@@ -56,6 +56,8 @@ fn main() -> Result<()> {
             r#loop,
         }) => cmd_run(&config, &task_id, &agent, r#loop),
 
+        Some(Commands::Flow { task_id }) => cmd_flow(&config, &task_id),
+
         Some(Commands::Pause { task_id }) => cmd_pause(&config, &task_id),
 
         Some(Commands::Resume { task_id }) => cmd_resume(&config, &task_id),
@@ -280,6 +282,23 @@ fn cmd_run(config: &Config, task_id: &str, agent_name: &str, loop_mode: bool) ->
         );
         println!("To attach: agman attach {}", task.meta.task_id());
     }
+
+    Ok(())
+}
+
+fn cmd_flow(config: &Config, task_id: &str) -> Result<()> {
+    config.init_default_files()?;
+
+    let mut task = Task::load_by_id(config, task_id)?;
+
+    println!("Running flow '{}' for task '{}'", task.meta.flow_name, task.meta.task_id());
+    println!();
+
+    let runner = agent::AgentRunner::new(config.clone());
+    let result = runner.run_flow(&mut task)?;
+
+    println!();
+    println!("Flow finished with: {}", result);
 
     Ok(())
 }

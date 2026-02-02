@@ -48,6 +48,12 @@ pub enum Commands {
         r#loop: bool,
     },
 
+    /// Run the entire flow for a task (blocking, runs agents in sequence)
+    Flow {
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
+    },
+
     /// Pause a running task
     Pause {
         /// Task identifier (repo--branch format, or just branch if unambiguous)

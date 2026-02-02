@@ -167,6 +167,7 @@ impl Tmux {
     }
 
     /// Send keys to the default pane in a session
+    #[allow(dead_code)]
     pub fn send_keys(session_name: &str, keys: &str) -> Result<()> {
         let output = Command::new("tmux")
             .args(["send-keys", "-t", session_name, keys, "Enter"])

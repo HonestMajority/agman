@@ -1,14 +1,13 @@
 use anyhow::{Context, Result};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 use crate::config::Config;
-use crate::flow::StopCondition;
-use crate::task::Task;
+use crate::flow::{BlockedAction, Flow, FlowStep, StopCondition};
+use crate::task::{Task, TaskStatus};
 use crate::tmux::Tmux;
 
 pub struct Agent {
-    #[allow(dead_code)]
     pub name: String,
     pub prompt_template: String,
 }
@@ -57,53 +56,64 @@ impl Agent {
         Ok(prompt)
     }
 
-    pub fn run_in_tmux(&self, task: &Task, _config: &Config) -> Result<()> {
+    /// Run agent in tmux's claude window
+    pub fn run_in_tmux(&self, task: &Task) -> Result<()> {
         let prompt = self.build_prompt(task)?;
 
-        // Write prompt to a temp file
+        // Write prompt to a temp file in the task directory
         let prompt_file = task.dir.join(".current-prompt.md");
         std::fs::write(&prompt_file, &prompt)?;
 
-        // Build the claude command
+        // Build the claude command for tmux
+        // Use -p (print mode) with the prompt read from file
+        // Pipe output to tee to log it
         let cmd = format!(
-            "claude --print '{}' 2>&1 | tee -a '{}'",
+            "claude -p \"$(cat '{}')\" 2>&1 | tee -a '{}'",
             prompt_file.display(),
             task.dir.join("agent.log").display()
         );
 
-        // Send to tmux
-        Tmux::send_keys(&task.meta.tmux_session, &cmd)?;
+        // Send to the claude window in tmux
+        Tmux::send_keys_to_window(&task.meta.tmux_session, "claude", &cmd)?;
 
         Ok(())
     }
 
+    /// Run agent directly (blocking) and capture output
     pub fn run_direct(&self, task: &Task) -> Result<Option<StopCondition>> {
         let prompt = self.build_prompt(task)?;
 
-        // Write prompt to temp file
-        let prompt_file = task.dir.join(".current-prompt.md");
-        std::fs::write(&prompt_file, &prompt)?;
+        // Log start
+        let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+        task.append_agent_log(&format!(
+            "\n--- Agent: {} started at {} ---\n",
+            self.name, timestamp
+        ))?;
 
-        // Run claude directly and capture output
+        // Run claude with -p flag (print mode, non-interactive)
+        // Pass prompt via stdin
         let mut child = Command::new("claude")
-            .arg("--print")
-            .arg(&prompt_file)
+            .arg("-p") // print mode
+            .arg("--dangerously-skip-permissions") // allow file operations without confirmation
             .current_dir(&task.meta.worktree_path)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("Failed to spawn claude process")?;
+            .context("Failed to spawn claude process. Is claude CLI installed?")?;
+
+        // Write prompt to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(prompt.as_bytes())?;
+        }
 
         let stdout = child.stdout.take().unwrap();
         let reader = BufReader::new(stdout);
 
-        let mut full_output = String::new();
         let mut last_condition: Option<StopCondition> = None;
 
         for line in reader.lines() {
             let line = line?;
-            full_output.push_str(&line);
-            full_output.push('\n');
 
             // Log to agent.log
             task.append_agent_log(&line)?;
@@ -118,12 +128,26 @@ impl Agent {
         }
 
         let status = child.wait()?;
-        if !status.success() {
-            tracing::warn!("Claude process exited with non-zero status");
-        }
 
-        // Clean up temp file
-        let _ = std::fs::remove_file(&prompt_file);
+        // Log completion
+        let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+        let result_str = last_condition
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "no signal".to_string());
+        task.append_agent_log(&format!(
+            "\n--- Agent: {} finished at {} with: {} (exit: {}) ---\n",
+            self.name,
+            timestamp,
+            result_str,
+            status.code().unwrap_or(-1)
+        ))?;
+
+        if !status.success() {
+            tracing::warn!(
+                "Claude process exited with status: {}",
+                status.code().unwrap_or(-1)
+            );
+        }
 
         Ok(last_condition)
     }
@@ -138,7 +162,19 @@ impl AgentRunner {
         Self { config }
     }
 
+    /// Run a single agent and return its stop condition
     pub fn run_agent(&self, task: &mut Task, agent_name: &str) -> Result<Option<StopCondition>> {
+        let agent = Agent::load(&self.config, agent_name)?;
+
+        // Update task to show current agent
+        task.update_agent(Some(agent_name.to_string()))?;
+
+        // Run the agent directly (blocking)
+        agent.run_direct(task)
+    }
+
+    /// Run agent in tmux (non-blocking, for interactive use)
+    pub fn run_agent_in_tmux(&self, task: &mut Task, agent_name: &str) -> Result<()> {
         let agent = Agent::load(&self.config, agent_name)?;
 
         // Update task to show current agent
@@ -146,43 +182,178 @@ impl AgentRunner {
 
         // Log start
         let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-        task.append_agent_log(&format!("\n--- Agent: {} started at {} ---\n", agent_name, timestamp))?;
+        task.append_agent_log(&format!(
+            "\n--- Agent: {} started at {} (tmux) ---\n",
+            agent_name, timestamp
+        ))?;
 
-        // Run the agent
-        let result = agent.run_direct(task)?;
-
-        // Log completion
-        let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-        let result_str = result.map(|r| r.to_string()).unwrap_or_else(|| "no signal".to_string());
-        task.append_agent_log(&format!("\n--- Agent: {} finished at {} with: {} ---\n", agent_name, timestamp, result_str))?;
-
-        Ok(result)
-    }
-
-    pub fn run_agent_in_tmux(&self, task: &mut Task, agent_name: &str) -> Result<()> {
-        let agent = Agent::load(&self.config, agent_name)?;
-
-        // Update task to show current agent
-        task.update_agent(Some(agent_name.to_string()))?;
-
-        // Run in tmux
-        agent.run_in_tmux(task, &self.config)?;
+        // Run in tmux (non-blocking)
+        agent.run_in_tmux(task)?;
 
         Ok(())
     }
 
+    /// Run a single agent in a loop until it returns a stop condition
     pub fn run_agent_loop(&self, task: &mut Task, agent_name: &str) -> Result<StopCondition> {
         loop {
             let result = self.run_agent(task, agent_name)?;
 
             match result {
-                Some(StopCondition::TaskComplete) => return Ok(StopCondition::TaskComplete),
-                Some(StopCondition::TaskBlocked) => return Ok(StopCondition::TaskBlocked),
-                Some(StopCondition::AgentDone) => return Ok(StopCondition::AgentDone),
-                Some(other) => return Ok(other),
+                Some(condition) => return Ok(condition),
                 None => {
-                    // No magic string, keep looping
+                    // No magic string detected, keep looping
                     tracing::info!("No stop condition detected, continuing agent loop");
+                    println!("No stop condition detected, running agent again...");
+                }
+            }
+        }
+    }
+
+    /// Run an entire flow to completion
+    pub fn run_flow(&self, task: &mut Task) -> Result<StopCondition> {
+        let flow = Flow::load(&self.config.flow_path(&task.meta.flow_name))?;
+
+        println!("Starting flow: {}", flow.name);
+        println!();
+
+        loop {
+            let step_index = task.meta.flow_step;
+
+            let Some(step) = flow.get_step(step_index) else {
+                // No more steps, flow is complete
+                println!("Flow complete - no more steps");
+                task.update_status(TaskStatus::Done)?;
+                return Ok(StopCondition::TaskComplete);
+            };
+
+            match step {
+                FlowStep::Agent(agent_step) => {
+                    println!(
+                        "Step {}: Running agent '{}' (until: {})",
+                        step_index, agent_step.agent, agent_step.until
+                    );
+
+                    let result = self.run_agent(task, &agent_step.agent)?;
+
+                    match result {
+                        Some(StopCondition::TaskComplete) => {
+                            println!("Task marked complete by agent");
+                            task.update_status(TaskStatus::Done)?;
+                            return Ok(StopCondition::TaskComplete);
+                        }
+                        Some(StopCondition::TaskBlocked) => {
+                            println!("Task blocked - needs human intervention");
+                            match agent_step.on_blocked {
+                                Some(BlockedAction::Continue) => {
+                                    println!("on_blocked: continue - advancing to next step");
+                                    task.advance_flow_step()?;
+                                }
+                                _ => {
+                                    println!("on_blocked: pause - pausing flow");
+                                    task.update_status(TaskStatus::Paused)?;
+                                    return Ok(StopCondition::TaskBlocked);
+                                }
+                            }
+                        }
+                        Some(StopCondition::AgentDone) => {
+                            if agent_step.until == StopCondition::AgentDone {
+                                println!("Agent done - advancing to next step");
+                                task.advance_flow_step()?;
+                            } else {
+                                println!(
+                                    "Agent done but waiting for {:?} - running again",
+                                    agent_step.until
+                                );
+                            }
+                        }
+                        Some(StopCondition::TestsPass) => {
+                            if agent_step.until == StopCondition::TestsPass {
+                                println!("Tests pass - advancing to next step");
+                                task.advance_flow_step()?;
+                            }
+                        }
+                        Some(StopCondition::TestsFail) => {
+                            println!("Tests failed");
+                            // For test failures, we typically want to loop back or continue
+                            // The flow should handle this
+                        }
+                        None => {
+                            // No stop condition - agent will be run again
+                            println!("No stop condition from agent - running again");
+                        }
+                    }
+                }
+                FlowStep::Loop(loop_step) => {
+                    println!(
+                        "Step {}: Entering loop (until: {})",
+                        step_index, loop_step.until
+                    );
+
+                    // Run the loop until its condition is met
+                    let result = self.run_loop(task, &loop_step.steps, loop_step.until)?;
+
+                    match result {
+                        StopCondition::TaskComplete => {
+                            task.update_status(TaskStatus::Done)?;
+                            return Ok(StopCondition::TaskComplete);
+                        }
+                        StopCondition::TaskBlocked => {
+                            task.update_status(TaskStatus::Paused)?;
+                            return Ok(StopCondition::TaskBlocked);
+                        }
+                        _ => {
+                            // Loop completed, advance to next step
+                            task.advance_flow_step()?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run a loop of agent steps until the loop condition is met
+    fn run_loop(
+        &self,
+        task: &mut Task,
+        steps: &[crate::flow::AgentStep],
+        until: StopCondition,
+    ) -> Result<StopCondition> {
+        let mut iteration = 0;
+        const MAX_ITERATIONS: usize = 100; // Safety limit
+
+        loop {
+            iteration += 1;
+            if iteration > MAX_ITERATIONS {
+                println!("Loop exceeded {} iterations, breaking", MAX_ITERATIONS);
+                return Ok(StopCondition::AgentDone);
+            }
+
+            println!("Loop iteration {}", iteration);
+
+            for (i, agent_step) in steps.iter().enumerate() {
+                println!("  Step {}: Running agent '{}'", i, agent_step.agent);
+
+                let result = self.run_agent(task, &agent_step.agent)?;
+
+                match result {
+                    Some(StopCondition::TaskComplete) => {
+                        return Ok(StopCondition::TaskComplete);
+                    }
+                    Some(StopCondition::TaskBlocked) => {
+                        return Ok(StopCondition::TaskBlocked);
+                    }
+                    Some(condition) if condition == until => {
+                        println!("Loop condition {:?} met", until);
+                        return Ok(condition);
+                    }
+                    Some(StopCondition::TestsFail) => {
+                        // Tests failed, loop back to start
+                        println!("Tests failed, restarting loop");
+                        break; // Break inner loop to restart
+                    }
+                    _ => {
+                        // Continue to next agent in loop
+                    }
                 }
             }
         }

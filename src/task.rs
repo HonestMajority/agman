@@ -190,7 +190,6 @@ impl Task {
         self.save_meta()
     }
 
-    #[allow(dead_code)]
     pub fn advance_flow_step(&mut self) -> Result<()> {
         self.meta.flow_step += 1;
         self.meta.updated_at = Utc::now();
