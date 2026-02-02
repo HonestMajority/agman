@@ -7,8 +7,32 @@ use crate::config::Config;
 pub struct Git;
 
 impl Git {
-    /// Fetch origin for a repository
-    pub fn fetch_origin(repo_path: &PathBuf) -> Result<()> {
+    /// Check if a remote exists
+    fn has_remote(repo_path: &PathBuf, remote_name: &str) -> bool {
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["remote", "get-url", remote_name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Check if a ref exists (branch, tag, or remote ref)
+    fn ref_exists(repo_path: &PathBuf, ref_name: &str) -> bool {
+        Command::new("git")
+            .current_dir(repo_path)
+            .args(["rev-parse", "--verify", ref_name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Fetch origin for a repository (returns Ok even if no remote)
+    pub fn fetch_origin(repo_path: &PathBuf) -> Result<bool> {
+        if !Self::has_remote(repo_path, "origin") {
+            return Ok(false);
+        }
+
         let output = Command::new("git")
             .current_dir(repo_path)
             .args(["fetch", "origin"])
@@ -16,17 +40,39 @@ impl Git {
             .context("Failed to execute git fetch")?;
 
         if !output.status.success() {
-            anyhow::bail!(
+            tracing::warn!(
                 "Failed to fetch origin: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
+            return Ok(false);
         }
 
-        Ok(())
+        Ok(true)
     }
 
-    /// Create a new worktree with a new branch based on origin/main
-    /// This matches tlana's behavior: git worktree add -b <branch> <wt_dir> origin/main
+    /// Find the best base ref for creating a new branch
+    /// Tries in order: origin/main, origin/master, main, master, HEAD
+    fn find_base_ref(repo_path: &PathBuf) -> String {
+        let candidates = [
+            "origin/main",
+            "origin/master",
+            "refs/heads/main",
+            "refs/heads/master",
+            "HEAD",
+        ];
+
+        for candidate in candidates {
+            if Self::ref_exists(repo_path, candidate) {
+                return candidate.to_string();
+            }
+        }
+
+        // Fallback to HEAD (should always exist in a valid repo)
+        "HEAD".to_string()
+    }
+
+    /// Create a new worktree with a new branch
+    /// Tries to base on origin/main if available, falls back to local main or HEAD
     pub fn create_worktree(
         config: &Config,
         repo_name: &str,
@@ -36,6 +82,11 @@ impl Git {
 
         if !repo_path.exists() {
             anyhow::bail!("Repository does not exist: {}", repo_path.display());
+        }
+
+        // Verify it's a git repo
+        if !repo_path.join(".git").exists() && !Self::ref_exists(&repo_path, "HEAD") {
+            anyhow::bail!("Not a git repository: {}", repo_path.display());
         }
 
         let worktree_base = config.worktree_base(repo_name);
@@ -55,12 +106,21 @@ impl Git {
         std::fs::create_dir_all(&worktree_base)
             .context("Failed to create worktree base directory")?;
 
-        // Fetch origin first
-        println!("  Fetching origin...");
-        Self::fetch_origin(&repo_path)?;
+        // Try to fetch origin (non-fatal if no remote)
+        print!("  Fetching origin... ");
+        if Self::fetch_origin(&repo_path)? {
+            println!("done");
+        } else {
+            println!("skipped (no remote)");
+        }
 
-        // Create worktree with new branch based on origin/main
-        println!("  Creating worktree with new branch '{}' based on origin/main...", branch_name);
+        // Find the best base ref
+        let base_ref = Self::find_base_ref(&repo_path);
+        println!(
+            "  Creating worktree with new branch '{}' based on {}...",
+            branch_name, base_ref
+        );
+
         let output = Command::new("git")
             .current_dir(&repo_path)
             .args([
@@ -69,7 +129,7 @@ impl Git {
                 "-b",
                 branch_name,
                 worktree_path.to_str().unwrap(),
-                "origin/main",
+                &base_ref,
             ])
             .output()
             .context("Failed to create worktree")?;
