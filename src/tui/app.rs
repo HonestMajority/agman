@@ -8,7 +8,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::process::Command;
 use std::time::{Duration, Instant};
-use tui_textarea::{Input, TextArea};
+use tui_textarea::{CursorMove, Input, TextArea};
 
 use crate::config::Config;
 use crate::git::Git;
@@ -144,6 +144,9 @@ impl App {
         self.notes_editor = TextArea::from(notes_content.lines());
         self.notes_editor
             .set_cursor_line_style(ratatui::style::Style::default());
+        // Move cursor to end of text
+        self.notes_editor.move_cursor(CursorMove::Bottom);
+        self.notes_editor.move_cursor(CursorMove::End);
         self.notes_editing = false;
     }
 

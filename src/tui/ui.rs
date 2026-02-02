@@ -61,25 +61,28 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
 
     // Render header
     let header = Line::from(vec![
-        Span::raw("     "),
+        Span::raw("   "),
         Span::styled(
-            format!("{:<32}", "TASK"),
+            format!("{:<30}", "TASK"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw("  "),
         Span::styled(
-            format!("{:<12}", "STATUS"),
+            format!("{:<10}", "STATUS"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw("  "),
         Span::styled(
-            format!("{:<14}", "AGENT"),
+            format!("{:<12}", "AGENT"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw("  "),
         Span::styled(
             "UPDATED",
             Style::default()
@@ -105,12 +108,16 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             let agent_str = task.meta.current_agent.as_deref().unwrap_or("-");
             let task_id = task.meta.task_id();
 
+            // Format each column with explicit spacing
+            let status_str = format!("{:<10}", task.meta.status);
+            let agent_str_fmt = format!("{:<12}", agent_str);
+
             let line = Line::from(vec![
-                Span::raw("  "),
+                Span::raw(" "),
                 Span::styled(status_icon, Style::default().fg(status_color)),
-                Span::raw("  "),
+                Span::raw(" "),
                 Span::styled(
-                    format!("{:<32}", task_id),
+                    format!("{:<30}", task_id),
                     if i == app.selected_index {
                         Style::default()
                             .fg(Color::White)
@@ -119,14 +126,11 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(Color::Gray)
                     },
                 ),
-                Span::styled(
-                    format!("{:<12}", task.meta.status),
-                    Style::default().fg(status_color),
-                ),
-                Span::styled(
-                    format!("{:<14}", agent_str),
-                    Style::default().fg(Color::LightBlue),
-                ),
+                Span::raw("  "),
+                Span::styled(status_str, Style::default().fg(status_color)),
+                Span::raw("  "),
+                Span::styled(agent_str_fmt, Style::default().fg(Color::LightBlue)),
+                Span::raw("  "),
                 Span::styled(task.time_since_update(), Style::default().fg(Color::DarkGray)),
             ]);
 
