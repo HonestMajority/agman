@@ -55,13 +55,20 @@ impl Agent {
             prompt.push_str("\n\n");
         }
 
-        // Include feedback if present (for refiner agent)
-        if !feedback.is_empty() {
-            prompt.push_str("# Follow-up Feedback\n");
-            prompt.push_str(&feedback);
-            prompt.push_str("\n\n");
+        // Include git context for refiner and checker agents
+        let needs_git_context = !feedback.is_empty()
+            || self.name == "checker"
+            || self.name == "refiner";
 
-            // Also include git diff for context
+        if needs_git_context {
+            // Include feedback if present
+            if !feedback.is_empty() {
+                prompt.push_str("# Follow-up Feedback\n");
+                prompt.push_str(&feedback);
+                prompt.push_str("\n\n");
+            }
+
+            // Include git diff for context
             if let Ok(diff) = task.get_git_diff() {
                 if !diff.is_empty() {
                     prompt.push_str("# Current Git Diff\n");
