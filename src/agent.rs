@@ -25,23 +25,16 @@ impl Agent {
     }
 
     pub fn build_prompt(&self, task: &Task) -> Result<String> {
-        let goal = task.read_prompt()?;
+        let task_content = task.read_task()?;
         let progress = task.read_progress()?;
         let context = task.read_context()?;
-        let plan = task.read_plan()?;
         let feedback = task.read_feedback()?;
 
         let mut prompt = self.prompt_template.clone();
         prompt.push_str("\n\n---\n\n");
-        prompt.push_str("# Task Goal\n");
-        prompt.push_str(&goal);
+        prompt.push_str("# Current Task\n");
+        prompt.push_str(&task_content);
         prompt.push_str("\n\n");
-
-        if !plan.is_empty() {
-            prompt.push_str("# Implementation Plan\n");
-            prompt.push_str(&plan);
-            prompt.push_str("\n\n");
-        }
 
         if !progress.is_empty() {
             prompt.push_str("# Progress So Far\n");

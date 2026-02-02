@@ -47,8 +47,22 @@ src/
 
 ### Task
 - Lives in `~/.agman/tasks/<repo>--<branch>/`
-- Contains: `meta.json`, `PROMPT.md`, `PLAN.md`, `notes.md`, `agent.log`
+- Contains: `meta.json`, `TASK.md`, `notes.md`, `agent.log`
 - Status: `working`, `paused`, `done`, `failed`
+
+### TASK.md Format
+```markdown
+# Goal
+[What we're trying to achieve - the high-level objective]
+
+# Plan
+## Completed
+- [x] Step that was done
+
+## Remaining
+- [ ] Next step to do
+- [ ] Another step
+```
 
 ### Flow
 - YAML file in `~/.agman/flows/`
@@ -142,4 +156,4 @@ cargo test              # Run tests
 
 4. **Flow progression**: Agents output magic strings, flow runner detects them and advances steps
 
-5. **Feedback loop**: `continue` flow uses refiner to synthesize feedback into fresh PROMPT.md and PLAN.md, avoiding context accumulation
+5. **Feedback loop**: `continue` flow uses refiner to synthesize feedback into fresh TASK.md, avoiding context accumulation

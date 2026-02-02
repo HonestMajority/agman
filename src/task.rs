@@ -95,7 +95,7 @@ impl Task {
 
         let task = Self { meta, dir };
         task.save_meta()?;
-        task.write_prompt(description)?;
+        task.write_task(&format!("# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n", description))?;
         task.init_files()?;
 
         Ok(task)
@@ -196,9 +196,9 @@ impl Task {
         self.save_meta()
     }
 
-    fn write_prompt(&self, description: &str) -> Result<()> {
-        let prompt_path = self.dir.join("PROMPT.md");
-        std::fs::write(&prompt_path, description)?;
+    pub fn write_task(&self, content: &str) -> Result<()> {
+        let task_path = self.dir.join("TASK.md");
+        std::fs::write(&task_path, content)?;
         Ok(())
     }
 
@@ -221,18 +221,9 @@ impl Task {
         Ok(())
     }
 
-    pub fn read_prompt(&self) -> Result<String> {
-        let path = self.dir.join("PROMPT.md");
-        std::fs::read_to_string(&path).context("Failed to read PROMPT.md")
-    }
-
-    pub fn read_plan(&self) -> Result<String> {
-        let path = self.dir.join("PLAN.md");
-        if path.exists() {
-            std::fs::read_to_string(&path).context("Failed to read PLAN.md")
-        } else {
-            Ok(String::new())
-        }
+    pub fn read_task(&self) -> Result<String> {
+        let path = self.dir.join("TASK.md");
+        std::fs::read_to_string(&path).context("Failed to read TASK.md")
     }
 
     pub fn read_progress(&self) -> Result<String> {

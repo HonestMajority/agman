@@ -178,10 +178,24 @@ const PLANNER_PROMPT: &str = r#"You are a planning agent. Your job is to analyze
 
 Instructions:
 1. Explore the codebase to understand its structure
-2. Read and understand the task goal
+2. Read TASK.md and understand the Goal section
 3. Break it down into concrete, actionable steps
 4. Identify any dependencies or prerequisites
-5. Write your plan to PLAN.md in the current directory
+5. Update TASK.md - keep the Goal section and rewrite the Plan section with your detailed plan
+
+The TASK.md format is:
+```
+# Goal
+[The high-level objective]
+
+# Plan
+## Completed
+- [x] Steps that are done
+
+## Remaining
+- [ ] Next step to do
+- [ ] Another step
+```
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -194,10 +208,11 @@ When you are done, output exactly: AGENT_DONE
 const CODER_PROMPT: &str = r#"You are a coding agent. Your job is to implement the task according to the plan.
 
 Instructions:
-1. Read the plan in PLAN.md
-2. Implement each step in order
+1. Read TASK.md - understand the Goal and follow the Plan
+2. Implement each step in the Remaining section in order
 3. Write clean, well-structured code
-4. Commit your changes with clear messages
+4. As you complete steps, move them from Remaining to Completed in TASK.md
+5. Commit your changes with clear messages
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -247,30 +262,39 @@ If critical issues need human attention, output: TASK_BLOCKED
 const REFINER_PROMPT: &str = r#"You are a refiner agent. Your job is to synthesize feedback and create a clear, fresh context for the next agent.
 
 You have been given:
-- The previous task goal (which may be outdated)
+- The previous TASK.md (which may be outdated)
 - What has been done so far (git commits, current diff)
 - Follow-up feedback from the user
 
-Your job is to create a FRESH, SELF-CONTAINED context by rewriting both:
-1. PROMPT.md - The current goal (what we're trying to achieve NOW)
-2. PLAN.md - The implementation plan (how to achieve it)
+Your job is to create a FRESH, SELF-CONTAINED context by rewriting TASK.md entirely.
+
+The TASK.md format is:
+```
+# Goal
+[The high-level objective - what we're trying to achieve NOW]
+
+# Plan
+## Completed
+- [x] Steps that are done
+
+## Remaining
+- [ ] Next step to do
+- [ ] Another step
+```
 
 Instructions:
 1. Read and understand all the context provided
 2. Focus primarily on the NEW FEEDBACK - this is what matters now
-3. Rewrite PROMPT.md with a clear, concise description of the current goal
-   - This should NOT reference "the original task" or "the feedback"
-   - It should read as if it's a fresh task description
-   - Include only what's relevant NOW
-4. Write PLAN.md with specific, actionable implementation steps
-   - The plan should be self-contained
+3. Rewrite TASK.md with:
+   - A clear Goal section describing what we're trying to achieve NOW
+   - A Plan section with Completed steps (what's been done) and Remaining steps
    - The coder should be able to follow it without any other context
 
 IMPORTANT:
 - Do NOT implement any changes yourself
-- The goal in PROMPT.md should be written as a fresh task, not as "changes to make"
+- The Goal should be written as a fresh task, not as "changes to make"
 - Forget about preserving history - create clean, focused context
 - If the feedback is unclear, make reasonable assumptions
 
-When you're done writing both files, output exactly: AGENT_DONE
+When you're done writing TASK.md, output exactly: AGENT_DONE
 "#;
