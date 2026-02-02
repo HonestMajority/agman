@@ -56,7 +56,7 @@ fn main() -> Result<()> {
             r#loop,
         }) => cmd_run(&config, &task_id, &agent, r#loop),
 
-        Some(Commands::Flow { task_id }) => cmd_flow(&config, &task_id),
+        Some(Commands::FlowRun { task_id }) => cmd_flow_run(&config, &task_id),
 
         Some(Commands::Pause { task_id }) => cmd_pause(&config, &task_id),
 
@@ -108,7 +108,6 @@ fn cmd_new(
     if !flow_path.exists() {
         anyhow::bail!("Flow '{}' does not exist", flow_name);
     }
-    let flow = Flow::load(&flow_path)?;
 
     println!("Creating task: {}--{}", repo_name, branch_name);
 
@@ -123,7 +122,7 @@ fn cmd_new(
 
     // Create task
     println!("Creating task directory...");
-    let mut task = Task::create(
+    let task = Task::create(
         config,
         repo_name,
         branch_name,
@@ -136,31 +135,20 @@ fn cmd_new(
     println!("Creating tmux session with windows...");
     Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)?;
 
-    // Start the first agent if flow has steps
-    if let Some(step) = flow.get_step(0) {
-        let agent_name = match step {
-            flow::FlowStep::Agent(a) => a.agent.clone(),
-            flow::FlowStep::Loop(l) => l.steps.first().map(|s| s.agent.clone()).unwrap_or_default(),
-        };
-
-        if !agent_name.is_empty() {
-            println!("Starting agent: {}", agent_name);
-            task.update_agent(Some(agent_name.clone()))?;
-
-            let runner = agent::AgentRunner::new(config.clone());
-            runner.run_agent_in_tmux(&mut task, &agent_name)?;
-        }
-    }
+    // Start the flow running in the tmux claude window
+    let task_id = task.meta.task_id();
+    println!("Starting flow '{}' in background...", flow_name);
+    let flow_cmd = format!("agman flow-run {}", task_id);
+    Tmux::send_keys_to_window(&task.meta.tmux_session, "claude", &flow_cmd)?;
 
     println!();
     println!("Task created successfully!");
-    println!("  Task ID:   {}--{}", repo_name, branch_name);
+    println!("  Task ID:   {}", task_id);
     println!("  Worktree:  {}", worktree_path.display());
     println!("  Tmux:      {}", task.meta.tmux_session);
     println!("  Flow:      {}", flow_name);
     println!();
-    println!("To attach: agman attach {}--{}", repo_name, branch_name);
-    println!("Or run:    agman");
+    println!("Flow is running in tmux. To watch: agman attach {}", task_id);
 
     Ok(())
 }
@@ -286,7 +274,7 @@ fn cmd_run(config: &Config, task_id: &str, agent_name: &str, loop_mode: bool) ->
     Ok(())
 }
 
-fn cmd_flow(config: &Config, task_id: &str) -> Result<()> {
+fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
     config.init_default_files()?;
 
     let mut task = Task::load_by_id(config, task_id)?;
