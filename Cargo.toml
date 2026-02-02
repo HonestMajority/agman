@@ -1,0 +1,48 @@
+[package]
+name = "agman"
+version = "0.1.0"
+edition = "2021"
+description = "Agent Manager - A CLI tool for orchestrating stateless AI agents across isolated git worktrees"
+authors = ["agman"]
+
+[dependencies]
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# TUI
+ratatui = "0.28"
+crossterm = "0.28"
+
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# File system
+dirs = "5.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# UUID for unique identifiers
+uuid = { version = "1.6", features = ["v4"] }
+
+# Better panic handling
+better-panic = "0.3"
+
+# Unicode width for TUI
+unicode-width = "0.1"
+
+# Tui-textarea for notes editor
+tui-textarea = "0.6"
