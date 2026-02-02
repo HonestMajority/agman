@@ -513,15 +513,17 @@ impl App {
 
     fn handle_feedback_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
+            // Check for Ctrl+S to submit
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                self.submit_feedback()?;
+                return Ok(false);
+            }
+
             match key.code {
                 KeyCode::Esc => {
                     // Cancel feedback
                     self.view = View::Preview;
                     self.set_status("Feedback cancelled".to_string());
-                }
-                KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Submit feedback with Ctrl+Enter
-                    self.submit_feedback()?;
                 }
                 _ => {
                     let input = Input::from(event.clone());

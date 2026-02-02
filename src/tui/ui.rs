@@ -59,30 +59,27 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
 
-    // Render header
+    // Render header - columns: icon(1) + space(2) + task(28) + status(12) + agent(14) + updated
     let header = Line::from(vec![
-        Span::raw("   "),
+        Span::raw("    "),
         Span::styled(
-            format!("{:<30}", "TASK"),
+            format!("{:<28}", "TASK"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
         Span::styled(
-            format!("{:<10}", "STATUS"),
+            format!("{:<12}", "STATUS"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
         Span::styled(
-            format!("{:<12}", "AGENT"),
+            format!("{:<14}", "AGENT"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
         Span::styled(
             "UPDATED",
             Style::default()
@@ -109,15 +106,14 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             let task_id = task.meta.task_id();
 
             // Format each column with explicit spacing
-            let status_str = format!("{:<10}", task.meta.status);
-            let agent_str_fmt = format!("{:<12}", agent_str);
+            let status_str = format!("{}", task.meta.status);
 
             let line = Line::from(vec![
                 Span::raw(" "),
                 Span::styled(status_icon, Style::default().fg(status_color)),
-                Span::raw(" "),
+                Span::raw("  "),
                 Span::styled(
-                    format!("{:<30}", task_id),
+                    format!("{:<28}", task_id),
                     if i == app.selected_index {
                         Style::default()
                             .fg(Color::White)
@@ -126,11 +122,14 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(Color::Gray)
                     },
                 ),
-                Span::raw("  "),
-                Span::styled(status_str, Style::default().fg(status_color)),
-                Span::raw("  "),
-                Span::styled(agent_str_fmt, Style::default().fg(Color::LightBlue)),
-                Span::raw("  "),
+                Span::styled(
+                    format!("{:<12}", status_str),
+                    Style::default().fg(status_color),
+                ),
+                Span::styled(
+                    format!("{:<14}", agent_str),
+                    Style::default().fg(Color::LightBlue),
+                ),
                 Span::styled(task.time_since_update(), Style::default().fg(Color::DarkGray)),
             ]);
 
@@ -330,7 +329,7 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
     app.feedback_editor.set_block(
         Block::default()
             .title(Span::styled(
-                " Enter feedback (Ctrl+Enter to submit, Esc to cancel) ",
+                " Enter feedback (Ctrl+S to submit, Esc to cancel) ",
                 Style::default().fg(Color::LightGreen),
             ))
             .borders(Borders::ALL)
@@ -452,7 +451,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         }
         View::Feedback => {
             vec![
-                Span::styled("Ctrl+Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
                 Span::styled(" submit  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc", Style::default().fg(Color::LightRed)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
