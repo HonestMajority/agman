@@ -160,11 +160,6 @@ fn cmd_new(
     println!("To attach: agman attach {}--{}", repo_name, branch_name);
     println!("Or run:    agman");
 
-    // Switch to the new session
-    println!();
-    println!("Switching to tmux session...");
-    Tmux::attach_session(&task.meta.tmux_session)?;
-
     Ok(())
 }
 
