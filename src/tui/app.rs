@@ -7,7 +7,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::{Duration, Instant};
-use tui_textarea::TextArea;
+use tui_textarea::{Input, TextArea};
 
 use crate::config::Config;
 use crate::git::Git;
@@ -20,8 +20,13 @@ use super::ui;
 pub enum View {
     TaskList,
     Preview,
-    Notes,
     DeleteConfirm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewPane {
+    Logs,
+    Notes,
 }
 
 pub struct App {
@@ -31,7 +36,11 @@ pub struct App {
     pub view: View,
     pub preview_content: String,
     pub preview_scroll: u16,
+    pub notes_content: String,
+    pub notes_scroll: u16,
     pub notes_editor: TextArea<'static>,
+    pub notes_editing: bool,
+    pub preview_pane: PreviewPane,
     pub should_quit: bool,
     pub status_message: Option<(String, Instant)>,
 }
@@ -39,8 +48,7 @@ pub struct App {
 impl App {
     pub fn new(config: Config) -> Result<Self> {
         let tasks = Task::list_all(&config)?;
-        let mut notes_editor = TextArea::default();
-        notes_editor.set_cursor_line_style(ratatui::style::Style::default());
+        let notes_editor = Self::create_notes_editor();
 
         Ok(Self {
             config,
@@ -49,10 +57,20 @@ impl App {
             view: View::TaskList,
             preview_content: String::new(),
             preview_scroll: 0,
+            notes_content: String::new(),
+            notes_scroll: 0,
             notes_editor,
+            notes_editing: false,
+            preview_pane: PreviewPane::Logs,
             should_quit: false,
             status_message: None,
         })
+    }
+
+    fn create_notes_editor() -> TextArea<'static> {
+        let mut editor = TextArea::default();
+        editor.set_cursor_line_style(ratatui::style::Style::default());
+        editor
     }
 
     pub fn refresh_tasks(&mut self) -> Result<()> {
@@ -102,26 +120,33 @@ impl App {
     }
 
     fn load_preview(&mut self) {
-        if let Some(task) = self.selected_task() {
-            self.preview_content = task
-                .read_agent_log_tail(50)
+        let (preview_content, notes_content) = if let Some(task) = self.selected_task() {
+            let preview = task
+                .read_agent_log_tail(100)
                 .unwrap_or_else(|_| "No agent log available".to_string());
-        }
-    }
-
-    fn load_notes(&mut self) {
-        if let Some(task) = self.selected_task() {
             let notes = task.read_notes().unwrap_or_default();
-            self.notes_editor = TextArea::from(notes.lines());
-            self.notes_editor
-                .set_cursor_line_style(ratatui::style::Style::default());
-        }
+            (preview, notes)
+        } else {
+            return;
+        };
+
+        self.preview_content = preview_content;
+        self.preview_scroll = 0;
+        self.notes_content = notes_content.clone();
+        self.notes_scroll = 0;
+
+        // Setup notes editor
+        self.notes_editor = TextArea::from(notes_content.lines());
+        self.notes_editor
+            .set_cursor_line_style(ratatui::style::Style::default());
+        self.notes_editing = false;
     }
 
     fn save_notes(&mut self) -> Result<()> {
         if let Some(task) = self.selected_task() {
             let notes = self.notes_editor.lines().join("\n");
             task.write_notes(&notes)?;
+            self.notes_content = notes;
             self.set_status("Notes saved".to_string());
         }
         Ok(())
@@ -183,25 +208,12 @@ impl App {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn attach_to_task(&self) -> Result<()> {
-        if let Some(task) = self.selected_task() {
-            if Tmux::session_exists(&task.meta.tmux_session) {
-                // We need to exit the TUI first, then attach
-                // This will be handled in the main loop
-                return Ok(());
-            }
-        }
-        Ok(())
-    }
-
     pub fn handle_event(&mut self, event: Event) -> Result<bool> {
         self.clear_old_status();
 
         match self.view {
             View::TaskList => self.handle_task_list_event(event),
             View::Preview => self.handle_preview_event(event),
-            View::Notes => self.handle_notes_event(event),
             View::DeleteConfirm => self.handle_delete_confirm_event(event),
         }
     }
@@ -215,19 +227,16 @@ impl App {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.should_quit = true;
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
+                KeyCode::Char('k') => {
                     self.previous_task();
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
+                KeyCode::Char('j') => {
                     self.next_task();
                 }
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Char('l') => {
                     self.load_preview();
+                    self.preview_pane = PreviewPane::Logs;
                     self.view = View::Preview;
-                }
-                KeyCode::Char('n') => {
-                    self.load_notes();
-                    self.view = View::Notes;
                 }
                 KeyCode::Char('p') => {
                     self.pause_task()?;
@@ -244,6 +253,16 @@ impl App {
                     self.refresh_tasks()?;
                     self.set_status("Refreshed task list".to_string());
                 }
+                KeyCode::Char('G') => {
+                    // Jump to last task
+                    if !self.tasks.is_empty() {
+                        self.selected_index = self.tasks.len() - 1;
+                    }
+                }
+                KeyCode::Char('g') => {
+                    // Jump to first task (gg in vim, but single g here)
+                    self.selected_index = 0;
+                }
                 _ => {}
             }
         }
@@ -251,30 +270,153 @@ impl App {
     }
 
     fn handle_preview_event(&mut self, event: Event) -> Result<bool> {
+        // If editing notes, handle vim-style input
+        if self.notes_editing {
+            return self.handle_notes_editing(event);
+        }
+
         if let Event::Key(key) = event {
+            // Ctrl+HJKL for pane switching
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                match key.code {
+                    KeyCode::Char('h') => {
+                        self.preview_pane = PreviewPane::Logs;
+                        return Ok(false);
+                    }
+                    KeyCode::Char('l') => {
+                        self.preview_pane = PreviewPane::Notes;
+                        return Ok(false);
+                    }
+                    KeyCode::Char('c') => {
+                        self.should_quit = true;
+                        return Ok(false);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Shift+J/K for scrolling
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                match key.code {
+                    KeyCode::Char('J') => {
+                        match self.preview_pane {
+                            PreviewPane::Logs => {
+                                self.preview_scroll = self.preview_scroll.saturating_add(3);
+                            }
+                            PreviewPane::Notes => {
+                                self.notes_scroll = self.notes_scroll.saturating_add(3);
+                            }
+                        }
+                        return Ok(false);
+                    }
+                    KeyCode::Char('K') => {
+                        match self.preview_pane {
+                            PreviewPane::Logs => {
+                                self.preview_scroll = self.preview_scroll.saturating_sub(3);
+                            }
+                            PreviewPane::Notes => {
+                                self.notes_scroll = self.notes_scroll.saturating_sub(3);
+                            }
+                        }
+                        return Ok(false);
+                    }
+                    _ => {}
+                }
+            }
+
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => {
                     self.view = View::TaskList;
                 }
                 KeyCode::Enter => {
-                    // Attach to tmux - return true to signal we need to exit and attach
-                    if let Some(task) = self.selected_task() {
-                        if Tmux::session_exists(&task.meta.tmux_session) {
-                            return Ok(true);
+                    // In Notes pane, Enter starts editing; in Logs, attaches tmux
+                    match self.preview_pane {
+                        PreviewPane::Logs => {
+                            if let Some(task) = self.selected_task() {
+                                if Tmux::session_exists(&task.meta.tmux_session) {
+                                    return Ok(true);
+                                }
+                            }
+                        }
+                        PreviewPane::Notes => {
+                            self.notes_editing = true;
+                            self.set_status("Editing notes (Esc to save & exit)".to_string());
                         }
                     }
                 }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.preview_scroll = self.preview_scroll.saturating_sub(1);
+                KeyCode::Char('i') => {
+                    // Enter edit mode for notes
+                    if self.preview_pane == PreviewPane::Notes {
+                        self.notes_editing = true;
+                        self.set_status("Editing notes (Esc to save & exit)".to_string());
+                    }
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.preview_scroll = self.preview_scroll.saturating_add(1);
+                KeyCode::Char('j') => {
+                    match self.preview_pane {
+                        PreviewPane::Logs => {
+                            self.preview_scroll = self.preview_scroll.saturating_add(1);
+                        }
+                        PreviewPane::Notes => {
+                            self.notes_scroll = self.notes_scroll.saturating_add(1);
+                        }
+                    }
                 }
-                KeyCode::PageUp => {
-                    self.preview_scroll = self.preview_scroll.saturating_sub(10);
+                KeyCode::Char('k') => {
+                    match self.preview_pane {
+                        PreviewPane::Logs => {
+                            self.preview_scroll = self.preview_scroll.saturating_sub(1);
+                        }
+                        PreviewPane::Notes => {
+                            self.notes_scroll = self.notes_scroll.saturating_sub(1);
+                        }
+                    }
                 }
-                KeyCode::PageDown => {
-                    self.preview_scroll = self.preview_scroll.saturating_add(10);
+                KeyCode::Char('l') => {
+                    self.preview_pane = PreviewPane::Notes;
+                }
+                KeyCode::Char('G') => {
+                    // Jump to bottom
+                    match self.preview_pane {
+                        PreviewPane::Logs => {
+                            self.preview_scroll = u16::MAX / 2;
+                        }
+                        PreviewPane::Notes => {
+                            self.notes_scroll = u16::MAX / 2;
+                        }
+                    }
+                }
+                KeyCode::Char('g') => {
+                    // Jump to top
+                    match self.preview_pane {
+                        PreviewPane::Logs => {
+                            self.preview_scroll = 0;
+                        }
+                        PreviewPane::Notes => {
+                            self.notes_scroll = 0;
+                        }
+                    }
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Half page down
+                    match self.preview_pane {
+                        PreviewPane::Logs => {
+                            self.preview_scroll = self.preview_scroll.saturating_add(15);
+                        }
+                        PreviewPane::Notes => {
+                            self.notes_scroll = self.notes_scroll.saturating_add(15);
+                        }
+                    }
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Half page up
+                    match self.preview_pane {
+                        PreviewPane::Logs => {
+                            self.preview_scroll = self.preview_scroll.saturating_sub(15);
+                        }
+                        PreviewPane::Notes => {
+                            self.notes_scroll = self.notes_scroll.saturating_sub(15);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -282,18 +424,17 @@ impl App {
         Ok(false)
     }
 
-    fn handle_notes_event(&mut self, event: Event) -> Result<bool> {
+    fn handle_notes_editing(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Esc => {
-                    self.save_notes()?;
-                    self.view = View::TaskList;
-                }
-                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.notes_editing = false;
                     self.save_notes()?;
                 }
                 _ => {
-                    self.notes_editor.input(event);
+                    // Convert crossterm event to tui-textarea Input
+                    let input = Input::from(event.clone());
+                    self.notes_editor.input(input);
                 }
             }
         }

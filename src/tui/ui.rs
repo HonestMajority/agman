@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::task::TaskStatus;
 
-use super::app::{App, View};
+use super::app::{App, PreviewPane, View};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -19,7 +19,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.view {
         View::TaskList => draw_task_list(f, app, chunks[0]),
         View::Preview => draw_preview(f, app, chunks[0]),
-        View::Notes => draw_notes(f, app, chunks[0]),
         View::DeleteConfirm => {
             draw_task_list(f, app, chunks[0]);
             draw_delete_confirm(f, app);
@@ -35,43 +34,43 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, task)| {
-            let status_icon = match task.meta.status {
-                TaskStatus::Working => ("●", Color::Green),
+            let (status_icon, status_color) = match task.meta.status {
+                TaskStatus::Working => ("●", Color::LightGreen),
                 TaskStatus::Paused => ("◐", Color::Yellow),
-                TaskStatus::Done => ("✓", Color::Cyan),
-                TaskStatus::Failed => ("✗", Color::Red),
+                TaskStatus::Done => ("✓", Color::LightCyan),
+                TaskStatus::Failed => ("✗", Color::LightRed),
             };
 
-            let agent_str = task.meta.current_agent.as_deref().unwrap_or("");
-
-            // Use task_id (repo--branch) for display
+            let agent_str = task.meta.current_agent.as_deref().unwrap_or("-");
             let task_id = task.meta.task_id();
 
             let line = Line::from(vec![
                 Span::raw("  "),
-                Span::styled(status_icon.0, Style::default().fg(status_icon.1)),
-                Span::raw(" "),
+                Span::styled(status_icon, Style::default().fg(status_color)),
+                Span::raw("  "),
                 Span::styled(
-                    format!("{:<30}", task_id),
+                    format!("{:<32}", task_id),
                     if i == app.selected_index {
-                        Style::default().add_modifier(Modifier::BOLD)
-                    } else {
                         Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Gray)
                     },
                 ),
                 Span::styled(
                     format!("{:<10}", task.meta.status),
-                    Style::default().fg(status_icon.1),
+                    Style::default().fg(status_color),
                 ),
-                Span::styled(format!("{:<12}", agent_str), Style::default().fg(Color::Blue)),
                 Span::styled(
-                    task.time_since_update(),
-                    Style::default().fg(Color::DarkGray),
+                    format!("{:<14}", agent_str),
+                    Style::default().fg(Color::LightBlue),
                 ),
+                Span::styled(task.time_since_update(), Style::default().fg(Color::DarkGray)),
             ]);
 
             let style = if i == app.selected_index {
-                Style::default().bg(Color::DarkGray)
+                Style::default().bg(Color::Rgb(40, 40, 50))
             } else {
                 Style::default()
             };
@@ -80,17 +79,71 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    let header = Line::from(vec![
+        Span::raw("     "),
+        Span::styled(
+            format!("{:<32}", "TASK"),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:<10}", "STATUS"),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:<14}", "AGENT"),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "UPDATED",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
     let list = List::new(items).block(
         Block::default()
-            .title(" agman ")
+            .title(Line::from(vec![
+                Span::styled(
+                    " agman ",
+                    Style::default()
+                        .fg(Color::LightCyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("({} tasks) ", app.tasks.len()),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(Color::LightCyan)),
     );
 
+    // Draw header
+    let inner = area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
     f.render_widget(list, area);
+
+    if inner.height > 1 {
+        let header_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(header), header_area);
+    }
 }
 
-fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
+fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
@@ -98,64 +151,140 @@ fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
 
     // Task info header
     if let Some(task) = app.selected_task() {
-        let header = Paragraph::new(format!(
-            "Task: {} | Status: {} | Agent: {}",
-            task.meta.task_id(),
-            task.meta.status,
-            task.meta.current_agent.as_deref().unwrap_or("none")
-        ))
+        let header = Paragraph::new(Line::from(vec![
+            Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                task.meta.task_id(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}", task.meta.status),
+                Style::default().fg(match task.meta.status {
+                    TaskStatus::Working => Color::LightGreen,
+                    TaskStatus::Paused => Color::Yellow,
+                    TaskStatus::Done => Color::LightCyan,
+                    TaskStatus::Failed => Color::LightRed,
+                }),
+            ),
+            Span::raw("  "),
+            Span::styled("Agent: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                task.meta.current_agent.as_deref().unwrap_or("none"),
+                Style::default().fg(Color::LightBlue),
+            ),
+        ]))
         .block(
             Block::default()
-                .title(" Task Info ")
+                .title(Span::styled(
+                    " Task Info ",
+                    Style::default()
+                        .fg(Color::LightCyan)
+                        .add_modifier(Modifier::BOLD),
+                ))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(Color::LightCyan)),
         );
         f.render_widget(header, chunks[0]);
     }
 
-    // Log preview
-    let preview = Paragraph::new(app.preview_content.as_str())
+    // Split the remaining area into logs and notes panels
+    let panels = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(chunks[1]);
+
+    draw_logs_panel(f, app, panels[0]);
+    draw_notes_panel(f, app, panels[1]);
+}
+
+fn draw_logs_panel(f: &mut Frame, app: &App, area: Rect) {
+    let is_focused = app.preview_pane == PreviewPane::Logs;
+    let border_color = if is_focused {
+        Color::LightYellow
+    } else {
+        Color::DarkGray
+    };
+
+    let title_style = if is_focused {
+        Style::default()
+            .fg(Color::LightYellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let logs = Paragraph::new(app.preview_content.as_str())
         .block(
             Block::default()
-                .title(" agent.log (press Enter to attach, Esc to go back) ")
+                .title(Span::styled(" Logs (Enter: attach tmux) ", title_style))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().fg(border_color)),
         )
+        .style(Style::default().fg(Color::Gray))
         .wrap(Wrap { trim: false })
         .scroll((app.preview_scroll, 0));
 
-    f.render_widget(preview, chunks[1]);
+    f.render_widget(logs, area);
 }
 
-fn draw_notes(f: &mut Frame, app: &mut App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
+fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    let is_focused = app.preview_pane == PreviewPane::Notes;
+    let border_color = if is_focused {
+        Color::LightGreen
+    } else {
+        Color::DarkGray
+    };
 
-    // Task info header
-    if let Some(task) = app.selected_task() {
-        let header = Paragraph::new(format!("Notes for: {}", task.meta.task_id())).block(
+    let title = if app.notes_editing {
+        " Notes [EDITING] "
+    } else if is_focused {
+        " Notes (i: edit, Enter: edit) "
+    } else {
+        " Notes "
+    };
+
+    let title_style = if is_focused {
+        Style::default()
+            .fg(Color::LightGreen)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    if app.notes_editing {
+        // Show the editor
+        app.notes_editor.set_block(
             Block::default()
+                .title(Span::styled(title, title_style))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(Color::LightGreen)),
         );
-        f.render_widget(header, chunks[0]);
+        app.notes_editor
+            .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+        f.render_widget(&app.notes_editor, area);
+    } else {
+        // Show read-only notes
+        let notes = Paragraph::new(app.notes_content.as_str())
+            .block(
+                Block::default()
+                    .title(Span::styled(title, title_style))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_color)),
+            )
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: false })
+            .scroll((app.notes_scroll, 0));
+
+        f.render_widget(notes, area);
     }
-
-    // Notes editor
-    app.notes_editor.set_block(
-        Block::default()
-            .title(" Notes (Esc to save & exit, Ctrl+S to save) ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Green)),
-    );
-
-    f.render_widget(&app.notes_editor, chunks[1]);
 }
 
 fn draw_delete_confirm(f: &mut Frame, app: &App) {
-    let area = centered_rect(50, 20, f.area());
+    let area = centered_rect(50, 30, f.area());
 
     f.render_widget(Clear, area);
 
@@ -164,38 +293,114 @@ fn draw_delete_confirm(f: &mut Frame, app: &App) {
         .map(|t| t.meta.task_id())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let text = format!(
-        "Delete task '{}'?\n\nThis will:\n- Kill the tmux session\n- Remove the git worktree\n- Delete all task files\n\n[y] Yes  [n] No",
-        task_id
-    );
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Delete task '{}'?", task_id),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled("This will:", Style::default().fg(Color::Gray))),
+        Line::from(Span::styled(
+            "  - Kill the tmux session",
+            Style::default().fg(Color::LightRed),
+        )),
+        Line::from(Span::styled(
+            "  - Remove the git worktree",
+            Style::default().fg(Color::LightRed),
+        )),
+        Line::from(Span::styled(
+            "  - Delete all task files",
+            Style::default().fg(Color::LightRed),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[y] ", Style::default().fg(Color::LightGreen)),
+            Span::styled("Yes", Style::default().fg(Color::White)),
+            Span::raw("    "),
+            Span::styled("[n] ", Style::default().fg(Color::LightRed)),
+            Span::styled("No", Style::default().fg(Color::White)),
+        ]),
+    ];
 
-    let popup = Paragraph::new(text)
-        .block(
-            Block::default()
-                .title(" Confirm Delete ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Red)),
-        )
-        .wrap(Wrap { trim: false });
+    let popup = Paragraph::new(text).block(
+        Block::default()
+            .title(Span::styled(
+                " Confirm Delete ",
+                Style::default()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightRed)),
+    );
 
     f.render_widget(popup, area);
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.view {
-        View::TaskList => "[↑↓] navigate  [Enter] preview  [n] notes  [p] pause  [r] resume  [d] delete  [R] refresh  [q] quit",
-        View::Preview => "[↑↓] scroll  [Enter] attach tmux  [Esc] back",
-        View::Notes => "[Esc] save & exit  [Ctrl+S] save",
-        View::DeleteConfirm => "[y] confirm  [n] cancel",
+        View::TaskList => {
+            vec![
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("l/Enter", Style::default().fg(Color::LightCyan)),
+                Span::styled(" preview  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("p", Style::default().fg(Color::LightCyan)),
+                Span::styled(" pause  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("r", Style::default().fg(Color::LightCyan)),
+                Span::styled(" resume  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("d", Style::default().fg(Color::LightCyan)),
+                Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("R", Style::default().fg(Color::LightCyan)),
+                Span::styled(" refresh  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("q", Style::default().fg(Color::LightCyan)),
+                Span::styled(" quit", Style::default().fg(Color::DarkGray)),
+            ]
+        }
+        View::Preview => {
+            if app.notes_editing {
+                vec![
+                    Span::styled("Esc", Style::default().fg(Color::LightGreen)),
+                    Span::styled(" save & exit editing", Style::default().fg(Color::DarkGray)),
+                ]
+            } else {
+                vec![
+                    Span::styled("Ctrl+h/l", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" switch pane  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Shift+J/K", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("g/G", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" top/bottom  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("i", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" edit notes  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("h/q", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                ]
+            }
+        }
+        View::DeleteConfirm => {
+            vec![
+                Span::styled("y", Style::default().fg(Color::LightGreen)),
+                Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("n/Esc", Style::default().fg(Color::LightRed)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
+        }
     };
 
-    let status_text = app
-        .status_message
-        .as_ref()
-        .map(|(msg, _)| format!(" | {}", msg))
-        .unwrap_or_default();
+    let mut line_spans = help_text;
 
-    let status = Paragraph::new(format!("{}{}", help_text, status_text)).block(
+    if let Some((msg, _)) = &app.status_message {
+        line_spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+        line_spans.push(Span::styled(msg, Style::default().fg(Color::LightYellow)));
+    }
+
+    let status = Paragraph::new(Line::from(line_spans)).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray)),
