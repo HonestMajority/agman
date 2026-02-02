@@ -136,7 +136,9 @@ impl App {
         };
 
         self.preview_content = preview_content;
-        self.preview_scroll = 0;
+        // Scroll to bottom of logs (estimate based on line count)
+        let line_count = self.preview_content.lines().count() as u16;
+        self.preview_scroll = line_count.saturating_sub(20); // Leave ~20 lines visible
         self.notes_content = notes_content.clone();
         self.notes_scroll = 0;
 
