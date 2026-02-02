@@ -255,6 +255,7 @@ impl App {
             }
         }
 
+        self.feedback_editor = Self::create_editor(); // Clear editor
         self.view = View::Preview;
         self.load_preview();
         Ok(())
@@ -563,6 +564,8 @@ pub fn run_tui(config: Config) -> Result<()> {
 
     // Main loop
     let mut attach_session: Option<String> = None;
+    let mut last_refresh = Instant::now();
+    let refresh_interval = Duration::from_secs(3);
 
     loop {
         terminal.draw(|f| ui::draw(f, &mut app))?;
@@ -583,7 +586,15 @@ pub fn run_tui(config: Config) -> Result<()> {
             }
         }
 
-        // Periodic refresh of task status
+        // Periodic refresh of task list (every 3 seconds, only in TaskList view)
+        if last_refresh.elapsed() >= refresh_interval {
+            if app.view == View::TaskList {
+                let _ = app.refresh_tasks();
+            }
+            last_refresh = Instant::now();
+        }
+
+        // Clear old status messages
         app.clear_old_status();
     }
 
