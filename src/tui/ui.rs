@@ -33,6 +33,63 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
+    // Create the outer block first
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(
+                " agman ",
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({} tasks) ", app.tasks.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::LightCyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Split inner area into header and list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
+    // Render header
+    let header = Line::from(vec![
+        Span::raw("     "),
+        Span::styled(
+            format!("{:<32}", "TASK"),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:<10}", "STATUS"),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:<14}", "AGENT"),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "UPDATED",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(header), chunks[0]);
+
+    // Render task list
     let items: Vec<ListItem> = app
         .tasks
         .iter()
@@ -83,68 +140,8 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let header = Line::from(vec![
-        Span::raw("     "),
-        Span::styled(
-            format!("{:<32}", "TASK"),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{:<10}", "STATUS"),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{:<14}", "AGENT"),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "UPDATED",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-
-    let list = List::new(items).block(
-        Block::default()
-            .title(Line::from(vec![
-                Span::styled(
-                    " agman ",
-                    Style::default()
-                        .fg(Color::LightCyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("({} tasks) ", app.tasks.len()),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightCyan)),
-    );
-
-    // Draw header
-    let inner = area.inner(ratatui::layout::Margin {
-        horizontal: 1,
-        vertical: 1,
-    });
-    f.render_widget(list, area);
-
-    if inner.height > 1 {
-        let header_area = Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width,
-            height: 1,
-        };
-        f.render_widget(Paragraph::new(header), header_area);
-    }
+    let list = List::new(items);
+    f.render_widget(list, chunks[1]);
 }
 
 fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
