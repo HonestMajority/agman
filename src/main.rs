@@ -66,6 +66,12 @@ fn main() -> Result<()> {
 
         Some(Commands::Init) => cmd_init(&config),
 
+        Some(Commands::Continue {
+            task_id,
+            feedback,
+            flow,
+        }) => cmd_continue(&config, &task_id, &feedback, &flow),
+
         None => {
             // No subcommand - launch TUI
             config.ensure_dirs()?;
@@ -348,6 +354,46 @@ fn cmd_attach(config: &Config, task_id: &str) -> Result<()> {
     }
 
     Tmux::attach_session(&task.meta.tmux_session)?;
+
+    Ok(())
+}
+
+fn cmd_continue(config: &Config, task_id: &str, feedback: &str, flow_name: &str) -> Result<()> {
+    config.init_default_files()?;
+
+    let mut task = Task::load_by_id(config, task_id)?;
+
+    // Verify flow exists
+    let flow_path = config.flow_path(flow_name);
+    if !flow_path.exists() {
+        anyhow::bail!("Flow '{}' does not exist", flow_name);
+    }
+
+    println!("Continuing task: {}", task.meta.task_id());
+    println!("Feedback: {}", feedback);
+    println!("Flow: {}", flow_name);
+    println!();
+
+    // Write feedback for the refiner to process
+    task.write_feedback(feedback)?;
+
+    // Update task state
+    task.meta.flow_name = flow_name.to_string();
+    task.reset_flow_step()?;
+    task.update_status(TaskStatus::Working)?;
+
+    // Ensure tmux session exists
+    if !Tmux::session_exists(&task.meta.tmux_session) {
+        println!("Recreating tmux session...");
+        Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
+    }
+
+    // Start the flow in tmux
+    let flow_cmd = format!("agman flow-run {}", task.meta.task_id());
+    Tmux::send_keys_to_window(&task.meta.tmux_session, "claude", &flow_cmd)?;
+
+    println!("Flow started in tmux.");
+    println!("To watch: agman attach {}", task.meta.task_id());
 
     Ok(())
 }

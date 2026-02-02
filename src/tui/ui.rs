@@ -23,6 +23,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_task_list(f, app, chunks[0]);
             draw_delete_confirm(f, app);
         }
+        View::Feedback => {
+            draw_preview(f, app, chunks[0]);
+            draw_feedback(f, app);
+        }
     }
 
     draw_status_bar(f, app, chunks[1]);
@@ -283,6 +287,60 @@ fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn draw_feedback(f: &mut Frame, app: &mut App) {
+    let area = centered_rect(70, 50, f.area());
+
+    f.render_widget(Clear, area);
+
+    let task_id = app
+        .selected_task()
+        .map(|t| t.meta.task_id())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
+
+    // Header
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("Feedback for: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            task_id,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .title(Span::styled(
+                " Continue Task ",
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightMagenta)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    // Editor
+    app.feedback_editor.set_block(
+        Block::default()
+            .title(Span::styled(
+                " Enter feedback (Ctrl+Enter to submit, Esc to cancel) ",
+                Style::default().fg(Color::LightGreen),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightGreen)),
+    );
+    app.feedback_editor
+        .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+
+    f.render_widget(&app.feedback_editor, chunks[1]);
+}
+
 fn draw_delete_confirm(f: &mut Frame, app: &App) {
     let area = centered_rect(50, 30, f.area());
 
@@ -346,16 +404,16 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("l/Enter", Style::default().fg(Color::LightCyan)),
+                Span::styled("l", Style::default().fg(Color::LightCyan)),
                 Span::styled(" preview  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("f", Style::default().fg(Color::LightMagenta)),
+                Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("p", Style::default().fg(Color::LightCyan)),
                 Span::styled(" pause  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("r", Style::default().fg(Color::LightCyan)),
                 Span::styled(" resume  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightCyan)),
                 Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("R", Style::default().fg(Color::LightCyan)),
-                Span::styled(" refresh  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" quit", Style::default().fg(Color::DarkGray)),
             ]
@@ -369,16 +427,16 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 vec![
                     Span::styled("Ctrl+h/l", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" switch pane  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("Shift+J/K", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(" pane  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                     Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("g/G", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" top/bottom  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("f", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("i", Style::default().fg(Color::LightCyan)),
                     Span::styled(" edit notes  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("h/q", Style::default().fg(Color::LightCyan)),
+                    Span::styled("Enter", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("h", Style::default().fg(Color::LightCyan)),
                     Span::styled(" back", Style::default().fg(Color::DarkGray)),
                 ]
             }
@@ -388,6 +446,14 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("y", Style::default().fg(Color::LightGreen)),
                 Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("n/Esc", Style::default().fg(Color::LightRed)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
+        }
+        View::Feedback => {
+            vec![
+                Span::styled("Ctrl+Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" submit  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightRed)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]
         }

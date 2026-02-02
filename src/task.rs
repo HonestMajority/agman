@@ -300,4 +300,64 @@ impl Task {
             "just now".to_string()
         }
     }
+
+    /// Write feedback for the refiner agent to process
+    pub fn write_feedback(&self, feedback: &str) -> Result<()> {
+        let path = self.dir.join("FEEDBACK.md");
+        std::fs::write(&path, feedback)?;
+        Ok(())
+    }
+
+    /// Read feedback (if any)
+    pub fn read_feedback(&self) -> Result<String> {
+        let path = self.dir.join("FEEDBACK.md");
+        if path.exists() {
+            std::fs::read_to_string(&path).context("Failed to read FEEDBACK.md")
+        } else {
+            Ok(String::new())
+        }
+    }
+
+    /// Clear feedback after it's been processed
+    pub fn clear_feedback(&self) -> Result<()> {
+        let path = self.dir.join("FEEDBACK.md");
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
+
+    /// Get the git diff for the worktree
+    pub fn get_git_diff(&self) -> Result<String> {
+        use std::process::Command;
+
+        let output = Command::new("git")
+            .args(["diff", "HEAD"])
+            .current_dir(&self.meta.worktree_path)
+            .output()
+            .context("Failed to run git diff")?;
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Get a summary of commits on this branch
+    pub fn get_git_log_summary(&self) -> Result<String> {
+        use std::process::Command;
+
+        // Try to get commits since branching from main/master
+        let output = Command::new("git")
+            .args(["log", "--oneline", "-20"])
+            .current_dir(&self.meta.worktree_path)
+            .output()
+            .context("Failed to run git log")?;
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Reset flow step to 0 for re-running
+    pub fn reset_flow_step(&mut self) -> Result<()> {
+        self.meta.flow_step = 0;
+        self.meta.updated_at = Utc::now();
+        self.save_meta()
+    }
 }

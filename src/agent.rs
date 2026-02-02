@@ -29,6 +29,7 @@ impl Agent {
         let progress = task.read_progress()?;
         let context = task.read_context()?;
         let plan = task.read_plan()?;
+        let feedback = task.read_feedback()?;
 
         let mut prompt = self.prompt_template.clone();
         prompt.push_str("\n\n---\n\n");
@@ -51,6 +52,39 @@ impl Agent {
         if !context.is_empty() {
             prompt.push_str("# Relevant Context\n");
             prompt.push_str(&context);
+            prompt.push_str("\n\n");
+        }
+
+        // Include feedback if present (for refiner agent)
+        if !feedback.is_empty() {
+            prompt.push_str("# Follow-up Feedback\n");
+            prompt.push_str(&feedback);
+            prompt.push_str("\n\n");
+
+            // Also include git diff for context
+            if let Ok(diff) = task.get_git_diff() {
+                if !diff.is_empty() {
+                    prompt.push_str("# Current Git Diff\n");
+                    prompt.push_str("```diff\n");
+                    // Truncate if too long
+                    if diff.len() > 10000 {
+                        prompt.push_str(&diff[..10000]);
+                        prompt.push_str("\n... (truncated)\n");
+                    } else {
+                        prompt.push_str(&diff);
+                    }
+                    prompt.push_str("```\n\n");
+                }
+            }
+
+            if let Ok(log) = task.get_git_log_summary() {
+                if !log.is_empty() {
+                    prompt.push_str("# Recent Commits\n");
+                    prompt.push_str("```\n");
+                    prompt.push_str(&log);
+                    prompt.push_str("```\n");
+                }
+            }
         }
 
         Ok(prompt)
@@ -170,7 +204,14 @@ impl AgentRunner {
         task.update_agent(Some(agent_name.to_string()))?;
 
         // Run the agent directly (blocking)
-        agent.run_direct(task)
+        let result = agent.run_direct(task)?;
+
+        // If this was the refiner, clear the feedback (it's been synthesized into PROMPT.md/PLAN.md)
+        if agent_name == "refiner" {
+            task.clear_feedback()?;
+        }
+
+        Ok(result)
     }
 
     /// Run agent in tmux (non-blocking, for interactive use)

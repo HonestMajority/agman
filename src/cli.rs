@@ -75,4 +75,15 @@ pub enum Commands {
 
     /// Initialize agman (creates directories and default files)
     Init,
+
+    /// Continue a task with follow-up instructions
+    Continue {
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
+        /// Follow-up instructions or feedback
+        feedback: String,
+        /// Flow to use (default: "continue")
+        #[arg(long, default_value = "continue")]
+        flow: String,
+    },
 }

@@ -6,6 +6,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use std::process::Command;
 use std::time::{Duration, Instant};
 use tui_textarea::{Input, TextArea};
 
@@ -21,6 +22,7 @@ pub enum View {
     TaskList,
     Preview,
     DeleteConfirm,
+    Feedback,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +43,7 @@ pub struct App {
     pub notes_editor: TextArea<'static>,
     pub notes_editing: bool,
     pub preview_pane: PreviewPane,
+    pub feedback_editor: TextArea<'static>,
     pub should_quit: bool,
     pub status_message: Option<(String, Instant)>,
 }
@@ -48,7 +51,8 @@ pub struct App {
 impl App {
     pub fn new(config: Config) -> Result<Self> {
         let tasks = Task::list_all(&config)?;
-        let notes_editor = Self::create_notes_editor();
+        let notes_editor = Self::create_editor();
+        let feedback_editor = Self::create_editor();
 
         Ok(Self {
             config,
@@ -62,12 +66,13 @@ impl App {
             notes_editor,
             notes_editing: false,
             preview_pane: PreviewPane::Logs,
+            feedback_editor,
             should_quit: false,
             status_message: None,
         })
     }
 
-    fn create_notes_editor() -> TextArea<'static> {
+    fn create_editor() -> TextArea<'static> {
         let mut editor = TextArea::default();
         editor.set_cursor_line_style(ratatui::style::Style::default());
         editor
@@ -208,6 +213,50 @@ impl App {
         Ok(())
     }
 
+    fn start_feedback(&mut self) {
+        // Clear the feedback editor
+        self.feedback_editor = Self::create_editor();
+        self.view = View::Feedback;
+    }
+
+    fn submit_feedback(&mut self) -> Result<()> {
+        let feedback = self.feedback_editor.lines().join("\n");
+        if feedback.trim().is_empty() {
+            self.set_status("Feedback cannot be empty".to_string());
+            self.view = View::Preview;
+            return Ok(());
+        }
+
+        let task_id = if let Some(task) = self.selected_task() {
+            task.meta.task_id()
+        } else {
+            self.view = View::Preview;
+            return Ok(());
+        };
+
+        // Run agman continue in the background
+        let status = Command::new("agman")
+            .args(["continue", &task_id, &feedback, "--flow", "continue"])
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                self.set_status(format!("Feedback submitted, flow started for {}", task_id));
+                self.refresh_tasks()?;
+            }
+            Ok(_) => {
+                self.set_status("Failed to start continue flow".to_string());
+            }
+            Err(e) => {
+                self.set_status(format!("Error: {}", e));
+            }
+        }
+
+        self.view = View::Preview;
+        self.load_preview();
+        Ok(())
+    }
+
     pub fn handle_event(&mut self, event: Event) -> Result<bool> {
         self.clear_old_status();
 
@@ -215,6 +264,7 @@ impl App {
             View::TaskList => self.handle_task_list_event(event),
             View::Preview => self.handle_preview_event(event),
             View::DeleteConfirm => self.handle_delete_confirm_event(event),
+            View::Feedback => self.handle_feedback_event(event),
         }
     }
 
@@ -252,6 +302,12 @@ impl App {
                 KeyCode::Char('R') => {
                     self.refresh_tasks()?;
                     self.set_status("Refreshed task list".to_string());
+                }
+                KeyCode::Char('f') => {
+                    if !self.tasks.is_empty() {
+                        self.load_preview();
+                        self.start_feedback();
+                    }
                 }
                 KeyCode::Char('G') => {
                     // Jump to last task
@@ -351,6 +407,10 @@ impl App {
                         self.set_status("Editing notes (Esc to save & exit)".to_string());
                     }
                 }
+                KeyCode::Char('f') => {
+                    // Give feedback
+                    self.start_feedback();
+                }
                 KeyCode::Char('j') => {
                     match self.preview_pane {
                         PreviewPane::Logs => {
@@ -435,6 +495,27 @@ impl App {
                     // Convert crossterm event to tui-textarea Input
                     let input = Input::from(event.clone());
                     self.notes_editor.input(input);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_feedback_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            match key.code {
+                KeyCode::Esc => {
+                    // Cancel feedback
+                    self.view = View::Preview;
+                    self.set_status("Feedback cancelled".to_string());
+                }
+                KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // Submit feedback with Ctrl+Enter
+                    self.submit_feedback()?;
+                }
+                _ => {
+                    let input = Input::from(event.clone());
+                    self.feedback_editor.input(input);
                 }
             }
         }

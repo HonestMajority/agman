@@ -106,6 +106,11 @@ impl Config {
             std::fs::write(&review_flow, REVIEW_FLOW)?;
         }
 
+        let continue_flow = self.flow_path("continue");
+        if !continue_flow.exists() {
+            std::fs::write(&continue_flow, CONTINUE_FLOW)?;
+        }
+
         // Create default prompts if they don't exist
         let prompts = [
             ("planner", PLANNER_PROMPT),
@@ -113,6 +118,7 @@ impl Config {
             ("test-writer", TEST_WRITER_PROMPT),
             ("tester", TESTER_PROMPT),
             ("reviewer", REVIEWER_PROMPT),
+            ("refiner", REFINER_PROMPT),
         ];
 
         for (name, content) in prompts {
@@ -153,6 +159,15 @@ steps:
 const REVIEW_FLOW: &str = r#"name: review
 steps:
   - agent: reviewer
+    until: AGENT_DONE
+  - agent: coder
+    until: TASK_COMPLETE
+    on_blocked: pause
+"#;
+
+const CONTINUE_FLOW: &str = r#"name: continue
+steps:
+  - agent: refiner
     until: AGENT_DONE
   - agent: coder
     until: TASK_COMPLETE
@@ -227,4 +242,35 @@ Instructions:
 
 When you're done reviewing, output: AGENT_DONE
 If critical issues need human attention, output: TASK_BLOCKED
+"#;
+
+const REFINER_PROMPT: &str = r#"You are a refiner agent. Your job is to synthesize feedback and create a clear, fresh context for the next agent.
+
+You have been given:
+- The previous task goal (which may be outdated)
+- What has been done so far (git commits, current diff)
+- Follow-up feedback from the user
+
+Your job is to create a FRESH, SELF-CONTAINED context by rewriting both:
+1. PROMPT.md - The current goal (what we're trying to achieve NOW)
+2. PLAN.md - The implementation plan (how to achieve it)
+
+Instructions:
+1. Read and understand all the context provided
+2. Focus primarily on the NEW FEEDBACK - this is what matters now
+3. Rewrite PROMPT.md with a clear, concise description of the current goal
+   - This should NOT reference "the original task" or "the feedback"
+   - It should read as if it's a fresh task description
+   - Include only what's relevant NOW
+4. Write PLAN.md with specific, actionable implementation steps
+   - The plan should be self-contained
+   - The coder should be able to follow it without any other context
+
+IMPORTANT:
+- Do NOT implement any changes yourself
+- The goal in PROMPT.md should be written as a fresh task, not as "changes to make"
+- Forget about preserving history - create clean, focused context
+- If the feedback is unclear, make reasonable assumptions
+
+When you're done writing both files, output exactly: AGENT_DONE
 "#;
