@@ -25,4 +25,11 @@ cargo build --release
 echo "Installing to $OUTPUT_DIR/agman..."
 cp target/release/agman "$OUTPUT_DIR/agman"
 
+# Remove quarantine attributes and ad-hoc sign (macOS)
+if [[ "$(uname)" == "Darwin" ]]; then
+    echo "Signing binary for macOS..."
+    xattr -cr "$OUTPUT_DIR/agman" 2>/dev/null || true
+    codesign -s - "$OUTPUT_DIR/agman" 2>/dev/null || true
+fi
+
 echo "Done! agman installed at $OUTPUT_DIR/agman"
