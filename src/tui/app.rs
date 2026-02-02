@@ -332,23 +332,30 @@ impl App {
         }
 
         if let Event::Key(key) = event {
-            // Ctrl+HJKL for pane switching
+            // Ctrl+C to quit
             if key.modifiers.contains(KeyModifiers::CONTROL) {
-                match key.code {
-                    KeyCode::Char('h') => {
-                        self.preview_pane = PreviewPane::Logs;
-                        return Ok(false);
-                    }
-                    KeyCode::Char('l') => {
-                        self.preview_pane = PreviewPane::Notes;
-                        return Ok(false);
-                    }
-                    KeyCode::Char('c') => {
-                        self.should_quit = true;
-                        return Ok(false);
-                    }
-                    _ => {}
+                if key.code == KeyCode::Char('c') {
+                    self.should_quit = true;
+                    return Ok(false);
                 }
+            }
+
+            // Tab to switch panes
+            if key.code == KeyCode::Tab {
+                self.preview_pane = match self.preview_pane {
+                    PreviewPane::Logs => PreviewPane::Notes,
+                    PreviewPane::Notes => PreviewPane::Logs,
+                };
+                return Ok(false);
+            }
+
+            // BackTab (Shift+Tab) to switch panes in reverse
+            if key.code == KeyCode::BackTab {
+                self.preview_pane = match self.preview_pane {
+                    PreviewPane::Logs => PreviewPane::Notes,
+                    PreviewPane::Notes => PreviewPane::Logs,
+                };
+                return Ok(false);
             }
 
             // Shift+J/K for scrolling

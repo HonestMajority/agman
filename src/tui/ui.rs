@@ -69,7 +69,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("{:<10}", "STATUS"),
+            format!("{:<12}", "STATUS"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -120,7 +120,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                     },
                 ),
                 Span::styled(
-                    format!("{:<10}", task.meta.status),
+                    format!("{:<12}", task.meta.status),
                     Style::default().fg(status_color),
                 ),
                 Span::styled(
@@ -423,8 +423,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 ]
             } else {
                 vec![
-                    Span::styled("Ctrl+h/l", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" pane  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" switch pane  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                     Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("f", Style::default().fg(Color::LightMagenta)),
@@ -433,7 +433,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" edit notes  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Enter", Style::default().fg(Color::LightCyan)),
                     Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("h", Style::default().fg(Color::LightCyan)),
+                    Span::styled("q", Style::default().fg(Color::LightCyan)),
                     Span::styled(" back", Style::default().fg(Color::DarkGray)),
                 ]
             }
