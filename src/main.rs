@@ -40,26 +40,27 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::New {
+            repo_name,
             branch_name,
             description,
             flow,
-        }) => cmd_new(&config, &branch_name, &description, &flow),
+        }) => cmd_new(&config, &repo_name, &branch_name, &description, &flow),
 
         Some(Commands::List) => cmd_list(&config),
 
-        Some(Commands::Delete { branch_name, force }) => cmd_delete(&config, &branch_name, force),
+        Some(Commands::Delete { task_id, force }) => cmd_delete(&config, &task_id, force),
 
         Some(Commands::Run {
-            branch_name,
+            task_id,
             agent,
             r#loop,
-        }) => cmd_run(&config, &branch_name, &agent, r#loop),
+        }) => cmd_run(&config, &task_id, &agent, r#loop),
 
-        Some(Commands::Pause { branch_name }) => cmd_pause(&config, &branch_name),
+        Some(Commands::Pause { task_id }) => cmd_pause(&config, &task_id),
 
-        Some(Commands::Resume { branch_name }) => cmd_resume(&config, &branch_name),
+        Some(Commands::Resume { task_id }) => cmd_resume(&config, &task_id),
 
-        Some(Commands::Attach { branch_name }) => cmd_attach(&config, &branch_name),
+        Some(Commands::Attach { task_id }) => cmd_attach(&config, &task_id),
 
         Some(Commands::Init) => cmd_init(&config),
 
@@ -71,13 +72,33 @@ fn main() -> Result<()> {
     }
 }
 
-fn cmd_new(config: &Config, branch_name: &str, description: &str, flow_name: &str) -> Result<()> {
+fn cmd_new(
+    config: &Config,
+    repo_name: &str,
+    branch_name: &str,
+    description: &str,
+    flow_name: &str,
+) -> Result<()> {
     config.init_default_files()?;
 
+    // Check if repo exists
+    let repo_path = config.repo_path(repo_name);
+    if !repo_path.exists() {
+        anyhow::bail!(
+            "Repository '{}' does not exist at {}",
+            repo_name,
+            repo_path.display()
+        );
+    }
+
     // Check if task already exists
-    let task_dir = config.task_dir(branch_name);
+    let task_dir = config.task_dir(repo_name, branch_name);
     if task_dir.exists() {
-        anyhow::bail!("Task '{}' already exists", branch_name);
+        anyhow::bail!(
+            "Task '{}--{}' already exists",
+            repo_name,
+            branch_name
+        );
     }
 
     // Verify flow exists
@@ -87,23 +108,31 @@ fn cmd_new(config: &Config, branch_name: &str, description: &str, flow_name: &st
     }
     let flow = Flow::load(&flow_path)?;
 
-    println!("Creating task: {}", branch_name);
+    println!("Creating task: {}--{}", repo_name, branch_name);
 
-    // Create worktree
-    let worktrees_base = config.base_dir.join("worktrees");
-    std::fs::create_dir_all(&worktrees_base)?;
-
+    // Create worktree (this fetches origin and creates from origin/main)
     println!("Creating git worktree...");
-    let worktree_path = Git::create_worktree(branch_name, &worktrees_base)
+    let worktree_path = Git::create_worktree(config, repo_name, branch_name)
         .context("Failed to create git worktree")?;
+
+    // Run direnv allow
+    println!("  Running direnv allow...");
+    Git::direnv_allow(&worktree_path)?;
 
     // Create task
     println!("Creating task directory...");
-    let mut task = Task::create(config, branch_name, description, flow_name, worktree_path.clone())?;
+    let mut task = Task::create(
+        config,
+        repo_name,
+        branch_name,
+        description,
+        flow_name,
+        worktree_path.clone(),
+    )?;
 
-    // Create tmux session
-    println!("Creating tmux session...");
-    Tmux::create_session(&task.meta.tmux_session, &worktree_path)?;
+    // Create tmux session with windows (nvim, lazygit, claude, zsh)
+    println!("Creating tmux session with windows...");
+    Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)?;
 
     // Start the first agent if flow has steps
     if let Some(step) = flow.get_step(0) {
@@ -123,13 +152,18 @@ fn cmd_new(config: &Config, branch_name: &str, description: &str, flow_name: &st
 
     println!();
     println!("Task created successfully!");
-    println!("  Branch:    {}", branch_name);
+    println!("  Task ID:   {}--{}", repo_name, branch_name);
     println!("  Worktree:  {}", worktree_path.display());
     println!("  Tmux:      {}", task.meta.tmux_session);
     println!("  Flow:      {}", flow_name);
     println!();
-    println!("To attach: agman attach {}", branch_name);
+    println!("To attach: agman attach {}--{}", repo_name, branch_name);
     println!("Or run:    agman");
+
+    // Switch to the new session
+    println!();
+    println!("Switching to tmux session...");
+    Tmux::attach_session(&task.meta.tmux_session)?;
 
     Ok(())
 }
@@ -139,12 +173,15 @@ fn cmd_list(config: &Config) -> Result<()> {
 
     if tasks.is_empty() {
         println!("No tasks found.");
-        println!("Create one with: agman new <branch-name> \"description\"");
+        println!("Create one with: agman new <repo> <branch> \"description\"");
         return Ok(());
     }
 
-    println!("{:<20} {:<10} {:<12} {:<10}", "BRANCH", "STATUS", "AGENT", "UPDATED");
-    println!("{}", "-".repeat(55));
+    println!(
+        "{:<30} {:<10} {:<12} {:<10}",
+        "TASK", "STATUS", "AGENT", "UPDATED"
+    );
+    println!("{}", "-".repeat(65));
 
     for task in tasks {
         let status_icon = match task.meta.status {
@@ -154,10 +191,12 @@ fn cmd_list(config: &Config) -> Result<()> {
             TaskStatus::Failed => "✗",
         };
 
+        let task_id = task.meta.task_id();
+
         println!(
-            "{} {:<18} {:<10} {:<12} {}",
+            "{} {:<28} {:<10} {:<12} {}",
             status_icon,
-            task.meta.branch_name,
+            task_id,
             task.meta.status,
             task.meta.current_agent.as_deref().unwrap_or("-"),
             task.time_since_update()
@@ -167,11 +206,14 @@ fn cmd_list(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn cmd_delete(config: &Config, branch_name: &str, force: bool) -> Result<()> {
-    let task = Task::load(config, branch_name)?;
+fn cmd_delete(config: &Config, task_id: &str, force: bool) -> Result<()> {
+    let task = Task::load_by_id(config, task_id)?;
 
     if !force {
-        print!("Delete task '{}'? This will remove the worktree and tmux session. [y/N] ", branch_name);
+        print!(
+            "Delete task '{}'? This will remove the worktree and tmux session. [y/N] ",
+            task.meta.task_id()
+        );
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -183,33 +225,39 @@ fn cmd_delete(config: &Config, branch_name: &str, force: bool) -> Result<()> {
         }
     }
 
-    println!("Deleting task: {}", branch_name);
+    let task_id = task.meta.task_id();
+    let repo_path = config.repo_path(&task.meta.repo_name);
+    let worktree_path = task.meta.worktree_path.clone();
+    let tmux_session = task.meta.tmux_session.clone();
+    let branch_name = task.meta.branch_name.clone();
+
+    println!("Deleting task: {}", task_id);
 
     // Kill tmux session
     println!("  Killing tmux session...");
-    let _ = Tmux::kill_session(&task.meta.tmux_session);
+    let _ = Tmux::kill_session(&tmux_session);
 
     // Remove worktree
     println!("  Removing git worktree...");
-    let _ = Git::remove_worktree(&task.meta.worktree_path);
+    let _ = Git::remove_worktree(&repo_path, &worktree_path);
 
     // Delete branch
     println!("  Deleting git branch...");
-    let _ = Git::delete_branch(branch_name);
+    let _ = Git::delete_branch(&repo_path, &branch_name);
 
     // Delete task directory
     println!("  Removing task directory...");
     task.delete(config)?;
 
-    println!("Task '{}' deleted.", branch_name);
+    println!("Task '{}' deleted.", task_id);
 
     Ok(())
 }
 
-fn cmd_run(config: &Config, branch_name: &str, agent_name: &str, loop_mode: bool) -> Result<()> {
+fn cmd_run(config: &Config, task_id: &str, agent_name: &str, loop_mode: bool) -> Result<()> {
     config.init_default_files()?;
 
-    let mut task = Task::load(config, branch_name)?;
+    let mut task = Task::load_by_id(config, task_id)?;
 
     // Check if agent prompt exists
     let prompt_path = config.prompt_path(agent_name);
@@ -219,7 +267,7 @@ fn cmd_run(config: &Config, branch_name: &str, agent_name: &str, loop_mode: bool
 
     // Ensure tmux session exists
     if !Tmux::session_exists(&task.meta.tmux_session) {
-        Tmux::create_session(&task.meta.tmux_session, &task.meta.worktree_path)?;
+        Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
     }
 
     let runner = agent::AgentRunner::new(config.clone());
@@ -231,23 +279,32 @@ fn cmd_run(config: &Config, branch_name: &str, agent_name: &str, loop_mode: bool
     } else {
         println!("Running agent '{}'...", agent_name);
         runner.run_agent_in_tmux(&mut task, agent_name)?;
-        println!("Agent started in tmux session: {}", task.meta.tmux_session);
-        println!("To attach: agman attach {}", branch_name);
+        println!(
+            "Agent started in tmux session: {}",
+            task.meta.tmux_session
+        );
+        println!("To attach: agman attach {}", task.meta.task_id());
     }
 
     Ok(())
 }
 
-fn cmd_pause(config: &Config, branch_name: &str) -> Result<()> {
-    let mut task = Task::load(config, branch_name)?;
+fn cmd_pause(config: &Config, task_id: &str) -> Result<()> {
+    let mut task = Task::load_by_id(config, task_id)?;
     task.update_status(TaskStatus::Paused)?;
-    println!("Task '{}' paused.", branch_name);
+    println!("Task '{}' paused.", task.meta.task_id());
     Ok(())
 }
 
-fn cmd_resume(config: &Config, branch_name: &str) -> Result<()> {
-    let mut task = Task::load(config, branch_name)?;
+fn cmd_resume(config: &Config, task_id: &str) -> Result<()> {
+    let mut task = Task::load_by_id(config, task_id)?;
     task.update_status(TaskStatus::Working)?;
+
+    // Ensure tmux session exists
+    if !Tmux::session_exists(&task.meta.tmux_session) {
+        println!("Recreating tmux session...");
+        Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
+    }
 
     // Resume the flow by running the current agent
     let flow = Flow::load(&config.flow_path(&task.meta.flow_name))?;
@@ -261,23 +318,31 @@ fn cmd_resume(config: &Config, branch_name: &str) -> Result<()> {
         if !agent_name.is_empty() {
             let runner = agent::AgentRunner::new(config.clone());
             runner.run_agent_in_tmux(&mut task, &agent_name)?;
-            println!("Task '{}' resumed with agent '{}'.", branch_name, agent_name);
+            println!(
+                "Task '{}' resumed with agent '{}'.",
+                task.meta.task_id(),
+                agent_name
+            );
         } else {
-            println!("Task '{}' resumed.", branch_name);
+            println!("Task '{}' resumed.", task.meta.task_id());
         }
     } else {
-        println!("Task '{}' resumed (no more flow steps).", branch_name);
+        println!(
+            "Task '{}' resumed (no more flow steps).",
+            task.meta.task_id()
+        );
     }
 
     Ok(())
 }
 
-fn cmd_attach(config: &Config, branch_name: &str) -> Result<()> {
-    let task = Task::load(config, branch_name)?;
+fn cmd_attach(config: &Config, task_id: &str) -> Result<()> {
+    let task = Task::load_by_id(config, task_id)?;
 
     if !Tmux::session_exists(&task.meta.tmux_session) {
         // Create session if it doesn't exist
-        Tmux::create_session(&task.meta.tmux_session, &task.meta.worktree_path)?;
+        println!("Creating tmux session...");
+        Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
     }
 
     Tmux::attach_session(&task.meta.tmux_session)?;

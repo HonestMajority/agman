@@ -13,10 +13,7 @@ use super::app::{App, View};
 pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(10),
-            Constraint::Length(3),
-        ])
+        .constraints([Constraint::Min(10), Constraint::Length(3)])
         .split(f.area());
 
     match app.view {
@@ -45,18 +42,17 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 TaskStatus::Failed => ("✗", Color::Red),
             };
 
-            let agent_str = task
-                .meta
-                .current_agent
-                .as_deref()
-                .unwrap_or("");
+            let agent_str = task.meta.current_agent.as_deref().unwrap_or("");
+
+            // Use task_id (repo--branch) for display
+            let task_id = task.meta.task_id();
 
             let line = Line::from(vec![
                 Span::raw("  "),
                 Span::styled(status_icon.0, Style::default().fg(status_icon.1)),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{:<20}", task.meta.branch_name),
+                    format!("{:<30}", task_id),
                     if i == app.selected_index {
                         Style::default().add_modifier(Modifier::BOLD)
                     } else {
@@ -67,10 +63,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                     format!("{:<10}", task.meta.status),
                     Style::default().fg(status_icon.1),
                 ),
-                Span::styled(
-                    format!("{:<12}", agent_str),
-                    Style::default().fg(Color::Blue),
-                ),
+                Span::styled(format!("{:<12}", agent_str), Style::default().fg(Color::Blue)),
                 Span::styled(
                     task.time_since_update(),
                     Style::default().fg(Color::DarkGray),
@@ -87,13 +80,12 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(" agman ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan)),
-        );
+    let list = List::new(items).block(
+        Block::default()
+            .title(" agman ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
 
     f.render_widget(list, area);
 }
@@ -101,17 +93,14 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
     // Task info header
     if let Some(task) = app.selected_task() {
         let header = Paragraph::new(format!(
             "Task: {} | Status: {} | Agent: {}",
-            task.meta.branch_name,
+            task.meta.task_id(),
             task.meta.status,
             task.meta.current_agent.as_deref().unwrap_or("none")
         ))
@@ -141,20 +130,16 @@ fn draw_preview(f: &mut Frame, app: &App, area: Rect) {
 fn draw_notes(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
     // Task info header
     if let Some(task) = app.selected_task() {
-        let header = Paragraph::new(format!("Notes for: {}", task.meta.branch_name))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan)),
-            );
+        let header = Paragraph::new(format!("Notes for: {}", task.meta.task_id())).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
         f.render_widget(header, chunks[0]);
     }
 
@@ -174,14 +159,14 @@ fn draw_delete_confirm(f: &mut Frame, app: &App) {
 
     f.render_widget(Clear, area);
 
-    let task_name = app
+    let task_id = app
         .selected_task()
-        .map(|t| t.meta.branch_name.as_str())
-        .unwrap_or("unknown");
+        .map(|t| t.meta.task_id())
+        .unwrap_or_else(|| "unknown".to_string());
 
     let text = format!(
         "Delete task '{}'?\n\nThis will:\n- Kill the tmux session\n- Remove the git worktree\n- Delete all task files\n\n[y] Yes  [n] No",
-        task_name
+        task_id
     );
 
     let popup = Paragraph::new(text)
@@ -210,12 +195,11 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         .map(|(msg, _)| format!(" | {}", msg))
         .unwrap_or_default();
 
-    let status = Paragraph::new(format!("{}{}", help_text, status_text))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
+    let status = Paragraph::new(format!("{}{}", help_text, status_text)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
 
     f.render_widget(status, area);
 }

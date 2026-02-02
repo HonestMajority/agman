@@ -27,6 +27,7 @@ impl std::fmt::Display for TaskStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMeta {
+    pub repo_name: String,
     pub branch_name: String,
     pub status: TaskStatus,
     pub tmux_session: String,
@@ -39,12 +40,19 @@ pub struct TaskMeta {
 }
 
 impl TaskMeta {
-    pub fn new(branch_name: String, worktree_path: PathBuf, flow_name: String) -> Self {
+    pub fn new(
+        repo_name: String,
+        branch_name: String,
+        worktree_path: PathBuf,
+        flow_name: String,
+    ) -> Self {
         let now = Utc::now();
+        let tmux_session = Config::tmux_session_name(&repo_name, &branch_name);
         Self {
-            tmux_session: format!("agman-{}", branch_name),
+            repo_name,
             branch_name,
             status: TaskStatus::Working,
+            tmux_session,
             worktree_path,
             flow_name,
             current_agent: None,
@@ -52,6 +60,11 @@ impl TaskMeta {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Get the task ID (repo--branch format)
+    pub fn task_id(&self) -> String {
+        Config::task_id(&self.repo_name, &self.branch_name)
     }
 }
 
@@ -62,11 +75,23 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn create(config: &Config, branch_name: &str, description: &str, flow_name: &str, worktree_path: PathBuf) -> Result<Self> {
-        let dir = config.task_dir(branch_name);
+    pub fn create(
+        config: &Config,
+        repo_name: &str,
+        branch_name: &str,
+        description: &str,
+        flow_name: &str,
+        worktree_path: PathBuf,
+    ) -> Result<Self> {
+        let dir = config.task_dir(repo_name, branch_name);
         std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
 
-        let meta = TaskMeta::new(branch_name.to_string(), worktree_path, flow_name.to_string());
+        let meta = TaskMeta::new(
+            repo_name.to_string(),
+            branch_name.to_string(),
+            worktree_path,
+            flow_name.to_string(),
+        );
 
         let task = Self { meta, dir };
         task.save_meta()?;
@@ -76,10 +101,14 @@ impl Task {
         Ok(task)
     }
 
-    pub fn load(config: &Config, branch_name: &str) -> Result<Self> {
-        let dir = config.task_dir(branch_name);
+    pub fn load(config: &Config, repo_name: &str, branch_name: &str) -> Result<Self> {
+        let dir = config.task_dir(repo_name, branch_name);
         if !dir.exists() {
-            anyhow::bail!("Task '{}' does not exist", branch_name);
+            anyhow::bail!(
+                "Task '{}--{}' does not exist",
+                repo_name,
+                branch_name
+            );
         }
 
         let meta_path = dir.join("meta.json");
@@ -89,6 +118,29 @@ impl Task {
             .context("Failed to parse task meta.json")?;
 
         Ok(Self { meta, dir })
+    }
+
+    /// Load a task by task_id (repo--branch format)
+    pub fn load_by_id(config: &Config, task_id: &str) -> Result<Self> {
+        if let Some((repo_name, branch_name)) = Config::parse_task_id(task_id) {
+            Self::load(config, &repo_name, &branch_name)
+        } else {
+            // Try to find a task that matches just the branch name
+            let tasks = Self::list_all(config)?;
+            let matching: Vec<_> = tasks
+                .into_iter()
+                .filter(|t| t.meta.branch_name == task_id)
+                .collect();
+
+            match matching.len() {
+                0 => anyhow::bail!("Task '{}' not found", task_id),
+                1 => Ok(matching.into_iter().next().unwrap()),
+                _ => anyhow::bail!(
+                    "Ambiguous task '{}' - found in multiple repos. Use repo--branch format.",
+                    task_id
+                ),
+            }
+        }
     }
 
     pub fn list_all(config: &Config) -> Result<Vec<Task>> {
@@ -101,11 +153,13 @@ impl Task {
         for entry in std::fs::read_dir(&config.tasks_dir)? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
-                let branch_name = entry.file_name().to_string_lossy().to_string();
-                match Task::load(config, &branch_name) {
-                    Ok(task) => tasks.push(task),
-                    Err(e) => {
-                        tracing::warn!("Failed to load task '{}': {}", branch_name, e);
+                let task_id = entry.file_name().to_string_lossy().to_string();
+                if let Some((repo_name, branch_name)) = Config::parse_task_id(&task_id) {
+                    match Task::load(config, &repo_name, &branch_name) {
+                        Ok(task) => tasks.push(task),
+                        Err(e) => {
+                            tracing::warn!("Failed to load task '{}': {}", task_id, e);
+                        }
                     }
                 }
             }
@@ -227,7 +281,7 @@ impl Task {
     }
 
     pub fn delete(self, config: &Config) -> Result<()> {
-        let dir = config.task_dir(&self.meta.branch_name);
+        let dir = config.task_dir(&self.meta.repo_name, &self.meta.branch_name);
         if dir.exists() {
             std::fs::remove_dir_all(&dir)?;
         }

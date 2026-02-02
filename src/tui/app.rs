@@ -4,10 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
+use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::{Duration, Instant};
 use tui_textarea::TextArea;
@@ -116,7 +113,8 @@ impl App {
         if let Some(task) = self.selected_task() {
             let notes = task.read_notes().unwrap_or_default();
             self.notes_editor = TextArea::from(notes.lines());
-            self.notes_editor.set_cursor_line_style(ratatui::style::Style::default());
+            self.notes_editor
+                .set_cursor_line_style(ratatui::style::Style::default());
         }
     }
 
@@ -130,23 +128,23 @@ impl App {
     }
 
     fn pause_task(&mut self) -> Result<()> {
-        let branch_name = self.selected_task().map(|t| t.meta.branch_name.clone());
+        let task_id = self.selected_task().map(|t| t.meta.task_id());
         if let Some(task) = self.selected_task_mut() {
             task.update_status(TaskStatus::Paused)?;
         }
-        if let Some(name) = branch_name {
-            self.set_status(format!("Paused: {}", name));
+        if let Some(id) = task_id {
+            self.set_status(format!("Paused: {}", id));
         }
         Ok(())
     }
 
     fn resume_task(&mut self) -> Result<()> {
-        let branch_name = self.selected_task().map(|t| t.meta.branch_name.clone());
+        let task_id = self.selected_task().map(|t| t.meta.task_id());
         if let Some(task) = self.selected_task_mut() {
             task.update_status(TaskStatus::Working)?;
         }
-        if let Some(name) = branch_name {
-            self.set_status(format!("Resumed: {}", name));
+        if let Some(id) = task_id {
+            self.set_status(format!("Resumed: {}", id));
         }
         Ok(())
     }
@@ -157,6 +155,8 @@ impl App {
         }
 
         let task = self.tasks.remove(self.selected_index);
+        let task_id = task.meta.task_id();
+        let repo_name = task.meta.repo_name.clone();
         let branch_name = task.meta.branch_name.clone();
         let worktree_path = task.meta.worktree_path.clone();
         let tmux_session = task.meta.tmux_session.clone();
@@ -165,19 +165,20 @@ impl App {
         let _ = Tmux::kill_session(&tmux_session);
 
         // Remove worktree
-        let _ = Git::remove_worktree(&worktree_path);
+        let repo_path = self.config.repo_path(&repo_name);
+        let _ = Git::remove_worktree(&repo_path, &worktree_path);
+
+        // Delete branch
+        let _ = Git::delete_branch(&repo_path, &branch_name);
 
         // Delete task directory
         task.delete(&self.config)?;
-
-        // Optionally delete the branch
-        let _ = Git::delete_branch(&branch_name);
 
         if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
             self.selected_index = self.tasks.len() - 1;
         }
 
-        self.set_status(format!("Deleted: {}", branch_name));
+        self.set_status(format!("Deleted: {}", task_id));
         self.view = View::TaskList;
         Ok(())
     }

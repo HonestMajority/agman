@@ -2,89 +2,92 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::config::Config;
+
 pub struct Git;
 
 impl Git {
-    pub fn get_repo_root() -> Result<PathBuf> {
+    /// Fetch origin for a repository
+    pub fn fetch_origin(repo_path: &PathBuf) -> Result<()> {
         let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(repo_path)
+            .args(["fetch", "origin"])
             .output()
-            .context("Failed to execute git command")?;
+            .context("Failed to execute git fetch")?;
 
         if !output.status.success() {
             anyhow::bail!(
-                "Not in a git repository: {}",
+                "Failed to fetch origin: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }
 
-        let path = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
-        Ok(PathBuf::from(path))
+        Ok(())
     }
 
-    pub fn create_worktree(branch_name: &str, base_path: &PathBuf) -> Result<PathBuf> {
-        let repo_root = Self::get_repo_root()?;
-        let worktree_path = base_path.join(branch_name);
+    /// Create a new worktree with a new branch based on origin/main
+    /// This matches tlana's behavior: git worktree add -b <branch> <wt_dir> origin/main
+    pub fn create_worktree(
+        config: &Config,
+        repo_name: &str,
+        branch_name: &str,
+    ) -> Result<PathBuf> {
+        let repo_path = config.repo_path(repo_name);
 
-        // First, check if branch exists
-        let branch_exists = Command::new("git")
-            .current_dir(&repo_root)
-            .args(["rev-parse", "--verify", branch_name])
+        if !repo_path.exists() {
+            anyhow::bail!("Repository does not exist: {}", repo_path.display());
+        }
+
+        let worktree_base = config.worktree_base(repo_name);
+        let worktree_path = config.worktree_path(repo_name, branch_name);
+
+        // Check if worktree already exists
+        if worktree_path.exists() {
+            anyhow::bail!(
+                "Worktree already exists: {}\nIf it's stale, remove with: git -C {:?} worktree remove {:?}",
+                worktree_path.display(),
+                repo_path,
+                worktree_path
+            );
+        }
+
+        // Create worktree base directory if needed
+        std::fs::create_dir_all(&worktree_base)
+            .context("Failed to create worktree base directory")?;
+
+        // Fetch origin first
+        println!("  Fetching origin...");
+        Self::fetch_origin(&repo_path)?;
+
+        // Create worktree with new branch based on origin/main
+        println!("  Creating worktree with new branch '{}' based on origin/main...", branch_name);
+        let output = Command::new("git")
+            .current_dir(&repo_path)
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                worktree_path.to_str().unwrap(),
+                "origin/main",
+            ])
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+            .context("Failed to create worktree")?;
 
-        if branch_exists {
-            // Use existing branch
-            let output = Command::new("git")
-                .current_dir(&repo_root)
-                .args([
-                    "worktree",
-                    "add",
-                    worktree_path.to_str().unwrap(),
-                    branch_name,
-                ])
-                .output()
-                .context("Failed to create worktree")?;
-
-            if !output.status.success() {
-                anyhow::bail!(
-                    "Failed to create worktree: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-        } else {
-            // Create new branch
-            let output = Command::new("git")
-                .current_dir(&repo_root)
-                .args([
-                    "worktree",
-                    "add",
-                    "-b",
-                    branch_name,
-                    worktree_path.to_str().unwrap(),
-                ])
-                .output()
-                .context("Failed to create worktree with new branch")?;
-
-            if !output.status.success() {
-                anyhow::bail!(
-                    "Failed to create worktree: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to create worktree: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
 
         Ok(worktree_path)
     }
 
-    pub fn remove_worktree(worktree_path: &PathBuf) -> Result<()> {
-        let repo_root = Self::get_repo_root()?;
-
+    /// Remove a worktree and prune stale references
+    pub fn remove_worktree(repo_path: &PathBuf, worktree_path: &PathBuf) -> Result<()> {
         let output = Command::new("git")
-            .current_dir(&repo_root)
+            .current_dir(repo_path)
             .args([
                 "worktree",
                 "remove",
@@ -95,21 +98,26 @@ impl Git {
             .context("Failed to remove worktree")?;
 
         if !output.status.success() {
-            // Try to prune instead
-            let _ = Command::new("git")
-                .current_dir(&repo_root)
-                .args(["worktree", "prune"])
-                .output();
+            tracing::warn!(
+                "Failed to remove worktree: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
+
+        // Prune stale worktree references
+        let _ = Command::new("git")
+            .current_dir(repo_path)
+            .args(["worktree", "prune"])
+            .output();
 
         Ok(())
     }
 
-    pub fn delete_branch(branch_name: &str) -> Result<()> {
-        let repo_root = Self::get_repo_root()?;
-
+    /// Delete a local branch (and any backup branches)
+    pub fn delete_branch(repo_path: &PathBuf, branch_name: &str) -> Result<()> {
+        // Delete main branch
         let output = Command::new("git")
-            .current_dir(&repo_root)
+            .current_dir(repo_path)
             .args(["branch", "-D", branch_name])
             .output()
             .context("Failed to delete branch")?;
@@ -122,15 +130,53 @@ impl Git {
             );
         }
 
+        // Delete backup branches (like tlana does)
+        let backup_output = Command::new("git")
+            .current_dir(repo_path)
+            .args(["branch", "--list", &format!("{}-BACKUP-*", branch_name)])
+            .output();
+
+        if let Ok(output) = backup_output {
+            let backups = String::from_utf8_lossy(&output.stdout);
+            for backup in backups.lines() {
+                let backup = backup.trim().trim_start_matches("* ");
+                if !backup.is_empty() {
+                    let _ = Command::new("git")
+                        .current_dir(repo_path)
+                        .args(["branch", "-D", backup])
+                        .output();
+                }
+            }
+        }
+
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn list_worktrees() -> Result<Vec<(String, PathBuf)>> {
-        let repo_root = Self::get_repo_root()?;
+    /// Run direnv allow in a directory
+    pub fn direnv_allow(path: &PathBuf) -> Result<()> {
+        let output = Command::new("direnv")
+            .args(["allow", path.to_str().unwrap()])
+            .output();
 
+        match output {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(_) => {
+                // direnv might not be available or configured, that's ok
+                tracing::debug!("direnv allow failed (this is ok if direnv is not used)");
+                Ok(())
+            }
+            Err(_) => {
+                // direnv not installed, that's ok
+                tracing::debug!("direnv not found (this is ok if direnv is not used)");
+                Ok(())
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn list_worktrees(repo_path: &PathBuf) -> Result<Vec<(String, PathBuf)>> {
         let output = Command::new("git")
-            .current_dir(&repo_root)
+            .current_dir(repo_path)
             .args(["worktree", "list", "--porcelain"])
             .output()
             .context("Failed to list worktrees")?;

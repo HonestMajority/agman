@@ -13,7 +13,9 @@ pub struct Cli {
 pub enum Commands {
     /// Start a new task (creates worktree, tmux session, starts flow)
     New {
-        /// Branch name for the task
+        /// Repository name (under ~/repos/)
+        repo_name: String,
+        /// Branch name for the task (also used as worktree name)
         branch_name: String,
         /// Description of what to build
         description: String,
@@ -27,8 +29,8 @@ pub enum Commands {
 
     /// Delete a task (removes worktree, tmux session, and task directory)
     Delete {
-        /// Branch name of the task to delete
-        branch_name: String,
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
         /// Skip confirmation prompt
         #[arg(short, long)]
         force: bool,
@@ -36,8 +38,8 @@ pub enum Commands {
 
     /// Run a specific agent on a task
     Run {
-        /// Branch name of the task
-        branch_name: String,
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
         /// Agent to run
         #[arg(long)]
         agent: String,
@@ -48,20 +50,20 @@ pub enum Commands {
 
     /// Pause a running task
     Pause {
-        /// Branch name of the task to pause
-        branch_name: String,
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
     },
 
     /// Resume a paused task
     Resume {
-        /// Branch name of the task to resume
-        branch_name: String,
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
     },
 
     /// Attach to a task's tmux session
     Attach {
-        /// Branch name of the task to attach to
-        branch_name: String,
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
     },
 
     /// Initialize agman (creates directories and default files)

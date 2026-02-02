@@ -13,6 +13,68 @@ impl Tmux {
             .unwrap_or(false)
     }
 
+    /// Create a new tmux session with multiple windows like tlana:
+    /// - nvim: starts nvim
+    /// - lazygit: starts lazygit
+    /// - claude: starts claude
+    /// - zsh: runs git status
+    pub fn create_session_with_windows(session_name: &str, working_dir: &Path) -> Result<()> {
+        if Self::session_exists(session_name) {
+            return Ok(());
+        }
+
+        let wd = working_dir.to_str().unwrap();
+
+        // Create session with first window (nvim)
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s", session_name,
+                "-c", wd,
+                "-n", "nvim",
+            ])
+            .output()
+            .context("Failed to create tmux session")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to create tmux session: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Start nvim in first window
+        Self::send_keys_to_window(session_name, "nvim", "nvim")?;
+
+        // Create lazygit window
+        let _ = Command::new("tmux")
+            .args(["new-window", "-t", session_name, "-n", "lazygit", "-c", wd])
+            .output();
+        Self::send_keys_to_window(session_name, "lazygit", "lazygit")?;
+
+        // Create claude window
+        let _ = Command::new("tmux")
+            .args(["new-window", "-t", session_name, "-n", "claude", "-c", wd])
+            .output();
+        Self::send_keys_to_window(session_name, "claude", "claude")?;
+
+        // Create zsh window
+        let _ = Command::new("tmux")
+            .args(["new-window", "-t", session_name, "-n", "zsh", "-c", wd])
+            .output();
+        Self::send_keys_to_window(session_name, "zsh", "git status && git branch --show-current")?;
+
+        // Select nvim window as default
+        let _ = Command::new("tmux")
+            .args(["select-window", "-t", &format!("{}:nvim", session_name)])
+            .output();
+
+        Ok(())
+    }
+
+    /// Simple session creation (single window, for backwards compatibility)
+    #[allow(dead_code)]
     pub fn create_session(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
             return Ok(());
@@ -62,6 +124,18 @@ impl Tmux {
     }
 
     pub fn attach_session(session_name: &str) -> Result<()> {
+        // Try switch-client first (if already in tmux)
+        let switch_result = Command::new("tmux")
+            .args(["switch-client", "-t", session_name])
+            .status();
+
+        if let Ok(status) = switch_result {
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        // Fall back to attach-session (if not in tmux)
         let status = Command::new("tmux")
             .args(["attach-session", "-t", session_name])
             .status()
@@ -74,6 +148,25 @@ impl Tmux {
         Ok(())
     }
 
+    /// Send keys to a specific window in a session
+    pub fn send_keys_to_window(session_name: &str, window_name: &str, keys: &str) -> Result<()> {
+        let target = format!("{}:{}", session_name, window_name);
+        let output = Command::new("tmux")
+            .args(["send-keys", "-t", &target, keys, "C-m"])
+            .output()
+            .context("Failed to send keys to tmux window")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to send keys: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Send keys to the default pane in a session
     pub fn send_keys(session_name: &str, keys: &str) -> Result<()> {
         let output = Command::new("tmux")
             .args(["send-keys", "-t", session_name, keys, "Enter"])

@@ -7,13 +7,14 @@ pub struct Config {
     pub tasks_dir: PathBuf,
     pub flows_dir: PathBuf,
     pub prompts_dir: PathBuf,
+    pub repos_dir: PathBuf,
 }
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let base_dir = dirs::home_dir()
-            .context("Could not find home directory")?
-            .join(".agman");
+        let home_dir = dirs::home_dir().context("Could not find home directory")?;
+        let base_dir = home_dir.join(".agman");
+        let repos_dir = home_dir.join("repos");
 
         let tasks_dir = base_dir.join("tasks");
         let flows_dir = base_dir.join("flows");
@@ -24,6 +25,7 @@ impl Config {
             tasks_dir,
             flows_dir,
             prompts_dir,
+            repos_dir,
         })
     }
 
@@ -37,8 +39,44 @@ impl Config {
         Ok(())
     }
 
-    pub fn task_dir(&self, branch_name: &str) -> PathBuf {
-        self.tasks_dir.join(branch_name)
+    /// Get task directory: ~/.agman/tasks/<repo>--<branch>/
+    pub fn task_dir(&self, repo_name: &str, branch_name: &str) -> PathBuf {
+        self.tasks_dir.join(format!("{}--{}", repo_name, branch_name))
+    }
+
+    /// Get task ID from repo and branch names
+    pub fn task_id(repo_name: &str, branch_name: &str) -> String {
+        format!("{}--{}", repo_name, branch_name)
+    }
+
+    /// Parse task ID into (repo_name, branch_name)
+    pub fn parse_task_id(task_id: &str) -> Option<(String, String)> {
+        let parts: Vec<&str> = task_id.splitn(2, "--").collect();
+        if parts.len() == 2 {
+            Some((parts[0].to_string(), parts[1].to_string()))
+        } else {
+            None
+        }
+    }
+
+    /// Get main repo path: ~/repos/<repo>/
+    pub fn repo_path(&self, repo_name: &str) -> PathBuf {
+        self.repos_dir.join(repo_name)
+    }
+
+    /// Get worktree base path: ~/repos/<repo>-wt/
+    pub fn worktree_base(&self, repo_name: &str) -> PathBuf {
+        self.repos_dir.join(format!("{}-wt", repo_name))
+    }
+
+    /// Get worktree path: ~/repos/<repo>-wt/<branch>/
+    pub fn worktree_path(&self, repo_name: &str, branch_name: &str) -> PathBuf {
+        self.worktree_base(repo_name).join(branch_name)
+    }
+
+    /// Get tmux session name: (<repo>)__<branch>
+    pub fn tmux_session_name(repo_name: &str, branch_name: &str) -> String {
+        format!("({})__{}", repo_name, branch_name)
     }
 
     pub fn flow_path(&self, flow_name: &str) -> PathBuf {
