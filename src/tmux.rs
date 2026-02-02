@@ -16,7 +16,7 @@ impl Tmux {
     /// Create a new tmux session with multiple windows like tlana:
     /// - nvim: starts nvim
     /// - lazygit: starts lazygit
-    /// - claude: starts claude
+    /// - agman: starts agman
     /// - zsh: runs git status
     pub fn create_session_with_windows(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
@@ -53,11 +53,11 @@ impl Tmux {
             .output();
         Self::send_keys_to_window(session_name, "lazygit", "lazygit")?;
 
-        // Create claude window (just a shell, agents will send commands here)
+        // Create agman window (just a shell, agents will send commands here)
         let _ = Command::new("tmux")
-            .args(["new-window", "-t", session_name, "-n", "claude", "-c", wd])
+            .args(["new-window", "-t", session_name, "-n", "agman", "-c", wd])
             .output();
-        // Don't start claude interactively - agents will send commands to this window
+        // Don't start agman interactively - agents will send commands to this window
 
         // Create zsh window
         let _ = Command::new("tmux")

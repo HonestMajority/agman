@@ -137,15 +137,15 @@ fn cmd_new(
         worktree_path.clone(),
     )?;
 
-    // Create tmux session with windows (nvim, lazygit, claude, zsh)
+    // Create tmux session with windows (nvim, lazygit, agman, zsh)
     println!("Creating tmux session with windows...");
     Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)?;
 
-    // Start the flow running in the tmux claude window
+    // Start the flow running in the tmux agman window
     let task_id = task.meta.task_id();
     println!("Starting flow '{}' in background...", flow_name);
     let flow_cmd = format!("agman flow-run {}", task_id);
-    Tmux::send_keys_to_window(&task.meta.tmux_session, "claude", &flow_cmd)?;
+    Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd)?;
 
     println!();
     println!("Task created successfully!");
@@ -390,7 +390,7 @@ fn cmd_continue(config: &Config, task_id: &str, feedback: &str, flow_name: &str)
 
     // Start the flow in tmux
     let flow_cmd = format!("agman flow-run {}", task.meta.task_id());
-    Tmux::send_keys_to_window(&task.meta.tmux_session, "claude", &flow_cmd)?;
+    Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd)?;
 
     println!("Flow started in tmux.");
     println!("To watch: agman attach {}", task.meta.task_id());

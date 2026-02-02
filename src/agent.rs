@@ -90,7 +90,7 @@ impl Agent {
         Ok(prompt)
     }
 
-    /// Run agent in tmux's claude window
+    /// Run agent in tmux's agman window
     pub fn run_in_tmux(&self, task: &Task) -> Result<()> {
         let prompt = self.build_prompt(task)?;
 
@@ -107,8 +107,8 @@ impl Agent {
             task.dir.join("agent.log").display()
         );
 
-        // Send to the claude window in tmux
-        Tmux::send_keys_to_window(&task.meta.tmux_session, "claude", &cmd)?;
+        // Send to the agman window in tmux
+        Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &cmd)?;
 
         Ok(())
     }
