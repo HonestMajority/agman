@@ -65,10 +65,10 @@ impl Agent {
         std::fs::write(&prompt_file, &prompt)?;
 
         // Build the claude command for tmux
-        // Use -p (print mode) with the prompt read from file
+        // Use -p (print mode) and --dangerously-skip-permissions to skip interactive prompts
         // Pipe output to tee to log it
         let cmd = format!(
-            "claude -p \"$(cat '{}')\" 2>&1 | tee -a '{}'",
+            "claude -p --dangerously-skip-permissions \"$(cat '{}')\" 2>&1 | tee -a '{}'",
             prompt_file.display(),
             task.dir.join("agent.log").display()
         );

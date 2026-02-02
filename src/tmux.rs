@@ -53,11 +53,11 @@ impl Tmux {
             .output();
         Self::send_keys_to_window(session_name, "lazygit", "lazygit")?;
 
-        // Create claude window
+        // Create claude window (just a shell, agents will send commands here)
         let _ = Command::new("tmux")
             .args(["new-window", "-t", session_name, "-n", "claude", "-c", wd])
             .output();
-        Self::send_keys_to_window(session_name, "claude", "claude")?;
+        // Don't start claude interactively - agents will send commands to this window
 
         // Create zsh window
         let _ = Command::new("tmux")

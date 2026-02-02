@@ -162,28 +162,35 @@ steps:
 const PLANNER_PROMPT: &str = r#"You are a planning agent. Your job is to analyze the task and create a detailed implementation plan.
 
 Instructions:
-1. Read and understand the task goal
-2. Break it down into concrete, actionable steps
-3. Identify any dependencies or prerequisites
-4. Consider edge cases and potential issues
-5. Write your plan to PLAN.md
+1. Explore the codebase to understand its structure
+2. Read and understand the task goal
+3. Break it down into concrete, actionable steps
+4. Identify any dependencies or prerequisites
+5. Write your plan to PLAN.md in the current directory
 
-When you are done planning, output: AGENT_DONE
+IMPORTANT:
+- Do NOT ask questions or wait for input
+- Make reasonable assumptions if something is unclear
+- Just investigate, write the plan, and finish
 
-If you need human input to proceed, output: TASK_BLOCKED
+When you are done, output exactly: AGENT_DONE
 "#;
 
 const CODER_PROMPT: &str = r#"You are a coding agent. Your job is to implement the task according to the plan.
 
 Instructions:
-1. Follow the plan in PLAN.md
-2. Write clean, well-structured code
-3. Update progress.md as you complete steps
+1. Read the plan in PLAN.md
+2. Implement each step in order
+3. Write clean, well-structured code
 4. Commit your changes with clear messages
 
-When the task is fully implemented, output: TASK_COMPLETE
-When you finish a chunk of work but the task isn't done, output: AGENT_DONE
-If you're blocked and need human help, output: TASK_BLOCKED
+IMPORTANT:
+- Do NOT ask questions or wait for input
+- Make reasonable assumptions if something is unclear
+- Just implement the code and finish
+
+When the task is fully implemented, output exactly: TASK_COMPLETE
+If you cannot complete it for some reason, output exactly: TASK_BLOCKED
 "#;
 
 const TEST_WRITER_PROMPT: &str = r#"You are a test-writing agent. Your job is to write tests for the task.
