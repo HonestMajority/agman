@@ -23,6 +23,35 @@ pub enum View {
     Preview,
     DeleteConfirm,
     Feedback,
+    NewTaskWizard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WizardStep {
+    SelectRepo,
+    SelectBranch,
+    EnterDescription,
+    SelectFlow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchMode {
+    CreateNew,
+    SelectExisting,
+}
+
+pub struct NewTaskWizard {
+    pub step: WizardStep,
+    pub repos: Vec<String>,
+    pub selected_repo_index: usize,
+    pub branch_mode: BranchMode,
+    pub existing_branches: Vec<String>,
+    pub selected_branch_index: usize,
+    pub new_branch_editor: TextArea<'static>,
+    pub description_editor: TextArea<'static>,
+    pub flows: Vec<String>,
+    pub selected_flow_index: usize,
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +75,7 @@ pub struct App {
     pub feedback_editor: TextArea<'static>,
     pub should_quit: bool,
     pub status_message: Option<(String, Instant)>,
+    pub wizard: Option<NewTaskWizard>,
 }
 
 impl App {
@@ -69,6 +99,7 @@ impl App {
             feedback_editor,
             should_quit: false,
             status_message: None,
+            wizard: None,
         })
     }
 
@@ -263,6 +294,311 @@ impl App {
         Ok(())
     }
 
+    // === Wizard Methods ===
+
+    fn start_wizard(&mut self) -> Result<()> {
+        let repos = self.scan_repos()?;
+        let flows = self.scan_flows()?;
+
+        if repos.is_empty() {
+            self.set_status("No repositories found in ~/repos/".to_string());
+            return Ok(());
+        }
+
+        let mut new_branch_editor = Self::create_editor();
+        new_branch_editor.set_cursor_line_style(ratatui::style::Style::default());
+
+        let mut description_editor = Self::create_editor();
+        description_editor.set_cursor_line_style(ratatui::style::Style::default());
+
+        // Find index of "default" flow, or use 0
+        let default_flow_index = flows.iter().position(|f| f == "default").unwrap_or(0);
+
+        self.wizard = Some(NewTaskWizard {
+            step: WizardStep::SelectRepo,
+            repos,
+            selected_repo_index: 0,
+            branch_mode: BranchMode::CreateNew,
+            existing_branches: Vec::new(),
+            selected_branch_index: 0,
+            new_branch_editor,
+            description_editor,
+            flows,
+            selected_flow_index: default_flow_index,
+            error_message: None,
+        });
+
+        self.view = View::NewTaskWizard;
+        Ok(())
+    }
+
+    fn scan_repos(&self) -> Result<Vec<String>> {
+        let repos_dir = &self.config.repos_dir;
+        if !repos_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut repos = Vec::new();
+        for entry in std::fs::read_dir(repos_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Skip if not a directory
+            if !path.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            // Skip worktree directories (ending with -wt)
+            if name.ends_with("-wt") {
+                continue;
+            }
+
+            // Check if it's a git repo
+            if path.join(".git").exists() {
+                repos.push(name);
+            }
+        }
+
+        repos.sort();
+        Ok(repos)
+    }
+
+    fn scan_flows(&self) -> Result<Vec<String>> {
+        let flows_dir = &self.config.flows_dir;
+        if !flows_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut flows = Vec::new();
+        for entry in std::fs::read_dir(flows_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().map(|e| e == "yaml").unwrap_or(false) {
+                if let Some(stem) = path.file_stem() {
+                    flows.push(stem.to_string_lossy().to_string());
+                }
+            }
+        }
+
+        flows.sort();
+        Ok(flows)
+    }
+
+    fn scan_branches(&self, repo_name: &str) -> Result<Vec<String>> {
+        let repo_path = self.config.repo_path(repo_name);
+
+        let output = Command::new("git")
+            .current_dir(&repo_path)
+            .args(["branch", "--list", "--format=%(refname:short)"])
+            .output()?;
+
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut branches: Vec<String> = stdout.lines().map(|s| s.to_string()).collect();
+
+        // Filter out branches that already have tasks
+        let existing_tasks: std::collections::HashSet<String> = self
+            .tasks
+            .iter()
+            .filter(|t| t.meta.repo_name == repo_name)
+            .map(|t| t.meta.branch_name.clone())
+            .collect();
+
+        branches.retain(|b| !existing_tasks.contains(b));
+        branches.sort();
+
+        Ok(branches)
+    }
+
+    fn wizard_next_step(&mut self) -> Result<()> {
+        let wizard = match &mut self.wizard {
+            Some(w) => w,
+            None => return Ok(()),
+        };
+
+        wizard.error_message = None;
+
+        match wizard.step {
+            WizardStep::SelectRepo => {
+                // Load branches for selected repo
+                let repo_name = wizard.repos[wizard.selected_repo_index].clone();
+                let branches = self.scan_branches(&repo_name)?;
+
+                let wizard = self.wizard.as_mut().unwrap();
+                wizard.existing_branches = branches;
+                wizard.selected_branch_index = 0;
+                wizard.step = WizardStep::SelectBranch;
+            }
+            WizardStep::SelectBranch => {
+                // Validate branch name
+                let branch_name = match wizard.branch_mode {
+                    BranchMode::CreateNew => {
+                        let name = wizard.new_branch_editor.lines().join("");
+                        let name = name.trim().to_string();
+                        if name.is_empty() {
+                            wizard.error_message = Some("Branch name cannot be empty".to_string());
+                            return Ok(());
+                        }
+                        // Check for invalid characters
+                        if name.contains(' ')
+                            || name.contains("..")
+                            || name.starts_with('/')
+                            || name.ends_with('/')
+                        {
+                            wizard.error_message =
+                                Some("Invalid branch name format".to_string());
+                            return Ok(());
+                        }
+                        name
+                    }
+                    BranchMode::SelectExisting => {
+                        if wizard.existing_branches.is_empty() {
+                            wizard.error_message =
+                                Some("No existing branches available".to_string());
+                            return Ok(());
+                        }
+                        wizard.existing_branches[wizard.selected_branch_index].clone()
+                    }
+                };
+
+                // Check if task already exists
+                let repo_name = &wizard.repos[wizard.selected_repo_index];
+                let task_dir = self.config.task_dir(repo_name, &branch_name);
+                if task_dir.exists() {
+                    wizard.error_message = Some(format!(
+                        "Task '{}--{}' already exists",
+                        repo_name, branch_name
+                    ));
+                    return Ok(());
+                }
+
+                wizard.step = WizardStep::EnterDescription;
+            }
+            WizardStep::EnterDescription => {
+                let description = wizard.description_editor.lines().join("\n");
+                let description = description.trim();
+                if description.is_empty() {
+                    wizard.error_message = Some("Description cannot be empty".to_string());
+                    return Ok(());
+                }
+                wizard.step = WizardStep::SelectFlow;
+            }
+            WizardStep::SelectFlow => {
+                // Create the task
+                return self.create_task_from_wizard();
+            }
+        }
+
+        Ok(())
+    }
+
+    fn wizard_prev_step(&mut self) {
+        let wizard = match &mut self.wizard {
+            Some(w) => w,
+            None => return,
+        };
+
+        wizard.error_message = None;
+
+        match wizard.step {
+            WizardStep::SelectRepo => {
+                // Cancel wizard
+                self.wizard = None;
+                self.view = View::TaskList;
+            }
+            WizardStep::SelectBranch => {
+                wizard.step = WizardStep::SelectRepo;
+            }
+            WizardStep::EnterDescription => {
+                wizard.step = WizardStep::SelectBranch;
+            }
+            WizardStep::SelectFlow => {
+                wizard.step = WizardStep::EnterDescription;
+            }
+        }
+    }
+
+    fn create_task_from_wizard(&mut self) -> Result<()> {
+        let wizard = match &self.wizard {
+            Some(w) => w,
+            None => return Ok(()),
+        };
+
+        let repo_name = wizard.repos[wizard.selected_repo_index].clone();
+        let branch_name = match wizard.branch_mode {
+            BranchMode::CreateNew => wizard.new_branch_editor.lines().join("").trim().to_string(),
+            BranchMode::SelectExisting => {
+                wizard.existing_branches[wizard.selected_branch_index].clone()
+            }
+        };
+        let description = wizard.description_editor.lines().join("\n").trim().to_string();
+        let flow_name = wizard.flows[wizard.selected_flow_index].clone();
+
+        // Initialize default files
+        self.config.init_default_files()?;
+
+        // Create worktree
+        let worktree_path = match Git::create_worktree(&self.config, &repo_name, &branch_name) {
+            Ok(path) => path,
+            Err(e) => {
+                if let Some(w) = &mut self.wizard {
+                    w.error_message = Some(format!("Failed to create worktree: {}", e));
+                }
+                return Ok(());
+            }
+        };
+
+        // Run direnv allow
+        let _ = Git::direnv_allow(&worktree_path);
+
+        // Create task
+        let task = match Task::create(
+            &self.config,
+            &repo_name,
+            &branch_name,
+            &description,
+            &flow_name,
+            worktree_path.clone(),
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                if let Some(w) = &mut self.wizard {
+                    w.error_message = Some(format!("Failed to create task: {}", e));
+                }
+                return Ok(());
+            }
+        };
+
+        // Create tmux session with windows
+        if let Err(e) =
+            Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)
+        {
+            if let Some(w) = &mut self.wizard {
+                w.error_message = Some(format!("Failed to create tmux session: {}", e));
+            }
+            return Ok(());
+        }
+
+        // Start the flow in tmux
+        let task_id = task.meta.task_id();
+        let flow_cmd = format!("agman flow-run {}", task_id);
+        let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd);
+
+        // Success - close wizard and refresh
+        self.wizard = None;
+        self.view = View::TaskList;
+        self.refresh_tasks()?;
+        self.set_status(format!("Created task: {}", task_id));
+
+        Ok(())
+    }
+
     pub fn handle_event(&mut self, event: Event) -> Result<bool> {
         self.clear_old_status();
 
@@ -271,6 +607,7 @@ impl App {
             View::Preview => self.handle_preview_event(event),
             View::DeleteConfirm => self.handle_delete_confirm_event(event),
             View::Feedback => self.handle_feedback_event(event),
+            View::NewTaskWizard => self.handle_wizard_event(event),
         }
     }
 
@@ -324,6 +661,10 @@ impl App {
                 KeyCode::Char('g') => {
                     // Jump to first task (gg in vim, but single g here)
                     self.selected_index = 0;
+                }
+                KeyCode::Char('n') => {
+                    // Start new task wizard
+                    self.start_wizard()?;
                 }
                 _ => {}
             }
@@ -547,6 +888,165 @@ impl App {
                     self.view = View::TaskList;
                 }
                 _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_wizard_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            // Check for Ctrl+C to quit
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            let wizard = match &mut self.wizard {
+                Some(w) => w,
+                None => {
+                    self.view = View::TaskList;
+                    return Ok(false);
+                }
+            };
+
+            // Clear error on any keypress
+            wizard.error_message = None;
+
+            match wizard.step {
+                WizardStep::SelectRepo => {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.wizard = None;
+                            self.view = View::TaskList;
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            if !wizard.repos.is_empty() {
+                                wizard.selected_repo_index =
+                                    (wizard.selected_repo_index + 1) % wizard.repos.len();
+                            }
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            if !wizard.repos.is_empty() {
+                                wizard.selected_repo_index = if wizard.selected_repo_index == 0 {
+                                    wizard.repos.len() - 1
+                                } else {
+                                    wizard.selected_repo_index - 1
+                                };
+                            }
+                        }
+                        KeyCode::Enter => {
+                            self.wizard_next_step()?;
+                        }
+                        _ => {}
+                    }
+                }
+                WizardStep::SelectBranch => {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.wizard_prev_step();
+                        }
+                        KeyCode::Tab | KeyCode::BackTab => {
+                            // Toggle between CreateNew and SelectExisting
+                            wizard.branch_mode = match wizard.branch_mode {
+                                BranchMode::CreateNew => BranchMode::SelectExisting,
+                                BranchMode::SelectExisting => BranchMode::CreateNew,
+                            };
+                        }
+                        KeyCode::Enter => {
+                            self.wizard_next_step()?;
+                        }
+                        _ => {
+                            match wizard.branch_mode {
+                                BranchMode::CreateNew => {
+                                    // Handle text input
+                                    match key.code {
+                                        KeyCode::Char('j') | KeyCode::Char('k')
+                                            if !key
+                                                .modifiers
+                                                .contains(KeyModifiers::CONTROL) =>
+                                        {
+                                            // Pass j/k as text input in create mode
+                                            let input = Input::from(event.clone());
+                                            wizard.new_branch_editor.input(input);
+                                        }
+                                        _ => {
+                                            let input = Input::from(event.clone());
+                                            wizard.new_branch_editor.input(input);
+                                        }
+                                    }
+                                }
+                                BranchMode::SelectExisting => {
+                                    // Handle list navigation
+                                    match key.code {
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            if !wizard.existing_branches.is_empty() {
+                                                wizard.selected_branch_index =
+                                                    (wizard.selected_branch_index + 1)
+                                                        % wizard.existing_branches.len();
+                                            }
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            if !wizard.existing_branches.is_empty() {
+                                                wizard.selected_branch_index =
+                                                    if wizard.selected_branch_index == 0 {
+                                                        wizard.existing_branches.len() - 1
+                                                    } else {
+                                                        wizard.selected_branch_index - 1
+                                                    };
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                WizardStep::EnterDescription => {
+                    // Check for Ctrl+S to submit
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('s')
+                    {
+                        self.wizard_next_step()?;
+                        return Ok(false);
+                    }
+
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.wizard_prev_step();
+                        }
+                        _ => {
+                            let input = Input::from(event.clone());
+                            wizard.description_editor.input(input);
+                        }
+                    }
+                }
+                WizardStep::SelectFlow => {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.wizard_prev_step();
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            if !wizard.flows.is_empty() {
+                                wizard.selected_flow_index =
+                                    (wizard.selected_flow_index + 1) % wizard.flows.len();
+                            }
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            if !wizard.flows.is_empty() {
+                                wizard.selected_flow_index = if wizard.selected_flow_index == 0 {
+                                    wizard.flows.len() - 1
+                                } else {
+                                    wizard.selected_flow_index - 1
+                                };
+                            }
+                        }
+                        KeyCode::Enter => {
+                            self.wizard_next_step()?;
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         Ok(false)

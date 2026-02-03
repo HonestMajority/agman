@@ -2,13 +2,13 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap},
     Frame,
 };
 
 use crate::task::TaskStatus;
 
-use super::app::{App, PreviewPane, View};
+use super::app::{App, BranchMode, PreviewPane, View, WizardStep};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -26,6 +26,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::Feedback => {
             draw_preview(f, app, chunks[0]);
             draw_feedback(f, app);
+        }
+        View::NewTaskWizard => {
+            draw_task_list(f, app, chunks[0]);
+            draw_wizard(f, app);
         }
     }
 
@@ -404,6 +408,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("n", Style::default().fg(Color::LightGreen)),
+                Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("l", Style::default().fg(Color::LightCyan)),
                 Span::styled(" preview  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("f", Style::default().fg(Color::LightMagenta)),
@@ -457,6 +463,54 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]
         }
+        View::NewTaskWizard => {
+            if let Some(wizard) = &app.wizard {
+                match wizard.step {
+                    WizardStep::SelectRepo => {
+                        vec![
+                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                            Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                        ]
+                    }
+                    WizardStep::SelectBranch => {
+                        vec![
+                            Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                            Span::styled(" mode  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                            Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                            Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                        ]
+                    }
+                    WizardStep::EnterDescription => {
+                        vec![
+                            Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
+                            Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                            Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                        ]
+                    }
+                    WizardStep::SelectFlow => {
+                        vec![
+                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                            Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                            Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                        ]
+                    }
+                }
+            } else {
+                vec![]
+            }
+        }
     };
 
     let mut line_spans = help_text;
@@ -473,6 +527,320 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     );
 
     f.render_widget(status, area);
+}
+
+fn draw_wizard(f: &mut Frame, app: &mut App) {
+    let area = centered_rect(80, 70, f.area());
+    f.render_widget(Clear, area);
+
+    // Extract data we need before mutable borrows
+    let (step, step_num, step_title, error_message) = {
+        let wizard = match &app.wizard {
+            Some(w) => w,
+            None => return,
+        };
+        let (step_num, step_title) = match wizard.step {
+            WizardStep::SelectRepo => (1, "Select Repository"),
+            WizardStep::SelectBranch => (2, "Branch Name"),
+            WizardStep::EnterDescription => (3, "Task Description"),
+            WizardStep::SelectFlow => (4, "Select Flow"),
+        };
+        (wizard.step, step_num, step_title, wizard.error_message.clone())
+    };
+
+    // Main wizard container
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" New Task [{}/4] {} ", step_num, step_title),
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::LightCyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Split inner area into content and error/help
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(5), Constraint::Length(2)])
+        .split(inner);
+
+    // Draw step-specific content
+    match step {
+        WizardStep::SelectRepo => {
+            if let Some(wizard) = &app.wizard {
+                draw_wizard_repo_list(f, wizard, chunks[0]);
+            }
+        }
+        WizardStep::SelectBranch => draw_wizard_branch(f, app, chunks[0]),
+        WizardStep::EnterDescription => draw_wizard_description(f, app, chunks[0]),
+        WizardStep::SelectFlow => {
+            if let Some(wizard) = &app.wizard {
+                draw_wizard_flow_list(f, wizard, chunks[0]);
+            }
+        }
+    }
+
+    // Draw error message or help text
+    draw_wizard_footer_direct(f, step, error_message, chunks[1]);
+}
+
+fn draw_wizard_repo_list(f: &mut Frame, wizard: &super::app::NewTaskWizard, area: Rect) {
+    let items: Vec<ListItem> = wizard
+        .repos
+        .iter()
+        .enumerate()
+        .map(|(i, repo)| {
+            let style = if i == wizard.selected_repo_index {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(40, 40, 60))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let prefix = if i == wizard.selected_repo_index {
+                "▸ "
+            } else {
+                "  "
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(repo, style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(Span::styled(
+                " Repositories ",
+                Style::default().fg(Color::DarkGray),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+
+    f.render_widget(list, area);
+}
+
+fn draw_wizard_branch(f: &mut Frame, app: &mut App, area: Rect) {
+    let wizard = match &mut app.wizard {
+        Some(w) => w,
+        None => return,
+    };
+
+    // Split into mode tabs and content
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(3)])
+        .split(area);
+
+    // Draw mode tabs
+    let tab_titles = vec![
+        Span::styled(
+            " Create New ",
+            if wizard.branch_mode == BranchMode::CreateNew {
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled(
+            " Select Existing ",
+            if wizard.branch_mode == BranchMode::SelectExisting {
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+    ];
+
+    let tabs = Tabs::new(tab_titles)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(Span::styled(
+                    " Tab to switch mode ",
+                    Style::default().fg(Color::DarkGray),
+                )),
+        )
+        .select(match wizard.branch_mode {
+            BranchMode::CreateNew => 0,
+            BranchMode::SelectExisting => 1,
+        })
+        .highlight_style(Style::default().fg(Color::LightCyan));
+
+    f.render_widget(tabs, chunks[0]);
+
+    // Draw content based on mode
+    match wizard.branch_mode {
+        BranchMode::CreateNew => {
+            wizard.new_branch_editor.set_block(
+                Block::default()
+                    .title(Span::styled(
+                        " Enter branch name ",
+                        Style::default().fg(Color::LightGreen),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::LightGreen)),
+            );
+            wizard
+                .new_branch_editor
+                .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+            f.render_widget(&wizard.new_branch_editor, chunks[1]);
+        }
+        BranchMode::SelectExisting => {
+            if wizard.existing_branches.is_empty() {
+                let msg = Paragraph::new("No available branches (all have tasks or repo is empty)")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .block(
+                        Block::default()
+                            .title(Span::styled(
+                                " Existing Branches ",
+                                Style::default().fg(Color::DarkGray),
+                            ))
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::DarkGray)),
+                    );
+                f.render_widget(msg, chunks[1]);
+            } else {
+                let items: Vec<ListItem> = wizard
+                    .existing_branches
+                    .iter()
+                    .enumerate()
+                    .map(|(i, branch)| {
+                        let style = if i == wizard.selected_branch_index {
+                            Style::default()
+                                .fg(Color::White)
+                                .bg(Color::Rgb(40, 40, 60))
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        let prefix = if i == wizard.selected_branch_index {
+                            "▸ "
+                        } else {
+                            "  "
+                        };
+                        ListItem::new(Line::from(vec![
+                            Span::styled(prefix, style),
+                            Span::styled(branch, style),
+                        ]))
+                    })
+                    .collect();
+
+                let list = List::new(items).block(
+                    Block::default()
+                        .title(Span::styled(
+                            " Existing Branches ",
+                            Style::default().fg(Color::LightYellow),
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightYellow)),
+                );
+
+                f.render_widget(list, chunks[1]);
+            }
+        }
+    }
+}
+
+fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
+    let wizard = match &mut app.wizard {
+        Some(w) => w,
+        None => return,
+    };
+
+    wizard.description_editor.set_block(
+        Block::default()
+            .title(Span::styled(
+                " Describe what this task should accomplish (Ctrl+S to continue) ",
+                Style::default().fg(Color::LightGreen),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightGreen)),
+    );
+    wizard
+        .description_editor
+        .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+
+    f.render_widget(&wizard.description_editor, area);
+}
+
+fn draw_wizard_flow_list(f: &mut Frame, wizard: &super::app::NewTaskWizard, area: Rect) {
+    let items: Vec<ListItem> = wizard
+        .flows
+        .iter()
+        .enumerate()
+        .map(|(i, flow)| {
+            let style = if i == wizard.selected_flow_index {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(40, 40, 60))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let prefix = if i == wizard.selected_flow_index {
+                "▸ "
+            } else {
+                "  "
+            };
+            let default_marker = if flow == "default" { " (default)" } else { "" };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(flow, style),
+                Span::styled(default_marker, Style::default().fg(Color::DarkGray)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(Span::styled(
+                " Select Flow (Enter to create task) ",
+                Style::default().fg(Color::LightMagenta),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightMagenta)),
+    );
+
+    f.render_widget(list, area);
+}
+
+fn draw_wizard_footer_direct(
+    f: &mut Frame,
+    step: WizardStep,
+    error_message: Option<String>,
+    area: Rect,
+) {
+    let content = if let Some(err) = &error_message {
+        Line::from(vec![
+            Span::styled("Error: ", Style::default().fg(Color::LightRed)),
+            Span::styled(err, Style::default().fg(Color::LightRed)),
+        ])
+    } else {
+        // Show contextual help
+        let help = match step {
+            WizardStep::SelectRepo => "j/k: navigate  Enter: select  Esc: cancel",
+            WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
+            WizardStep::EnterDescription => "Ctrl+S: continue  Esc: back",
+            WizardStep::SelectFlow => "j/k: navigate  Enter: create task  Esc: back",
+        };
+        Line::from(Span::styled(help, Style::default().fg(Color::DarkGray)))
+    };
+
+    let para = Paragraph::new(content);
+    f.render_widget(para, area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
