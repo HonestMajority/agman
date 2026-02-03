@@ -206,7 +206,7 @@ impl AgentRunner {
         // Run the agent directly (blocking)
         let result = agent.run_direct(task)?;
 
-        // If this was the refiner, clear the feedback (it's been synthesized into PROMPT.md/PLAN.md)
+        // If this was the refiner, clear the feedback (it's been synthesized into TASK.md)
         if agent_name == "refiner" {
             task.clear_feedback()?;
         }
