@@ -78,6 +78,24 @@ impl Git {
         repo_name: &str,
         branch_name: &str,
     ) -> Result<PathBuf> {
+        Self::create_worktree_impl(config, repo_name, branch_name, false)
+    }
+
+    /// Create a new worktree with a new branch (quiet mode for TUI)
+    pub fn create_worktree_quiet(
+        config: &Config,
+        repo_name: &str,
+        branch_name: &str,
+    ) -> Result<PathBuf> {
+        Self::create_worktree_impl(config, repo_name, branch_name, true)
+    }
+
+    fn create_worktree_impl(
+        config: &Config,
+        repo_name: &str,
+        branch_name: &str,
+        quiet: bool,
+    ) -> Result<PathBuf> {
         let repo_path = config.repo_path(repo_name);
 
         if !repo_path.exists() {
@@ -107,19 +125,25 @@ impl Git {
             .context("Failed to create worktree base directory")?;
 
         // Try to fetch origin (non-fatal if no remote)
-        print!("  Fetching origin... ");
+        if !quiet {
+            print!("  Fetching origin... ");
+        }
         if Self::fetch_origin(&repo_path)? {
-            println!("done");
-        } else {
+            if !quiet {
+                println!("done");
+            }
+        } else if !quiet {
             println!("skipped (no remote)");
         }
 
         // Find the best base ref
         let base_ref = Self::find_base_ref(&repo_path);
-        println!(
-            "  Creating worktree with new branch '{}' based on {}...",
-            branch_name, base_ref
-        );
+        if !quiet {
+            println!(
+                "  Creating worktree with new branch '{}' based on {}...",
+                branch_name, base_ref
+            );
+        }
 
         let output = Command::new("git")
             .current_dir(&repo_path)

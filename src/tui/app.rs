@@ -543,8 +543,8 @@ impl App {
         // Initialize default files
         self.config.init_default_files()?;
 
-        // Create worktree
-        let worktree_path = match Git::create_worktree(&self.config, &repo_name, &branch_name) {
+        // Create worktree (use quiet mode to avoid corrupting TUI)
+        let worktree_path = match Git::create_worktree_quiet(&self.config, &repo_name, &branch_name) {
             Ok(path) => path,
             Err(e) => {
                 if let Some(w) = &mut self.wizard {
