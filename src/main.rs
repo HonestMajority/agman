@@ -68,7 +68,7 @@ fn main() -> Result<()> {
             task_id,
             feedback,
             flow,
-        }) => cmd_continue(&config, &task_id, &feedback, &flow),
+        }) => cmd_continue(&config, &task_id, feedback.as_deref(), &flow),
 
         Some(Commands::Reset { task_id }) => cmd_reset(&config, &task_id),
 
@@ -355,7 +355,7 @@ fn cmd_attach(config: &Config, task_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_continue(config: &Config, task_id: &str, feedback: &str, flow_name: &str) -> Result<()> {
+fn cmd_continue(config: &Config, task_id: &str, feedback: Option<&str>, flow_name: &str) -> Result<()> {
     config.init_default_files()?;
 
     let mut task = Task::load_by_id(config, task_id)?;
@@ -366,13 +366,27 @@ fn cmd_continue(config: &Config, task_id: &str, feedback: &str, flow_name: &str)
         anyhow::bail!("Flow '{}' does not exist", flow_name);
     }
 
+    // Get feedback: from argument, or from existing FEEDBACK.md file
+    let feedback_text = match feedback {
+        Some(f) => {
+            // Write feedback to file for the refiner
+            task.write_feedback(f)?;
+            f.to_string()
+        }
+        None => {
+            // Read from existing FEEDBACK.md
+            let existing = task.read_feedback()?;
+            if existing.trim().is_empty() {
+                anyhow::bail!("No feedback provided and FEEDBACK.md is empty");
+            }
+            existing
+        }
+    };
+
     println!("Continuing task: {}", task.meta.task_id());
-    println!("Feedback: {}", feedback);
+    println!("Feedback: {}", feedback_text);
     println!("Flow: {}", flow_name);
     println!();
-
-    // Write feedback for the refiner to process
-    task.write_feedback(feedback)?;
 
     // Update task state
     task.meta.flow_name = flow_name.to_string();

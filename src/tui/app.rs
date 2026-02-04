@@ -302,6 +302,8 @@ impl App {
         }
 
         let task_id = if let Some(task) = self.selected_task() {
+            // Write feedback directly to the task's FEEDBACK.md file
+            task.write_feedback(&feedback)?;
             task.meta.task_id()
         } else {
             self.set_status("No task selected".to_string());
@@ -309,9 +311,9 @@ impl App {
             return Ok(());
         };
 
-        // Run agman continue in the background
+        // Run agman continue (reads feedback from FEEDBACK.md)
         let status = Command::new("agman")
-            .args(["continue", &task_id, &feedback, "--flow", "continue"])
+            .args(["continue", &task_id, "--flow", "continue"])
             .status();
 
         match status {

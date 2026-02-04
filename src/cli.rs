@@ -74,8 +74,9 @@ pub enum Commands {
     Continue {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
-        /// Follow-up instructions or feedback
-        feedback: String,
+        /// Follow-up instructions or feedback (reads from FEEDBACK.md if not provided)
+        #[arg(allow_hyphen_values = true)]
+        feedback: Option<String>,
         /// Flow to use (default: "continue")
         #[arg(long, default_value = "continue")]
         flow: String,
