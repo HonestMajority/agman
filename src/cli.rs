@@ -55,14 +55,8 @@ pub enum Commands {
         task_id: String,
     },
 
-    /// Pause a running task
-    Pause {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-    },
-
-    /// Resume a paused task
-    Resume {
+    /// Start a stopped task (resume flow execution)
+    Start {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
     },
@@ -87,14 +81,8 @@ pub enum Commands {
         flow: String,
     },
 
-    /// Reset a stuck task (clears flow state, sets to paused)
+    /// Reset a task (clears flow state, sets to stopped)
     Reset {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-    },
-
-    /// Manually mark a task as done
-    Done {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
     },

@@ -5,30 +5,49 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
-    Working,
-    Paused,
-    Done,
-    Failed,
+    Running,
+    Stopped,
 }
 
 impl std::fmt::Display for TaskStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TaskStatus::Working => write!(f, "working"),
-            TaskStatus::Paused => write!(f, "paused"),
-            TaskStatus::Done => write!(f, "done"),
-            TaskStatus::Failed => write!(f, "failed"),
+            TaskStatus::Running => write!(f, "running"),
+            TaskStatus::Stopped => write!(f, "stopped"),
         }
     }
 }
 
-impl TaskStatus {
-    /// Returns true if this status represents an active (non-completed) task
-    pub fn is_active(&self) -> bool {
-        matches!(self, TaskStatus::Working | TaskStatus::Paused)
+// Custom serialization to maintain backwards compatibility
+impl Serialize for TaskStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            TaskStatus::Running => serializer.serialize_str("running"),
+            TaskStatus::Stopped => serializer.serialize_str("stopped"),
+        }
+    }
+}
+
+// Custom deserialization to handle migration from old states
+impl<'de> Deserialize<'de> for TaskStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "running" | "working" => Ok(TaskStatus::Running),
+            "stopped" | "paused" | "done" | "failed" => Ok(TaskStatus::Stopped),
+            _ => Err(serde::de::Error::unknown_variant(
+                &s,
+                &["running", "stopped"],
+            )),
+        }
     }
 }
 
@@ -58,7 +77,7 @@ impl TaskMeta {
         Self {
             repo_name,
             branch_name,
-            status: TaskStatus::Working,
+            status: TaskStatus::Running,
             tmux_session,
             worktree_path,
             flow_name,
@@ -172,12 +191,12 @@ impl Task {
             }
         }
 
-        // Sort by: active tasks first, then by updated_at descending within each group
+        // Sort by: running tasks first, then by updated_at descending within each group
         tasks.sort_by(|a, b| {
-            let a_active = a.meta.status.is_active();
-            let b_active = b.meta.status.is_active();
-            // Active tasks come first
-            match (a_active, b_active) {
+            let a_running = a.meta.status == TaskStatus::Running;
+            let b_running = b.meta.status == TaskStatus::Running;
+            // Running tasks come first
+            match (a_running, b_running) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
                 // Within the same group, sort by updated_at descending

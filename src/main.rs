@@ -58,9 +58,7 @@ fn main() -> Result<()> {
 
         Some(Commands::FlowRun { task_id }) => cmd_flow_run(&config, &task_id),
 
-        Some(Commands::Pause { task_id }) => cmd_pause(&config, &task_id),
-
-        Some(Commands::Resume { task_id }) => cmd_resume(&config, &task_id),
+        Some(Commands::Start { task_id }) => cmd_start(&config, &task_id),
 
         Some(Commands::Attach { task_id }) => cmd_attach(&config, &task_id),
 
@@ -73,8 +71,6 @@ fn main() -> Result<()> {
         }) => cmd_continue(&config, &task_id, &feedback, &flow),
 
         Some(Commands::Reset { task_id }) => cmd_reset(&config, &task_id),
-
-        Some(Commands::Done { task_id }) => cmd_done(&config, &task_id),
 
         None => {
             // No subcommand - launch TUI
@@ -180,10 +176,8 @@ fn cmd_list(config: &Config) -> Result<()> {
 
     for task in tasks {
         let status_icon = match task.meta.status {
-            TaskStatus::Working => "●",
-            TaskStatus::Paused => "◐",
-            TaskStatus::Done => "✓",
-            TaskStatus::Failed => "✗",
+            TaskStatus::Running => "●",
+            TaskStatus::Stopped => "○",
         };
 
         let task_id = task.meta.task_id();
@@ -301,16 +295,15 @@ fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_pause(config: &Config, task_id: &str) -> Result<()> {
+fn cmd_start(config: &Config, task_id: &str) -> Result<()> {
     let mut task = Task::load_by_id(config, task_id)?;
-    task.update_status(TaskStatus::Paused)?;
-    println!("Task '{}' paused.", task.meta.task_id());
-    Ok(())
-}
 
-fn cmd_resume(config: &Config, task_id: &str) -> Result<()> {
-    let mut task = Task::load_by_id(config, task_id)?;
-    task.update_status(TaskStatus::Working)?;
+    if task.meta.status == TaskStatus::Running {
+        println!("Task '{}' is already running.", task.meta.task_id());
+        return Ok(());
+    }
+
+    task.update_status(TaskStatus::Running)?;
 
     // Ensure tmux session exists
     if !Tmux::session_exists(&task.meta.tmux_session) {
@@ -318,7 +311,7 @@ fn cmd_resume(config: &Config, task_id: &str) -> Result<()> {
         Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
     }
 
-    // Resume the flow by running the current agent
+    // Start the flow by running the current agent
     let flow = Flow::load(&config.flow_path(&task.meta.flow_name))?;
 
     if let Some(step) = flow.get_step(task.meta.flow_step) {
@@ -331,16 +324,16 @@ fn cmd_resume(config: &Config, task_id: &str) -> Result<()> {
             let runner = agent::AgentRunner::new(config.clone());
             runner.run_agent_in_tmux(&mut task, &agent_name)?;
             println!(
-                "Task '{}' resumed with agent '{}'.",
+                "Task '{}' started with agent '{}'.",
                 task.meta.task_id(),
                 agent_name
             );
         } else {
-            println!("Task '{}' resumed.", task.meta.task_id());
+            println!("Task '{}' started.", task.meta.task_id());
         }
     } else {
         println!(
-            "Task '{}' resumed (no more flow steps).",
+            "Task '{}' started (no more flow steps).",
             task.meta.task_id()
         );
     }
@@ -384,7 +377,7 @@ fn cmd_continue(config: &Config, task_id: &str, feedback: &str, flow_name: &str)
     // Update task state
     task.meta.flow_name = flow_name.to_string();
     task.reset_flow_step()?;
-    task.update_status(TaskStatus::Working)?;
+    task.update_status(TaskStatus::Running)?;
 
     // Ensure tmux session exists
     if !Tmux::session_exists(&task.meta.tmux_session) {
@@ -435,28 +428,16 @@ fn cmd_reset(config: &Config, task_id: &str) -> Result<()> {
     // Reset flow state
     task.meta.flow_step = 0;
     task.meta.current_agent = None;
-    task.update_status(TaskStatus::Paused)?;
+    task.update_status(TaskStatus::Stopped)?;
 
     println!("Reset task: {}", task.meta.task_id());
-    println!("  Status: paused");
+    println!("  Status: stopped");
     println!("  Flow step: 0");
     println!("  Current agent: none");
     println!();
     println!("You can now:");
-    println!("  agman resume {}  - Restart the flow from the beginning", task.meta.task_id());
+    println!("  agman start {}  - Restart the flow from the beginning", task.meta.task_id());
     println!("  agman continue {} \"feedback\" - Continue with new instructions", task.meta.task_id());
-    println!("  agman done {}    - Mark as complete", task.meta.task_id());
-
-    Ok(())
-}
-
-fn cmd_done(config: &Config, task_id: &str) -> Result<()> {
-    let mut task = Task::load_by_id(config, task_id)?;
-
-    task.meta.current_agent = None;
-    task.update_status(TaskStatus::Done)?;
-
-    println!("Marked task as done: {}", task.meta.task_id());
 
     Ok(())
 }

@@ -37,9 +37,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
-    // Count active and completed tasks
-    let active_count = app.tasks.iter().filter(|t| t.meta.status.is_active()).count();
-    let completed_count = app.tasks.len() - active_count;
+    // Count running and stopped tasks
+    let running_count = app.tasks.iter().filter(|t| t.meta.status == TaskStatus::Running).count();
+    let stopped_count = app.tasks.len() - running_count;
 
     // Create the outer block first
     let block = Block::default()
@@ -121,20 +121,20 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(header), chunks[0]);
 
-    // Build task list with section headers
+    // Build task list (sorted by updated_at, running tasks first)
     let mut items: Vec<ListItem> = Vec::new();
-    let mut task_index = 0; // Tracks actual task index (not including headers)
-    let mut shown_active_header = false;
-    let mut shown_completed_header = false;
+    let mut task_index = 0;
+    let mut shown_running_header = false;
+    let mut shown_stopped_header = false;
 
     for task in &app.tasks {
-        let is_active = task.meta.status.is_active();
+        let is_running = task.meta.status == TaskStatus::Running;
 
         // Add section header if needed
-        if is_active && !shown_active_header && active_count > 0 {
+        if is_running && !shown_running_header && running_count > 0 {
             let header_line = Line::from(vec![
                 Span::styled(
-                    format!("── Active ({}) ", active_count),
+                    format!("── Running ({}) ", running_count),
                     Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
@@ -143,32 +143,30 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 ),
             ]);
             items.push(ListItem::new(header_line));
-            shown_active_header = true;
-        } else if !is_active && !shown_completed_header && completed_count > 0 {
-            // Add spacing before completed section if there were active tasks
-            if shown_active_header {
+            shown_running_header = true;
+        } else if !is_running && !shown_stopped_header && stopped_count > 0 {
+            // Add spacing before stopped section if there were running tasks
+            if shown_running_header {
                 items.push(ListItem::new(Line::from("")));
             }
             let header_line = Line::from(vec![
                 Span::styled(
-                    format!("── Completed ({}) ", completed_count),
+                    format!("── Stopped ({}) ", stopped_count),
                     Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    "─".repeat(46),
+                    "─".repeat(48),
                     Style::default().fg(Color::Rgb(40, 40, 40)),
                 ),
             ]);
             items.push(ListItem::new(header_line));
-            shown_completed_header = true;
+            shown_stopped_header = true;
         }
 
         // Render the task
         let (status_icon, status_color) = match task.meta.status {
-            TaskStatus::Working => ("●", Color::LightGreen),
-            TaskStatus::Paused => ("◐", Color::Yellow),
-            TaskStatus::Done => ("✓", Color::Rgb(80, 80, 80)),
-            TaskStatus::Failed => ("✗", Color::LightRed),
+            TaskStatus::Running => ("●", Color::LightGreen),
+            TaskStatus::Stopped => ("○", Color::DarkGray),
         };
 
         let agent_str = task.meta.current_agent.as_deref().unwrap_or("-");
@@ -182,8 +180,8 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             task_id.clone()
         };
 
-        // Dim completed tasks
-        let text_color = if is_active {
+        // Dim stopped tasks
+        let text_color = if is_running {
             if task_index == app.selected_index {
                 Color::White
             } else {
@@ -215,7 +213,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             Span::raw(COL_GAP),
             Span::styled(
                 format!("{:<width$}", agent_str, width = AGENT_WIDTH),
-                if is_active {
+                if is_running {
                     Style::default().fg(Color::LightBlue)
                 } else {
                     Style::default().fg(Color::Rgb(80, 80, 80))
@@ -263,10 +261,8 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(
                 format!("{}", task.meta.status),
                 Style::default().fg(match task.meta.status {
-                    TaskStatus::Working => Color::LightGreen,
-                    TaskStatus::Paused => Color::Yellow,
-                    TaskStatus::Done => Color::LightCyan,
-                    TaskStatus::Failed => Color::LightRed,
+                    TaskStatus::Running => Color::LightGreen,
+                    TaskStatus::Stopped => Color::DarkGray,
                 }),
             ),
             Span::raw("  "),
@@ -505,10 +501,10 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" preview  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("f", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("p", Style::default().fg(Color::LightCyan)),
-                Span::styled(" pause  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("s", Style::default().fg(Color::LightCyan)),
+                Span::styled(" start  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("r", Style::default().fg(Color::LightCyan)),
-                Span::styled(" resume  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" reset  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightCyan)),
                 Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),

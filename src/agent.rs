@@ -263,7 +263,7 @@ impl AgentRunner {
             let Some(step) = flow.get_step(step_index) else {
                 // No more steps, flow is complete
                 println!("Flow complete - no more steps");
-                task.update_status(TaskStatus::Done)?;
+                task.update_status(TaskStatus::Stopped)?;
                 return Ok(StopCondition::TaskComplete);
             };
 
@@ -279,7 +279,7 @@ impl AgentRunner {
                     match result {
                         Some(StopCondition::TaskComplete) => {
                             println!("Task marked complete by agent");
-                            task.update_status(TaskStatus::Done)?;
+                            task.update_status(TaskStatus::Stopped)?;
                             return Ok(StopCondition::TaskComplete);
                         }
                         Some(StopCondition::TaskBlocked) => {
@@ -290,8 +290,8 @@ impl AgentRunner {
                                     task.advance_flow_step()?;
                                 }
                                 _ => {
-                                    println!("on_blocked: pause - pausing flow");
-                                    task.update_status(TaskStatus::Paused)?;
+                                    println!("on_blocked: stop - stopping flow");
+                                    task.update_status(TaskStatus::Stopped)?;
                                     return Ok(StopCondition::TaskBlocked);
                                 }
                             }
@@ -335,11 +335,11 @@ impl AgentRunner {
 
                     match result {
                         StopCondition::TaskComplete => {
-                            task.update_status(TaskStatus::Done)?;
+                            task.update_status(TaskStatus::Stopped)?;
                             return Ok(StopCondition::TaskComplete);
                         }
                         StopCondition::TaskBlocked => {
-                            task.update_status(TaskStatus::Paused)?;
+                            task.update_status(TaskStatus::Stopped)?;
                             return Ok(StopCondition::TaskBlocked);
                         }
                         _ => {

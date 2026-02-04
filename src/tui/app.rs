@@ -121,10 +121,6 @@ impl App {
         self.tasks.get(self.selected_index)
     }
 
-    pub fn selected_task_mut(&mut self) -> Option<&mut Task> {
-        self.tasks.get_mut(self.selected_index)
-    }
-
     pub fn set_status(&mut self, message: String) {
         self.status_message = Some((message, Instant::now()));
     }
@@ -193,24 +189,66 @@ impl App {
         Ok(())
     }
 
-    fn pause_task(&mut self) -> Result<()> {
-        let task_id = self.selected_task().map(|t| t.meta.task_id());
-        if let Some(task) = self.selected_task_mut() {
-            task.update_status(TaskStatus::Paused)?;
-        }
-        if let Some(id) = task_id {
-            self.set_status(format!("Paused: {}", id));
+    fn start_task(&mut self) -> Result<()> {
+        let task_info = self.selected_task().map(|t| {
+            (t.meta.task_id(), t.meta.status == TaskStatus::Stopped)
+        });
+
+        if let Some((task_id, is_stopped)) = task_info {
+            if !is_stopped {
+                self.set_status(format!("Task already running: {}", task_id));
+                return Ok(());
+            }
+
+            // Run agman start in the background
+            let status = std::process::Command::new("agman")
+                .args(["start", &task_id])
+                .status();
+
+            match status {
+                Ok(s) if s.success() => {
+                    self.refresh_tasks()?;
+                    self.set_status(format!("Started: {}", task_id));
+                }
+                Ok(_) => {
+                    self.set_status("Failed to start task".to_string());
+                }
+                Err(e) => {
+                    self.set_status(format!("Error: {}", e));
+                }
+            }
         }
         Ok(())
     }
 
-    fn resume_task(&mut self) -> Result<()> {
-        let task_id = self.selected_task().map(|t| t.meta.task_id());
-        if let Some(task) = self.selected_task_mut() {
-            task.update_status(TaskStatus::Working)?;
-        }
-        if let Some(id) = task_id {
-            self.set_status(format!("Resumed: {}", id));
+    fn reset_task(&mut self) -> Result<()> {
+        let task_info = self.selected_task().map(|t| {
+            (t.meta.task_id(), t.meta.status == TaskStatus::Stopped)
+        });
+
+        if let Some((task_id, is_stopped)) = task_info {
+            if !is_stopped {
+                self.set_status(format!("Can only reset stopped tasks: {}", task_id));
+                return Ok(());
+            }
+
+            // Run agman reset in the background
+            let status = std::process::Command::new("agman")
+                .args(["reset", &task_id])
+                .status();
+
+            match status {
+                Ok(s) if s.success() => {
+                    self.refresh_tasks()?;
+                    self.set_status(format!("Reset: {}", task_id));
+                }
+                Ok(_) => {
+                    self.set_status("Failed to reset task".to_string());
+                }
+                Err(e) => {
+                    self.set_status(format!("Error: {}", e));
+                }
+            }
         }
         Ok(())
     }
@@ -632,11 +670,11 @@ impl App {
                     self.preview_pane = PreviewPane::Logs;
                     self.view = View::Preview;
                 }
-                KeyCode::Char('p') => {
-                    self.pause_task()?;
+                KeyCode::Char('s') => {
+                    self.start_task()?;
                 }
                 KeyCode::Char('r') => {
-                    self.resume_task()?;
+                    self.reset_task()?;
                 }
                 KeyCode::Char('d') => {
                     if !self.tasks.is_empty() {
