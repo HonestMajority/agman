@@ -10,6 +10,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use tui_textarea::{CursorMove, Input, TextArea};
 
+use crate::command::StoredCommand;
 use crate::config::Config;
 use crate::git::Git;
 use crate::task::{Task, TaskStatus};
@@ -24,6 +25,7 @@ pub enum View {
     DeleteConfirm,
     Feedback,
     NewTaskWizard,
+    CommandList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,11 +80,15 @@ pub struct App {
     pub wizard: Option<NewTaskWizard>,
     pub output_log: Vec<String>,
     pub output_scroll: u16,
+    // Stored commands
+    pub commands: Vec<StoredCommand>,
+    pub selected_command_index: usize,
 }
 
 impl App {
     pub fn new(config: Config) -> Result<Self> {
         let tasks = Task::list_all(&config)?;
+        let commands = StoredCommand::list_all(&config.commands_dir).unwrap_or_default();
         let notes_editor = Self::create_editor();
         let feedback_editor = Self::create_editor();
 
@@ -104,6 +110,8 @@ impl App {
             wizard: None,
             output_log: Vec::new(),
             output_scroll: 0,
+            commands,
+            selected_command_index: 0,
         })
     }
 
@@ -554,6 +562,81 @@ impl App {
         Ok(flows)
     }
 
+    pub fn scan_commands(&mut self) -> Result<()> {
+        self.commands = StoredCommand::list_all(&self.config.commands_dir)?;
+        if self.selected_command_index >= self.commands.len() && !self.commands.is_empty() {
+            self.selected_command_index = self.commands.len() - 1;
+        }
+        Ok(())
+    }
+
+    fn open_command_list(&mut self) {
+        if self.tasks.is_empty() {
+            self.set_status("No task selected to run command on".to_string());
+            return;
+        }
+        // Refresh commands list
+        let _ = self.scan_commands();
+        if self.commands.is_empty() {
+            self.set_status("No stored commands available".to_string());
+            return;
+        }
+        self.selected_command_index = 0;
+        self.view = View::CommandList;
+    }
+
+    fn run_selected_command(&mut self) -> Result<()> {
+        let task_id = match self.selected_task() {
+            Some(t) => t.meta.task_id(),
+            None => {
+                self.set_status("No task selected".to_string());
+                self.view = View::TaskList;
+                return Ok(());
+            }
+        };
+
+        let command = match self.commands.get(self.selected_command_index) {
+            Some(c) => c.clone(),
+            None => {
+                self.set_status("No command selected".to_string());
+                self.view = View::TaskList;
+                return Ok(());
+            }
+        };
+
+        self.log_output(format!("Running command '{}' on task {}...", command.name, task_id));
+
+        // Run agman run-command in background
+        let output = Command::new("agman")
+            .args(["run-command", &task_id, &command.id])
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                if !stdout.is_empty() {
+                    for line in stdout.lines() {
+                        self.log_output(line.to_string());
+                    }
+                }
+                self.refresh_tasks()?;
+                self.set_status(format!("Started: {}", command.name));
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                self.log_output(format!("Failed: {}", stderr));
+                self.set_status(format!("Failed to run {}", command.name));
+            }
+            Err(e) => {
+                self.log_output(format!("Error: {}", e));
+                self.set_status(format!("Error: {}", e));
+            }
+        }
+
+        self.view = View::TaskList;
+        Ok(())
+    }
+
     fn scan_branches(&self, repo_name: &str) -> Result<Vec<String>> {
         let repo_path = self.config.repo_path(repo_name);
 
@@ -784,6 +867,7 @@ impl App {
             View::DeleteConfirm => self.handle_delete_confirm_event(event),
             View::Feedback => self.handle_feedback_event(event),
             View::NewTaskWizard => self.handle_wizard_event(event),
+            View::CommandList => self.handle_command_list_event(event),
         }
     }
 
@@ -845,6 +929,10 @@ impl App {
                 KeyCode::Char('c') => {
                     // Clear output log
                     self.clear_output();
+                }
+                KeyCode::Char('x') => {
+                    // Open command list
+                    self.open_command_list();
                 }
                 _ => {}
             }
@@ -944,6 +1032,10 @@ impl App {
                 KeyCode::Char('f') => {
                     // Give feedback
                     self.start_feedback();
+                }
+                KeyCode::Char('x') => {
+                    // Open command list
+                    self.open_command_list();
                 }
                 KeyCode::Char('j') => {
                     match self.preview_pane {
@@ -1248,6 +1340,42 @@ impl App {
                         _ => {}
                     }
                 }
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_command_list_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            // Check for Ctrl+C to quit
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = View::TaskList;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if !self.commands.is_empty() {
+                        self.selected_command_index =
+                            (self.selected_command_index + 1) % self.commands.len();
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if !self.commands.is_empty() {
+                        self.selected_command_index = if self.selected_command_index == 0 {
+                            self.commands.len() - 1
+                        } else {
+                            self.selected_command_index - 1
+                        };
+                    }
+                }
+                KeyCode::Enter => {
+                    self.run_selected_command()?;
+                }
+                _ => {}
             }
         }
         Ok(false)

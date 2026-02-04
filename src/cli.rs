@@ -87,4 +87,15 @@ pub enum Commands {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
     },
+
+    /// Run a stored command on a task
+    RunCommand {
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
+        /// Command identifier (e.g., "create-pr", "address-review")
+        command_id: String,
+    },
+
+    /// List available stored commands
+    ListCommands,
 }
