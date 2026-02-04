@@ -1,5 +1,6 @@
 mod agent;
 mod cli;
+mod command;
 mod config;
 mod flow;
 mod git;
@@ -71,6 +72,12 @@ fn main() -> Result<()> {
         }) => cmd_continue(&config, &task_id, feedback.as_deref(), &flow),
 
         Some(Commands::Reset { task_id }) => cmd_reset(&config, &task_id),
+
+        Some(Commands::RunCommand { task_id, command_id }) => {
+            cmd_run_command(&config, &task_id, &command_id)
+        }
+
+        Some(Commands::ListCommands) => cmd_list_commands(&config),
 
         None => {
             // No subcommand - launch TUI
@@ -418,19 +425,24 @@ fn cmd_init(config: &Config) -> Result<()> {
     println!("  {}/", config.tasks_dir.display());
     println!("  {}/", config.flows_dir.display());
     println!("  {}/", config.prompts_dir.display());
+    println!("  {}/", config.commands_dir.display());
     println!();
     println!("Created default flows:");
     println!("  default.yaml");
     println!("  tdd.yaml");
     println!("  review.yaml");
+    println!("  continue.yaml");
     println!();
     println!("Created default agent prompts:");
-    println!("  planner.md");
-    println!("  coder.md");
-    println!("  test-writer.md");
-    println!("  tester.md");
-    println!("  reviewer.md");
+    println!("  planner.md, coder.md, test-writer.md, tester.md, reviewer.md, refiner.md");
+    println!("  pr-creator.md, ci-monitor.md, ci-fixer.md");
+    println!("  review-reader.md, review-fixer.md, review-summarizer.md");
     println!();
+    println!("Created stored commands:");
+    println!("  create-pr      - Create a draft PR with CI monitoring");
+    println!("  address-review - Address review comments with separate commits");
+    println!();
+    println!("Use 'x' in the TUI or 'agman run-command' to run stored commands.");
     println!("You can customize these files to fit your workflow.");
 
     Ok(())
@@ -452,6 +464,84 @@ fn cmd_reset(config: &Config, task_id: &str) -> Result<()> {
     println!("You can now:");
     println!("  agman start {}  - Restart the flow from the beginning", task.meta.task_id());
     println!("  agman continue {} \"feedback\" - Continue with new instructions", task.meta.task_id());
+
+    Ok(())
+}
+
+fn cmd_run_command(config: &Config, task_id: &str, command_id: &str) -> Result<()> {
+    config.init_default_files()?;
+
+    let mut task = Task::load_by_id(config, task_id)?;
+
+    // Load the command
+    let cmd = command::StoredCommand::get_by_id(&config.commands_dir, command_id)?
+        .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?;
+
+    println!("Running command: {}", cmd.name);
+    println!("  Description: {}", cmd.description);
+    println!("  Task: {}", task.meta.task_id());
+    println!();
+
+    // Ensure tmux session exists
+    if !Tmux::session_exists(&task.meta.tmux_session) {
+        println!("Recreating tmux session...");
+        Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
+    }
+
+    // Update task to running state
+    task.update_status(TaskStatus::Running)?;
+
+    // Run the command flow - commands use the flow format stored in the command file itself
+    // We'll run it step by step using the same flow runner
+    let flow = Flow::load(&cmd.flow_path)?;
+
+    println!("Starting command flow: {}", flow.name);
+    println!();
+
+    let runner = agent::AgentRunner::new(config.clone());
+
+    // Temporarily set the flow name to run the command flow
+    let original_flow = task.meta.flow_name.clone();
+    let original_step = task.meta.flow_step;
+
+    task.meta.flow_name = command_id.to_string();
+    task.meta.flow_step = 0;
+    task.save_meta()?;
+
+    // Run the flow
+    let result = runner.run_flow(&mut task)?;
+
+    // Restore original flow settings
+    task.meta.flow_name = original_flow;
+    task.meta.flow_step = original_step;
+    task.save_meta()?;
+
+    println!();
+    println!("Command '{}' finished with: {}", cmd.name, result);
+
+    Ok(())
+}
+
+fn cmd_list_commands(config: &Config) -> Result<()> {
+    config.init_default_files()?;
+
+    let commands = command::StoredCommand::list_all(&config.commands_dir)?;
+
+    if commands.is_empty() {
+        println!("No stored commands found.");
+        println!("Run 'agman init' to create default commands.");
+        return Ok(());
+    }
+
+    println!("{:<20} {}", "COMMAND", "DESCRIPTION");
+    println!("{}", "-".repeat(60));
+
+    for cmd in commands {
+        println!("{:<20} {}", cmd.id, cmd.description);
+    }
+
+    println!();
+    println!("Run a command with: agman run-command <task_id> <command>");
 
     Ok(())
 }

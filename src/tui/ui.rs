@@ -14,7 +14,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Check if we're showing a modal that should hide the output pane
     let is_modal_view = matches!(
         app.view,
-        View::DeleteConfirm | View::Feedback | View::NewTaskWizard
+        View::DeleteConfirm | View::Feedback | View::NewTaskWizard | View::CommandList
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -47,6 +47,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::NewTaskWizard => {
             draw_task_list(f, app, chunks[0]);
             draw_wizard(f, app);
+        }
+        View::CommandList => {
+            draw_task_list(f, app, chunks[0]);
+            draw_command_list(f, app);
         }
     }
 
@@ -555,6 +559,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("x", Style::default().fg(Color::LightMagenta)),
+                Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("l", Style::default().fg(Color::LightCyan)),
                 Span::styled(" preview  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("f", Style::default().fg(Color::LightMagenta)),
@@ -565,8 +571,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" reset  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightCyan)),
                 Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("c", Style::default().fg(Color::LightCyan)),
-                Span::styled(" clear  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" quit", Style::default().fg(Color::DarkGray)),
             ]
@@ -580,13 +584,15 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 vec![
                     Span::styled("Tab", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" switch pane  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(" pane  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                     Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("x", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("f", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("i", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" edit notes  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Enter", Style::default().fg(Color::LightCyan)),
                     Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("q", Style::default().fg(Color::LightCyan)),
@@ -657,6 +663,16 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 vec![]
             }
+        }
+        View::CommandList => {
+            vec![
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" run  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
         }
     };
 
@@ -988,6 +1004,92 @@ fn draw_wizard_footer_direct(
 
     let para = Paragraph::new(content);
     f.render_widget(para, area);
+}
+
+fn draw_command_list(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 50, f.area());
+    f.render_widget(Clear, area);
+
+    let task_id = app
+        .selected_task()
+        .map(|t| t.meta.task_id())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Split into header and list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
+
+    // Header
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("Run command on: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            task_id,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .title(Span::styled(
+                " Stored Commands ",
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightMagenta)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    // Command list
+    let items: Vec<ListItem> = app
+        .commands
+        .iter()
+        .enumerate()
+        .map(|(i, cmd)| {
+            let style = if i == app.selected_command_index {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(40, 40, 60))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let prefix = if i == app.selected_command_index {
+                "▸ "
+            } else {
+                "  "
+            };
+
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled(prefix, style),
+                    Span::styled(&cmd.name, style),
+                ]),
+                Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(&cmd.description, Style::default().fg(Color::DarkGray)),
+                ]),
+            ];
+
+            ListItem::new(lines)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(Span::styled(
+                " Select a command (Enter to run, Esc to cancel) ",
+                Style::default().fg(Color::LightGreen),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightGreen)),
+    );
+
+    f.render_widget(list, chunks[1]);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
