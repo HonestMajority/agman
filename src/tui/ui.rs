@@ -797,9 +797,14 @@ fn draw_wizard_branch(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     // Split into mode tabs and content
+    // Use Length(3) for CreateNew (single-line input), Min(3) for SelectExisting (list)
+    let content_constraint = match wizard.branch_mode {
+        BranchMode::CreateNew => Constraint::Length(3),
+        BranchMode::SelectExisting => Constraint::Min(3),
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(3)])
+        .constraints([Constraint::Length(3), content_constraint])
         .split(area);
 
     // Draw mode tabs
