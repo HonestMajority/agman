@@ -76,6 +76,8 @@ pub struct App {
     pub should_quit: bool,
     pub status_message: Option<(String, Instant)>,
     pub wizard: Option<NewTaskWizard>,
+    pub output_log: Vec<String>,
+    pub output_scroll: u16,
 }
 
 impl App {
@@ -100,6 +102,8 @@ impl App {
             should_quit: false,
             status_message: None,
             wizard: None,
+            output_log: Vec::new(),
+            output_scroll: 0,
         })
     }
 
@@ -107,6 +111,66 @@ impl App {
         let mut editor = TextArea::default();
         editor.set_cursor_line_style(ratatui::style::Style::default());
         editor
+    }
+
+    /// Auto-wrap text in a TextArea when lines exceed max_width.
+    /// Finds the last word boundary and inserts a newline there.
+    fn auto_wrap_editor(editor: &mut TextArea<'static>, max_width: usize) {
+        if max_width < 20 {
+            return;
+        }
+
+        let (row, col) = editor.cursor();
+        let lines = editor.lines();
+
+        if row >= lines.len() {
+            return;
+        }
+
+        let current_line = &lines[row];
+        if current_line.len() <= max_width {
+            return;
+        }
+
+        // Find the last space before max_width
+        let wrap_at = current_line[..max_width]
+            .rfind(' ')
+            .unwrap_or(max_width);
+
+        if wrap_at == 0 {
+            return;
+        }
+
+        // We need to split the line: move cursor to wrap point, insert newline
+        // This is a bit tricky with tui-textarea's API
+        // We'll rebuild the lines and recreate the editor content
+
+        let mut new_lines: Vec<String> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if i == row {
+                // Split this line
+                let (before, after) = line.split_at(wrap_at);
+                new_lines.push(before.to_string());
+                new_lines.push(after.trim_start().to_string());
+            } else {
+                new_lines.push(line.to_string());
+            }
+        }
+
+        // Calculate new cursor position
+        let new_col = if col > wrap_at {
+            col - wrap_at - 1 // Account for removed space
+        } else {
+            col
+        };
+        let new_row = if col > wrap_at { row + 1 } else { row };
+
+        // Recreate the editor with new content
+        *editor = TextArea::from(new_lines.iter().map(|s| s.as_str()));
+        editor.set_cursor_line_style(ratatui::style::Style::default());
+
+        // Restore cursor position
+        editor.move_cursor(CursorMove::Jump(new_row as u16, new_col as u16));
     }
 
     pub fn refresh_tasks(&mut self) -> Result<()> {
@@ -123,6 +187,21 @@ impl App {
 
     pub fn set_status(&mut self, message: String) {
         self.status_message = Some((message, Instant::now()));
+    }
+
+    pub fn log_output(&mut self, message: String) {
+        self.output_log.push(message);
+        // Keep only the last 100 lines
+        if self.output_log.len() > 100 {
+            self.output_log.remove(0);
+        }
+        // Auto-scroll to bottom
+        self.output_scroll = self.output_log.len().saturating_sub(5) as u16;
+    }
+
+    pub fn clear_output(&mut self) {
+        self.output_log.clear();
+        self.output_scroll = 0;
     }
 
     pub fn clear_old_status(&mut self) {
@@ -200,20 +279,31 @@ impl App {
                 return Ok(());
             }
 
-            // Run agman start in the background
-            let status = std::process::Command::new("agman")
-                .args(["start", &task_id])
-                .status();
+            self.log_output(format!("Starting task {}...", task_id));
 
-            match status {
-                Ok(s) if s.success() => {
+            // Run agman start - capture output to avoid corrupting TUI
+            let output = Command::new("agman")
+                .args(["start", &task_id])
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    if !stdout.is_empty() {
+                        for line in stdout.lines() {
+                            self.log_output(line.to_string());
+                        }
+                    }
                     self.refresh_tasks()?;
                     self.set_status(format!("Started: {}", task_id));
                 }
-                Ok(_) => {
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    self.log_output(format!("Failed to start: {}", stderr));
                     self.set_status("Failed to start task".to_string());
                 }
                 Err(e) => {
+                    self.log_output(format!("Error: {}", e));
                     self.set_status(format!("Error: {}", e));
                 }
             }
@@ -232,20 +322,31 @@ impl App {
                 return Ok(());
             }
 
-            // Run agman reset in the background
-            let status = std::process::Command::new("agman")
-                .args(["reset", &task_id])
-                .status();
+            self.log_output(format!("Resetting task {}...", task_id));
 
-            match status {
-                Ok(s) if s.success() => {
+            // Run agman reset - capture output to avoid corrupting TUI
+            let output = Command::new("agman")
+                .args(["reset", &task_id])
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    if !stdout.is_empty() {
+                        for line in stdout.lines() {
+                            self.log_output(line.to_string());
+                        }
+                    }
                     self.refresh_tasks()?;
                     self.set_status(format!("Reset: {}", task_id));
                 }
-                Ok(_) => {
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    self.log_output(format!("Failed to reset: {}", stderr));
                     self.set_status("Failed to reset task".to_string());
                 }
                 Err(e) => {
+                    self.log_output(format!("Error: {}", e));
                     self.set_status(format!("Error: {}", e));
                 }
             }
@@ -265,18 +366,24 @@ impl App {
         let worktree_path = task.meta.worktree_path.clone();
         let tmux_session = task.meta.tmux_session.clone();
 
+        self.log_output(format!("Deleting task {}...", task_id));
+
         // Kill tmux session
         let _ = Tmux::kill_session(&tmux_session);
+        self.log_output("  Killed tmux session".to_string());
 
         // Remove worktree
         let repo_path = self.config.repo_path(&repo_name);
         let _ = Git::remove_worktree(&repo_path, &worktree_path);
+        self.log_output("  Removed worktree".to_string());
 
         // Delete branch
         let _ = Git::delete_branch(&repo_path, &branch_name);
+        self.log_output("  Deleted branch".to_string());
 
         // Delete task directory
         task.delete(&self.config)?;
+        self.log_output("  Deleted task files".to_string());
 
         if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
             self.selected_index = self.tasks.len() - 1;
@@ -311,20 +418,39 @@ impl App {
             return Ok(());
         };
 
-        // Run agman continue (reads feedback from FEEDBACK.md)
-        let status = Command::new("agman")
-            .args(["continue", &task_id, "--flow", "continue"])
-            .status();
+        self.log_output(format!("Starting continue flow for {}...", task_id));
 
-        match status {
-            Ok(s) if s.success() => {
-                self.set_status(format!("Feedback submitted, flow started for {}", task_id));
+        // Run agman continue (reads feedback from FEEDBACK.md)
+        // Capture output to avoid corrupting TUI
+        let output = Command::new("agman")
+            .args(["continue", &task_id, "--flow", "continue"])
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                if !stdout.is_empty() {
+                    for line in stdout.lines() {
+                        self.log_output(line.to_string());
+                    }
+                }
+                if !stderr.is_empty() {
+                    for line in stderr.lines() {
+                        self.log_output(format!("[stderr] {}", line));
+                    }
+                }
+                self.log_output(format!("Flow started for {}", task_id));
+                self.set_status(format!("Feedback submitted for {}", task_id));
                 self.refresh_tasks()?;
             }
-            Ok(_) => {
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                self.log_output(format!("Failed to start continue flow: {}", stderr));
                 self.set_status("Failed to start continue flow".to_string());
             }
             Err(e) => {
+                self.log_output(format!("Error: {}", e));
                 self.set_status(format!("Error: {}", e));
             }
         }
@@ -581,13 +707,17 @@ impl App {
         let description = wizard.description_editor.lines().join("\n").trim().to_string();
         let flow_name = wizard.flows[wizard.selected_flow_index].clone();
 
+        self.log_output(format!("Creating task {}--{}...", repo_name, branch_name));
+
         // Initialize default files
         self.config.init_default_files()?;
 
         // Create worktree (use quiet mode to avoid corrupting TUI)
+        self.log_output("  Creating worktree...".to_string());
         let worktree_path = match Git::create_worktree_quiet(&self.config, &repo_name, &branch_name) {
             Ok(path) => path,
             Err(e) => {
+                self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
                     w.error_message = Some(format!("Failed to create worktree: {}", e));
                 }
@@ -599,6 +729,7 @@ impl App {
         let _ = Git::direnv_allow(&worktree_path);
 
         // Create task
+        self.log_output("  Creating task files...".to_string());
         let task = match Task::create(
             &self.config,
             &repo_name,
@@ -609,6 +740,7 @@ impl App {
         ) {
             Ok(t) => t,
             Err(e) => {
+                self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
                     w.error_message = Some(format!("Failed to create task: {}", e));
                 }
@@ -617,9 +749,11 @@ impl App {
         };
 
         // Create tmux session with windows
+        self.log_output("  Creating tmux session...".to_string());
         if let Err(e) =
             Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)
         {
+            self.log_output(format!("  Error: {}", e));
             if let Some(w) = &mut self.wizard {
                 w.error_message = Some(format!("Failed to create tmux session: {}", e));
             }
@@ -630,6 +764,7 @@ impl App {
         let task_id = task.meta.task_id();
         let flow_cmd = format!("agman flow-run {}", task_id);
         let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd);
+        self.log_output(format!("  Started flow: {}", flow_name));
 
         // Success - close wizard and refresh
         self.wizard = None;
@@ -706,6 +841,10 @@ impl App {
                 KeyCode::Char('n') => {
                     // Start new task wizard
                     self.start_wizard()?;
+                }
+                KeyCode::Char('c') => {
+                    // Clear output log
+                    self.clear_output();
                 }
                 _ => {}
             }
@@ -880,6 +1019,9 @@ impl App {
     }
 
     fn handle_notes_editing(&mut self, event: Event) -> Result<bool> {
+        // Max width for auto-wrapping (notes panel is ~40% of screen, minus borders)
+        const WRAP_WIDTH: usize = 45;
+
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Esc => {
@@ -890,6 +1032,8 @@ impl App {
                     // Convert crossterm event to tui-textarea Input
                     let input = Input::from(event.clone());
                     self.notes_editor.input(input);
+                    // Auto-wrap long lines
+                    Self::auto_wrap_editor(&mut self.notes_editor, WRAP_WIDTH);
                 }
             }
         }
@@ -897,6 +1041,9 @@ impl App {
     }
 
     fn handle_feedback_event(&mut self, event: Event) -> Result<bool> {
+        // Max width for auto-wrapping (modal is ~70% of screen, minus borders)
+        const WRAP_WIDTH: usize = 65;
+
         if let Event::Key(key) = event {
             // Check for Ctrl+S to submit
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
@@ -913,6 +1060,8 @@ impl App {
                 _ => {
                     let input = Input::from(event.clone());
                     self.feedback_editor.input(input);
+                    // Auto-wrap long lines
+                    Self::auto_wrap_editor(&mut self.feedback_editor, WRAP_WIDTH);
                 }
             }
         }
@@ -1044,6 +1193,9 @@ impl App {
                     }
                 }
                 WizardStep::EnterDescription => {
+                    // Max width for auto-wrapping (wizard is ~80% of screen, minus borders)
+                    const WRAP_WIDTH: usize = 72;
+
                     // Check for Ctrl+S to submit
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('s')
@@ -1059,6 +1211,8 @@ impl App {
                         _ => {
                             let input = Input::from(event.clone());
                             wizard.description_editor.input(input);
+                            // Auto-wrap long lines
+                            Self::auto_wrap_editor(&mut wizard.description_editor, WRAP_WIDTH);
                         }
                     }
                 }

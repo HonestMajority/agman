@@ -11,9 +11,26 @@ use crate::task::TaskStatus;
 use super::app::{App, BranchMode, PreviewPane, View, WizardStep};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    // Check if we're showing a modal that should hide the output pane
+    let is_modal_view = matches!(
+        app.view,
+        View::DeleteConfirm | View::Feedback | View::NewTaskWizard
+    );
+
+    // Determine output pane height based on content (hide during modals)
+    let output_height = if app.output_log.is_empty() || is_modal_view {
+        0
+    } else {
+        (app.output_log.len() as u16 + 2).min(8) // 2 for borders, max 8 lines
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(10), Constraint::Length(3)])
+        .constraints([
+            Constraint::Min(10),
+            Constraint::Length(output_height),
+            Constraint::Length(3),
+        ])
         .split(f.area());
 
     match app.view {
@@ -33,7 +50,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
 
-    draw_status_bar(f, app, chunks[1]);
+    if output_height > 0 {
+        draw_output_pane(f, app, chunks[1]);
+    }
+
+    draw_status_bar(f, app, chunks[2]);
 }
 
 fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
@@ -169,7 +190,12 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             TaskStatus::Stopped => ("○", Color::DarkGray),
         };
 
-        let agent_str = task.meta.current_agent.as_deref().unwrap_or("-");
+        // Only show agent if task is running
+        let agent_str = if is_running {
+            task.meta.current_agent.as_deref().unwrap_or("-")
+        } else {
+            "-"
+        };
         let task_id = task.meta.task_id();
         let status_str = format!("{}", task.meta.status);
 
@@ -248,6 +274,12 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Task info header
     if let Some(task) = app.selected_task() {
+        let is_running = task.meta.status == TaskStatus::Running;
+        let agent_str = if is_running {
+            task.meta.current_agent.as_deref().unwrap_or("none")
+        } else {
+            "none"
+        };
         let header = Paragraph::new(Line::from(vec![
             Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
@@ -268,8 +300,12 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
             Span::raw("  "),
             Span::styled("Agent: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                task.meta.current_agent.as_deref().unwrap_or("none"),
-                Style::default().fg(Color::LightBlue),
+                agent_str,
+                if is_running {
+                    Style::default().fg(Color::LightBlue)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
             ),
         ]))
         .block(
@@ -489,6 +525,28 @@ fn draw_delete_confirm(f: &mut Frame, app: &App) {
     f.render_widget(popup, area);
 }
 
+fn draw_output_pane(f: &mut Frame, app: &App, area: Rect) {
+    let content = app.output_log.join("\n");
+
+    let output = Paragraph::new(content)
+        .block(
+            Block::default()
+                .title(Span::styled(
+                    " Output ",
+                    Style::default()
+                        .fg(Color::LightYellow)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .style(Style::default().fg(Color::Gray))
+        .wrap(Wrap { trim: false })
+        .scroll((app.output_scroll, 0));
+
+    f.render_widget(output, area);
+}
+
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.view {
         View::TaskList => {
@@ -506,7 +564,9 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("r", Style::default().fg(Color::LightCyan)),
                 Span::styled(" reset  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightCyan)),
-                Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("c", Style::default().fg(Color::LightCyan)),
+                Span::styled(" clear  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" quit", Style::default().fg(Color::DarkGray)),
             ]
