@@ -1019,8 +1019,10 @@ impl App {
     }
 
     fn handle_notes_editing(&mut self, event: Event) -> Result<bool> {
-        // Max width for auto-wrapping (notes panel is ~40% of screen, minus borders)
-        const WRAP_WIDTH: usize = 45;
+        // Calculate wrap width dynamically: notes panel is 40% of screen width, minus borders
+        let wrap_width = crossterm::terminal::size()
+            .map(|(w, _)| ((w as f32 * 0.40) as usize).saturating_sub(4))
+            .unwrap_or(40);
 
         if let Event::Key(key) = event {
             match key.code {
@@ -1033,7 +1035,7 @@ impl App {
                     let input = Input::from(event.clone());
                     self.notes_editor.input(input);
                     // Auto-wrap long lines
-                    Self::auto_wrap_editor(&mut self.notes_editor, WRAP_WIDTH);
+                    Self::auto_wrap_editor(&mut self.notes_editor, wrap_width);
                 }
             }
         }
@@ -1041,8 +1043,10 @@ impl App {
     }
 
     fn handle_feedback_event(&mut self, event: Event) -> Result<bool> {
-        // Max width for auto-wrapping (modal is ~70% of screen, minus borders)
-        const WRAP_WIDTH: usize = 65;
+        // Calculate wrap width dynamically: feedback modal is 70% of screen width, minus borders
+        let wrap_width = crossterm::terminal::size()
+            .map(|(w, _)| ((w as f32 * 0.70) as usize).saturating_sub(6))
+            .unwrap_or(70);
 
         if let Event::Key(key) = event {
             // Check for Ctrl+S to submit
@@ -1061,7 +1065,7 @@ impl App {
                     let input = Input::from(event.clone());
                     self.feedback_editor.input(input);
                     // Auto-wrap long lines
-                    Self::auto_wrap_editor(&mut self.feedback_editor, WRAP_WIDTH);
+                    Self::auto_wrap_editor(&mut self.feedback_editor, wrap_width);
                 }
             }
         }
@@ -1193,8 +1197,10 @@ impl App {
                     }
                 }
                 WizardStep::EnterDescription => {
-                    // Max width for auto-wrapping (wizard is ~80% of screen, minus borders)
-                    const WRAP_WIDTH: usize = 72;
+                    // Calculate wrap width dynamically: wizard is 80% of screen width, minus borders
+                    let wrap_width = crossterm::terminal::size()
+                        .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
+                        .unwrap_or(70);
 
                     // Check for Ctrl+S to submit
                     if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1212,7 +1218,7 @@ impl App {
                             let input = Input::from(event.clone());
                             wizard.description_editor.input(input);
                             // Auto-wrap long lines
-                            Self::auto_wrap_editor(&mut wizard.description_editor, WRAP_WIDTH);
+                            Self::auto_wrap_editor(&mut wizard.description_editor, wrap_width);
                         }
                     }
                 }
