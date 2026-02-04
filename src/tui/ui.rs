@@ -67,23 +67,43 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
 
-    // Render header - columns: icon(1) + space(2) + task(28) + status(12) + agent(14) + updated
+    // Calculate dynamic task column width
+    // Fixed columns: icon(1) + spaces(3) + status(12) + agent(14) + updated(~10) + padding = ~44
+    const FIXED_COLS_WIDTH: u16 = 44;
+    const MIN_TASK_WIDTH: usize = 15;
+    const STATUS_WIDTH: usize = 12;
+    const AGENT_WIDTH: usize = 14;
+
+    let available_width = inner.width.saturating_sub(FIXED_COLS_WIDTH) as usize;
+
+    // Find the longest task ID
+    let max_task_len = app
+        .tasks
+        .iter()
+        .map(|t| t.meta.task_id().len())
+        .max()
+        .unwrap_or(MIN_TASK_WIDTH);
+
+    // Task column width: use max task length, but cap it to available space
+    let task_width = max_task_len.max(MIN_TASK_WIDTH).min(available_width.max(MIN_TASK_WIDTH));
+
+    // Render header - columns: icon(1) + space(2) + task(dynamic) + status(12) + agent(14) + updated
     let header = Line::from(vec![
         Span::raw("    "),
         Span::styled(
-            format!("{:<28}", "TASK"),
+            format!("{:<width$}", "TASK", width = task_width),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("{:<12}", "STATUS"),
+            format!("{:<width$}", "STATUS", width = STATUS_WIDTH),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("{:<14}", "AGENT"),
+            format!("{:<width$}", "AGENT", width = AGENT_WIDTH),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -151,6 +171,13 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         let task_id = task.meta.task_id();
         let status_str = format!("{}", task.meta.status);
 
+        // Truncate task_id if needed, with ellipsis
+        let display_task_id = if task_id.len() > task_width {
+            format!("{}…", &task_id[..task_width.saturating_sub(1)])
+        } else {
+            task_id.clone()
+        };
+
         // Dim completed tasks
         let text_color = if is_active {
             if task_index == app.selected_index {
@@ -167,7 +194,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(status_icon, Style::default().fg(status_color)),
             Span::raw("  "),
             Span::styled(
-                format!("{:<28}", task_id),
+                format!("{:<width$}", display_task_id, width = task_width),
                 if task_index == app.selected_index {
                     Style::default()
                         .fg(Color::White)
@@ -177,11 +204,11 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 },
             ),
             Span::styled(
-                format!("{:<12}", status_str),
+                format!("{:<width$}", status_str, width = STATUS_WIDTH),
                 Style::default().fg(status_color),
             ),
             Span::styled(
-                format!("{:<14}", agent_str),
+                format!("{:<width$}", agent_str, width = AGENT_WIDTH),
                 if is_active {
                     Style::default().fg(Color::LightBlue)
                 } else {
