@@ -68,11 +68,12 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .split(inner);
 
     // Calculate dynamic task column width
-    // Fixed columns: icon(1) + spaces(3) + status(12) + agent(14) + updated(~10) + padding = ~44
-    const FIXED_COLS_WIDTH: u16 = 44;
+    // Fixed columns: icon(1) + spaces(3) + status(10) + agent(12) + updated(~10) + gaps(9) = ~45
+    const FIXED_COLS_WIDTH: u16 = 48;
     const MIN_TASK_WIDTH: usize = 15;
-    const STATUS_WIDTH: usize = 12;
-    const AGENT_WIDTH: usize = 14;
+    const STATUS_WIDTH: usize = 10;
+    const AGENT_WIDTH: usize = 12;
+    const COL_GAP: &str = "   "; // 3 spaces between columns
 
     let available_width = inner.width.saturating_sub(FIXED_COLS_WIDTH) as usize;
 
@@ -87,7 +88,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     // Task column width: use max task length, but cap it to available space
     let task_width = max_task_len.max(MIN_TASK_WIDTH).min(available_width.max(MIN_TASK_WIDTH));
 
-    // Render header - columns: icon(1) + space(2) + task(dynamic) + status(12) + agent(14) + updated
+    // Render header - columns: icon(1) + space(2) + task(dynamic) + gap + status + gap + agent + gap + updated
     let header = Line::from(vec![
         Span::raw("    "),
         Span::styled(
@@ -96,18 +97,21 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw(COL_GAP),
         Span::styled(
             format!("{:<width$}", "STATUS", width = STATUS_WIDTH),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw(COL_GAP),
         Span::styled(
             format!("{:<width$}", "AGENT", width = AGENT_WIDTH),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::raw(COL_GAP),
         Span::styled(
             "UPDATED",
             Style::default()
@@ -203,10 +207,12 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(text_color)
                 },
             ),
+            Span::raw(COL_GAP),
             Span::styled(
                 format!("{:<width$}", status_str, width = STATUS_WIDTH),
                 Style::default().fg(status_color),
             ),
+            Span::raw(COL_GAP),
             Span::styled(
                 format!("{:<width$}", agent_str, width = AGENT_WIDTH),
                 if is_active {
@@ -215,6 +221,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(Color::Rgb(80, 80, 80))
                 },
             ),
+            Span::raw(COL_GAP),
             Span::styled(
                 task.time_since_update(),
                 Style::default().fg(Color::DarkGray),
