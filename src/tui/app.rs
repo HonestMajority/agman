@@ -1054,64 +1054,77 @@ impl App {
 }
 
 pub fn run_tui(config: Config) -> Result<()> {
-    // Setup terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    // Create app
+    // Create app once (persists across attach/return cycles)
     let mut app = App::new(config)?;
 
-    // Main loop
-    let mut attach_session: Option<String> = None;
-    let mut last_refresh = Instant::now();
-    let refresh_interval = Duration::from_secs(3);
-
     loop {
-        terminal.draw(|f| ui::draw(f, &mut app))?;
+        // Setup terminal
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
 
-        if event::poll(Duration::from_millis(250))? {
-            let event = event::read()?;
-            let should_attach = app.handle_event(event)?;
+        // Reset view state when returning from attach
+        app.view = View::TaskList;
+        app.should_quit = false;
+        let _ = app.refresh_tasks();
 
-            if should_attach {
-                if let Some(task) = app.selected_task() {
-                    attach_session = Some(task.meta.tmux_session.clone());
+        // Main loop
+        let mut attach_session: Option<String> = None;
+        let mut last_refresh = Instant::now();
+        let refresh_interval = Duration::from_secs(3);
+
+        loop {
+            terminal.draw(|f| ui::draw(f, &mut app))?;
+
+            if event::poll(Duration::from_millis(250))? {
+                let event = event::read()?;
+                let should_attach = app.handle_event(event)?;
+
+                if should_attach {
+                    if let Some(task) = app.selected_task() {
+                        attach_session = Some(task.meta.tmux_session.clone());
+                    }
+                    break;
                 }
-                break;
+
+                if app.should_quit {
+                    break;
+                }
             }
 
-            if app.should_quit {
-                break;
+            // Periodic refresh of task list (every 3 seconds, only in TaskList view)
+            if last_refresh.elapsed() >= refresh_interval {
+                if app.view == View::TaskList {
+                    let _ = app.refresh_tasks();
+                }
+                last_refresh = Instant::now();
             }
+
+            // Clear old status messages
+            app.clear_old_status();
         }
 
-        // Periodic refresh of task list (every 3 seconds, only in TaskList view)
-        if last_refresh.elapsed() >= refresh_interval {
-            if app.view == View::TaskList {
-                let _ = app.refresh_tasks();
-            }
-            last_refresh = Instant::now();
+        // Restore terminal
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        // If user requested quit, exit the outer loop
+        if app.should_quit {
+            break;
         }
 
-        // Clear old status messages
-        app.clear_old_status();
-    }
-
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    // Attach to tmux if requested
-    if let Some(session) = attach_session {
-        Tmux::attach_session(&session)?;
+        // Attach to tmux if requested, then loop back to restart TUI
+        if let Some(session) = attach_session {
+            Tmux::attach_session(&session)?;
+            // After detaching or switching back, the loop continues and TUI restarts
+        }
     }
 
     Ok(())
