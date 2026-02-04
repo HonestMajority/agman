@@ -5,10 +5,11 @@
   
 
 
-
+- I should create a workflow for working on agman with agman. e.g. merge to main and then delete the task?
 
 
   ## Problems
 
   - agman does not seem to work to edit agman...
+  - we should only show the actions which are relevant for a task. e.g. start should not show for a task which is running
 
