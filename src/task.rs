@@ -25,6 +25,13 @@ impl std::fmt::Display for TaskStatus {
     }
 }
 
+impl TaskStatus {
+    /// Returns true if this status represents an active (non-completed) task
+    pub fn is_active(&self) -> bool {
+        matches!(self, TaskStatus::Working | TaskStatus::Paused)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMeta {
     pub repo_name: String,
@@ -165,8 +172,18 @@ impl Task {
             }
         }
 
-        // Sort by updated_at descending
-        tasks.sort_by(|a, b| b.meta.updated_at.cmp(&a.meta.updated_at));
+        // Sort by: active tasks first, then by updated_at descending within each group
+        tasks.sort_by(|a, b| {
+            let a_active = a.meta.status.is_active();
+            let b_active = b.meta.status.is_active();
+            // Active tasks come first
+            match (a_active, b_active) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                // Within the same group, sort by updated_at descending
+                _ => b.meta.updated_at.cmp(&a.meta.updated_at),
+            }
+        });
 
         Ok(tasks)
     }

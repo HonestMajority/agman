@@ -37,6 +37,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
+    // Count active and completed tasks
+    let active_count = app.tasks.iter().filter(|t| t.meta.status.is_active()).count();
+    let completed_count = app.tasks.len() - active_count;
+
     // Create the outer block first
     let block = Block::default()
         .title(Line::from(vec![
@@ -93,59 +97,112 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(header), chunks[0]);
 
-    // Render task list
-    let items: Vec<ListItem> = app
-        .tasks
-        .iter()
-        .enumerate()
-        .map(|(i, task)| {
-            let (status_icon, status_color) = match task.meta.status {
-                TaskStatus::Working => ("●", Color::LightGreen),
-                TaskStatus::Paused => ("◐", Color::Yellow),
-                TaskStatus::Done => ("✓", Color::LightCyan),
-                TaskStatus::Failed => ("✗", Color::LightRed),
-            };
+    // Build task list with section headers
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut task_index = 0; // Tracks actual task index (not including headers)
+    let mut shown_active_header = false;
+    let mut shown_completed_header = false;
 
-            let agent_str = task.meta.current_agent.as_deref().unwrap_or("-");
-            let task_id = task.meta.task_id();
+    for task in &app.tasks {
+        let is_active = task.meta.status.is_active();
 
-            // Format each column with explicit spacing
-            let status_str = format!("{}", task.meta.status);
-
-            let line = Line::from(vec![
-                Span::raw(" "),
-                Span::styled(status_icon, Style::default().fg(status_color)),
-                Span::raw("  "),
+        // Add section header if needed
+        if is_active && !shown_active_header && active_count > 0 {
+            let header_line = Line::from(vec![
                 Span::styled(
-                    format!("{:<28}", task_id),
-                    if i == app.selected_index {
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Gray)
-                    },
+                    format!("── Active ({}) ", active_count),
+                    Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{:<12}", status_str),
-                    Style::default().fg(status_color),
+                    "─".repeat(50),
+                    Style::default().fg(Color::Rgb(60, 60, 60)),
                 ),
-                Span::styled(
-                    format!("{:<14}", agent_str),
-                    Style::default().fg(Color::LightBlue),
-                ),
-                Span::styled(task.time_since_update(), Style::default().fg(Color::DarkGray)),
             ]);
+            items.push(ListItem::new(header_line));
+            shown_active_header = true;
+        } else if !is_active && !shown_completed_header && completed_count > 0 {
+            // Add spacing before completed section if there were active tasks
+            if shown_active_header {
+                items.push(ListItem::new(Line::from("")));
+            }
+            let header_line = Line::from(vec![
+                Span::styled(
+                    format!("── Completed ({}) ", completed_count),
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "─".repeat(46),
+                    Style::default().fg(Color::Rgb(40, 40, 40)),
+                ),
+            ]);
+            items.push(ListItem::new(header_line));
+            shown_completed_header = true;
+        }
 
-            let style = if i == app.selected_index {
-                Style::default().bg(Color::Rgb(40, 40, 50))
+        // Render the task
+        let (status_icon, status_color) = match task.meta.status {
+            TaskStatus::Working => ("●", Color::LightGreen),
+            TaskStatus::Paused => ("◐", Color::Yellow),
+            TaskStatus::Done => ("✓", Color::Rgb(80, 80, 80)),
+            TaskStatus::Failed => ("✗", Color::LightRed),
+        };
+
+        let agent_str = task.meta.current_agent.as_deref().unwrap_or("-");
+        let task_id = task.meta.task_id();
+        let status_str = format!("{}", task.meta.status);
+
+        // Dim completed tasks
+        let text_color = if is_active {
+            if task_index == app.selected_index {
+                Color::White
             } else {
-                Style::default()
-            };
+                Color::Gray
+            }
+        } else {
+            Color::Rgb(100, 100, 100)
+        };
 
-            ListItem::new(line).style(style)
-        })
-        .collect();
+        let line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled(status_icon, Style::default().fg(status_color)),
+            Span::raw("  "),
+            Span::styled(
+                format!("{:<28}", task_id),
+                if task_index == app.selected_index {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(text_color)
+                },
+            ),
+            Span::styled(
+                format!("{:<12}", status_str),
+                Style::default().fg(status_color),
+            ),
+            Span::styled(
+                format!("{:<14}", agent_str),
+                if is_active {
+                    Style::default().fg(Color::LightBlue)
+                } else {
+                    Style::default().fg(Color::Rgb(80, 80, 80))
+                },
+            ),
+            Span::styled(
+                task.time_since_update(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+
+        let style = if task_index == app.selected_index {
+            Style::default().bg(Color::Rgb(40, 40, 50))
+        } else {
+            Style::default()
+        };
+
+        items.push(ListItem::new(line).style(style));
+        task_index += 1;
+    }
 
     let list = List::new(items);
     f.render_widget(list, chunks[1]);
