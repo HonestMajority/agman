@@ -326,14 +326,19 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(header, chunks[0]);
     }
 
-    // Split the remaining area into logs and notes panels
+    // Split the remaining area into logs, notes, and task file panels (40/30/30)
     let panels = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+        ])
         .split(chunks[1]);
 
     draw_logs_panel(f, app, panels[0]);
     draw_notes_panel(f, app, panels[1]);
+    draw_task_file_panel(f, app, panels[2]);
 }
 
 fn draw_logs_panel(f: &mut Frame, app: &App, area: Rect) {
@@ -377,7 +382,7 @@ fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let title = if app.notes_editing {
         " Notes [EDITING] "
     } else if is_focused {
-        " Notes (i: edit, Enter: edit) "
+        " Notes (i: edit) "
     } else {
         " Notes "
     };
@@ -415,6 +420,58 @@ fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
             .scroll((app.notes_scroll, 0));
 
         f.render_widget(notes, area);
+    }
+}
+
+fn draw_task_file_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    let is_focused = app.preview_pane == PreviewPane::TaskFile;
+    let border_color = if is_focused {
+        Color::LightMagenta
+    } else {
+        Color::DarkGray
+    };
+
+    let title = if app.task_file_editing {
+        " TASK.md [EDITING] "
+    } else if is_focused {
+        " TASK.md (i: edit) "
+    } else {
+        " TASK.md "
+    };
+
+    let title_style = if is_focused {
+        Style::default()
+            .fg(Color::LightMagenta)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    if app.task_file_editing {
+        // Show the editor
+        app.task_file_editor.set_block(
+            Block::default()
+                .title(Span::styled(title, title_style))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::LightMagenta)),
+        );
+        app.task_file_editor
+            .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+        f.render_widget(&app.task_file_editor, area);
+    } else {
+        // Show read-only task file content
+        let task_file = Paragraph::new(app.task_file_content.as_str())
+            .block(
+                Block::default()
+                    .title(Span::styled(title, title_style))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border_color)),
+            )
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: false })
+            .scroll((app.task_file_scroll, 0));
+
+        f.render_widget(task_file, area);
     }
 }
 
@@ -574,7 +631,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             ]
         }
         View::Preview => {
-            if app.notes_editing {
+            if app.notes_editing || app.task_file_editing {
                 vec![
                     Span::styled("Esc", Style::default().fg(Color::LightGreen)),
                     Span::styled(" save & exit editing", Style::default().fg(Color::DarkGray)),
@@ -585,12 +642,12 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" pane  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                     Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("x", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("t", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("f", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("i", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(" edit  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Enter", Style::default().fg(Color::LightCyan)),
                     Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("q", Style::default().fg(Color::LightCyan)),

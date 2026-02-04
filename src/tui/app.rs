@@ -60,6 +60,7 @@ pub struct NewTaskWizard {
 pub enum PreviewPane {
     Logs,
     Notes,
+    TaskFile,
 }
 
 pub struct App {
@@ -80,6 +81,11 @@ pub struct App {
     pub wizard: Option<NewTaskWizard>,
     pub output_log: Vec<String>,
     pub output_scroll: u16,
+    // Task file (TASK.md) viewing/editing
+    pub task_file_content: String,
+    pub task_file_scroll: u16,
+    pub task_file_editor: TextArea<'static>,
+    pub task_file_editing: bool,
     // Stored commands
     pub commands: Vec<StoredCommand>,
     pub selected_command_index: usize,
@@ -91,6 +97,7 @@ impl App {
         let commands = StoredCommand::list_all(&config.commands_dir).unwrap_or_default();
         let notes_editor = Self::create_editor();
         let feedback_editor = Self::create_editor();
+        let task_file_editor = Self::create_editor();
 
         Ok(Self {
             config,
@@ -110,6 +117,10 @@ impl App {
             wizard: None,
             output_log: Vec::new(),
             output_scroll: 0,
+            task_file_content: String::new(),
+            task_file_scroll: 0,
+            task_file_editor,
+            task_file_editing: false,
             commands,
             selected_command_index: 0,
         })
@@ -234,12 +245,13 @@ impl App {
     }
 
     fn load_preview(&mut self) {
-        let (preview_content, notes_content) = if let Some(task) = self.selected_task() {
+        let (preview_content, notes_content, task_file_content) = if let Some(task) = self.selected_task() {
             let preview = task
                 .read_agent_log_tail(100)
                 .unwrap_or_else(|_| "No agent log available".to_string());
             let notes = task.read_notes().unwrap_or_default();
-            (preview, notes)
+            let task_file = task.read_task().unwrap_or_else(|_| "No TASK.md available".to_string());
+            (preview, notes, task_file)
         } else {
             return;
         };
@@ -259,6 +271,14 @@ impl App {
         self.notes_editor.move_cursor(CursorMove::Bottom);
         self.notes_editor.move_cursor(CursorMove::End);
         self.notes_editing = false;
+
+        // Setup task file content and editor
+        self.task_file_content = task_file_content.clone();
+        self.task_file_scroll = 0;
+        self.task_file_editor = TextArea::from(task_file_content.lines());
+        self.task_file_editor
+            .set_cursor_line_style(ratatui::style::Style::default());
+        self.task_file_editing = false;
     }
 
     fn save_notes(&mut self) -> Result<()> {
@@ -267,6 +287,16 @@ impl App {
             task.write_notes(&notes)?;
             self.notes_content = notes;
             self.set_status("Notes saved".to_string());
+        }
+        Ok(())
+    }
+
+    fn save_task_file(&mut self) -> Result<()> {
+        if let Some(task) = self.selected_task() {
+            let content = self.task_file_editor.lines().join("\n");
+            task.write_task(&content)?;
+            self.task_file_content = content;
+            self.set_status("TASK.md saved".to_string());
         }
         Ok(())
     }
@@ -895,6 +925,11 @@ impl App {
             return self.handle_notes_editing(event);
         }
 
+        // If editing task file, handle vim-style input
+        if self.task_file_editing {
+            return self.handle_task_file_editing(event);
+        }
+
         if let Event::Key(key) = event {
             // Ctrl+C to quit
             if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -904,11 +939,12 @@ impl App {
                 }
             }
 
-            // Tab to switch panes
+            // Tab to switch panes (Logs -> Notes -> TaskFile -> Logs)
             if key.code == KeyCode::Tab {
                 self.preview_pane = match self.preview_pane {
                     PreviewPane::Logs => PreviewPane::Notes,
-                    PreviewPane::Notes => PreviewPane::Logs,
+                    PreviewPane::Notes => PreviewPane::TaskFile,
+                    PreviewPane::TaskFile => PreviewPane::Logs,
                 };
                 return Ok(false);
             }
@@ -916,8 +952,9 @@ impl App {
             // BackTab (Shift+Tab) to switch panes in reverse
             if key.code == KeyCode::BackTab {
                 self.preview_pane = match self.preview_pane {
-                    PreviewPane::Logs => PreviewPane::Notes,
+                    PreviewPane::Logs => PreviewPane::TaskFile,
                     PreviewPane::Notes => PreviewPane::Logs,
+                    PreviewPane::TaskFile => PreviewPane::Notes,
                 };
                 return Ok(false);
             }
@@ -933,6 +970,9 @@ impl App {
                             PreviewPane::Notes => {
                                 self.notes_scroll = self.notes_scroll.saturating_add(3);
                             }
+                            PreviewPane::TaskFile => {
+                                self.task_file_scroll = self.task_file_scroll.saturating_add(3);
+                            }
                         }
                         return Ok(false);
                     }
@@ -943,6 +983,9 @@ impl App {
                             }
                             PreviewPane::Notes => {
                                 self.notes_scroll = self.notes_scroll.saturating_sub(3);
+                            }
+                            PreviewPane::TaskFile => {
+                                self.task_file_scroll = self.task_file_scroll.saturating_sub(3);
                             }
                         }
                         return Ok(false);
@@ -956,7 +999,7 @@ impl App {
                     self.view = View::TaskList;
                 }
                 KeyCode::Enter => {
-                    // In Notes pane, Enter starts editing; in Logs, attaches tmux
+                    // In Notes/TaskFile pane, Enter starts editing; in Logs, attaches tmux
                     match self.preview_pane {
                         PreviewPane::Logs => {
                             if let Some(task) = self.selected_task() {
@@ -969,14 +1012,29 @@ impl App {
                             self.notes_editing = true;
                             self.set_status("Editing notes (Esc to save & exit)".to_string());
                         }
+                        PreviewPane::TaskFile => {
+                            self.task_file_editing = true;
+                            self.set_status("Editing TASK.md (Esc to save & exit)".to_string());
+                        }
                     }
                 }
                 KeyCode::Char('i') => {
-                    // Enter edit mode for notes
-                    if self.preview_pane == PreviewPane::Notes {
-                        self.notes_editing = true;
-                        self.set_status("Editing notes (Esc to save & exit)".to_string());
+                    // Enter edit mode for notes or task file
+                    match self.preview_pane {
+                        PreviewPane::Notes => {
+                            self.notes_editing = true;
+                            self.set_status("Editing notes (Esc to save & exit)".to_string());
+                        }
+                        PreviewPane::TaskFile => {
+                            self.task_file_editing = true;
+                            self.set_status("Editing TASK.md (Esc to save & exit)".to_string());
+                        }
+                        PreviewPane::Logs => {}
                     }
+                }
+                KeyCode::Char('t') => {
+                    // Switch to TaskFile pane directly
+                    self.preview_pane = PreviewPane::TaskFile;
                 }
                 KeyCode::Char('f') => {
                     // Give feedback
@@ -994,6 +1052,9 @@ impl App {
                         PreviewPane::Notes => {
                             self.notes_scroll = self.notes_scroll.saturating_add(1);
                         }
+                        PreviewPane::TaskFile => {
+                            self.task_file_scroll = self.task_file_scroll.saturating_add(1);
+                        }
                     }
                 }
                 KeyCode::Char('k') => {
@@ -1003,6 +1064,9 @@ impl App {
                         }
                         PreviewPane::Notes => {
                             self.notes_scroll = self.notes_scroll.saturating_sub(1);
+                        }
+                        PreviewPane::TaskFile => {
+                            self.task_file_scroll = self.task_file_scroll.saturating_sub(1);
                         }
                     }
                 }
@@ -1018,6 +1082,9 @@ impl App {
                         PreviewPane::Notes => {
                             self.notes_scroll = u16::MAX / 2;
                         }
+                        PreviewPane::TaskFile => {
+                            self.task_file_scroll = u16::MAX / 2;
+                        }
                     }
                 }
                 KeyCode::Char('g') => {
@@ -1028,6 +1095,9 @@ impl App {
                         }
                         PreviewPane::Notes => {
                             self.notes_scroll = 0;
+                        }
+                        PreviewPane::TaskFile => {
+                            self.task_file_scroll = 0;
                         }
                     }
                 }
@@ -1040,6 +1110,9 @@ impl App {
                         PreviewPane::Notes => {
                             self.notes_scroll = self.notes_scroll.saturating_add(15);
                         }
+                        PreviewPane::TaskFile => {
+                            self.task_file_scroll = self.task_file_scroll.saturating_add(15);
+                        }
                     }
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1051,6 +1124,9 @@ impl App {
                         PreviewPane::Notes => {
                             self.notes_scroll = self.notes_scroll.saturating_sub(15);
                         }
+                        PreviewPane::TaskFile => {
+                            self.task_file_scroll = self.task_file_scroll.saturating_sub(15);
+                        }
                     }
                 }
                 _ => {}
@@ -1060,10 +1136,10 @@ impl App {
     }
 
     fn handle_notes_editing(&mut self, event: Event) -> Result<bool> {
-        // Calculate wrap width dynamically: notes panel is 40% of screen width, minus borders
+        // Calculate wrap width dynamically: notes panel is 30% of screen width, minus borders
         let wrap_width = crossterm::terminal::size()
-            .map(|(w, _)| ((w as f32 * 0.40) as usize).saturating_sub(4))
-            .unwrap_or(40);
+            .map(|(w, _)| ((w as f32 * 0.30) as usize).saturating_sub(4))
+            .unwrap_or(30);
 
         if let Event::Key(key) = event {
             match key.code {
@@ -1077,6 +1153,30 @@ impl App {
                     self.notes_editor.input(input);
                     // Auto-wrap long lines
                     Self::auto_wrap_editor(&mut self.notes_editor, wrap_width);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_task_file_editing(&mut self, event: Event) -> Result<bool> {
+        // Calculate wrap width dynamically: task file panel is 30% of screen width, minus borders
+        let wrap_width = crossterm::terminal::size()
+            .map(|(w, _)| ((w as f32 * 0.30) as usize).saturating_sub(4))
+            .unwrap_or(30);
+
+        if let Event::Key(key) = event {
+            match key.code {
+                KeyCode::Esc => {
+                    self.task_file_editing = false;
+                    self.save_task_file()?;
+                }
+                _ => {
+                    // Convert crossterm event to tui-textarea Input
+                    let input = Input::from(event.clone());
+                    self.task_file_editor.input(input);
+                    // Auto-wrap long lines
+                    Self::auto_wrap_editor(&mut self.task_file_editor, wrap_width);
                 }
             }
         }
