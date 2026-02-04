@@ -59,8 +59,6 @@ fn main() -> Result<()> {
 
         Some(Commands::FlowRun { task_id }) => cmd_flow_run(&config, &task_id),
 
-        Some(Commands::Start { task_id }) => cmd_start(&config, &task_id),
-
         Some(Commands::Attach { task_id }) => cmd_attach(&config, &task_id),
 
         Some(Commands::Init) => cmd_init(&config),
@@ -70,8 +68,6 @@ fn main() -> Result<()> {
             feedback,
             flow,
         }) => cmd_continue(&config, &task_id, feedback.as_deref(), &flow),
-
-        Some(Commands::Reset { task_id }) => cmd_reset(&config, &task_id),
 
         Some(Commands::RunCommand { task_id, command_id }) => {
             cmd_run_command(&config, &task_id, &command_id)
@@ -302,52 +298,6 @@ fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_start(config: &Config, task_id: &str) -> Result<()> {
-    let mut task = Task::load_by_id(config, task_id)?;
-
-    if task.meta.status == TaskStatus::Running {
-        println!("Task '{}' is already running.", task.meta.task_id());
-        return Ok(());
-    }
-
-    task.update_status(TaskStatus::Running)?;
-
-    // Ensure tmux session exists
-    if !Tmux::session_exists(&task.meta.tmux_session) {
-        println!("Recreating tmux session...");
-        Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
-    }
-
-    // Start the flow by running the current agent
-    let flow = Flow::load(&config.flow_path(&task.meta.flow_name))?;
-
-    if let Some(step) = flow.get_step(task.meta.flow_step) {
-        let agent_name = match step {
-            flow::FlowStep::Agent(a) => a.agent.clone(),
-            flow::FlowStep::Loop(l) => l.steps.first().map(|s| s.agent.clone()).unwrap_or_default(),
-        };
-
-        if !agent_name.is_empty() {
-            let runner = agent::AgentRunner::new(config.clone());
-            runner.run_agent_in_tmux(&mut task, &agent_name)?;
-            println!(
-                "Task '{}' started with agent '{}'.",
-                task.meta.task_id(),
-                agent_name
-            );
-        } else {
-            println!("Task '{}' started.", task.meta.task_id());
-        }
-    } else {
-        println!(
-            "Task '{}' started (no more flow steps).",
-            task.meta.task_id()
-        );
-    }
-
-    Ok(())
-}
-
 fn cmd_attach(config: &Config, task_id: &str) -> Result<()> {
     let task = Task::load_by_id(config, task_id)?;
 
@@ -444,26 +394,6 @@ fn cmd_init(config: &Config) -> Result<()> {
     println!();
     println!("Use 'x' in the TUI or 'agman run-command' to run stored commands.");
     println!("You can customize these files to fit your workflow.");
-
-    Ok(())
-}
-
-fn cmd_reset(config: &Config, task_id: &str) -> Result<()> {
-    let mut task = Task::load_by_id(config, task_id)?;
-
-    // Reset flow state
-    task.meta.flow_step = 0;
-    task.meta.current_agent = None;
-    task.update_status(TaskStatus::Stopped)?;
-
-    println!("Reset task: {}", task.meta.task_id());
-    println!("  Status: stopped");
-    println!("  Flow step: 0");
-    println!("  Current agent: none");
-    println!();
-    println!("You can now:");
-    println!("  agman start {}  - Restart the flow from the beginning", task.meta.task_id());
-    println!("  agman continue {} \"feedback\" - Continue with new instructions", task.meta.task_id());
 
     Ok(())
 }

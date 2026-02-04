@@ -207,11 +207,6 @@ impl App {
         self.output_scroll = self.output_log.len().saturating_sub(5) as u16;
     }
 
-    pub fn clear_output(&mut self) {
-        self.output_log.clear();
-        self.output_scroll = 0;
-    }
-
     pub fn clear_old_status(&mut self) {
         if let Some((_, instant)) = &self.status_message {
             if instant.elapsed() > Duration::from_secs(3) {
@@ -276,88 +271,49 @@ impl App {
         Ok(())
     }
 
-    fn start_task(&mut self) -> Result<()> {
+    fn stop_task(&mut self) -> Result<()> {
         let task_info = self.selected_task().map(|t| {
-            (t.meta.task_id(), t.meta.status == TaskStatus::Stopped)
+            (
+                t.meta.task_id(),
+                t.meta.tmux_session.clone(),
+                t.meta.status == TaskStatus::Running,
+            )
         });
 
-        if let Some((task_id, is_stopped)) = task_info {
-            if !is_stopped {
-                self.set_status(format!("Task already running: {}", task_id));
+        if let Some((task_id, tmux_session, is_running)) = task_info {
+            if !is_running {
+                self.set_status(format!("Task already stopped: {}", task_id));
                 return Ok(());
             }
 
-            self.log_output(format!("Starting task {}...", task_id));
+            self.log_output(format!("Stopping task {}...", task_id));
 
-            // Run agman start - capture output to avoid corrupting TUI
-            let output = Command::new("agman")
-                .args(["start", &task_id])
-                .output();
-
-            match output {
-                Ok(o) if o.status.success() => {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    if !stdout.is_empty() {
-                        for line in stdout.lines() {
-                            self.log_output(line.to_string());
-                        }
+            // Send Ctrl+C to the agman window to interrupt any running process
+            if Tmux::session_exists(&tmux_session) {
+                match Tmux::send_ctrl_c_to_window(&tmux_session, "agman") {
+                    Ok(_) => {
+                        self.log_output("  Sent interrupt signal to agman window".to_string());
                     }
-                    self.refresh_tasks()?;
-                    self.set_status(format!("Started: {}", task_id));
-                }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    self.log_output(format!("Failed to start: {}", stderr));
-                    self.set_status("Failed to start task".to_string());
-                }
-                Err(e) => {
-                    self.log_output(format!("Error: {}", e));
-                    self.set_status(format!("Error: {}", e));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn reset_task(&mut self) -> Result<()> {
-        let task_info = self.selected_task().map(|t| {
-            (t.meta.task_id(), t.meta.status == TaskStatus::Stopped)
-        });
-
-        if let Some((task_id, is_stopped)) = task_info {
-            if !is_stopped {
-                self.set_status(format!("Can only reset stopped tasks: {}", task_id));
-                return Ok(());
-            }
-
-            self.log_output(format!("Resetting task {}...", task_id));
-
-            // Run agman reset - capture output to avoid corrupting TUI
-            let output = Command::new("agman")
-                .args(["reset", &task_id])
-                .output();
-
-            match output {
-                Ok(o) if o.status.success() => {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    if !stdout.is_empty() {
-                        for line in stdout.lines() {
-                            self.log_output(line.to_string());
-                        }
+                    Err(e) => {
+                        self.log_output(format!("  Warning: Could not interrupt agman window: {}", e));
                     }
-                    self.refresh_tasks()?;
-                    self.set_status(format!("Reset: {}", task_id));
-                }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    self.log_output(format!("Failed to reset: {}", stderr));
-                    self.set_status("Failed to reset task".to_string());
-                }
-                Err(e) => {
-                    self.log_output(format!("Error: {}", e));
-                    self.set_status(format!("Error: {}", e));
                 }
             }
+
+            // Update task status to Stopped
+            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                if let Err(e) = task.update_status(TaskStatus::Stopped) {
+                    self.log_output(format!("  Error updating status: {}", e));
+                    self.set_status(format!("Error: {}", e));
+                    return Ok(());
+                }
+                task.meta.current_agent = None;
+                if let Err(e) = task.save_meta() {
+                    self.log_output(format!("  Error saving meta: {}", e));
+                }
+            }
+
+            self.set_status(format!("Stopped: {}", task_id));
         }
         Ok(())
     }
@@ -891,11 +847,8 @@ impl App {
                     self.preview_pane = PreviewPane::Logs;
                     self.view = View::Preview;
                 }
-                KeyCode::Char('s') => {
-                    self.start_task()?;
-                }
-                KeyCode::Char('r') => {
-                    self.reset_task()?;
+                KeyCode::Char('S') => {
+                    self.stop_task()?;
                 }
                 KeyCode::Char('d') => {
                     if !self.tasks.is_empty() {
@@ -925,10 +878,6 @@ impl App {
                 KeyCode::Char('n') => {
                     // Start new task wizard
                     self.start_wizard()?;
-                }
-                KeyCode::Char('c') => {
-                    // Clear output log
-                    self.clear_output();
                 }
                 KeyCode::Char('x') => {
                     // Open command list

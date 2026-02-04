@@ -173,6 +173,24 @@ impl Tmux {
         Ok(())
     }
 
+    /// Send Ctrl+C to a specific window to interrupt any running process
+    pub fn send_ctrl_c_to_window(session_name: &str, window_name: &str) -> Result<()> {
+        let target = format!("{}:{}", session_name, window_name);
+        let output = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "C-c"])
+            .output()
+            .context("Failed to send Ctrl+C to tmux window")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to send Ctrl+C: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
     /// Send keys to the default pane in a session
     #[allow(dead_code)]
     pub fn send_keys(session_name: &str, keys: &str) -> Result<()> {

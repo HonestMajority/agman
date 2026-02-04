@@ -55,12 +55,6 @@ pub enum Commands {
         task_id: String,
     },
 
-    /// Start a stopped task (resume flow execution)
-    Start {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-    },
-
     /// Attach to a task's tmux session
     Attach {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
@@ -80,12 +74,6 @@ pub enum Commands {
         /// Flow to use (default: "continue")
         #[arg(long, default_value = "continue")]
         flow: String,
-    },
-
-    /// Reset a task (clears flow state, sets to stopped)
-    Reset {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
     },
 
     /// Run a stored command on a task
