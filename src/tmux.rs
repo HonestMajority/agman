@@ -13,11 +13,12 @@ impl Tmux {
             .unwrap_or(false)
     }
 
-    /// Create a new tmux session with multiple windows like tlana:
+    /// Create a new tmux session with multiple windows:
     /// - nvim: starts nvim
     /// - lazygit: starts lazygit
-    /// - agman: starts agman
+    /// - claude: starts claude --dangerously-skip-permissions
     /// - zsh: runs git status
+    /// - agman: shell for agent commands
     pub fn create_session_with_windows(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
             return Ok(());
@@ -53,17 +54,23 @@ impl Tmux {
             .output();
         Self::send_keys_to_window(session_name, "lazygit", "lazygit")?;
 
-        // Create agman window (just a shell, agents will send commands here)
+        // Create claude window
         let _ = Command::new("tmux")
-            .args(["new-window", "-t", session_name, "-n", "agman", "-c", wd])
+            .args(["new-window", "-t", session_name, "-n", "claude", "-c", wd])
             .output();
-        // Don't start agman interactively - agents will send commands to this window
+        Self::send_keys_to_window(session_name, "claude", "claude --dangerously-skip-permissions")?;
 
         // Create zsh window
         let _ = Command::new("tmux")
             .args(["new-window", "-t", session_name, "-n", "zsh", "-c", wd])
             .output();
         Self::send_keys_to_window(session_name, "zsh", "git status && git branch --show-current")?;
+
+        // Create agman window (just a shell, agents will send commands here)
+        let _ = Command::new("tmux")
+            .args(["new-window", "-t", session_name, "-n", "agman", "-c", wd])
+            .output();
+        // Don't start agman interactively - agents will send commands to this window
 
         // Select nvim window as default
         let _ = Command::new("tmux")
