@@ -256,41 +256,20 @@ impl App {
     }
 
     fn submit_feedback(&mut self) -> Result<()> {
-        // Debug logging
-        let log_debug = |msg: &str| {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/agman-debug.log")
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "submit_feedback: {}", msg);
-            }
-        };
-
-        log_debug("entered");
-
         let feedback = self.feedback_editor.lines().join("\n");
-        log_debug(&format!("feedback text: '{}'", feedback.trim()));
-
         if feedback.trim().is_empty() {
-            log_debug("feedback is empty, returning");
             self.set_status("Feedback cannot be empty".to_string());
             self.view = View::Preview;
             return Ok(());
         }
 
         let task_id = if let Some(task) = self.selected_task() {
-            log_debug(&format!("selected task: {}", task.meta.task_id()));
             task.meta.task_id()
         } else {
-            log_debug("no task selected!");
             self.set_status("No task selected".to_string());
             self.view = View::TaskList;
             return Ok(());
         };
-
-        log_debug(&format!("running agman continue for {}", task_id));
 
         // Run agman continue in the background
         let status = Command::new("agman")
@@ -299,16 +278,13 @@ impl App {
 
         match status {
             Ok(s) if s.success() => {
-                log_debug("command succeeded");
                 self.set_status(format!("Feedback submitted, flow started for {}", task_id));
                 self.refresh_tasks()?;
             }
-            Ok(s) => {
-                log_debug(&format!("command failed with status: {:?}", s.code()));
+            Ok(_) => {
                 self.set_status("Failed to start continue flow".to_string());
             }
             Err(e) => {
-                log_debug(&format!("command error: {}", e));
                 self.set_status(format!("Error: {}", e));
             }
         }
@@ -316,7 +292,6 @@ impl App {
         self.feedback_editor = Self::create_editor(); // Clear editor
         self.view = View::Preview;
         self.load_preview();
-        log_debug("done");
         Ok(())
     }
 
@@ -883,26 +858,8 @@ impl App {
 
     fn handle_feedback_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
-            // Debug: log all key events to file
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/agman-debug.log")
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "Feedback key: {:?} modifiers: {:?}", key.code, key.modifiers);
-            }
-
             // Check for Ctrl+S to submit
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("/tmp/agman-debug.log")
-                {
-                    use std::io::Write;
-                    let _ = writeln!(f, "Ctrl+S detected, calling submit_feedback");
-                }
                 self.submit_feedback()?;
                 return Ok(false);
             }

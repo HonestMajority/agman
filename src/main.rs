@@ -72,6 +72,10 @@ fn main() -> Result<()> {
             flow,
         }) => cmd_continue(&config, &task_id, &feedback, &flow),
 
+        Some(Commands::Reset { task_id }) => cmd_reset(&config, &task_id),
+
+        Some(Commands::Done { task_id }) => cmd_done(&config, &task_id),
+
         None => {
             // No subcommand - launch TUI
             config.ensure_dirs()?;
@@ -421,6 +425,38 @@ fn cmd_init(config: &Config) -> Result<()> {
     println!("  reviewer.md");
     println!();
     println!("You can customize these files to fit your workflow.");
+
+    Ok(())
+}
+
+fn cmd_reset(config: &Config, task_id: &str) -> Result<()> {
+    let mut task = Task::load_by_id(config, task_id)?;
+
+    // Reset flow state
+    task.meta.flow_step = 0;
+    task.meta.current_agent = None;
+    task.update_status(TaskStatus::Paused)?;
+
+    println!("Reset task: {}", task.meta.task_id());
+    println!("  Status: paused");
+    println!("  Flow step: 0");
+    println!("  Current agent: none");
+    println!();
+    println!("You can now:");
+    println!("  agman resume {}  - Restart the flow from the beginning", task.meta.task_id());
+    println!("  agman continue {} \"feedback\" - Continue with new instructions", task.meta.task_id());
+    println!("  agman done {}    - Mark as complete", task.meta.task_id());
+
+    Ok(())
+}
+
+fn cmd_done(config: &Config, task_id: &str) -> Result<()> {
+    let mut task = Task::load_by_id(config, task_id)?;
+
+    task.meta.current_agent = None;
+    task.update_status(TaskStatus::Done)?;
+
+    println!("Marked task as done: {}", task.meta.task_id());
 
     Ok(())
 }

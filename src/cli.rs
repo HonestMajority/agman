@@ -86,4 +86,16 @@ pub enum Commands {
         #[arg(long, default_value = "continue")]
         flow: String,
     },
+
+    /// Reset a stuck task (clears flow state, sets to paused)
+    Reset {
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
+    },
+
+    /// Manually mark a task as done
+    Done {
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
+    },
 }
