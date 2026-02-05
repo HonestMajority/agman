@@ -50,7 +50,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_wizard(f, app);
         }
         View::CommandList => {
-            draw_task_list(f, app, chunks[0]);
+            draw_preview(f, app, chunks[0]);
             draw_command_list(f, app);
         }
         View::TaskEditor => {
