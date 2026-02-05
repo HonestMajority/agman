@@ -673,8 +673,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("x", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("l", Style::default().fg(Color::LightCyan)),
-                Span::styled(" preview  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("f", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("S", Style::default().fg(Color::LightRed)),
