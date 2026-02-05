@@ -905,6 +905,7 @@ impl App {
                     // Open command list (go to preview first, like f and t)
                     if !self.tasks.is_empty() {
                         self.load_preview();
+                        self.view = View::Preview;
                         self.open_command_list();
                     }
                 }
@@ -1421,7 +1422,7 @@ impl App {
 
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
-                    self.view = View::TaskList;
+                    self.view = View::Preview;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     if !self.commands.is_empty() {
