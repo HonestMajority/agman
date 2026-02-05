@@ -26,6 +26,7 @@ pub enum View {
     Feedback,
     NewTaskWizard,
     CommandList,
+    TaskEditor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +61,6 @@ pub struct NewTaskWizard {
 pub enum PreviewPane {
     Logs,
     Notes,
-    TaskFile,
 }
 
 pub struct App {
@@ -81,11 +81,9 @@ pub struct App {
     pub wizard: Option<NewTaskWizard>,
     pub output_log: Vec<String>,
     pub output_scroll: u16,
-    // Task file (TASK.md) viewing/editing
+    // Task file (TASK.md) viewing/editing (used by modal)
     pub task_file_content: String,
-    pub task_file_scroll: u16,
     pub task_file_editor: TextArea<'static>,
-    pub task_file_editing: bool,
     // Stored commands
     pub commands: Vec<StoredCommand>,
     pub selected_command_index: usize,
@@ -118,9 +116,7 @@ impl App {
             output_log: Vec::new(),
             output_scroll: 0,
             task_file_content: String::new(),
-            task_file_scroll: 0,
             task_file_editor,
-            task_file_editing: false,
             commands,
             selected_command_index: 0,
         })
@@ -272,13 +268,8 @@ impl App {
         self.notes_editor.move_cursor(CursorMove::End);
         self.notes_editing = false;
 
-        // Setup task file content and editor
-        self.task_file_content = task_file_content.clone();
-        self.task_file_scroll = 0;
-        self.task_file_editor = TextArea::from(task_file_content.lines());
-        self.task_file_editor
-            .set_cursor_line_style(ratatui::style::Style::default());
-        self.task_file_editing = false;
+        // Setup task file content for modal (editor gets set up when modal opens)
+        self.task_file_content = task_file_content;
     }
 
     fn save_notes(&mut self) -> Result<()> {
@@ -854,6 +845,7 @@ impl App {
             View::Feedback => self.handle_feedback_event(event),
             View::NewTaskWizard => self.handle_wizard_event(event),
             View::CommandList => self.handle_command_list_event(event),
+            View::TaskEditor => self.handle_task_editor_event(event),
         }
     }
 
@@ -913,6 +905,13 @@ impl App {
                     // Open command list
                     self.open_command_list();
                 }
+                KeyCode::Char('t') => {
+                    // Open task editor modal
+                    if !self.tasks.is_empty() {
+                        self.load_preview();
+                        self.open_task_editor();
+                    }
+                }
                 _ => {}
             }
         }
@@ -925,11 +924,6 @@ impl App {
             return self.handle_notes_editing(event);
         }
 
-        // If editing task file, handle vim-style input
-        if self.task_file_editing {
-            return self.handle_task_file_editing(event);
-        }
-
         if let Event::Key(key) = event {
             // Ctrl+C to quit
             if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -939,12 +933,11 @@ impl App {
                 }
             }
 
-            // Tab to switch panes (Logs -> Notes -> TaskFile -> Logs)
+            // Tab to switch panes (Logs -> Notes -> Logs)
             if key.code == KeyCode::Tab {
                 self.preview_pane = match self.preview_pane {
                     PreviewPane::Logs => PreviewPane::Notes,
-                    PreviewPane::Notes => PreviewPane::TaskFile,
-                    PreviewPane::TaskFile => PreviewPane::Logs,
+                    PreviewPane::Notes => PreviewPane::Logs,
                 };
                 return Ok(false);
             }
@@ -952,9 +945,8 @@ impl App {
             // BackTab (Shift+Tab) to switch panes in reverse
             if key.code == KeyCode::BackTab {
                 self.preview_pane = match self.preview_pane {
-                    PreviewPane::Logs => PreviewPane::TaskFile,
+                    PreviewPane::Logs => PreviewPane::Notes,
                     PreviewPane::Notes => PreviewPane::Logs,
-                    PreviewPane::TaskFile => PreviewPane::Notes,
                 };
                 return Ok(false);
             }
@@ -970,9 +962,6 @@ impl App {
                             PreviewPane::Notes => {
                                 self.notes_scroll = self.notes_scroll.saturating_add(3);
                             }
-                            PreviewPane::TaskFile => {
-                                self.task_file_scroll = self.task_file_scroll.saturating_add(3);
-                            }
                         }
                         return Ok(false);
                     }
@@ -983,9 +972,6 @@ impl App {
                             }
                             PreviewPane::Notes => {
                                 self.notes_scroll = self.notes_scroll.saturating_sub(3);
-                            }
-                            PreviewPane::TaskFile => {
-                                self.task_file_scroll = self.task_file_scroll.saturating_sub(3);
                             }
                         }
                         return Ok(false);
@@ -999,7 +985,7 @@ impl App {
                     self.view = View::TaskList;
                 }
                 KeyCode::Enter => {
-                    // In Notes/TaskFile pane, Enter starts editing; in Logs, attaches tmux
+                    // In Notes pane, Enter starts editing; in Logs, attaches tmux
                     match self.preview_pane {
                         PreviewPane::Logs => {
                             if let Some(task) = self.selected_task() {
@@ -1012,29 +998,18 @@ impl App {
                             self.notes_editing = true;
                             self.set_status("Editing notes (Esc to save & exit)".to_string());
                         }
-                        PreviewPane::TaskFile => {
-                            self.task_file_editing = true;
-                            self.set_status("Editing TASK.md (Esc to save & exit)".to_string());
-                        }
                     }
                 }
                 KeyCode::Char('i') => {
-                    // Enter edit mode for notes or task file
-                    match self.preview_pane {
-                        PreviewPane::Notes => {
-                            self.notes_editing = true;
-                            self.set_status("Editing notes (Esc to save & exit)".to_string());
-                        }
-                        PreviewPane::TaskFile => {
-                            self.task_file_editing = true;
-                            self.set_status("Editing TASK.md (Esc to save & exit)".to_string());
-                        }
-                        PreviewPane::Logs => {}
+                    // Enter edit mode for notes
+                    if self.preview_pane == PreviewPane::Notes {
+                        self.notes_editing = true;
+                        self.set_status("Editing notes (Esc to save & exit)".to_string());
                     }
                 }
                 KeyCode::Char('t') => {
-                    // Switch to TaskFile pane directly
-                    self.preview_pane = PreviewPane::TaskFile;
+                    // Open TaskEditor modal
+                    self.open_task_editor();
                 }
                 KeyCode::Char('f') => {
                     // Give feedback
@@ -1052,9 +1027,6 @@ impl App {
                         PreviewPane::Notes => {
                             self.notes_scroll = self.notes_scroll.saturating_add(1);
                         }
-                        PreviewPane::TaskFile => {
-                            self.task_file_scroll = self.task_file_scroll.saturating_add(1);
-                        }
                     }
                 }
                 KeyCode::Char('k') => {
@@ -1064,9 +1036,6 @@ impl App {
                         }
                         PreviewPane::Notes => {
                             self.notes_scroll = self.notes_scroll.saturating_sub(1);
-                        }
-                        PreviewPane::TaskFile => {
-                            self.task_file_scroll = self.task_file_scroll.saturating_sub(1);
                         }
                     }
                 }
@@ -1082,9 +1051,6 @@ impl App {
                         PreviewPane::Notes => {
                             self.notes_scroll = u16::MAX / 2;
                         }
-                        PreviewPane::TaskFile => {
-                            self.task_file_scroll = u16::MAX / 2;
-                        }
                     }
                 }
                 KeyCode::Char('g') => {
@@ -1095,9 +1061,6 @@ impl App {
                         }
                         PreviewPane::Notes => {
                             self.notes_scroll = 0;
-                        }
-                        PreviewPane::TaskFile => {
-                            self.task_file_scroll = 0;
                         }
                     }
                 }
@@ -1110,9 +1073,6 @@ impl App {
                         PreviewPane::Notes => {
                             self.notes_scroll = self.notes_scroll.saturating_add(15);
                         }
-                        PreviewPane::TaskFile => {
-                            self.task_file_scroll = self.task_file_scroll.saturating_add(15);
-                        }
                     }
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1123,9 +1083,6 @@ impl App {
                         }
                         PreviewPane::Notes => {
                             self.notes_scroll = self.notes_scroll.saturating_sub(15);
-                        }
-                        PreviewPane::TaskFile => {
-                            self.task_file_scroll = self.task_file_scroll.saturating_sub(15);
                         }
                     }
                 }
@@ -1159,17 +1116,37 @@ impl App {
         Ok(false)
     }
 
-    fn handle_task_file_editing(&mut self, event: Event) -> Result<bool> {
-        // Calculate wrap width dynamically: task file panel is 30% of screen width, minus borders
+    fn open_task_editor(&mut self) {
+        // Re-read the task file content from disk to ensure fresh content
+        if let Some(task) = self.selected_task() {
+            let content = task.read_task().unwrap_or_else(|_| "No TASK.md available".to_string());
+            self.task_file_content = content.clone();
+            self.task_file_editor = TextArea::from(content.lines());
+            self.task_file_editor
+                .set_cursor_line_style(ratatui::style::Style::default());
+        }
+        self.view = View::TaskEditor;
+    }
+
+    fn handle_task_editor_event(&mut self, event: Event) -> Result<bool> {
+        // Calculate wrap width dynamically: modal is ~80% of screen width, minus borders
         let wrap_width = crossterm::terminal::size()
-            .map(|(w, _)| ((w as f32 * 0.30) as usize).saturating_sub(4))
-            .unwrap_or(30);
+            .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
+            .unwrap_or(70);
 
         if let Event::Key(key) = event {
+            // Check for Ctrl+S to save and close
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                self.save_task_file()?;
+                self.view = View::Preview;
+                return Ok(false);
+            }
+
             match key.code {
                 KeyCode::Esc => {
-                    self.task_file_editing = false;
-                    self.save_task_file()?;
+                    // Cancel without saving - restore original content
+                    self.view = View::Preview;
+                    self.set_status("Task editor cancelled".to_string());
                 }
                 _ => {
                     // Convert crossterm event to tui-textarea Input

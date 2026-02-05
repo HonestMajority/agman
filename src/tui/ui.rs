@@ -14,7 +14,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Check if we're showing a modal that should hide the output pane
     let is_modal_view = matches!(
         app.view,
-        View::DeleteConfirm | View::Feedback | View::NewTaskWizard | View::CommandList
+        View::DeleteConfirm | View::Feedback | View::NewTaskWizard | View::CommandList | View::TaskEditor
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -51,6 +51,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::CommandList => {
             draw_task_list(f, app, chunks[0]);
             draw_command_list(f, app);
+        }
+        View::TaskEditor => {
+            draw_preview(f, app, chunks[0]);
+            draw_task_editor(f, app);
         }
     }
 
@@ -326,19 +330,17 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(header, chunks[0]);
     }
 
-    // Split the remaining area into logs, notes, and task file panels (40/30/30)
+    // Split the remaining area into logs and notes panels (60/40)
     let panels = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
+            Constraint::Percentage(60),
             Constraint::Percentage(40),
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
         ])
         .split(chunks[1]);
 
     draw_logs_panel(f, app, panels[0]);
     draw_notes_panel(f, app, panels[1]);
-    draw_task_file_panel(f, app, panels[2]);
 }
 
 fn draw_logs_panel(f: &mut Frame, app: &App, area: Rect) {
@@ -423,56 +425,58 @@ fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn draw_task_file_panel(f: &mut Frame, app: &mut App, area: Rect) {
-    let is_focused = app.preview_pane == PreviewPane::TaskFile;
-    let border_color = if is_focused {
-        Color::LightMagenta
-    } else {
-        Color::DarkGray
-    };
+fn draw_task_editor(f: &mut Frame, app: &mut App) {
+    let area = centered_rect(80, 70, f.area());
 
-    let title = if app.task_file_editing {
-        " TASK.md [EDITING] "
-    } else if is_focused {
-        " TASK.md (i: edit) "
-    } else {
-        " TASK.md "
-    };
+    f.render_widget(Clear, area);
 
-    let title_style = if is_focused {
-        Style::default()
-            .fg(Color::LightMagenta)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let task_id = app
+        .selected_task()
+        .map(|t| t.meta.task_id())
+        .unwrap_or_else(|| "unknown".to_string());
 
-    if app.task_file_editing {
-        // Show the editor
-        app.task_file_editor.set_block(
-            Block::default()
-                .title(Span::styled(title, title_style))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::LightMagenta)),
-        );
-        app.task_file_editor
-            .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
-        f.render_widget(&app.task_file_editor, area);
-    } else {
-        // Show read-only task file content
-        let task_file = Paragraph::new(app.task_file_content.as_str())
-            .block(
-                Block::default()
-                    .title(Span::styled(title, title_style))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(border_color)),
-            )
-            .style(Style::default().fg(Color::Gray))
-            .wrap(Wrap { trim: false })
-            .scroll((app.task_file_scroll, 0));
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
 
-        f.render_widget(task_file, area);
-    }
+    // Header
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("Editing: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            task_id,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .title(Span::styled(
+                " TASK.md Editor ",
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightMagenta)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    // Editor
+    app.task_file_editor.set_block(
+        Block::default()
+            .title(Span::styled(
+                " Ctrl+S to save & close, Esc to cancel ",
+                Style::default().fg(Color::LightGreen),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightGreen)),
+    );
+    app.task_file_editor
+        .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+
+    f.render_widget(&app.task_file_editor, chunks[1]);
 }
 
 fn draw_feedback(f: &mut Frame, app: &mut App) {
@@ -616,6 +620,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("t", Style::default().fg(Color::LightMagenta)),
+                Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("x", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("l", Style::default().fg(Color::LightCyan)),
@@ -631,7 +637,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             ]
         }
         View::Preview => {
-            if app.notes_editing || app.task_file_editing {
+            if app.notes_editing {
                 vec![
                     Span::styled("Esc", Style::default().fg(Color::LightGreen)),
                     Span::styled(" save & exit editing", Style::default().fg(Color::DarkGray)),
@@ -654,6 +660,14 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" back", Style::default().fg(Color::DarkGray)),
                 ]
             }
+        }
+        View::TaskEditor => {
+            vec![
+                Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
+                Span::styled(" save & close  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
         }
         View::DeleteConfirm => {
             vec![
