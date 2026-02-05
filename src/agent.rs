@@ -263,6 +263,12 @@ impl AgentRunner {
                 // No more steps, flow is complete
                 println!("Flow complete - no more steps");
                 task.update_status(TaskStatus::Stopped)?;
+
+                // Check for queued feedback and process it
+                if let Some(result) = self.process_queued_feedback(task)? {
+                    return Ok(result);
+                }
+
                 return Ok(StopCondition::TaskComplete);
             };
 
@@ -279,6 +285,12 @@ impl AgentRunner {
                         Some(StopCondition::TaskComplete) => {
                             println!("Task marked complete by agent");
                             task.update_status(TaskStatus::Stopped)?;
+
+                            // Check for queued feedback and process it
+                            if let Some(result) = self.process_queued_feedback(task)? {
+                                return Ok(result);
+                            }
+
                             return Ok(StopCondition::TaskComplete);
                         }
                         Some(StopCondition::TaskBlocked) => {
@@ -291,6 +303,12 @@ impl AgentRunner {
                                 _ => {
                                     println!("on_blocked: stop - stopping flow");
                                     task.update_status(TaskStatus::Stopped)?;
+
+                                    // Check for queued feedback and process it
+                                    if let Some(result) = self.process_queued_feedback(task)? {
+                                        return Ok(result);
+                                    }
+
                                     return Ok(StopCondition::TaskBlocked);
                                 }
                             }
@@ -335,10 +353,22 @@ impl AgentRunner {
                     match result {
                         StopCondition::TaskComplete => {
                             task.update_status(TaskStatus::Stopped)?;
+
+                            // Check for queued feedback and process it
+                            if let Some(result) = self.process_queued_feedback(task)? {
+                                return Ok(result);
+                            }
+
                             return Ok(StopCondition::TaskComplete);
                         }
                         StopCondition::TaskBlocked => {
                             task.update_status(TaskStatus::Stopped)?;
+
+                            // Check for queued feedback and process it
+                            if let Some(result) = self.process_queued_feedback(task)? {
+                                return Ok(result);
+                            }
+
                             return Ok(StopCondition::TaskBlocked);
                         }
                         _ => {
@@ -349,6 +379,42 @@ impl AgentRunner {
                 }
             }
         }
+    }
+
+    /// Process queued feedback if any exists
+    /// Returns Some(StopCondition) if feedback was processed and a new flow completed,
+    /// or None if no feedback was queued
+    fn process_queued_feedback(&self, task: &mut Task) -> Result<Option<StopCondition>> {
+        if !task.has_queued_feedback() {
+            return Ok(None);
+        }
+
+        println!();
+        println!("=== Processing queued feedback ({} items) ===", task.queued_feedback_count());
+
+        // Pop the first feedback item
+        let feedback = task.pop_feedback_queue()?.expect("Queue was not empty");
+
+        println!("Feedback: {}", if feedback.len() > 100 {
+            format!("{}...", &feedback[..100])
+        } else {
+            feedback.clone()
+        });
+
+        // Write feedback to FEEDBACK.md
+        task.write_feedback(&feedback)?;
+
+        // Reset flow to use continue flow and start from step 0
+        task.meta.flow_name = "continue".to_string();
+        task.reset_flow_step()?;
+        task.update_status(TaskStatus::Running)?;
+
+        println!();
+
+        // Run the continue flow
+        let result = self.run_flow(task)?;
+
+        Ok(Some(result))
     }
 
     /// Run a loop of agent steps until the loop condition is met

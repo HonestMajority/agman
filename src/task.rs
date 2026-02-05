@@ -34,6 +34,9 @@ pub struct TaskMeta {
     pub flow_step: usize,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Queue of feedback items to be processed when the task stops
+    #[serde(default)]
+    pub feedback_queue: Vec<String>,
 }
 
 impl TaskMeta {
@@ -56,6 +59,7 @@ impl TaskMeta {
             flow_step: 0,
             created_at: now,
             updated_at: now,
+            feedback_queue: Vec::new(),
         }
     }
 
@@ -392,6 +396,46 @@ impl Task {
             std::fs::remove_file(&path)?;
         }
         Ok(())
+    }
+
+    /// Queue feedback to be processed when the task stops
+    pub fn queue_feedback(&mut self, feedback: &str) -> Result<()> {
+        self.meta.feedback_queue.push(feedback.to_string());
+        self.meta.updated_at = Utc::now();
+        self.save_meta()
+    }
+
+    /// Pop the first feedback item from the queue
+    pub fn pop_feedback_queue(&mut self) -> Result<Option<String>> {
+        if self.meta.feedback_queue.is_empty() {
+            return Ok(None);
+        }
+        let feedback = self.meta.feedback_queue.remove(0);
+        self.meta.updated_at = Utc::now();
+        self.save_meta()?;
+        Ok(Some(feedback))
+    }
+
+    /// Check if there's queued feedback
+    pub fn has_queued_feedback(&self) -> bool {
+        !self.meta.feedback_queue.is_empty()
+    }
+
+    /// Get the number of queued feedback items
+    pub fn queued_feedback_count(&self) -> usize {
+        self.meta.feedback_queue.len()
+    }
+
+    /// Read all queued feedback items (for display purposes)
+    pub fn read_feedback_queue(&self) -> &[String] {
+        &self.meta.feedback_queue
+    }
+
+    /// Clear all queued feedback
+    pub fn clear_feedback_queue(&mut self) -> Result<()> {
+        self.meta.feedback_queue.clear();
+        self.meta.updated_at = Utc::now();
+        self.save_meta()
     }
 
     /// Get the git diff for the worktree

@@ -28,6 +28,7 @@ pub enum View {
     NewTaskWizard,
     CommandList,
     TaskEditor,
+    FeedbackQueue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +89,8 @@ pub struct App {
     // Stored commands
     pub commands: Vec<StoredCommand>,
     pub selected_command_index: usize,
+    // Feedback queue view
+    pub selected_queue_index: usize,
 }
 
 impl App {
@@ -120,6 +123,7 @@ impl App {
             task_file_editor,
             commands,
             selected_command_index: 0,
+            selected_queue_index: 0,
         })
     }
 
@@ -431,50 +435,64 @@ impl App {
             return Ok(());
         }
 
-        let task_id = if let Some(task) = self.selected_task() {
-            // Write feedback directly to the task's FEEDBACK.md file
-            task.write_feedback(&feedback)?;
-            task.meta.task_id()
+        // Check if task is running - if so, queue the feedback instead
+        let (task_id, is_running) = if let Some(task) = self.selected_task() {
+            (task.meta.task_id(), task.meta.status == TaskStatus::Running)
         } else {
             self.set_status("No task selected".to_string());
             self.view = View::TaskList;
             return Ok(());
         };
 
-        self.log_output(format!("Starting continue flow for {}...", task_id));
-
-        // Run agman continue (reads feedback from FEEDBACK.md)
-        // Capture output to avoid corrupting TUI
-        let output = Command::new("agman")
-            .args(["continue", &task_id, "--flow", "continue"])
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                if !stdout.is_empty() {
-                    for line in stdout.lines() {
-                        self.log_output(line.to_string());
-                    }
-                }
-                if !stderr.is_empty() {
-                    for line in stderr.lines() {
-                        self.log_output(format!("[stderr] {}", line));
-                    }
-                }
-                self.log_output(format!("Flow started for {}", task_id));
-                self.set_status(format!("Feedback submitted for {}", task_id));
-                self.refresh_tasks()?;
+        if is_running {
+            // Queue the feedback for later processing
+            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                task.queue_feedback(&feedback)?;
+                let queue_count = task.queued_feedback_count();
+                self.log_output(format!("Queued feedback for {} ({} in queue)", task_id, queue_count));
+                self.set_status(format!("Feedback queued ({} in queue)", queue_count));
             }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                self.log_output(format!("Failed to start continue flow: {}", stderr));
-                self.set_status("Failed to start continue flow".to_string());
+        } else {
+            // Task is stopped - write feedback and start continue flow immediately
+            if let Some(task) = self.selected_task() {
+                task.write_feedback(&feedback)?;
             }
-            Err(e) => {
-                self.log_output(format!("Error: {}", e));
-                self.set_status(format!("Error: {}", e));
+
+            self.log_output(format!("Starting continue flow for {}...", task_id));
+
+            // Run agman continue (reads feedback from FEEDBACK.md)
+            // Capture output to avoid corrupting TUI
+            let output = Command::new("agman")
+                .args(["continue", &task_id, "--flow", "continue"])
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    if !stdout.is_empty() {
+                        for line in stdout.lines() {
+                            self.log_output(line.to_string());
+                        }
+                    }
+                    if !stderr.is_empty() {
+                        for line in stderr.lines() {
+                            self.log_output(format!("[stderr] {}", line));
+                        }
+                    }
+                    self.log_output(format!("Flow started for {}", task_id));
+                    self.set_status(format!("Feedback submitted for {}", task_id));
+                    self.refresh_tasks()?;
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    self.log_output(format!("Failed to start continue flow: {}", stderr));
+                    self.set_status("Failed to start continue flow".to_string());
+                }
+                Err(e) => {
+                    self.log_output(format!("Error: {}", e));
+                    self.set_status(format!("Error: {}", e));
+                }
             }
         }
 
@@ -886,6 +904,7 @@ impl App {
             View::NewTaskWizard => self.handle_wizard_event(event),
             View::CommandList => self.handle_command_list_event(event),
             View::TaskEditor => self.handle_task_editor_event(event),
+            View::FeedbackQueue => self.handle_feedback_queue_event(event),
         }
     }
 
@@ -1070,6 +1089,10 @@ impl App {
                 KeyCode::Char('x') => {
                     // Open command list
                     self.open_command_list();
+                }
+                KeyCode::Char('Q') => {
+                    // Open feedback queue view
+                    self.open_feedback_queue();
                 }
                 KeyCode::Char('j') => match self.preview_pane {
                     PreviewPane::Logs => {
@@ -1488,6 +1511,102 @@ impl App {
             }
         }
         Ok(false)
+    }
+
+    fn open_feedback_queue(&mut self) {
+        if let Some(task) = self.selected_task() {
+            if task.queued_feedback_count() == 0 {
+                self.set_status("No feedback queued for this task".to_string());
+                return;
+            }
+        } else {
+            self.set_status("No task selected".to_string());
+            return;
+        }
+        self.selected_queue_index = 0;
+        self.view = View::FeedbackQueue;
+    }
+
+    fn handle_feedback_queue_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            // Check for Ctrl+C to quit
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            let queue_len = self.selected_task()
+                .map(|t| t.queued_feedback_count())
+                .unwrap_or(0);
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = View::Preview;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if queue_len > 0 {
+                        self.selected_queue_index =
+                            (self.selected_queue_index + 1) % queue_len;
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if queue_len > 0 {
+                        self.selected_queue_index = if self.selected_queue_index == 0 {
+                            queue_len - 1
+                        } else {
+                            self.selected_queue_index - 1
+                        };
+                    }
+                }
+                KeyCode::Char('d') | KeyCode::Delete => {
+                    // Delete selected feedback item
+                    self.delete_queued_feedback()?;
+                }
+                KeyCode::Char('C') => {
+                    // Clear all queued feedback
+                    self.clear_all_queued_feedback()?;
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn delete_queued_feedback(&mut self) -> Result<()> {
+        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+            let queue_len = task.queued_feedback_count();
+            if queue_len == 0 {
+                return Ok(());
+            }
+
+            // Remove the selected item from the queue
+            task.meta.feedback_queue.remove(self.selected_queue_index);
+            task.meta.updated_at = chrono::Utc::now();
+            task.save_meta()?;
+
+            // Adjust selected index if needed
+            if self.selected_queue_index >= task.queued_feedback_count() && self.selected_queue_index > 0 {
+                self.selected_queue_index -= 1;
+            }
+
+            let remaining = task.queued_feedback_count();
+            if remaining == 0 {
+                self.view = View::Preview;
+                self.set_status("Queue cleared".to_string());
+            } else {
+                self.set_status(format!("Removed item ({} remaining)", remaining));
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_all_queued_feedback(&mut self) -> Result<()> {
+        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+            task.clear_feedback_queue()?;
+            self.view = View::Preview;
+            self.set_status("Queue cleared".to_string());
+        }
+        Ok(())
     }
 }
 

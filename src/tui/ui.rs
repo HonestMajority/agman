@@ -20,6 +20,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::NewTaskWizard
             | View::CommandList
             | View::TaskEditor
+            | View::FeedbackQueue
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -60,6 +61,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::TaskEditor => {
             draw_preview(f, app, chunks[0]);
             draw_task_editor(f, app);
+        }
+        View::FeedbackQueue => {
+            draw_preview(f, app, chunks[0]);
+            draw_feedback_queue(f, app);
         }
     }
 
@@ -216,11 +221,20 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         let task_id = task.meta.task_id();
         let status_str = format!("{}", task.meta.status);
 
-        // Truncate task_id if needed, with ellipsis
-        let display_task_id = if task_id.len() > task_width {
-            format!("{}…", &task_id[..task_width.saturating_sub(1)])
+        // Build display task ID with optional queue indicator
+        let queue_count = task.queued_feedback_count();
+        let queue_suffix = if queue_count > 0 {
+            format!(" (+{})", queue_count)
         } else {
-            task_id.clone()
+            String::new()
+        };
+        let full_task_id = format!("{}{}", task_id, queue_suffix);
+
+        // Truncate task_id if needed, with ellipsis
+        let display_task_id = if full_task_id.len() > task_width {
+            format!("{}…", &full_task_id[..task_width.saturating_sub(1)])
+        } else {
+            full_task_id.clone()
         };
 
         // Dim stopped tasks
@@ -297,7 +311,9 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             "none"
         };
-        let header = Paragraph::new(Line::from(vec![
+        let queue_count = task.queued_feedback_count();
+
+        let mut header_spans = vec![
             Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 task.meta.task_id(),
@@ -324,7 +340,21 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(Color::DarkGray)
                 },
             ),
-        ]))
+        ];
+
+        // Add queued feedback indicator if there are items in the queue
+        if queue_count > 0 {
+            header_spans.push(Span::raw("  "));
+            header_spans.push(Span::styled("Queue: ", Style::default().fg(Color::DarkGray)));
+            header_spans.push(Span::styled(
+                format!("{}", queue_count),
+                Style::default()
+                    .fg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        let header = Paragraph::new(Line::from(header_spans))
         .block(
             Block::default()
                 .title(Span::styled(
@@ -705,6 +735,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("f", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Q", Style::default().fg(Color::LightYellow)),
+                    Span::styled(" queue  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("x", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("i", Style::default().fg(Color::LightCyan)),
@@ -796,6 +828,18 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" run  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc", Style::default().fg(Color::LightRed)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
+        }
+        View::FeedbackQueue => {
+            vec![
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("d", Style::default().fg(Color::LightRed)),
+                Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("C", Style::default().fg(Color::LightRed)),
+                Span::styled(" clear all  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("q/Esc", Style::default().fg(Color::LightCyan)),
+                Span::styled(" close", Style::default().fg(Color::DarkGray)),
             ]
         }
     };
@@ -1235,6 +1279,115 @@ fn draw_command_list(f: &mut Frame, app: &App) {
     );
 
     f.render_widget(list, chunks[1]);
+}
+
+fn draw_feedback_queue(f: &mut Frame, app: &App) {
+    let area = centered_rect(70, 60, f.area());
+    f.render_widget(Clear, area);
+
+    let task_id = app
+        .selected_task()
+        .map(|t| t.meta.task_id())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let queue = app
+        .selected_task()
+        .map(|t| t.read_feedback_queue().to_vec())
+        .unwrap_or_default();
+
+    // Split into header, list, and footer
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
+        .split(area);
+
+    // Header
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("Queued feedback for: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            &task_id,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  ({} items)", queue.len()),
+            Style::default().fg(Color::LightYellow),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .title(Span::styled(
+                " Feedback Queue ",
+                Style::default()
+                    .fg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightYellow)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    // Queue list
+    let items: Vec<ListItem> = queue
+        .iter()
+        .enumerate()
+        .map(|(i, feedback)| {
+            let is_selected = i == app.selected_queue_index;
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(40, 40, 60))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let prefix = if is_selected { "▸ " } else { "  " };
+
+            // Truncate feedback preview to fit on one line
+            let preview = if feedback.len() > 60 {
+                format!("{}...", &feedback[..57])
+            } else {
+                feedback.clone()
+            };
+            // Replace newlines with spaces for display
+            let preview = preview.replace('\n', " ");
+
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(format!("{}. ", i + 1), Style::default().fg(Color::DarkGray)),
+                Span::styled(preview, style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(Span::styled(
+                " j/k: navigate  d: delete item  C: clear all  q: close ",
+                Style::default().fg(Color::DarkGray),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    f.render_widget(list, chunks[1]);
+
+    // Selected item preview (if any)
+    if let Some(feedback) = queue.get(app.selected_queue_index) {
+        let preview_text = if feedback.len() > 200 {
+            format!("{}...", &feedback[..197])
+        } else {
+            feedback.clone()
+        };
+        let preview = Paragraph::new(preview_text)
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: true });
+        f.render_widget(preview, chunks[2]);
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
