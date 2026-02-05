@@ -8,7 +8,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::process::Command;
 use std::time::{Duration, Instant};
-use tui_textarea::{CursorMove, Input, TextArea};
+use tui_textarea::{CursorMove, Input, Key, TextArea};
 
 use crate::command::StoredCommand;
 use crate::config::Config;
@@ -17,6 +17,7 @@ use crate::task::{Task, TaskStatus};
 use crate::tmux::Tmux;
 
 use super::ui;
+use super::vim::{VimMode, VimTextArea};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -51,7 +52,7 @@ pub struct NewTaskWizard {
     pub existing_branches: Vec<String>,
     pub selected_branch_index: usize,
     pub new_branch_editor: TextArea<'static>,
-    pub description_editor: TextArea<'static>,
+    pub description_editor: VimTextArea<'static>,
     pub flows: Vec<String>,
     pub selected_flow_index: usize,
     pub error_message: Option<String>,
@@ -72,10 +73,10 @@ pub struct App {
     pub preview_scroll: u16,
     pub notes_content: String,
     pub notes_scroll: u16,
-    pub notes_editor: TextArea<'static>,
+    pub notes_editor: VimTextArea<'static>,
     pub notes_editing: bool,
     pub preview_pane: PreviewPane,
-    pub feedback_editor: TextArea<'static>,
+    pub feedback_editor: VimTextArea<'static>,
     pub should_quit: bool,
     pub status_message: Option<(String, Instant)>,
     pub wizard: Option<NewTaskWizard>,
@@ -83,7 +84,7 @@ pub struct App {
     pub output_scroll: u16,
     // Task file (TASK.md) viewing/editing (used by modal)
     pub task_file_content: String,
-    pub task_file_editor: TextArea<'static>,
+    pub task_file_editor: VimTextArea<'static>,
     // Stored commands
     pub commands: Vec<StoredCommand>,
     pub selected_command_index: usize,
@@ -93,9 +94,9 @@ impl App {
     pub fn new(config: Config) -> Result<Self> {
         let tasks = Task::list_all(&config)?;
         let commands = StoredCommand::list_all(&config.commands_dir).unwrap_or_default();
-        let notes_editor = Self::create_editor();
-        let feedback_editor = Self::create_editor();
-        let task_file_editor = Self::create_editor();
+        let notes_editor = VimTextArea::new();
+        let feedback_editor = VimTextArea::new();
+        let task_file_editor = VimTextArea::new();
 
         Ok(Self {
             config,
@@ -122,15 +123,14 @@ impl App {
         })
     }
 
-    fn create_editor() -> TextArea<'static> {
+    fn create_plain_editor() -> TextArea<'static> {
         let mut editor = TextArea::default();
         editor.set_cursor_line_style(ratatui::style::Style::default());
         editor
     }
 
-    /// Auto-wrap text in a TextArea when lines exceed max_width.
-    /// Finds the last word boundary and inserts a newline there.
-    fn auto_wrap_editor(editor: &mut TextArea<'static>, max_width: usize) {
+    /// Auto-wrap text in a VimTextArea when lines exceed max_width.
+    fn auto_wrap_vim_editor(editor: &mut VimTextArea<'static>, max_width: usize) {
         if max_width < 20 {
             return;
         }
@@ -157,9 +157,6 @@ impl App {
         }
 
         // We need to split the line: move cursor to wrap point, insert newline
-        // This is a bit tricky with tui-textarea's API
-        // We'll rebuild the lines and recreate the editor content
-
         let mut new_lines: Vec<String> = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             if i == row {
@@ -168,7 +165,7 @@ impl App {
                 new_lines.push(before.to_string());
                 new_lines.push(after.trim_start().to_string());
             } else {
-                new_lines.push(line.to_string());
+                new_lines.push(line.clone());
             }
         }
 
@@ -180,9 +177,12 @@ impl App {
         };
         let new_row = if col > wrap_at { row + 1 } else { row };
 
+        // Save vim mode before recreating
+        let current_mode = editor.mode();
+
         // Recreate the editor with new content
-        *editor = TextArea::from(new_lines.iter().map(|s| s.as_str()));
-        editor.set_cursor_line_style(ratatui::style::Style::default());
+        editor.set_content(&new_lines.join("\n"));
+        editor.vim.mode = current_mode;
 
         // Restore cursor position
         editor.move_cursor(CursorMove::Jump(new_row as u16, new_col as u16));
@@ -259,10 +259,8 @@ impl App {
         self.notes_content = notes_content.clone();
         self.notes_scroll = 0;
 
-        // Setup notes editor
-        self.notes_editor = TextArea::from(notes_content.lines());
-        self.notes_editor
-            .set_cursor_line_style(ratatui::style::Style::default());
+        // Setup notes editor with vim mode
+        self.notes_editor = VimTextArea::from_lines(notes_content.lines());
         // Move cursor to end of text
         self.notes_editor.move_cursor(CursorMove::Bottom);
         self.notes_editor.move_cursor(CursorMove::End);
@@ -274,7 +272,7 @@ impl App {
 
     fn save_notes(&mut self) -> Result<()> {
         if let Some(task) = self.selected_task() {
-            let notes = self.notes_editor.lines().join("\n");
+            let notes = self.notes_editor.lines_joined();
             task.write_notes(&notes)?;
             self.notes_content = notes;
             self.set_status("Notes saved".to_string());
@@ -284,7 +282,7 @@ impl App {
 
     fn save_task_file(&mut self) -> Result<()> {
         if let Some(task) = self.selected_task() {
-            let content = self.task_file_editor.lines().join("\n");
+            let content = self.task_file_editor.lines_joined();
             task.write_task(&content)?;
             self.task_file_content = content;
             self.set_status("TASK.md saved".to_string());
@@ -380,13 +378,14 @@ impl App {
     }
 
     fn start_feedback(&mut self) {
-        // Clear the feedback editor
-        self.feedback_editor = Self::create_editor();
+        // Clear the feedback editor and start in insert mode
+        self.feedback_editor = VimTextArea::new();
+        self.feedback_editor.set_insert_mode();
         self.view = View::Feedback;
     }
 
     fn submit_feedback(&mut self) -> Result<()> {
-        let feedback = self.feedback_editor.lines().join("\n");
+        let feedback = self.feedback_editor.lines_joined();
         if feedback.trim().is_empty() {
             self.set_status("Feedback cannot be empty".to_string());
             self.view = View::Preview;
@@ -440,7 +439,7 @@ impl App {
             }
         }
 
-        self.feedback_editor = Self::create_editor(); // Clear editor
+        self.feedback_editor = VimTextArea::new(); // Clear editor
         self.view = View::Preview;
         self.load_preview();
         Ok(())
@@ -457,11 +456,12 @@ impl App {
             return Ok(());
         }
 
-        let mut new_branch_editor = Self::create_editor();
+        let mut new_branch_editor = Self::create_plain_editor();
         new_branch_editor.set_cursor_line_style(ratatui::style::Style::default());
 
-        let mut description_editor = Self::create_editor();
-        description_editor.set_cursor_line_style(ratatui::style::Style::default());
+        // Description editor uses vim mode, start in insert mode
+        let mut description_editor = VimTextArea::new();
+        description_editor.set_insert_mode();
 
         // Find index of "default" flow, or use 0
         let default_flow_index = flows.iter().position(|f| f == "default").unwrap_or(0);
@@ -708,7 +708,7 @@ impl App {
                 wizard.step = WizardStep::EnterDescription;
             }
             WizardStep::EnterDescription => {
-                let description = wizard.description_editor.lines().join("\n");
+                let description = wizard.description_editor.lines_joined();
                 let description = description.trim();
                 if description.is_empty() {
                     wizard.error_message = Some("Description cannot be empty".to_string());
@@ -764,7 +764,7 @@ impl App {
                 wizard.existing_branches[wizard.selected_branch_index].clone()
             }
         };
-        let description = wizard.description_editor.lines().join("\n").trim().to_string();
+        let description = wizard.description_editor.lines_joined().trim().to_string();
         let flow_name = wizard.flows[wizard.selected_flow_index].clone();
 
         self.log_output(format!("Creating task {}--{}...", repo_name, branch_name));
@@ -996,7 +996,8 @@ impl App {
                         }
                         PreviewPane::Notes => {
                             self.notes_editing = true;
-                            self.set_status("Editing notes (Esc to save & exit)".to_string());
+                            self.notes_editor.set_insert_mode();
+                            self.set_status("Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string());
                         }
                     }
                 }
@@ -1004,7 +1005,8 @@ impl App {
                     // Enter edit mode for notes
                     if self.preview_pane == PreviewPane::Notes {
                         self.notes_editing = true;
-                        self.set_status("Editing notes (Esc to save & exit)".to_string());
+                        self.notes_editor.set_insert_mode();
+                        self.set_status("Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string());
                     }
                 }
                 KeyCode::Char('t') => {
@@ -1099,18 +1101,33 @@ impl App {
             .unwrap_or(30);
 
         if let Event::Key(key) = event {
-            match key.code {
-                KeyCode::Esc => {
-                    self.notes_editing = false;
-                    self.save_notes()?;
-                }
-                _ => {
-                    // Convert crossterm event to tui-textarea Input
-                    let input = Input::from(event.clone());
-                    self.notes_editor.input(input);
-                    // Auto-wrap long lines
-                    Self::auto_wrap_editor(&mut self.notes_editor, wrap_width);
-                }
+            // Check for Ctrl+S to save in any mode
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                self.notes_editing = false;
+                self.notes_editor.set_normal_mode();
+                self.save_notes()?;
+                return Ok(false);
+            }
+
+            // In Normal mode, Esc exits editing; in Insert mode, Esc goes to Normal
+            let input = Input::from(event.clone());
+            let was_insert = self.notes_editor.mode() == VimMode::Insert;
+
+            self.notes_editor.input(input.clone());
+
+            // If we were in insert mode and now in normal, or got Esc in normal, might exit
+            let is_normal_now = self.notes_editor.mode() == VimMode::Normal;
+
+            // If we pressed Esc and are now in normal mode after being in normal, exit editing
+            if input.key == Key::Esc && !was_insert && is_normal_now {
+                self.notes_editing = false;
+                self.save_notes()?;
+                return Ok(false);
+            }
+
+            // Auto-wrap only in insert mode
+            if self.notes_editor.mode() == VimMode::Insert {
+                Self::auto_wrap_vim_editor(&mut self.notes_editor, wrap_width);
             }
         }
         Ok(false)
@@ -1121,9 +1138,8 @@ impl App {
         if let Some(task) = self.selected_task() {
             let content = task.read_task().unwrap_or_else(|_| "No TASK.md available".to_string());
             self.task_file_content = content.clone();
-            self.task_file_editor = TextArea::from(content.lines());
-            self.task_file_editor
-                .set_cursor_line_style(ratatui::style::Style::default());
+            self.task_file_editor = VimTextArea::from_lines(content.lines());
+            self.task_file_editor.set_insert_mode();
         }
         self.view = View::TaskEditor;
     }
@@ -1135,26 +1151,31 @@ impl App {
             .unwrap_or(70);
 
         if let Event::Key(key) = event {
-            // Check for Ctrl+S to save and close
+            // Check for Ctrl+S to save and close in any mode
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
                 self.save_task_file()?;
+                self.task_file_editor.set_normal_mode();
                 self.view = View::Preview;
                 return Ok(false);
             }
 
-            match key.code {
-                KeyCode::Esc => {
-                    // Cancel without saving - restore original content
-                    self.view = View::Preview;
-                    self.set_status("Task editor cancelled".to_string());
-                }
-                _ => {
-                    // Convert crossterm event to tui-textarea Input
-                    let input = Input::from(event.clone());
-                    self.task_file_editor.input(input);
-                    // Auto-wrap long lines
-                    Self::auto_wrap_editor(&mut self.task_file_editor, wrap_width);
-                }
+            let input = Input::from(event.clone());
+            let was_insert = self.task_file_editor.mode() == VimMode::Insert;
+
+            self.task_file_editor.input(input.clone());
+
+            let is_normal_now = self.task_file_editor.mode() == VimMode::Normal;
+
+            // If we pressed Esc while already in normal mode, cancel editing
+            if input.key == Key::Esc && !was_insert && is_normal_now {
+                self.view = View::Preview;
+                self.set_status("Task editor cancelled".to_string());
+                return Ok(false);
+            }
+
+            // Auto-wrap only in insert mode
+            if self.task_file_editor.mode() == VimMode::Insert {
+                Self::auto_wrap_vim_editor(&mut self.task_file_editor, wrap_width);
             }
         }
         Ok(false)
@@ -1167,24 +1188,30 @@ impl App {
             .unwrap_or(70);
 
         if let Event::Key(key) = event {
-            // Check for Ctrl+S to submit
+            // Check for Ctrl+S to submit in any mode
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                self.feedback_editor.set_normal_mode();
                 self.submit_feedback()?;
                 return Ok(false);
             }
 
-            match key.code {
-                KeyCode::Esc => {
-                    // Cancel feedback
-                    self.view = View::Preview;
-                    self.set_status("Feedback cancelled".to_string());
-                }
-                _ => {
-                    let input = Input::from(event.clone());
-                    self.feedback_editor.input(input);
-                    // Auto-wrap long lines
-                    Self::auto_wrap_editor(&mut self.feedback_editor, wrap_width);
-                }
+            let input = Input::from(event.clone());
+            let was_insert = self.feedback_editor.mode() == VimMode::Insert;
+
+            self.feedback_editor.input(input.clone());
+
+            let is_normal_now = self.feedback_editor.mode() == VimMode::Normal;
+
+            // If we pressed Esc while already in normal mode, cancel feedback
+            if input.key == Key::Esc && !was_insert && is_normal_now {
+                self.view = View::Preview;
+                self.set_status("Feedback cancelled".to_string());
+                return Ok(false);
+            }
+
+            // Auto-wrap only in insert mode
+            if self.feedback_editor.mode() == VimMode::Insert {
+                Self::auto_wrap_vim_editor(&mut self.feedback_editor, wrap_width);
             }
         }
         Ok(false)
@@ -1320,24 +1347,31 @@ impl App {
                         .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
                         .unwrap_or(70);
 
-                    // Check for Ctrl+S to submit
+                    // Check for Ctrl+S to submit in any mode
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('s')
                     {
+                        wizard.description_editor.set_normal_mode();
                         self.wizard_next_step()?;
                         return Ok(false);
                     }
 
-                    match key.code {
-                        KeyCode::Esc => {
-                            self.wizard_prev_step();
-                        }
-                        _ => {
-                            let input = Input::from(event.clone());
-                            wizard.description_editor.input(input);
-                            // Auto-wrap long lines
-                            Self::auto_wrap_editor(&mut wizard.description_editor, wrap_width);
-                        }
+                    let input = Input::from(event.clone());
+                    let was_insert = wizard.description_editor.mode() == VimMode::Insert;
+
+                    wizard.description_editor.input(input.clone());
+
+                    let is_normal_now = wizard.description_editor.mode() == VimMode::Normal;
+
+                    // If we pressed Esc while already in normal mode, go back
+                    if input.key == Key::Esc && !was_insert && is_normal_now {
+                        self.wizard_prev_step();
+                        return Ok(false);
+                    }
+
+                    // Auto-wrap only in insert mode
+                    if wizard.description_editor.mode() == VimMode::Insert {
+                        Self::auto_wrap_vim_editor(&mut wizard.description_editor, wrap_width);
                     }
                 }
                 WizardStep::SelectFlow => {

@@ -9,6 +9,7 @@ use ratatui::{
 use crate::task::TaskStatus;
 
 use super::app::{App, BranchMode, PreviewPane, View, WizardStep};
+use super::vim::VimMode;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     // Check if we're showing a modal that should hide the output pane
@@ -382,14 +383,26 @@ fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let title = if app.notes_editing {
-        " Notes [EDITING] "
+        let mode = app.notes_editor.mode();
+        format!(" Notes [{}] ", mode.indicator())
     } else if is_focused {
-        " Notes (i: edit) "
+        " Notes (i: edit) ".to_string()
     } else {
-        " Notes "
+        " Notes ".to_string()
     };
 
-    let title_style = if is_focused {
+    let title_style = if app.notes_editing {
+        let mode = app.notes_editor.mode();
+        let mode_color = match mode {
+            VimMode::Normal => Color::LightCyan,
+            VimMode::Insert => Color::LightGreen,
+            VimMode::Visual => Color::LightYellow,
+            VimMode::Operator(_) => Color::LightMagenta,
+        };
+        Style::default()
+            .fg(mode_color)
+            .add_modifier(Modifier::BOLD)
+    } else if is_focused {
         Style::default()
             .fg(Color::LightGreen)
             .add_modifier(Modifier::BOLD)
@@ -398,16 +411,24 @@ fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     if app.notes_editing {
+        let mode = app.notes_editor.mode();
+        let border_color = match mode {
+            VimMode::Normal => Color::LightCyan,
+            VimMode::Insert => Color::LightGreen,
+            VimMode::Visual => Color::LightYellow,
+            VimMode::Operator(_) => Color::LightMagenta,
+        };
+
         // Show the editor
-        app.notes_editor.set_block(
+        app.notes_editor.textarea.set_block(
             Block::default()
                 .title(Span::styled(title, title_style))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::LightGreen)),
+                .border_style(Style::default().fg(border_color)),
         );
-        app.notes_editor
+        app.notes_editor.textarea
             .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
-        f.render_widget(&app.notes_editor, area);
+        f.render_widget(&app.notes_editor.textarea, area);
     } else {
         // Show read-only notes
         let notes = Paragraph::new(app.notes_content.as_str())
@@ -435,6 +456,14 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
         .map(|t| t.meta.task_id())
         .unwrap_or_else(|| "unknown".to_string());
 
+    let mode = app.task_file_editor.mode();
+    let mode_color = match mode {
+        VimMode::Normal => Color::LightCyan,
+        VimMode::Insert => Color::LightGreen,
+        VimMode::Visual => Color::LightYellow,
+        VimMode::Operator(_) => Color::LightMagenta,
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(5)])
@@ -449,6 +478,12 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled("  [", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            mode.indicator(),
+            Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("]", Style::default().fg(Color::DarkGray)),
     ]))
     .block(
         Block::default()
@@ -464,19 +499,19 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
     f.render_widget(header, chunks[0]);
 
     // Editor
-    app.task_file_editor.set_block(
+    app.task_file_editor.textarea.set_block(
         Block::default()
             .title(Span::styled(
-                " Ctrl+S to save & close, Esc to cancel ",
-                Style::default().fg(Color::LightGreen),
+                " Ctrl+S to save & close, Esc (in normal) to cancel ",
+                Style::default().fg(mode_color),
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightGreen)),
+            .border_style(Style::default().fg(mode_color)),
     );
-    app.task_file_editor
+    app.task_file_editor.textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
-    f.render_widget(&app.task_file_editor, chunks[1]);
+    f.render_widget(&app.task_file_editor.textarea, chunks[1]);
 }
 
 fn draw_feedback(f: &mut Frame, app: &mut App) {
@@ -488,6 +523,14 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
         .selected_task()
         .map(|t| t.meta.task_id())
         .unwrap_or_else(|| "unknown".to_string());
+
+    let mode = app.feedback_editor.mode();
+    let mode_color = match mode {
+        VimMode::Normal => Color::LightCyan,
+        VimMode::Insert => Color::LightGreen,
+        VimMode::Visual => Color::LightYellow,
+        VimMode::Operator(_) => Color::LightMagenta,
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -503,6 +546,12 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled("  [", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            mode.indicator(),
+            Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("]", Style::default().fg(Color::DarkGray)),
     ]))
     .block(
         Block::default()
@@ -518,19 +567,19 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
     f.render_widget(header, chunks[0]);
 
     // Editor
-    app.feedback_editor.set_block(
+    app.feedback_editor.textarea.set_block(
         Block::default()
             .title(Span::styled(
-                " Enter feedback (Ctrl+S to submit, Esc to cancel) ",
-                Style::default().fg(Color::LightGreen),
+                " Enter feedback (Ctrl+S to submit, Esc in normal to cancel) ",
+                Style::default().fg(mode_color),
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightGreen)),
+            .border_style(Style::default().fg(mode_color)),
     );
-    app.feedback_editor
+    app.feedback_editor.textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
-    f.render_widget(&app.feedback_editor, chunks[1]);
+    f.render_widget(&app.feedback_editor.textarea, chunks[1]);
 }
 
 fn draw_delete_confirm(f: &mut Frame, app: &App) {
@@ -997,20 +1046,33 @@ fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
         None => return,
     };
 
-    wizard.description_editor.set_block(
+    let mode = wizard.description_editor.mode();
+    let mode_color = match mode {
+        VimMode::Normal => Color::LightCyan,
+        VimMode::Insert => Color::LightGreen,
+        VimMode::Visual => Color::LightYellow,
+        VimMode::Operator(_) => Color::LightMagenta,
+    };
+
+    let title = format!(
+        " Describe what this task should accomplish [{}] (Ctrl+S to continue) ",
+        mode.indicator()
+    );
+
+    wizard.description_editor.textarea.set_block(
         Block::default()
             .title(Span::styled(
-                " Describe what this task should accomplish (Ctrl+S to continue) ",
-                Style::default().fg(Color::LightGreen),
+                title,
+                Style::default().fg(mode_color),
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightGreen)),
+            .border_style(Style::default().fg(mode_color)),
     );
     wizard
-        .description_editor
+        .description_editor.textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
-    f.render_widget(&wizard.description_editor, area);
+    f.render_widget(&wizard.description_editor.textarea, area);
 }
 
 fn draw_wizard_flow_list(f: &mut Frame, wizard: &super::app::NewTaskWizard, area: Rect) {
