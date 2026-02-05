@@ -3,6 +3,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+
 use crate::config::Config;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +118,7 @@ impl Task {
         let meta = TaskMeta::new(
             repo_name.to_string(),
             branch_name.to_string(),
-            worktree_path,
+            worktree_path.clone(),
             flow_name.to_string(),
         );
 
@@ -123,6 +126,9 @@ impl Task {
         task.save_meta()?;
         task.write_task(&format!("# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n", description))?;
         task.init_files()?;
+
+        // Create symlink in worktree pointing to canonical TASK.md
+        task.ensure_worktree_symlink()?;
 
         Ok(task)
     }
@@ -143,7 +149,15 @@ impl Task {
         let meta: TaskMeta = serde_json::from_str(&meta_content)
             .context("Failed to parse task meta.json")?;
 
-        Ok(Self { meta, dir })
+        let task = Self { meta, dir };
+
+        // Ensure symlink exists for existing tasks (migration)
+        // Only if the worktree still exists
+        if task.meta.worktree_path.exists() {
+            let _ = task.ensure_worktree_symlink();
+        }
+
+        Ok(task)
     }
 
     /// Load a task by task_id (repo--branch format)
@@ -235,6 +249,64 @@ impl Task {
     pub fn write_task(&self, content: &str) -> Result<()> {
         let task_path = self.dir.join("TASK.md");
         std::fs::write(&task_path, content)?;
+        Ok(())
+    }
+
+    /// Ensure the worktree has a symlink to the canonical TASK.md in the tasks directory.
+    /// This allows agents running in the worktree to read/write the same TASK.md that the TUI uses.
+    #[cfg(unix)]
+    pub fn ensure_worktree_symlink(&self) -> Result<()> {
+        let canonical_path = self.dir.join("TASK.md");
+        let worktree_path = self.meta.worktree_path.join("TASK.md");
+
+        // If worktree path already exists, check what it is
+        if worktree_path.exists() || worktree_path.symlink_metadata().is_ok() {
+            // Check if it's already a symlink to the right place
+            if let Ok(link_target) = std::fs::read_link(&worktree_path) {
+                if link_target == canonical_path {
+                    // Already correct
+                    return Ok(());
+                }
+            }
+
+            // It's either a file or a symlink to the wrong place
+            // If it's a regular file with content, migrate it
+            if worktree_path.is_file() && !worktree_path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+                // It's a regular file - copy content to canonical location if canonical is empty/missing
+                let worktree_content = std::fs::read_to_string(&worktree_path).unwrap_or_default();
+                let canonical_content = std::fs::read_to_string(&canonical_path).unwrap_or_default();
+
+                // If worktree has newer/different content, use it
+                if !worktree_content.is_empty() && (canonical_content.is_empty() || worktree_content != canonical_content) {
+                    std::fs::write(&canonical_path, &worktree_content)
+                        .context("Failed to migrate TASK.md content to canonical location")?;
+                }
+            }
+
+            // Remove the existing file/symlink
+            std::fs::remove_file(&worktree_path)
+                .context("Failed to remove existing TASK.md in worktree")?;
+        }
+
+        // Create the symlink
+        symlink(&canonical_path, &worktree_path)
+            .context("Failed to create TASK.md symlink in worktree")?;
+
+        Ok(())
+    }
+
+    /// Non-unix stub for ensure_worktree_symlink
+    #[cfg(not(unix))]
+    pub fn ensure_worktree_symlink(&self) -> Result<()> {
+        // On non-unix systems, just copy the file instead
+        let canonical_path = self.dir.join("TASK.md");
+        let worktree_path = self.meta.worktree_path.join("TASK.md");
+
+        if canonical_path.exists() {
+            std::fs::copy(&canonical_path, &worktree_path)
+                .context("Failed to copy TASK.md to worktree")?;
+        }
+
         Ok(())
     }
 
