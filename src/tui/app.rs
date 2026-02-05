@@ -981,8 +981,11 @@ impl App {
             }
 
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => {
+                KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
+                }
+                KeyCode::Char('h') => {
+                    self.preview_pane = PreviewPane::Logs;
                 }
                 KeyCode::Enter => {
                     // In Notes pane, Enter starts editing; in Logs, attaches tmux
