@@ -124,6 +124,12 @@ impl Task {
         task.write_task(&format!("# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n", description))?;
         task.init_files()?;
 
+        // Create symlink in worktree pointing to TASK.md in task directory
+        task.create_worktree_symlink()?;
+
+        // Ensure TASK.md is in .gitignore to prevent accidental commits
+        task.ensure_gitignore_entry()?;
+
         Ok(task)
     }
 
@@ -235,8 +241,67 @@ impl Task {
     }
 
     pub fn write_task(&self, content: &str) -> Result<()> {
-        let task_path = self.meta.worktree_path.join("TASK.md");
+        let task_path = self.dir.join("TASK.md");
         std::fs::write(&task_path, content)?;
+        Ok(())
+    }
+
+    /// Create a symlink in the worktree pointing to TASK.md in the task directory.
+    /// This allows the Claude agent to read/write TASK.md transparently while keeping
+    /// the actual file outside of git.
+    pub fn create_worktree_symlink(&self) -> Result<()> {
+        let symlink_path = self.meta.worktree_path.join("TASK.md");
+        let target_path = self.dir.join("TASK.md");
+
+        // Remove existing file or symlink if present
+        if symlink_path.exists() || symlink_path.is_symlink() {
+            std::fs::remove_file(&symlink_path)
+                .context("Failed to remove existing TASK.md in worktree")?;
+        }
+
+        // Create symlink
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &symlink_path)
+            .context("Failed to create TASK.md symlink in worktree")?;
+
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target_path, &symlink_path)
+            .context("Failed to create TASK.md symlink in worktree")?;
+
+        Ok(())
+    }
+
+    /// Ensure TASK.md is in the worktree's .gitignore to prevent accidental commits.
+    pub fn ensure_gitignore_entry(&self) -> Result<()> {
+        let gitignore_path = self.meta.worktree_path.join(".gitignore");
+        let entry = "TASK.md";
+
+        if gitignore_path.exists() {
+            let content = std::fs::read_to_string(&gitignore_path)
+                .context("Failed to read .gitignore")?;
+
+            // Check if TASK.md is already ignored
+            let is_ignored = content.lines().any(|line| {
+                let trimmed = line.trim();
+                trimmed == entry || trimmed == "/TASK.md"
+            });
+
+            if !is_ignored {
+                // Append TASK.md to .gitignore
+                let new_content = if content.ends_with('\n') || content.is_empty() {
+                    format!("{}{}\n", content, entry)
+                } else {
+                    format!("{}\n{}\n", content, entry)
+                };
+                std::fs::write(&gitignore_path, new_content)
+                    .context("Failed to update .gitignore")?;
+            }
+        } else {
+            // Create .gitignore with TASK.md entry
+            std::fs::write(&gitignore_path, format!("{}\n", entry))
+                .context("Failed to create .gitignore")?;
+        }
+
         Ok(())
     }
 
@@ -260,7 +325,7 @@ impl Task {
     }
 
     pub fn read_task(&self) -> Result<String> {
-        let path = self.meta.worktree_path.join("TASK.md");
+        let path = self.dir.join("TASK.md");
         std::fs::read_to_string(&path).context("Failed to read TASK.md")
     }
 
