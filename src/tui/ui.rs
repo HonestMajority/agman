@@ -699,6 +699,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("f", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("x", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("i", Style::default().fg(Color::LightCyan)),
                     Span::styled(" edit  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Enter", Style::default().fg(Color::LightCyan)),

@@ -902,8 +902,11 @@ impl App {
                     self.start_wizard()?;
                 }
                 KeyCode::Char('x') => {
-                    // Open command list
-                    self.open_command_list();
+                    // Open command list (go to preview first, like f and t)
+                    if !self.tasks.is_empty() {
+                        self.load_preview();
+                        self.open_command_list();
+                    }
                 }
                 KeyCode::Char('t') => {
                     // Open task editor modal
