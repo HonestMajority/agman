@@ -864,7 +864,7 @@ impl App {
                 KeyCode::Char('j') => {
                     self.next_task();
                 }
-                KeyCode::Enter | KeyCode::Char('l') => {
+                KeyCode::Enter => {
                     self.load_preview();
                     self.preview_pane = PreviewPane::Logs;
                     self.view = View::Preview;

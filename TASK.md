@@ -1,14 +1,11 @@
 # Goal
-the navigation is a bit weird in the view when looking in a task. I would like to be able to switch back and forth between the
-logs pane and the notes pane with h and l. currently we navigate backwards to the main view on h. we can remove that.
+Remove the `l` key shortcut from the main task list view. Currently both `Enter` and `l` open the preview view, but only `Enter` should do this. The `l` key should have no action in the task list view.
 
 # Plan
 ## Completed
-- [x] In `handle_preview_event` (src/tui/app.rs:987), modify the `h` key handler to switch to Logs pane instead of navigating back to TaskList
-- [x] `l` key handler switches to Notes pane (already implemented at line 1047)
-- [x] Bidirectional switching: `h` moves to Logs pane, `l` moves to Notes pane
-- [x] `q` and `Esc` are now the only ways to go back to TaskList view
-- [x] Build verified - compiles successfully
+- [x] Changed h/l keys in preview view to switch between Logs and Notes panes
+- [x] `q` and `Esc` are now the only ways to go back from preview to task list
+- [x] In `handle_tasklist_event` (src/tui/app.rs:867), remove `KeyCode::Char('l')` from the match arm that opens preview view - keep only `KeyCode::Enter`
 
 ## Remaining
 (none)
