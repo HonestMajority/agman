@@ -120,15 +120,38 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
 
-    // Calculate dynamic task column width
-    // Fixed columns: icon(1) + spaces(3) + status(10) + agent(12) + updated(~10) + gaps(9) = ~45
-    const FIXED_COLS_WIDTH: u16 = 48;
+    // Calculate dynamic column widths
     const MIN_TASK_WIDTH: usize = 15;
     const STATUS_WIDTH: usize = 10;
-    const AGENT_WIDTH: usize = 12;
+    const MIN_AGENT_WIDTH: usize = 6; // width of "AGENT" header + 1
+    const MAX_AGENT_WIDTH: usize = 25;
+    const UPDATED_WIDTH: usize = 10;
     const COL_GAP: &str = "   "; // 3 spaces between columns
 
-    let available_width = inner.width.saturating_sub(FIXED_COLS_WIDTH) as usize;
+    // Scan tasks for longest agent name
+    let max_agent_len = app
+        .tasks
+        .iter()
+        .filter_map(|t| {
+            if t.meta.status == TaskStatus::Running {
+                t.meta.current_agent.as_deref()
+            } else {
+                None
+            }
+        })
+        .map(|a| a.len())
+        .max()
+        .unwrap_or(0);
+
+    let agent_width = max_agent_len
+        .max(MIN_AGENT_WIDTH)
+        .min(MAX_AGENT_WIDTH);
+
+    // Compute fixed width from actual components:
+    // icon(1) + padding(3) + col_gaps(3*3=9) + status + agent + updated
+    let fixed_cols_width = (1 + 3 + 9 + STATUS_WIDTH + agent_width + UPDATED_WIDTH) as u16;
+
+    let available_width = inner.width.saturating_sub(fixed_cols_width) as usize;
 
     // Find the longest task ID
     let max_task_len = app
@@ -161,7 +184,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw(COL_GAP),
         Span::styled(
-            format!("{:<width$}", "AGENT", width = AGENT_WIDTH),
+            format!("{:<width$}", "AGENT", width = agent_width),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -279,7 +302,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw(COL_GAP),
             Span::styled(
-                format!("{:<width$}", agent_str, width = AGENT_WIDTH),
+                format!("{:<width$}", agent_str, width = agent_width),
                 if is_running {
                     Style::default().fg(Color::LightBlue)
                 } else {
