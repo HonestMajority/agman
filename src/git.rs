@@ -165,15 +165,6 @@ impl Git {
         Ok(worktree_path)
     }
 
-    /// Create a worktree for an existing remote branch
-    pub fn create_worktree_for_existing_branch(
-        config: &Config,
-        repo_name: &str,
-        branch_name: &str,
-    ) -> Result<PathBuf> {
-        Self::create_worktree_for_existing_branch_impl(config, repo_name, branch_name, false)
-    }
-
     /// Create a worktree for an existing remote branch (quiet mode for TUI)
     pub fn create_worktree_for_existing_branch_quiet(
         config: &Config,
