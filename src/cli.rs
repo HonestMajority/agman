@@ -19,9 +19,6 @@ pub enum Commands {
         branch_name: String,
         /// Description of what to build
         description: String,
-        /// Flow to use (default: "default")
-        #[arg(long, default_value = "default")]
-        flow: String,
     },
 
     /// List all tasks
@@ -71,9 +68,6 @@ pub enum Commands {
         /// Follow-up instructions or feedback (reads from FEEDBACK.md if not provided)
         #[arg(allow_hyphen_values = true)]
         feedback: Option<String>,
-        /// Flow to use (default: "continue")
-        #[arg(long, default_value = "continue")]
-        flow: String,
     },
 
     /// Run a stored command on a task
