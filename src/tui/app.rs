@@ -6,6 +6,7 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use std::io;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tui_textarea::{CursorMove, Input, Key, TextArea};
@@ -35,8 +36,15 @@ pub enum View {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizardStep {
     SelectRepo,
+    SelectWorktreeMode,
     SelectBranch,
     EnterDescription,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeMode {
+    CreateNew,
+    UseExisting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +57,9 @@ pub struct NewTaskWizard {
     pub step: WizardStep,
     pub repos: Vec<String>,
     pub selected_repo_index: usize,
+    pub worktree_mode: WorktreeMode,
+    pub existing_worktrees: Vec<(String, PathBuf)>,
+    pub selected_worktree_index: usize,
     pub branch_mode: BranchMode,
     pub existing_branches: Vec<String>,
     pub selected_branch_index: usize,
@@ -528,6 +539,9 @@ impl App {
             step: WizardStep::SelectRepo,
             repos,
             selected_repo_index: 0,
+            worktree_mode: WorktreeMode::CreateNew,
+            existing_worktrees: Vec::new(),
+            selected_worktree_index: 0,
             branch_mode: BranchMode::CreateNew,
             existing_branches: Vec::new(),
             selected_branch_index: 0,
@@ -803,6 +817,36 @@ impl App {
         Ok(branches)
     }
 
+    fn scan_existing_worktrees(&self, repo_name: &str) -> Result<Vec<(String, PathBuf)>> {
+        let repo_path = self.config.repo_path(repo_name);
+        let worktrees = Git::list_worktrees(&repo_path)?;
+
+        // Build set of branches that already have tasks for this repo
+        let existing_tasks: std::collections::HashSet<String> = self
+            .tasks
+            .iter()
+            .filter(|t| t.meta.repo_name == repo_name)
+            .map(|t| t.meta.branch_name.clone())
+            .collect();
+
+        let main_repo_path = repo_path.canonicalize().unwrap_or(repo_path);
+
+        let orphans: Vec<(String, PathBuf)> = worktrees
+            .into_iter()
+            .filter(|(branch, path)| {
+                // Filter out the main repo worktree
+                let canonical = path.canonicalize().unwrap_or(path.clone());
+                if canonical == main_repo_path {
+                    return false;
+                }
+                // Filter out worktrees that already have a task
+                !existing_tasks.contains(branch)
+            })
+            .collect();
+
+        Ok(orphans)
+    }
+
     fn wizard_next_step(&mut self) -> Result<()> {
         let wizard = match &mut self.wizard {
             Some(w) => w,
@@ -813,14 +857,46 @@ impl App {
 
         match wizard.step {
             WizardStep::SelectRepo => {
-                // Load branches for selected repo
+                // Scan both branches and existing worktrees for selected repo
                 let repo_name = wizard.repos[wizard.selected_repo_index].clone();
                 let branches = self.scan_branches(&repo_name)?;
+                let existing_wts = self.scan_existing_worktrees(&repo_name)?;
 
                 let wizard = self.wizard.as_mut().unwrap();
                 wizard.existing_branches = branches;
                 wizard.selected_branch_index = 0;
-                wizard.step = WizardStep::SelectBranch;
+                wizard.existing_worktrees = existing_wts;
+                wizard.selected_worktree_index = 0;
+                wizard.worktree_mode = WorktreeMode::CreateNew;
+                wizard.step = WizardStep::SelectWorktreeMode;
+            }
+            WizardStep::SelectWorktreeMode => {
+                let wizard = self.wizard.as_mut().unwrap();
+                match wizard.worktree_mode {
+                    WorktreeMode::CreateNew => {
+                        wizard.step = WizardStep::SelectBranch;
+                    }
+                    WorktreeMode::UseExisting => {
+                        if wizard.existing_worktrees.is_empty() {
+                            wizard.error_message =
+                                Some("No existing worktrees without tasks".to_string());
+                            return Ok(());
+                        }
+                        // Validate selection and check task doesn't already exist
+                        let (ref branch_name, _) =
+                            wizard.existing_worktrees[wizard.selected_worktree_index];
+                        let repo_name = &wizard.repos[wizard.selected_repo_index];
+                        let task_dir = self.config.task_dir(repo_name, branch_name);
+                        if task_dir.exists() {
+                            wizard.error_message = Some(format!(
+                                "Task '{}--{}' already exists",
+                                repo_name, branch_name
+                            ));
+                            return Ok(());
+                        }
+                        wizard.step = WizardStep::EnterDescription;
+                    }
+                }
             }
             WizardStep::SelectBranch => {
                 // Validate branch name
@@ -895,11 +971,21 @@ impl App {
                 self.wizard = None;
                 self.view = View::TaskList;
             }
-            WizardStep::SelectBranch => {
+            WizardStep::SelectWorktreeMode => {
                 wizard.step = WizardStep::SelectRepo;
             }
+            WizardStep::SelectBranch => {
+                wizard.step = WizardStep::SelectWorktreeMode;
+            }
             WizardStep::EnterDescription => {
-                wizard.step = WizardStep::SelectBranch;
+                match wizard.worktree_mode {
+                    WorktreeMode::UseExisting => {
+                        wizard.step = WizardStep::SelectWorktreeMode;
+                    }
+                    WorktreeMode::CreateNew => {
+                        wizard.step = WizardStep::SelectBranch;
+                    }
+                }
             }
         }
     }
@@ -911,12 +997,24 @@ impl App {
         };
 
         let repo_name = wizard.repos[wizard.selected_repo_index].clone();
-        let branch_name = match wizard.branch_mode {
-            BranchMode::CreateNew => wizard.new_branch_editor.lines().join("").trim().to_string(),
-            BranchMode::SelectExisting => {
-                wizard.existing_branches[wizard.selected_branch_index].clone()
-            }
+        let use_existing = wizard.worktree_mode == WorktreeMode::UseExisting;
+
+        let (branch_name, worktree_path_existing) = if use_existing {
+            let (branch, path) =
+                wizard.existing_worktrees[wizard.selected_worktree_index].clone();
+            (branch, Some(path))
+        } else {
+            let name = match wizard.branch_mode {
+                BranchMode::CreateNew => {
+                    wizard.new_branch_editor.lines().join("").trim().to_string()
+                }
+                BranchMode::SelectExisting => {
+                    wizard.existing_branches[wizard.selected_branch_index].clone()
+                }
+            };
+            (name, None)
         };
+
         let description = wizard.description_editor.lines_joined().trim().to_string();
         let flow_name = "new".to_string();
 
@@ -925,22 +1023,28 @@ impl App {
         // Initialize default files
         self.config.init_default_files()?;
 
-        // Create worktree (use quiet mode to avoid corrupting TUI)
-        self.log_output("  Creating worktree...".to_string());
-        let worktree_path = match Git::create_worktree_quiet(&self.config, &repo_name, &branch_name)
-        {
-            Ok(path) => path,
-            Err(e) => {
-                self.log_output(format!("  Error: {}", e));
-                if let Some(w) = &mut self.wizard {
-                    w.error_message = Some(format!("Failed to create worktree: {}", e));
+        let worktree_path = if let Some(existing_path) = worktree_path_existing {
+            // UseExisting mode: skip worktree creation, just use existing path
+            self.log_output("  Using existing worktree...".to_string());
+            let _ = Git::direnv_allow(&existing_path);
+            existing_path
+        } else {
+            // CreateNew mode: create worktree as before
+            self.log_output("  Creating worktree...".to_string());
+            match Git::create_worktree_quiet(&self.config, &repo_name, &branch_name) {
+                Ok(path) => {
+                    let _ = Git::direnv_allow(&path);
+                    path
                 }
-                return Ok(());
+                Err(e) => {
+                    self.log_output(format!("  Error: {}", e));
+                    if let Some(w) = &mut self.wizard {
+                        w.error_message = Some(format!("Failed to create worktree: {}", e));
+                    }
+                    return Ok(());
+                }
             }
         };
-
-        // Run direnv allow
-        let _ = Git::direnv_allow(&worktree_path);
 
         // Create task
         self.log_output("  Creating task files...".to_string());
@@ -1442,6 +1546,43 @@ impl App {
                             } else {
                                 wizard.selected_repo_index - 1
                             };
+                        }
+                    }
+                    KeyCode::Enter => {
+                        self.wizard_next_step()?;
+                    }
+                    _ => {}
+                },
+                WizardStep::SelectWorktreeMode => match key.code {
+                    KeyCode::Esc => {
+                        self.wizard_prev_step();
+                    }
+                    KeyCode::Tab | KeyCode::BackTab => {
+                        // Toggle between CreateNew and UseExisting
+                        wizard.worktree_mode = match wizard.worktree_mode {
+                            WorktreeMode::CreateNew => WorktreeMode::UseExisting,
+                            WorktreeMode::UseExisting => WorktreeMode::CreateNew,
+                        };
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if wizard.worktree_mode == WorktreeMode::UseExisting
+                            && !wizard.existing_worktrees.is_empty()
+                        {
+                            wizard.selected_worktree_index =
+                                (wizard.selected_worktree_index + 1)
+                                    % wizard.existing_worktrees.len();
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if wizard.worktree_mode == WorktreeMode::UseExisting
+                            && !wizard.existing_worktrees.is_empty()
+                        {
+                            wizard.selected_worktree_index =
+                                if wizard.selected_worktree_index == 0 {
+                                    wizard.existing_worktrees.len() - 1
+                                } else {
+                                    wizard.selected_worktree_index - 1
+                                };
                         }
                     }
                     KeyCode::Enter => {

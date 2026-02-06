@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::task::TaskStatus;
 
-use super::app::{App, BranchMode, PreviewPane, View, WizardStep};
+use super::app::{App, BranchMode, PreviewPane, View, WizardStep, WorktreeMode};
 use super::vim::VimMode;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -790,6 +790,18 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                             Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
                         ]
                     }
+                    WizardStep::SelectWorktreeMode => {
+                        vec![
+                            Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                            Span::styled(" mode  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                            Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                            Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                        ]
+                    }
                     WizardStep::SelectBranch => {
                         vec![
                             Span::styled("Tab", Style::default().fg(Color::LightCyan)),
@@ -870,19 +882,26 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
     f.render_widget(Clear, area);
 
     // Extract data we need before mutable borrows
-    let (step, step_num, step_title, error_message) = {
+    let (step, step_num, total_steps, step_title, error_message) = {
         let wizard = match &app.wizard {
             Some(w) => w,
             None => return,
         };
+        // Dynamic step numbering: UseExisting skips SelectBranch (3 steps), CreateNew has 4 steps
+        let total = match wizard.worktree_mode {
+            WorktreeMode::UseExisting => 3,
+            WorktreeMode::CreateNew => 4,
+        };
         let (step_num, step_title) = match wizard.step {
             WizardStep::SelectRepo => (1, "Select Repository"),
-            WizardStep::SelectBranch => (2, "Branch Name"),
-            WizardStep::EnterDescription => (3, "Task Description"),
+            WizardStep::SelectWorktreeMode => (2, "Worktree"),
+            WizardStep::SelectBranch => (3, "Branch Name"),
+            WizardStep::EnterDescription => (total, "Task Description"),
         };
         (
             wizard.step,
             step_num,
+            total,
             step_title,
             wizard.error_message.clone(),
         )
@@ -891,7 +910,7 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
     // Main wizard container
     let block = Block::default()
         .title(Span::styled(
-            format!(" New Task [{}/3] {} ", step_num, step_title),
+            format!(" New Task [{}/{}] {} ", step_num, total_steps, step_title),
             Style::default()
                 .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
@@ -915,6 +934,7 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
                 draw_wizard_repo_list(f, wizard, chunks[0]);
             }
         }
+        WizardStep::SelectWorktreeMode => draw_wizard_worktree_mode(f, app, chunks[0]),
         WizardStep::SelectBranch => draw_wizard_branch(f, app, chunks[0]),
         WizardStep::EnterDescription => draw_wizard_description(f, app, chunks[0]),
     }
@@ -960,6 +980,140 @@ fn draw_wizard_repo_list(f: &mut Frame, wizard: &super::app::NewTaskWizard, area
     );
 
     f.render_widget(list, area);
+}
+
+fn draw_wizard_worktree_mode(f: &mut Frame, app: &mut App, area: Rect) {
+    let wizard = match &mut app.wizard {
+        Some(w) => w,
+        None => return,
+    };
+
+    // Split into mode tabs and content
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(3)])
+        .split(area);
+
+    // Draw mode tabs
+    let has_existing = !wizard.existing_worktrees.is_empty();
+    let tab_titles = vec![
+        Span::styled(
+            " Create New ",
+            if wizard.worktree_mode == WorktreeMode::CreateNew {
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled(
+            " Use Existing ",
+            if wizard.worktree_mode == WorktreeMode::UseExisting {
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if has_existing {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::Rgb(60, 60, 60))
+            },
+        ),
+    ];
+
+    let tabs = Tabs::new(tab_titles)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(Span::styled(
+                    " Tab to switch mode ",
+                    Style::default().fg(Color::DarkGray),
+                )),
+        )
+        .select(match wizard.worktree_mode {
+            WorktreeMode::CreateNew => 0,
+            WorktreeMode::UseExisting => 1,
+        })
+        .highlight_style(Style::default().fg(Color::LightCyan));
+
+    f.render_widget(tabs, chunks[0]);
+
+    // Draw content based on mode
+    match wizard.worktree_mode {
+        WorktreeMode::CreateNew => {
+            let msg = Paragraph::new("Will create a new branch and worktree for this task.")
+                .style(Style::default().fg(Color::Gray))
+                .block(
+                    Block::default()
+                        .title(Span::styled(
+                            " New Branch + Worktree ",
+                            Style::default().fg(Color::LightGreen),
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightGreen)),
+                );
+            f.render_widget(msg, chunks[1]);
+        }
+        WorktreeMode::UseExisting => {
+            if wizard.existing_worktrees.is_empty() {
+                let msg =
+                    Paragraph::new("No existing worktrees without tasks for this repository.")
+                        .style(Style::default().fg(Color::DarkGray))
+                        .block(
+                            Block::default()
+                                .title(Span::styled(
+                                    " Existing Worktrees ",
+                                    Style::default().fg(Color::DarkGray),
+                                ))
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(Color::DarkGray)),
+                        );
+                f.render_widget(msg, chunks[1]);
+            } else {
+                let items: Vec<ListItem> = wizard
+                    .existing_worktrees
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (branch, path))| {
+                        let style = if i == wizard.selected_worktree_index {
+                            Style::default()
+                                .fg(Color::White)
+                                .bg(Color::Rgb(40, 40, 60))
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        let prefix = if i == wizard.selected_worktree_index {
+                            "▸ "
+                        } else {
+                            "  "
+                        };
+                        ListItem::new(Line::from(vec![
+                            Span::styled(prefix, style),
+                            Span::styled(branch, style),
+                            Span::styled(
+                                format!("  ({})", path.display()),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ]))
+                    })
+                    .collect();
+
+                let list = List::new(items).block(
+                    Block::default()
+                        .title(Span::styled(
+                            " Existing Worktrees ",
+                            Style::default().fg(Color::LightYellow),
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightYellow)),
+                );
+
+                f.render_widget(list, chunks[1]);
+            }
+        }
+    }
 }
 
 fn draw_wizard_branch(f: &mut Frame, app: &mut App, area: Rect) {
@@ -1142,6 +1296,9 @@ fn draw_wizard_footer_direct(
         // Show contextual help
         let help = match step {
             WizardStep::SelectRepo => "j/k: navigate  Enter: select  Esc: cancel",
+            WizardStep::SelectWorktreeMode => {
+                "Tab: switch mode  j/k: navigate  Enter: next  Esc: back"
+            }
             WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
             WizardStep::EnterDescription => "Ctrl+S: create task  Esc: back",
         };

@@ -253,7 +253,6 @@ impl Git {
         }
     }
 
-    #[allow(dead_code)]
     pub fn list_worktrees(repo_path: &PathBuf) -> Result<Vec<(String, PathBuf)>> {
         let output = Command::new("git")
             .current_dir(repo_path)
