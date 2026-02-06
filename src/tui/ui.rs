@@ -124,7 +124,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     const MIN_REPO_WIDTH: usize = 4; // "REPO" header length
     const MAX_REPO_WIDTH: usize = 20;
     const MIN_BRANCH_WIDTH: usize = 6; // "BRANCH" header length
-    const MAX_BRANCH_WIDTH: usize = 30;
+
     const STATUS_WIDTH: usize = 10;
     const MIN_AGENT_WIDTH: usize = 6; // width of "AGENT" header + 1
     const MAX_AGENT_WIDTH: usize = 25;
@@ -160,8 +160,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(MIN_BRANCH_WIDTH);
 
     let branch_width = max_branch_len
-        .max(MIN_BRANCH_WIDTH)
-        .min(MAX_BRANCH_WIDTH);
+        .max(MIN_BRANCH_WIDTH);
 
     // Scan tasks for longest agent name
     let max_agent_len = app
