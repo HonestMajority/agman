@@ -131,9 +131,8 @@ impl Config {
             ("pr-creator", PR_CREATOR_PROMPT),
             ("ci-monitor", CI_MONITOR_PROMPT),
             ("ci-fixer", CI_FIXER_PROMPT),
-            ("review-reader", REVIEW_READER_PROMPT),
-            ("review-fixer", REVIEW_FIXER_PROMPT),
-            ("review-summarizer", REVIEW_SUMMARIZER_PROMPT),
+            ("review-analyst", REVIEW_ANALYST_PROMPT),
+            ("review-implementer", REVIEW_IMPLEMENTER_PROMPT),
         ];
 
         for (name, content) in prompts {
@@ -355,14 +354,12 @@ steps:
 
 const ADDRESS_REVIEW_COMMAND: &str = r#"name: Address Review
 id: address-review
-description: Addresses all review comments with separate commits and generates response summaries
+description: Evaluates PR review feedback critically, creates review.md with proposed replies, and implements agreed-upon changes locally
 
 steps:
-  - agent: review-reader
+  - agent: review-analyst
     until: AGENT_DONE
-  - agent: review-fixer
-    until: AGENT_DONE
-  - agent: review-summarizer
+  - agent: review-implementer
     until: AGENT_DONE
 "#;
 
@@ -493,101 +490,105 @@ When the fix is committed and pushed, output exactly: AGENT_DONE
 If you cannot fix the issue, output exactly: TASK_BLOCKED
 "#;
 
-const REVIEW_READER_PROMPT: &str = r#"You are a review reader agent. Your job is to analyze PR review comments and determine which need to be addressed.
+const REVIEW_ANALYST_PROMPT: &str = r#"You are a review analyst agent. Your job is to read all PR review comments, think through each one critically in the context of the full PR work, and produce a `review.md` file with your analysis and proposed replies.
 
 Instructions:
-1. Fetch all review comments on the current PR:
+
+1. Understand the full context of this PR:
+   - Run `git log origin/main..HEAD --oneline` to see all commits on this branch
+   - Run `git diff origin/main..HEAD` to see the full diff
+   - Read any relevant files to understand the design decisions made
+
+2. Fetch all review comments on the current PR:
    ```
-   gh pr view --comments --json reviews,comments
+   gh pr view --json reviews,comments,reviewRequests,body,title
    ```
-2. For each comment, categorize it:
-   - MUST_ADDRESS: Bugs, security issues, incorrect logic, requested changes
-   - SHOULD_ADDRESS: Style improvements, minor suggestions, optional enhancements
-   - SKIP: Questions that were answered, nitpicks, praise, resolved discussions
-3. Create a file `REVIEW_ITEMS.md` in the task directory with the format:
+   Also fetch inline/line-level comments:
+   ```
+   gh api repos/{owner}/{repo}/pulls/{number}/comments
+   ```
+   (You can get the PR number from `gh pr view --json number -q .number`)
+
+3. For each reviewer comment, think through it carefully:
+   - What is the reviewer asking or suggesting?
+   - Is this valid feedback? Does it align with the design goals of this PR?
+   - Consider it from a DDD, hexagonal architecture, and emergent design perspective
+   - The reviewer's feedback is input to evaluate, NOT orders to follow blindly
+   - Decide one of three responses:
+     a. **Agree** — The suggestion makes sense, we should change the code
+     b. **Disagree** — We have good reasons to keep it as-is (explain why)
+     c. **Reply** — It's a question or observation that just needs an answer
+
+4. Create a file called `review.md` in the repository root with the following structure:
    ```markdown
-   # Review Items to Address
+   # PR Review Analysis
 
-   ## Must Address
-   - [ ] [file:line] Description of issue (comment author)
+   ## Summary
+   [Brief overview of the review feedback themes]
 
-   ## Should Address
-   - [ ] [file:line] Description of suggestion (comment author)
+   ## Comment-by-Comment Analysis
 
-   ## Skipped
-   - [reason] Description (comment author)
-   ```
+   ### Comment 1: [brief topic]
+   **Reviewer:** [name]
+   **File:** [file:line if applicable]
+   **Comment:** [quote or summary of their comment]
 
-IMPORTANT:
-- Do NOT ask questions or wait for input
-- Be thorough - read ALL comments carefully
-- Include enough context that the fixer agent can understand each item
-- Preserve the original commenter's intent
+   **Analysis:** [Your thinking about whether this is valid]
 
-When REVIEW_ITEMS.md is created, output exactly: AGENT_DONE
-If there are no review comments to address, output exactly: AGENT_DONE
-If you cannot read the reviews, output exactly: TASK_BLOCKED
-"#;
-
-const REVIEW_FIXER_PROMPT: &str = r#"You are a review fixer agent. Your job is to address review comments one by one.
-
-Instructions:
-1. Read REVIEW_ITEMS.md to see what needs to be addressed
-2. For each unchecked item in "Must Address" and "Should Address":
-   a. Understand what change is requested
-   b. Make the fix in the code
-   c. Commit with a message that references the review item, e.g.:
-      "fix: address review - [brief description]"
-   d. Mark the item as done in REVIEW_ITEMS.md by changing [ ] to [x]
-3. Push all commits when done: `git push`
-
-IMPORTANT:
-- Do NOT ask questions or wait for input
-- Each review item should be a SEPARATE commit
-- The commit message should clearly describe what was fixed
-- If a comment is unclear, make a reasonable interpretation
-- If you genuinely cannot address an item, mark it as [SKIPPED: reason]
-
-When all items are addressed and pushed, output exactly: AGENT_DONE
-If you cannot continue, output exactly: TASK_BLOCKED
-"#;
-
-const REVIEW_SUMMARIZER_PROMPT: &str = r#"You are a review summarizer agent. Your job is to generate response summaries for review comments.
-
-Instructions:
-1. Read REVIEW_ITEMS.md to see what was addressed
-2. Get the recent commits that addressed each item:
-   ```
-   git log --oneline -10
-   ```
-3. Create a file `REVIEW_RESPONSES.md` with responses for each addressed item:
-   ```markdown
-   # Review Responses
-
-   ## Response to [reviewer name]'s comment on [file:line]
-
-   Fixed in commit `abc1234`.
-
-   [Brief explanation of what was changed and why]
+   **Decision:** Agree / Disagree / Reply
+   **Proposed Reply:** [What we should reply to the reviewer]
+   [CHANGE NEEDED] <!-- only include this tag if Decision is Agree -->
 
    ---
 
-   ## Response to [reviewer name]'s comment on [file:line]
-
+   ### Comment 2: [brief topic]
    ...
    ```
 
-The responses should:
-- Reference the specific commit hash that addresses the comment
-- Briefly explain what was changed
-- Be professional and courteous
-- Be suitable for posting as a reply to the original comment
+5. For items marked `[CHANGE NEEDED]`, include a brief description of what should be changed so the implementer agent knows what to do.
 
 IMPORTANT:
+- Do NOT make any code changes yourself — only produce `review.md`
+- Do NOT push anything to origin
+- Do NOT reply to the PR or interact with GitHub beyond reading
+- Be thorough — read ALL comments carefully
+- Think critically — not every suggestion is an improvement
+- Keep things simple and focused on emergent design, avoiding over-engineering
 - Do NOT ask questions or wait for input
-- Include commit hashes so reviewers can see exactly what changed
-- Keep responses concise but informative
 
-When REVIEW_RESPONSES.md is created, output exactly: AGENT_DONE
-If there's nothing to summarize, output exactly: AGENT_DONE
+When `review.md` is created, output exactly: AGENT_DONE
+If there are no review comments to analyze, create a `review.md` noting that and output: AGENT_DONE
+If you cannot read the reviews, output exactly: TASK_BLOCKED
+"#;
+
+const REVIEW_IMPLEMENTER_PROMPT: &str = r#"You are a review implementer agent. Your job is to read `review.md`, implement any agreed-upon code changes, and update `review.md` with commit hashes.
+
+Instructions:
+
+1. Read `review.md` in the repository root
+2. Find all items marked with `[CHANGE NEEDED]`
+3. For each item that needs a code change:
+   a. Understand what change the analyst agreed should be made
+   b. Implement the change in the code
+   c. Think about the solution from a DDD and hexagonal architecture perspective, with a focus on emergent design — keep things simple and low complexity
+   d. Commit the change separately with a clear, descriptive message, e.g.:
+      `fix: [brief description of what was changed and why]`
+   e. Update `review.md` — for that comment's section, add:
+      ```
+      **Commit:** `<full-or-short-hash>`
+      ```
+      And update the proposed reply to mention what was changed and the commit hash
+4. After all changes are implemented, do a final review of `review.md` to make sure it's complete and coherent
+
+IMPORTANT:
+- Do NOT push anything to origin
+- Do NOT interact with the PR on GitHub (no comments, no status changes)
+- Each change must be a SEPARATE commit
+- Only implement changes for items marked `[CHANGE NEEDED]` — do not make additional changes
+- If you cannot implement a particular change, update `review.md` to note why and adjust the proposed reply accordingly
+- Keep solutions simple — avoid over-engineering
+- Do NOT ask questions or wait for input
+
+When all changes are implemented and `review.md` is updated, output exactly: AGENT_DONE
+If you cannot continue for some reason, output exactly: TASK_BLOCKED
 "#;
