@@ -954,12 +954,25 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_wizard_repo_list(f: &mut Frame, wizard: &super::app::NewTaskWizard, area: Rect) {
-    let items: Vec<ListItem> = wizard
-        .repos
-        .iter()
-        .enumerate()
-        .map(|(i, repo)| {
-            let style = if i == wizard.selected_repo_index {
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut flat_index: usize = 0;
+
+    // Favorites section
+    if !wizard.favorite_repos.is_empty() {
+        let header_line = Line::from(vec![
+            Span::styled(
+                format!("── Favorites ({}) ", wizard.favorite_repos.len()),
+                Style::default()
+                    .fg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("─".repeat(40), Style::default().fg(Color::Rgb(60, 60, 60))),
+        ]);
+        items.push(ListItem::new(header_line));
+
+        for (repo, count) in &wizard.favorite_repos {
+            let is_selected = flat_index == wizard.selected_repo_index;
+            let style = if is_selected {
                 Style::default()
                     .fg(Color::White)
                     .bg(Color::Rgb(40, 40, 60))
@@ -967,17 +980,49 @@ fn draw_wizard_repo_list(f: &mut Frame, wizard: &super::app::NewTaskWizard, area
             } else {
                 Style::default().fg(Color::Gray)
             };
-            let prefix = if i == wizard.selected_repo_index {
-                "▸ "
-            } else {
-                "  "
-            };
-            ListItem::new(Line::from(vec![
+            let prefix = if is_selected { "▸ " } else { "  " };
+            let count_str = format!("  ({} tasks)", count);
+            items.push(ListItem::new(Line::from(vec![
                 Span::styled(prefix, style),
                 Span::styled(repo, style),
-            ]))
-        })
-        .collect();
+                Span::styled(count_str, Style::default().fg(Color::DarkGray)),
+            ])));
+            flat_index += 1;
+        }
+
+        // Spacing before All Repositories section
+        items.push(ListItem::new(Line::from("")));
+    }
+
+    // All Repositories section header
+    let header_line = Line::from(vec![
+        Span::styled(
+            format!("── All Repositories ({}) ", wizard.repos.len()),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("─".repeat(34), Style::default().fg(Color::Rgb(40, 40, 40))),
+    ]);
+    items.push(ListItem::new(header_line));
+
+    for repo in &wizard.repos {
+        let is_selected = flat_index == wizard.selected_repo_index;
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(40, 40, 60))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let prefix = if is_selected { "▸ " } else { "  " };
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(repo, style),
+        ])));
+        flat_index += 1;
+    }
 
     let list = List::new(items).block(
         Block::default()

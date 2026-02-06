@@ -14,6 +14,7 @@ use tui_textarea::{CursorMove, Input, Key, TextArea};
 use crate::command::StoredCommand;
 use crate::config::Config;
 use crate::git::Git;
+use crate::repo_stats::RepoStats;
 use crate::task::{Task, TaskStatus};
 use crate::tmux::Tmux;
 
@@ -50,6 +51,7 @@ pub enum BranchSource {
 pub struct NewTaskWizard {
     pub step: WizardStep,
     pub repos: Vec<String>,
+    pub favorite_repos: Vec<(String, u64)>,
     pub selected_repo_index: usize,
     pub branch_source: BranchSource,
     pub existing_worktrees: Vec<(String, PathBuf)>,
@@ -59,6 +61,22 @@ pub struct NewTaskWizard {
     pub new_branch_editor: TextArea<'static>,
     pub description_editor: VimTextArea<'static>,
     pub error_message: Option<String>,
+}
+
+impl NewTaskWizard {
+    /// Total number of selectable items (favorites + all repos)
+    pub fn total_repo_count(&self) -> usize {
+        self.favorite_repos.len() + self.repos.len()
+    }
+
+    /// Resolve the current selection to a repo name
+    pub fn selected_repo_name(&self) -> &str {
+        if self.selected_repo_index < self.favorite_repos.len() {
+            &self.favorite_repos[self.selected_repo_index].0
+        } else {
+            &self.repos[self.selected_repo_index - self.favorite_repos.len()]
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -557,6 +575,16 @@ impl App {
             return Ok(());
         }
 
+        // Load repo stats and filter favorites to only repos that still exist
+        let stats = RepoStats::load(&self.config.repo_stats_path());
+        let repos_set: std::collections::HashSet<&str> =
+            repos.iter().map(|s| s.as_str()).collect();
+        let favorite_repos: Vec<(String, u64)> = stats
+            .favorites()
+            .into_iter()
+            .filter(|(name, _)| repos_set.contains(name.as_str()))
+            .collect();
+
         let mut new_branch_editor = Self::create_plain_editor();
         new_branch_editor.set_cursor_line_style(ratatui::style::Style::default());
 
@@ -567,6 +595,7 @@ impl App {
         self.wizard = Some(NewTaskWizard {
             step: WizardStep::SelectRepo,
             repos,
+            favorite_repos,
             selected_repo_index: 0,
             branch_source: BranchSource::NewBranch,
             existing_worktrees: Vec::new(),
@@ -889,7 +918,7 @@ impl App {
         match wizard.step {
             WizardStep::SelectRepo => {
                 // Scan both branches and existing worktrees for selected repo
-                let repo_name = wizard.repos[wizard.selected_repo_index].clone();
+                let repo_name = wizard.selected_repo_name().to_string();
                 let branches = self.scan_branches(&repo_name)?;
                 let existing_wts = self.scan_existing_worktrees(&repo_name)?;
 
@@ -942,8 +971,8 @@ impl App {
                 };
 
                 // Check if task already exists
-                let repo_name = &wizard.repos[wizard.selected_repo_index];
-                let task_dir = self.config.task_dir(repo_name, &branch_name);
+                let repo_name = wizard.selected_repo_name().to_string();
+                let task_dir = self.config.task_dir(&repo_name, &branch_name);
                 if task_dir.exists() {
                     wizard.error_message = Some(format!(
                         "Task '{}--{}' already exists",
@@ -998,7 +1027,7 @@ impl App {
             None => return Ok(()),
         };
 
-        let repo_name = wizard.repos[wizard.selected_repo_index].clone();
+        let repo_name = wizard.selected_repo_name().to_string();
         tracing::info!(repo = %repo_name, "creating task via wizard");
 
         let (branch_name, worktree_path_existing) = match wizard.branch_source {
@@ -1082,6 +1111,12 @@ impl App {
         let task_id = task.meta.task_id();
         let flow_cmd = format!("agman flow-run {}", task_id);
         let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd);
+
+        // Increment repo usage stats
+        let stats_path = self.config.repo_stats_path();
+        let mut stats = RepoStats::load(&stats_path);
+        stats.increment(&repo_name);
+        stats.save(&stats_path);
 
         // Success - close wizard and refresh
         self.wizard = None;
@@ -1547,15 +1582,17 @@ impl App {
                         self.view = View::TaskList;
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if !wizard.repos.is_empty() {
+                        let total = wizard.total_repo_count();
+                        if total > 0 {
                             wizard.selected_repo_index =
-                                (wizard.selected_repo_index + 1) % wizard.repos.len();
+                                (wizard.selected_repo_index + 1) % total;
                         }
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        if !wizard.repos.is_empty() {
+                        let total = wizard.total_repo_count();
+                        if total > 0 {
                             wizard.selected_repo_index = if wizard.selected_repo_index == 0 {
-                                wizard.repos.len() - 1
+                                total - 1
                             } else {
                                 wizard.selected_repo_index - 1
                             };

@@ -5,6 +5,7 @@ mod config;
 mod flow;
 mod git;
 mod logging;
+mod repo_stats;
 mod task;
 mod tmux;
 mod tui;

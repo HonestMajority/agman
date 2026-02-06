@@ -96,6 +96,10 @@ impl Config {
         self.commands_dir.join(format!("{}.yaml", command_id))
     }
 
+    pub fn repo_stats_path(&self) -> PathBuf {
+        self.base_dir.join("repo_stats.json")
+    }
+
     pub fn init_default_files(&self, force: bool) -> Result<()> {
         self.ensure_dirs()?;
 
