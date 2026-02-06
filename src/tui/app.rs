@@ -1055,7 +1055,7 @@ impl App {
         self.log_output(format!("Creating task {}--{}...", repo_name, branch_name));
 
         // Initialize default files
-        self.config.init_default_files()?;
+        self.config.init_default_files(false)?;
 
         let worktree_path = if let Some(existing_path) = worktree_path_existing {
             // UseExisting mode: skip worktree creation, just use existing path

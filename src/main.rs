@@ -60,7 +60,7 @@ fn main() -> Result<()> {
 
         Some(Commands::Attach { task_id }) => cmd_attach(&config, &task_id),
 
-        Some(Commands::Init) => cmd_init(&config),
+        Some(Commands::Init { force }) => cmd_init(&config, force),
 
         Some(Commands::Continue {
             task_id,
@@ -95,7 +95,7 @@ fn cmd_new(
     branch_name: &str,
     description: &str,
 ) -> Result<()> {
-    config.init_default_files()?;
+    config.init_default_files(false)?;
 
     let flow_name = "new";
 
@@ -252,7 +252,7 @@ fn cmd_delete(config: &Config, task_id: &str, force: bool) -> Result<()> {
 }
 
 fn cmd_run(config: &Config, task_id: &str, agent_name: &str, loop_mode: bool) -> Result<()> {
-    config.init_default_files()?;
+    config.init_default_files(false)?;
 
     let mut task = Task::load_by_id(config, task_id)?;
 
@@ -284,7 +284,7 @@ fn cmd_run(config: &Config, task_id: &str, agent_name: &str, loop_mode: bool) ->
 }
 
 fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
-    config.init_default_files()?;
+    config.init_default_files(false)?;
 
     let mut task = Task::load_by_id(config, task_id)?;
 
@@ -323,7 +323,7 @@ fn cmd_continue(
     task_id: &str,
     feedback: Option<&str>,
 ) -> Result<()> {
-    config.init_default_files()?;
+    config.init_default_files(false)?;
 
     let flow_name = "continue";
 
@@ -377,8 +377,8 @@ fn cmd_continue(
     Ok(())
 }
 
-fn cmd_init(config: &Config) -> Result<()> {
-    config.init_default_files()?;
+fn cmd_init(config: &Config, force: bool) -> Result<()> {
+    config.init_default_files(force)?;
 
     println!("Initialized agman at: {}", config.base_dir.display());
     println!();
@@ -405,7 +405,7 @@ fn cmd_run_command(
     command_id: &str,
     branch: Option<&str>,
 ) -> Result<()> {
-    config.init_default_files()?;
+    config.init_default_files(false)?;
 
     let mut task = Task::load_by_id(config, task_id)?;
 
@@ -463,7 +463,7 @@ fn cmd_command_flow_run(
     command_id: &str,
     branch: Option<&str>,
 ) -> Result<()> {
-    config.init_default_files()?;
+    config.init_default_files(false)?;
 
     let mut task = Task::load_by_id(config, task_id)?;
 
@@ -520,7 +520,7 @@ fn cmd_command_flow_run(
 }
 
 fn cmd_list_commands(config: &Config) -> Result<()> {
-    config.init_default_files()?;
+    config.init_default_files(false)?;
 
     let commands = command::StoredCommand::list_all(&config.commands_dir)?;
 

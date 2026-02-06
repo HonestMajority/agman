@@ -59,7 +59,11 @@ pub enum Commands {
     },
 
     /// Initialize agman (creates directories and default files)
-    Init,
+    Init {
+        /// Overwrite existing flows, prompts, and commands with defaults
+        #[arg(short, long)]
+        force: bool,
+    },
 
     /// Continue a task with follow-up instructions
     Continue {

@@ -94,27 +94,27 @@ impl Config {
         self.commands_dir.join(format!("{}.yaml", command_id))
     }
 
-    pub fn init_default_files(&self) -> Result<()> {
+    pub fn init_default_files(&self, force: bool) -> Result<()> {
         self.ensure_dirs()?;
 
         // Create "new" flow if it doesn't exist
         let new_flow = self.flow_path("new");
-        if !new_flow.exists() {
+        if force || !new_flow.exists() {
             std::fs::write(&new_flow, DEFAULT_FLOW)?;
         }
 
         let tdd_flow = self.flow_path("tdd");
-        if !tdd_flow.exists() {
+        if force || !tdd_flow.exists() {
             std::fs::write(&tdd_flow, TDD_FLOW)?;
         }
 
         let review_flow = self.flow_path("review");
-        if !review_flow.exists() {
+        if force || !review_flow.exists() {
             std::fs::write(&review_flow, REVIEW_FLOW)?;
         }
 
         let continue_flow = self.flow_path("continue");
-        if !continue_flow.exists() {
+        if force || !continue_flow.exists() {
             std::fs::write(&continue_flow, CONTINUE_FLOW)?;
         }
 
@@ -138,7 +138,7 @@ impl Config {
 
         for (name, content) in prompts {
             let path = self.prompt_path(name);
-            if !path.exists() {
+            if force || !path.exists() {
                 std::fs::write(&path, content)?;
             }
         }
@@ -153,7 +153,7 @@ impl Config {
 
         for (name, content) in commands {
             let path = self.command_path(name);
-            if !path.exists() {
+            if force || !path.exists() {
                 std::fs::write(&path, content)?;
             }
         }
