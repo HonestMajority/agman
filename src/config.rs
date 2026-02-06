@@ -22,14 +22,16 @@ impl Config {
         let prompts_dir = base_dir.join("prompts");
         let commands_dir = base_dir.join("commands");
 
-        Ok(Self {
+        let config = Self {
             base_dir,
             tasks_dir,
             flows_dir,
             prompts_dir,
             commands_dir,
             repos_dir,
-        })
+        };
+        tracing::debug!(base_dir = %config.base_dir.display(), "config loaded");
+        Ok(config)
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {

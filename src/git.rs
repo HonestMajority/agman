@@ -92,6 +92,7 @@ impl Git {
         branch_name: &str,
         quiet: bool,
     ) -> Result<PathBuf> {
+        tracing::info!(repo = repo_name, branch = branch_name, "creating worktree");
         let repo_path = config.repo_path(repo_name);
 
         if !repo_path.exists() {
@@ -155,17 +156,18 @@ impl Git {
             .context("Failed to create worktree")?;
 
         if !output.status.success() {
-            anyhow::bail!(
-                "Failed to create worktree: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let err = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(repo = repo_name, branch = branch_name, error = %err, "worktree creation failed");
+            anyhow::bail!("Failed to create worktree: {}", err);
         }
 
+        tracing::info!(path = %worktree_path.display(), "worktree created");
         Ok(worktree_path)
     }
 
     /// Remove a worktree and prune stale references
     pub fn remove_worktree(repo_path: &PathBuf, worktree_path: &PathBuf) -> Result<()> {
+        tracing::info!(worktree = %worktree_path.display(), "removing worktree");
         let output = Command::new("git")
             .current_dir(repo_path)
             .args([
@@ -195,6 +197,7 @@ impl Git {
 
     /// Delete a local branch (and any backup branches)
     pub fn delete_branch(repo_path: &PathBuf, branch_name: &str) -> Result<()> {
+        tracing::debug!(branch = branch_name, "deleting branch");
         // Delete main branch
         let output = Command::new("git")
             .current_dir(repo_path)

@@ -48,8 +48,7 @@ impl StoredCommand {
                 match Self::load(&path) {
                     Ok(cmd) => commands.push(cmd),
                     Err(e) => {
-                        // Log but continue on parse errors
-                        eprintln!("Warning: Failed to load command {}: {}", path.display(), e);
+                        tracing::warn!(path = %path.display(), error = %e, "failed to load command");
                     }
                 }
             }

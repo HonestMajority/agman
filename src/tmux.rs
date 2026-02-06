@@ -21,8 +21,10 @@ impl Tmux {
     /// - agman: shell for agent commands
     pub fn create_session_with_windows(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
+            tracing::debug!(session = session_name, "tmux session already exists, skipping creation");
             return Ok(());
         }
+        tracing::debug!(session = session_name, dir = %working_dir.display(), "creating tmux session");
 
         let wd = working_dir.to_str().unwrap();
 
@@ -95,6 +97,7 @@ impl Tmux {
         if !Self::session_exists(session_name) {
             return Ok(());
         }
+        tracing::debug!(session = session_name, "killing tmux session");
 
         let output = Command::new("tmux")
             .args(["kill-session", "-t", session_name])
@@ -113,6 +116,7 @@ impl Tmux {
     }
 
     pub fn attach_session(session_name: &str) -> Result<()> {
+        tracing::debug!(session = session_name, "attaching to tmux session");
         // Try switch-client first (if already in tmux)
         let switch_result = Command::new("tmux")
             .args(["switch-client", "-t", session_name])
@@ -139,6 +143,7 @@ impl Tmux {
 
     /// Send keys to a specific window in a session
     pub fn send_keys_to_window(session_name: &str, window_name: &str, keys: &str) -> Result<()> {
+        tracing::trace!(session = session_name, window = window_name, "sending keys to tmux window");
         let target = format!("{}:{}", session_name, window_name);
         let output = Command::new("tmux")
             .args(["send-keys", "-t", &target, keys, "C-m"])

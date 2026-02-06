@@ -9,7 +9,7 @@ pub struct Cli {
     pub command: Option<Commands>,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Start a new task (creates worktree, tmux session, starts flow)
     New {

@@ -89,10 +89,12 @@ pub enum FailAction {
 
 impl Flow {
     pub fn load(path: &Path) -> Result<Self> {
+        tracing::debug!(path = %path.display(), "loading flow");
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read flow file: {}", path.display()))?;
         let flow: Flow = serde_yaml::from_str(&content)
             .with_context(|| format!("Failed to parse flow file: {}", path.display()))?;
+        tracing::debug!(flow = %flow.name, steps = flow.steps.len(), "flow loaded");
         Ok(flow)
     }
 

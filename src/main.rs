@@ -4,6 +4,7 @@ mod command;
 mod config;
 mod flow;
 mod git;
+mod logging;
 mod task;
 mod tmux;
 mod tui;
@@ -21,23 +22,22 @@ use tmux::Tmux;
 use tui::run_tui;
 
 fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .with_target(false)
-        .init();
-
     // Setup better panic handling
     better_panic::install();
 
     // Load config
     let config = Config::load()?;
 
+    // Rotate log file before setting up logging (keeps it under 1000 lines)
+    logging::rotate_log(&config);
+
+    // Initialize file-based logging to ~/.agman/agman.log
+    logging::setup_logging(&config)?;
+
     // Parse CLI
     let cli = Cli::parse();
+
+    tracing::debug!(command = ?cli.command, "dispatching command");
 
     match cli.command {
         Some(Commands::New {

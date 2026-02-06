@@ -114,6 +114,7 @@ impl Agent {
 
     /// Run agent directly (blocking) and capture output
     pub fn run_direct(&self, task: &Task) -> Result<Option<StopCondition>> {
+        tracing::info!(agent = %self.name, task_id = %task.meta.task_id(), "starting agent (direct)");
         let prompt = self.build_prompt(task)?;
 
         // Log start
@@ -153,6 +154,7 @@ impl Agent {
 
             // Check for magic strings
             if let Some(condition) = StopCondition::from_output(&line) {
+                tracing::info!(agent = %self.name, condition = %condition, "stop condition detected");
                 last_condition = Some(condition);
             }
 
@@ -197,6 +199,7 @@ impl AgentRunner {
 
     /// Run a single agent and return its stop condition
     pub fn run_agent(&self, task: &mut Task, agent_name: &str) -> Result<Option<StopCondition>> {
+        tracing::debug!(agent = agent_name, task_id = %task.meta.task_id(), "loading and running agent");
         let agent = Agent::load(&self.config, agent_name)?;
 
         // Update task to show current agent
@@ -251,6 +254,7 @@ impl AgentRunner {
 
     /// Run an entire flow to completion
     pub fn run_flow(&self, task: &mut Task) -> Result<StopCondition> {
+        tracing::info!(flow = %task.meta.flow_name, task_id = %task.meta.task_id(), "starting flow");
         let flow = Flow::load(&self.config.flow_path(&task.meta.flow_name))?;
         self.run_flow_with(task, &flow)
     }
@@ -266,6 +270,7 @@ impl AgentRunner {
 
             let Some(step) = flow.get_step(step_index) else {
                 // No more steps, flow is complete
+                tracing::info!(task_id = %task.meta.task_id(), "flow complete - no more steps");
                 println!("Flow complete - no more steps");
                 task.update_status(TaskStatus::Stopped)?;
 

@@ -84,6 +84,7 @@ impl Task {
         flow_name: &str,
         worktree_path: PathBuf,
     ) -> Result<Self> {
+        tracing::info!(repo = repo_name, branch = branch_name, flow = flow_name, "creating task");
         let dir = config.task_dir(repo_name, branch_name);
         std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
 
@@ -206,6 +207,7 @@ impl Task {
     }
 
     pub fn update_status(&mut self, status: TaskStatus) -> Result<()> {
+        tracing::debug!(task_id = %self.meta.task_id(), status = %status, "updating task status");
         self.meta.status = status;
         self.meta.updated_at = Utc::now();
         self.save_meta()
@@ -361,6 +363,7 @@ impl Task {
     }
 
     pub fn delete(self, config: &Config) -> Result<()> {
+        tracing::info!(task_id = %self.meta.task_id(), "deleting task");
         let dir = config.task_dir(&self.meta.repo_name, &self.meta.branch_name);
         if dir.exists() {
             std::fs::remove_dir_all(&dir)?;
@@ -410,6 +413,7 @@ impl Task {
 
     /// Queue feedback to be processed when the task stops
     pub fn queue_feedback(&mut self, feedback: &str) -> Result<()> {
+        tracing::debug!(task_id = %self.meta.task_id(), queue_size = self.meta.feedback_queue.len() + 1, "queuing feedback");
         self.meta.feedback_queue.push(feedback.to_string());
         self.meta.updated_at = Utc::now();
         self.save_meta()

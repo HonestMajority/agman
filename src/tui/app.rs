@@ -415,6 +415,7 @@ impl App {
 
         let task = self.tasks.remove(self.selected_index);
         let task_id = task.meta.task_id();
+        tracing::info!(task_id = %task_id, mode = ?mode, "deleting task via TUI");
         let repo_name = task.meta.repo_name.clone();
         let branch_name = task.meta.branch_name.clone();
         let worktree_path = task.meta.worktree_path.clone();
@@ -472,6 +473,7 @@ impl App {
 
     fn submit_feedback(&mut self) -> Result<()> {
         let feedback = self.feedback_editor.lines_joined();
+        tracing::info!("submitting feedback");
         if feedback.trim().is_empty() {
             self.set_status("Feedback cannot be empty".to_string());
             self.view = View::Preview;
@@ -755,7 +757,10 @@ impl App {
 
     fn run_selected_command(&mut self) -> Result<()> {
         let command = match self.commands.get(self.selected_command_index) {
-            Some(c) => c.clone(),
+            Some(c) => {
+                tracing::info!(command = %c.name, "running stored command");
+                c.clone()
+            }
             None => {
                 self.set_status("No command selected".to_string());
                 self.view = View::TaskList;
@@ -994,6 +999,7 @@ impl App {
         };
 
         let repo_name = wizard.repos[wizard.selected_repo_index].clone();
+        tracing::info!(repo = %repo_name, "creating task via wizard");
 
         let (branch_name, worktree_path_existing) = match wizard.branch_source {
             BranchSource::ExistingWorktree => {
