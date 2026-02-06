@@ -1450,7 +1450,6 @@ impl App {
             let wrapped = Self::wrap_content(&content, wrap_width);
 
             self.task_file_editor = VimTextArea::from_lines(wrapped.lines());
-            self.task_file_editor.set_insert_mode();
         }
         self.view = View::TaskEditor;
     }
