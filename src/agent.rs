@@ -390,6 +390,9 @@ impl AgentRunner {
     /// Returns Some(StopCondition) if feedback was processed and a new flow completed,
     /// or None if no feedback was queued
     fn process_queued_feedback(&self, task: &mut Task) -> Result<Option<StopCondition>> {
+        // Reload meta from disk to pick up feedback queued by the TUI (a separate process)
+        task.reload_meta()?;
+
         if !task.has_queued_feedback() {
             return Ok(None);
         }

@@ -195,6 +195,16 @@ impl Task {
         Ok(())
     }
 
+    /// Re-read meta.json from disk, picking up changes made by other processes (e.g. TUI)
+    pub fn reload_meta(&mut self) -> Result<()> {
+        let meta_path = self.dir.join("meta.json");
+        let meta_content =
+            std::fs::read_to_string(&meta_path).context("Failed to read task meta.json")?;
+        self.meta =
+            serde_json::from_str(&meta_content).context("Failed to parse task meta.json")?;
+        Ok(())
+    }
+
     pub fn update_status(&mut self, status: TaskStatus) -> Result<()> {
         self.meta.status = status;
         self.meta.updated_at = Utc::now();
