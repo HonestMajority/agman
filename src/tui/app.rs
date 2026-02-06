@@ -92,9 +92,29 @@ pub enum ReviewWizardStep {
 pub struct ReviewWizard {
     pub step: ReviewWizardStep,
     pub repos: Vec<String>,
+    pub favorite_repos: Vec<(String, u64)>,
     pub selected_repo_index: usize,
+    pub branch_source: BranchSource,
     pub branch_editor: TextArea<'static>,
+    pub existing_branches: Vec<String>,
+    pub selected_branch_index: usize,
+    pub existing_worktrees: Vec<(String, PathBuf)>,
+    pub selected_worktree_index: usize,
     pub error_message: Option<String>,
+}
+
+impl ReviewWizard {
+    pub fn total_repo_count(&self) -> usize {
+        self.favorite_repos.len() + self.repos.len()
+    }
+
+    pub fn selected_repo_name(&self) -> &str {
+        if self.selected_repo_index < self.favorite_repos.len() {
+            &self.favorite_repos[self.selected_repo_index].0
+        } else {
+            &self.repos[self.selected_repo_index - self.favorite_repos.len()]
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1205,14 +1225,30 @@ impl App {
             return Ok(());
         }
 
+        // Load repo stats and filter favorites to only repos that still exist
+        let stats = RepoStats::load(&self.config.repo_stats_path());
+        let repos_set: std::collections::HashSet<&str> =
+            repos.iter().map(|s| s.as_str()).collect();
+        let favorite_repos: Vec<(String, u64)> = stats
+            .favorites()
+            .into_iter()
+            .filter(|(name, _)| repos_set.contains(name.as_str()))
+            .collect();
+
         let mut branch_editor = Self::create_plain_editor();
         branch_editor.set_cursor_line_style(ratatui::style::Style::default());
 
         self.review_wizard = Some(ReviewWizard {
             step: ReviewWizardStep::SelectRepo,
             repos,
+            favorite_repos,
             selected_repo_index: 0,
+            branch_source: BranchSource::NewBranch,
             branch_editor,
+            existing_branches: Vec::new(),
+            selected_branch_index: 0,
+            existing_worktrees: Vec::new(),
+            selected_worktree_index: 0,
             error_message: None,
         });
 
@@ -1230,27 +1266,63 @@ impl App {
 
         match wizard.step {
             ReviewWizardStep::SelectRepo => {
+                // Scan branches and worktrees for the selected repo
+                let repo_name = wizard.selected_repo_name().to_string();
+                let branches = self.scan_branches(&repo_name)?;
+                let existing_wts = self.scan_existing_worktrees(&repo_name)?;
+
+                let wizard = self.review_wizard.as_mut().unwrap();
+                wizard.existing_branches = branches;
+                wizard.selected_branch_index = 0;
+                wizard.existing_worktrees = existing_wts;
+                wizard.selected_worktree_index = 0;
+                wizard.branch_source = BranchSource::NewBranch;
                 wizard.step = ReviewWizardStep::EnterBranch;
             }
             ReviewWizardStep::EnterBranch => {
-                let branch_name = wizard.branch_editor.lines().join("");
-                let branch_name = branch_name.trim().to_string();
-                if branch_name.is_empty() {
-                    wizard.error_message = Some("Branch name cannot be empty".to_string());
-                    return Ok(());
-                }
-                if branch_name.contains(' ')
-                    || branch_name.contains("..")
-                    || branch_name.starts_with('/')
-                    || branch_name.ends_with('/')
-                {
-                    wizard.error_message = Some("Invalid branch name format".to_string());
-                    return Ok(());
-                }
+                let branch_name = match wizard.branch_source {
+                    BranchSource::NewBranch => {
+                        let name = wizard.branch_editor.lines().join("");
+                        let name = name.trim().to_string();
+                        if name.is_empty() {
+                            wizard.error_message =
+                                Some("Branch name cannot be empty".to_string());
+                            return Ok(());
+                        }
+                        if name.contains(' ')
+                            || name.contains("..")
+                            || name.starts_with('/')
+                            || name.ends_with('/')
+                        {
+                            wizard.error_message =
+                                Some("Invalid branch name format".to_string());
+                            return Ok(());
+                        }
+                        name
+                    }
+                    BranchSource::ExistingBranch => {
+                        if wizard.existing_branches.is_empty() {
+                            wizard.error_message =
+                                Some("No existing branches available".to_string());
+                            return Ok(());
+                        }
+                        wizard.existing_branches[wizard.selected_branch_index].clone()
+                    }
+                    BranchSource::ExistingWorktree => {
+                        if wizard.existing_worktrees.is_empty() {
+                            wizard.error_message =
+                                Some("No existing worktrees available".to_string());
+                            return Ok(());
+                        }
+                        wizard.existing_worktrees[wizard.selected_worktree_index]
+                            .0
+                            .clone()
+                    }
+                };
 
                 // Check if task already exists
-                let repo_name = &wizard.repos[wizard.selected_repo_index];
-                let task_dir = self.config.task_dir(repo_name, &branch_name);
+                let repo_name = wizard.selected_repo_name().to_string();
+                let task_dir = self.config.task_dir(&repo_name, &branch_name);
                 if task_dir.exists() {
                     wizard.error_message = Some(format!(
                         "Task '{}--{}' already exists",
@@ -1291,8 +1363,22 @@ impl App {
             None => return Ok(()),
         };
 
-        let repo_name = wizard.repos[wizard.selected_repo_index].clone();
-        let branch_name = wizard.branch_editor.lines().join("").trim().to_string();
+        let repo_name = wizard.selected_repo_name().to_string();
+        let (branch_name, worktree_path_existing) = match wizard.branch_source {
+            BranchSource::ExistingWorktree => {
+                let (branch, path) =
+                    wizard.existing_worktrees[wizard.selected_worktree_index].clone();
+                (branch, Some(path))
+            }
+            BranchSource::NewBranch => {
+                let name = wizard.branch_editor.lines().join("").trim().to_string();
+                (name, None)
+            }
+            BranchSource::ExistingBranch => {
+                let name = wizard.existing_branches[wizard.selected_branch_index].clone();
+                (name, None)
+            }
+        };
 
         self.log_output(format!(
             "Creating review task {}--{}...",
@@ -1302,23 +1388,29 @@ impl App {
         // Initialize default files (ensures review-pr command exists)
         self.config.init_default_files(false)?;
 
-        // Create worktree for the existing branch
-        self.log_output("  Creating worktree for existing branch...".to_string());
-        let worktree_path = match Git::create_worktree_for_existing_branch_quiet(
-            &self.config,
-            &repo_name,
-            &branch_name,
-        ) {
-            Ok(path) => {
-                let _ = Git::direnv_allow(&path);
-                path
-            }
-            Err(e) => {
-                self.log_output(format!("  Error: {}", e));
-                if let Some(w) = &mut self.review_wizard {
-                    w.error_message = Some(format!("Failed: {}", e));
+        // Create or reuse worktree
+        let worktree_path = if let Some(existing_path) = worktree_path_existing {
+            self.log_output("  Using existing worktree...".to_string());
+            let _ = Git::direnv_allow(&existing_path);
+            existing_path
+        } else {
+            self.log_output("  Creating worktree for existing branch...".to_string());
+            match Git::create_worktree_for_existing_branch_quiet(
+                &self.config,
+                &repo_name,
+                &branch_name,
+            ) {
+                Ok(path) => {
+                    let _ = Git::direnv_allow(&path);
+                    path
                 }
-                return Ok(());
+                Err(e) => {
+                    self.log_output(format!("  Error: {}", e));
+                    if let Some(w) = &mut self.review_wizard {
+                        w.error_message = Some(format!("Failed: {}", e));
+                    }
+                    return Ok(());
+                }
             }
         };
 
@@ -1370,6 +1462,12 @@ impl App {
         let task_id = task.meta.task_id();
         let review_cmd = format!("agman run-command {} review-pr", task_id);
         let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &review_cmd);
+
+        // Increment repo usage stats
+        let stats_path = self.config.repo_stats_path();
+        let mut stats = RepoStats::load(&stats_path);
+        stats.increment(&repo_name);
+        stats.save(&stats_path);
 
         // Success - close wizard and refresh
         self.review_wizard = None;
@@ -2174,15 +2272,17 @@ impl App {
                         self.view = View::TaskList;
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if !wizard.repos.is_empty() {
+                        let total = wizard.total_repo_count();
+                        if total > 0 {
                             wizard.selected_repo_index =
-                                (wizard.selected_repo_index + 1) % wizard.repos.len();
+                                (wizard.selected_repo_index + 1) % total;
                         }
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        if !wizard.repos.is_empty() {
+                        let total = wizard.total_repo_count();
+                        if total > 0 {
                             wizard.selected_repo_index = if wizard.selected_repo_index == 0 {
-                                wizard.repos.len() - 1
+                                total - 1
                             } else {
                                 wizard.selected_repo_index - 1
                             };
@@ -2193,18 +2293,78 @@ impl App {
                     }
                     _ => {}
                 },
-                ReviewWizardStep::EnterBranch => match key.code {
-                    KeyCode::Esc => {
-                        self.review_wizard_prev_step();
+                ReviewWizardStep::EnterBranch => {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.review_wizard_prev_step();
+                        }
+                        KeyCode::Tab => {
+                            wizard.branch_source = match wizard.branch_source {
+                                BranchSource::NewBranch => BranchSource::ExistingBranch,
+                                BranchSource::ExistingBranch => BranchSource::ExistingWorktree,
+                                BranchSource::ExistingWorktree => BranchSource::NewBranch,
+                            };
+                        }
+                        KeyCode::BackTab => {
+                            wizard.branch_source = match wizard.branch_source {
+                                BranchSource::NewBranch => BranchSource::ExistingWorktree,
+                                BranchSource::ExistingBranch => BranchSource::NewBranch,
+                                BranchSource::ExistingWorktree => BranchSource::ExistingBranch,
+                            };
+                        }
+                        KeyCode::Enter => {
+                            self.review_wizard_next_step()?;
+                        }
+                        _ => {
+                            match wizard.branch_source {
+                                BranchSource::NewBranch => {
+                                    let input = Input::from(event.clone());
+                                    wizard.branch_editor.input(input);
+                                }
+                                BranchSource::ExistingBranch => match key.code {
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        if !wizard.existing_branches.is_empty() {
+                                            wizard.selected_branch_index =
+                                                (wizard.selected_branch_index + 1)
+                                                    % wizard.existing_branches.len();
+                                        }
+                                    }
+                                    KeyCode::Char('k') | KeyCode::Up => {
+                                        if !wizard.existing_branches.is_empty() {
+                                            wizard.selected_branch_index =
+                                                if wizard.selected_branch_index == 0 {
+                                                    wizard.existing_branches.len() - 1
+                                                } else {
+                                                    wizard.selected_branch_index - 1
+                                                };
+                                        }
+                                    }
+                                    _ => {}
+                                },
+                                BranchSource::ExistingWorktree => match key.code {
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        if !wizard.existing_worktrees.is_empty() {
+                                            wizard.selected_worktree_index =
+                                                (wizard.selected_worktree_index + 1)
+                                                    % wizard.existing_worktrees.len();
+                                        }
+                                    }
+                                    KeyCode::Char('k') | KeyCode::Up => {
+                                        if !wizard.existing_worktrees.is_empty() {
+                                            wizard.selected_worktree_index =
+                                                if wizard.selected_worktree_index == 0 {
+                                                    wizard.existing_worktrees.len() - 1
+                                                } else {
+                                                    wizard.selected_worktree_index - 1
+                                                };
+                                        }
+                                    }
+                                    _ => {}
+                                },
+                            }
+                        }
                     }
-                    KeyCode::Enter => {
-                        self.review_wizard_next_step()?;
-                    }
-                    _ => {
-                        let input = Input::from(event.clone());
-                        wizard.branch_editor.input(input);
-                    }
-                },
+                }
             }
         }
         Ok(false)
