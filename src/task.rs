@@ -37,6 +37,9 @@ pub struct TaskMeta {
     /// Queue of feedback items to be processed when the task stops
     #[serde(default)]
     pub feedback_queue: Vec<String>,
+    /// When true, run the review-pr command automatically after the flow completes
+    #[serde(default)]
+    pub review_after: bool,
 }
 
 impl TaskMeta {
@@ -60,6 +63,7 @@ impl TaskMeta {
             created_at: now,
             updated_at: now,
             feedback_queue: Vec::new(),
+            review_after: false,
         }
     }
 

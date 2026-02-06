@@ -65,6 +65,7 @@ pub struct NewTaskWizard {
     pub new_branch_editor: TextArea<'static>,
     pub description_editor: VimTextArea<'static>,
     pub error_message: Option<String>,
+    pub review_after: bool,
 }
 
 impl NewTaskWizard {
@@ -667,6 +668,7 @@ impl App {
             new_branch_editor,
             description_editor,
             error_message: None,
+            review_after: false,
         });
 
         self.view = View::NewTaskWizard;
@@ -1135,6 +1137,7 @@ impl App {
         };
 
         let description = wizard.description_editor.lines_joined().trim().to_string();
+        let review_after = wizard.review_after;
         let flow_name = "new".to_string();
 
         self.log_output(format!("Creating task {}--{}...", repo_name, branch_name));
@@ -1167,7 +1170,7 @@ impl App {
 
         // Create task
         self.log_output("  Creating task files...".to_string());
-        let task = match Task::create(
+        let mut task = match Task::create(
             &self.config,
             &repo_name,
             &branch_name,
@@ -1185,6 +1188,12 @@ impl App {
             }
         };
 
+        // Set review_after flag if requested
+        if review_after {
+            task.meta.review_after = true;
+            task.save_meta()?;
+        }
+
         // Create tmux session with windows
         self.log_output("  Creating tmux session...".to_string());
         if let Err(e) = Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path) {
@@ -1194,6 +1203,9 @@ impl App {
             }
             return Ok(());
         }
+
+        // Add review window (nvim REVIEW.md) as window 5, agman becomes window 6
+        let _ = Tmux::add_review_window(&task.meta.tmux_session, &worktree_path);
 
         // Start the flow in tmux
         let task_id = task.meta.task_id();
@@ -1447,16 +1459,8 @@ impl App {
             return Ok(());
         }
 
-        // Pre-create REVIEW.md so nvim can open it immediately
-        let review_md_path = worktree_path.join("REVIEW.md");
-        std::fs::write(&review_md_path, "# Code Review\n\n(Review in progress...)\n")?;
-
-        // Add a 6th tmux window with REVIEW.md open in nvim
-        let wd = worktree_path.to_str().unwrap_or(".");
-        let _ = std::process::Command::new("tmux")
-            .args(["new-window", "-t", &task.meta.tmux_session, "-n", "review", "-c", wd])
-            .output();
-        let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "review", "nvim REVIEW.md");
+        // Add review window (nvim REVIEW.md) as window 5, agman becomes window 6
+        Tmux::add_review_window(&task.meta.tmux_session, &worktree_path)?;
 
         // Run the review-pr stored command instead of a flow
         let task_id = task.meta.task_id();
@@ -1870,6 +1874,17 @@ impl App {
                 return Ok(false);
             }
 
+            // Toggle review_after on the selected task with Ctrl+R
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+                if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                    task.meta.review_after = !task.meta.review_after;
+                    let _ = task.save_meta();
+                    let state = if task.meta.review_after { "ON" } else { "OFF" };
+                    self.set_status(format!("Review after flow: {}", state));
+                }
+                return Ok(false);
+            }
+
             let input = Input::from(event.clone());
             let was_insert = self.feedback_editor.mode() == VimMode::Insert;
 
@@ -2085,6 +2100,14 @@ impl App {
                     {
                         wizard.description_editor.set_normal_mode();
                         self.wizard_next_step()?;
+                        return Ok(false);
+                    }
+
+                    // Toggle review_after with Ctrl+R
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('r')
+                    {
+                        wizard.review_after = !wizard.review_after;
                         return Ok(false);
                     }
 
