@@ -186,6 +186,41 @@ impl App {
         editor.move_cursor(CursorMove::Jump(new_row as u16, new_col as u16));
     }
 
+    /// Hard-wrap all lines in a string to a given max width at word boundaries.
+    /// Unlike `auto_wrap_vim_editor` which operates on a single line during editing,
+    /// this wraps all lines in bulk — useful for pre-wrapping content before loading.
+    fn wrap_content(text: &str, max_width: usize) -> String {
+        if max_width < 10 {
+            return text.to_string();
+        }
+
+        let mut result = Vec::new();
+        for line in text.lines() {
+            if line.len() <= max_width {
+                result.push(line.to_string());
+            } else {
+                let mut remaining = line;
+                while remaining.len() > max_width {
+                    let wrap_at = remaining[..max_width]
+                        .rfind(' ')
+                        .unwrap_or(max_width);
+                    if wrap_at == 0 {
+                        // No space found, force break at max_width
+                        result.push(remaining[..max_width].to_string());
+                        remaining = &remaining[max_width..];
+                    } else {
+                        result.push(remaining[..wrap_at].to_string());
+                        remaining = &remaining[wrap_at..].trim_start();
+                    }
+                }
+                if !remaining.is_empty() {
+                    result.push(remaining.to_string());
+                }
+            }
+        }
+        result.join("\n")
+    }
+
     pub fn refresh_tasks(&mut self) -> Result<()> {
         self.tasks = Task::list_all(&self.config)?;
         if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
@@ -1151,7 +1186,14 @@ impl App {
                 .read_task()
                 .unwrap_or_else(|_| "No TASK.md available".to_string());
             self.task_file_content = content.clone();
-            self.task_file_editor = VimTextArea::from_lines(content.lines());
+
+            // Pre-wrap content to fit the modal width (same formula as handle_task_editor_event)
+            let wrap_width = crossterm::terminal::size()
+                .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
+                .unwrap_or(70);
+            let wrapped = Self::wrap_content(&content, wrap_width);
+
+            self.task_file_editor = VimTextArea::from_lines(wrapped.lines());
             self.task_file_editor.set_insert_mode();
         }
         self.view = View::TaskEditor;
