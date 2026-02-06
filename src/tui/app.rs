@@ -127,6 +127,7 @@ pub struct App {
     pub review_wizard: Option<ReviewWizard>,
     pub output_log: Vec<String>,
     pub output_scroll: u16,
+    pub last_output_time: Option<Instant>,
     // Task file (TASK.md) viewing/editing (used by modal)
     pub task_file_content: String,
     pub task_file_editor: VimTextArea<'static>,
@@ -171,6 +172,7 @@ impl App {
             review_wizard: None,
             output_log: Vec::new(),
             output_scroll: 0,
+            last_output_time: None,
             task_file_content: String::new(),
             task_file_editor,
             commands,
@@ -310,6 +312,7 @@ impl App {
 
     pub fn log_output(&mut self, message: String) {
         self.output_log.push(message);
+        self.last_output_time = Some(Instant::now());
         // Keep only the last 100 lines
         if self.output_log.len() > 100 {
             self.output_log.remove(0);
@@ -322,6 +325,16 @@ impl App {
         if let Some((_, instant)) = &self.status_message {
             if instant.elapsed() > Duration::from_secs(3) {
                 self.status_message = None;
+            }
+        }
+    }
+
+    pub fn clear_old_output(&mut self) {
+        if let Some(instant) = &self.last_output_time {
+            if instant.elapsed() > Duration::from_secs(7) {
+                self.output_log.clear();
+                self.output_scroll = 0;
+                self.last_output_time = None;
             }
         }
     }
@@ -2255,6 +2268,7 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Clear old status messages
             app.clear_old_status();
+            app.clear_old_output();
         }
 
         // Restore terminal

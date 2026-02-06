@@ -784,9 +784,24 @@ fn draw_delete_confirm(f: &mut Frame, app: &App) {
 }
 
 fn draw_output_pane(f: &mut Frame, app: &App, area: Rect) {
-    let content = app.output_log.join("\n");
+    let lines: Vec<Line> = app
+        .output_log
+        .iter()
+        .map(|line| {
+            let lower = line.to_lowercase();
+            let is_error = lower.contains("error")
+                || lower.contains("failed")
+                || lower.contains("[stderr]");
+            let color = if is_error {
+                Color::LightRed
+            } else {
+                Color::Gray
+            };
+            Line::from(Span::styled(line.as_str(), Style::default().fg(color)))
+        })
+        .collect();
 
-    let output = Paragraph::new(content)
+    let output = Paragraph::new(lines)
         .block(
             Block::default()
                 .title(Span::styled(
@@ -798,7 +813,6 @@ fn draw_output_pane(f: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray)),
         )
-        .style(Style::default().fg(Color::Gray))
         .wrap(Wrap { trim: false })
         .scroll((app.output_scroll, 0));
 
