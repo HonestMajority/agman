@@ -35,6 +35,7 @@ pub enum View {
     FeedbackQueue,
     RebaseBranchPicker,
     ReviewWizard,
+    RestartConfirm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +144,10 @@ pub struct App {
     pub pending_branch_command: Option<StoredCommand>,
     // Delete mode chooser
     pub delete_mode_index: usize,
+    // Restart modal state
+    pub restart_pending: bool,
+    pub restart_confirm_index: usize,
+    pub should_restart: bool,
 }
 
 impl App {
@@ -183,6 +188,9 @@ impl App {
             selected_rebase_branch_index: 0,
             pending_branch_command: None,
             delete_mode_index: 0,
+            restart_pending: false,
+            restart_confirm_index: 0,
+            should_restart: false,
         })
     }
 
@@ -1375,6 +1383,7 @@ impl App {
             View::FeedbackQueue => self.handle_feedback_queue_event(event),
             View::RebaseBranchPicker => self.handle_rebase_branch_picker_event(event),
             View::ReviewWizard => self.handle_review_wizard_event(event),
+            View::RestartConfirm => self.handle_restart_confirm_event(event),
         }
     }
 
@@ -1448,6 +1457,11 @@ impl App {
                         self.load_preview();
                         self.open_task_editor();
                     }
+                }
+                KeyCode::Char('U') => {
+                    // Manual restart
+                    self.restart_confirm_index = 0;
+                    self.view = View::RestartConfirm;
                 }
                 _ => {}
             }
@@ -1788,6 +1802,35 @@ impl App {
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_restart_confirm_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.restart_confirm_index = (self.restart_confirm_index + 1) % 2;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.restart_confirm_index = if self.restart_confirm_index == 0 { 1 } else { 0 };
+                }
+                KeyCode::Enter => {
+                    if self.restart_confirm_index == 0 {
+                        // "Restart now"
+                        self.should_restart = true;
+                    } else {
+                        // "Later"
+                        self.view = View::TaskList;
+                        self.set_status("Restart available — press U to restart".to_string());
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = View::TaskList;
+                    self.set_status("Restart available — press U to restart".to_string());
                 }
                 _ => {}
             }
@@ -2244,7 +2287,7 @@ pub fn run_tui(config: Config) -> Result<()> {
                     break;
                 }
 
-                if app.should_quit {
+                if app.should_quit || app.should_restart {
                     break;
                 }
             }
@@ -2264,21 +2307,19 @@ pub fn run_tui(config: Config) -> Result<()> {
                     .unwrap_or_default()
                     .join(".agman/.restart-tui");
                 if restart_signal.exists() {
-                    tracing::info!("detected .restart-tui signal file, restarting TUI");
+                    tracing::info!("detected .restart-tui signal file, deferring to restart modal");
                     let _ = std::fs::remove_file(&restart_signal);
-                    disable_raw_mode()?;
-                    execute!(
-                        terminal.backend_mut(),
-                        LeaveAlternateScreen,
-                        DisableMouseCapture
-                    )?;
-                    terminal.show_cursor()?;
-                    eprintln!("agman updated — restarting...");
-                    let err = Command::new("agman").exec();
-                    // exec only returns on error
-                    eprintln!("Failed to restart: {err}");
-                    std::process::exit(1);
+                    app.restart_pending = true;
                 }
+            }
+
+            // Show restart modal when no other modal is active
+            if app.restart_pending
+                && matches!(app.view, View::TaskList | View::Preview)
+            {
+                app.restart_confirm_index = 0;
+                app.view = View::RestartConfirm;
+                app.restart_pending = false;
             }
 
             // Clear old status messages
@@ -2294,6 +2335,16 @@ pub fn run_tui(config: Config) -> Result<()> {
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;
+
+        // If user confirmed restart, exec the new binary
+        #[cfg(unix)]
+        if app.should_restart {
+            eprintln!("agman updated — restarting...");
+            let err = Command::new("agman").exec();
+            // exec only returns on error
+            eprintln!("Failed to restart: {err}");
+            std::process::exit(1);
+        }
 
         // If user requested quit, exit the outer loop
         if app.should_quit {
