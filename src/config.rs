@@ -366,7 +366,7 @@ steps:
 
 const ADDRESS_REVIEW_COMMAND: &str = r#"name: Address Review
 id: address-review
-description: Evaluates PR review feedback critically, creates review.md with proposed replies, and implements agreed-upon changes locally
+description: Evaluates PR review feedback critically, creates REVIEW.md with proposed replies, and implements agreed-upon changes locally
 
 steps:
   - agent: review-analyst
@@ -512,7 +512,7 @@ When the fix is committed and pushed, output exactly: AGENT_DONE
 If you cannot fix the issue, output exactly: TASK_BLOCKED
 "#;
 
-const REVIEW_ANALYST_PROMPT: &str = r#"You are a review analyst agent. Your job is to read all PR review comments, think through each one critically in the context of the full PR work, and produce a `review.md` file with your analysis and proposed replies.
+const REVIEW_ANALYST_PROMPT: &str = r#"You are a review analyst agent. Your job is to read all PR review comments, think through each one critically in the context of the full PR work, and produce a `REVIEW.md` file with your analysis and proposed replies.
 
 Instructions:
 
@@ -541,7 +541,7 @@ Instructions:
      b. **Disagree** — We have good reasons to keep it as-is (explain why)
      c. **Reply** — It's a question or observation that just needs an answer
 
-4. Create a file called `review.md` in the repository root with the following structure:
+4. Write your analysis to `REVIEW.md` in the repository root (this file already exists — overwrite it) with the following structure:
    ```markdown
    # PR Review Analysis
 
@@ -570,7 +570,7 @@ Instructions:
 5. For items marked `[CHANGE NEEDED]`, include a brief description of what should be changed so the implementer agent knows what to do.
 
 IMPORTANT:
-- Do NOT make any code changes yourself — only produce `review.md`
+- Do NOT make any code changes yourself — only produce `REVIEW.md`
 - Do NOT push anything to origin
 - Do NOT reply to the PR or interact with GitHub beyond reading
 - Be thorough — read ALL comments carefully
@@ -578,16 +578,16 @@ IMPORTANT:
 - Keep things simple and focused on emergent design, avoiding over-engineering
 - Do NOT ask questions or wait for input
 
-When `review.md` is created, output exactly: AGENT_DONE
-If there are no review comments to analyze, create a `review.md` noting that and output: AGENT_DONE
+When `REVIEW.md` is created, output exactly: AGENT_DONE
+If there are no review comments to analyze, create a `REVIEW.md` noting that and output: AGENT_DONE
 If you cannot read the reviews, output exactly: TASK_BLOCKED
 "#;
 
-const REVIEW_IMPLEMENTER_PROMPT: &str = r#"You are a review implementer agent. Your job is to read `review.md`, implement any agreed-upon code changes, and update `review.md` with commit hashes.
+const REVIEW_IMPLEMENTER_PROMPT: &str = r#"You are a review implementer agent. Your job is to read `REVIEW.md`, implement any agreed-upon code changes, and update `REVIEW.md` with commit hashes.
 
 Instructions:
 
-1. Read `review.md` in the repository root
+1. Read `REVIEW.md` in the repository root
 2. Find all items marked with `[CHANGE NEEDED]`
 3. For each item that needs a code change:
    a. Understand what change the analyst agreed should be made
@@ -595,23 +595,23 @@ Instructions:
    c. Think about the solution from a DDD and hexagonal architecture perspective, with a focus on emergent design — keep things simple and low complexity
    d. Commit the change separately with a clear, descriptive message, e.g.:
       `fix: [brief description of what was changed and why]`
-   e. Update `review.md` — for that comment's section, add:
+   e. Update `REVIEW.md` — for that comment's section, add:
       ```
       **Commit:** `<full-or-short-hash>`
       ```
       And update the proposed reply to mention what was changed and the commit hash
-4. After all changes are implemented, do a final review of `review.md` to make sure it's complete and coherent
+4. After all changes are implemented, do a final review of `REVIEW.md` to make sure it's complete and coherent
 
 IMPORTANT:
 - Do NOT push anything to origin
 - Do NOT interact with the PR on GitHub (no comments, no status changes)
 - Each change must be a SEPARATE commit
 - Only implement changes for items marked `[CHANGE NEEDED]` — do not make additional changes
-- If you cannot implement a particular change, update `review.md` to note why and adjust the proposed reply accordingly
+- If you cannot implement a particular change, update `REVIEW.md` to note why and adjust the proposed reply accordingly
 - Keep solutions simple — avoid over-engineering
 - Do NOT ask questions or wait for input
 
-When all changes are implemented and `review.md` is updated, output exactly: AGENT_DONE
+When all changes are implemented and `REVIEW.md` is updated, output exactly: AGENT_DONE
 If you cannot continue for some reason, output exactly: TASK_BLOCKED
 "#;
 
@@ -659,7 +659,7 @@ If you cannot fix the CI after 3 attempts, output exactly: TASK_BLOCKED
 
 const REVIEW_PR_COMMAND: &str = r#"name: Review PR
 id: review-pr
-description: Reviews the current PR or full branch diff if no PR exists, writes findings to review.md
+description: Reviews the current PR or full branch diff if no PR exists, writes findings to REVIEW.md
 
 steps:
   - agent: pr-reviewer
@@ -763,7 +763,7 @@ Instructions:
    - Review all commits: `git log origin/main..HEAD --oneline`
    - Review the code changes thoroughly
 
-4. Write your review findings to `review.md` in the repository root with this structure:
+4. Write your review findings to `REVIEW.md` in the repository root (this file already exists) with this structure:
    ```markdown
    # Code Review
 
@@ -796,9 +796,9 @@ Instructions:
 IMPORTANT:
 - Do NOT ask questions or wait for input
 - Do NOT push anything or interact with the PR on GitHub
-- Do NOT make any code changes — only produce review.md
+- Do NOT make any code changes — only produce REVIEW.md
 - Be constructive and specific in your feedback
 
-When review.md is written, output exactly: AGENT_DONE
+When REVIEW.md is written, output exactly: AGENT_DONE
 If you cannot complete the review, output exactly: TASK_BLOCKED
 "#;

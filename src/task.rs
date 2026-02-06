@@ -231,9 +231,9 @@ impl Task {
         Ok(())
     }
 
-    /// Ensure TASK.md is excluded from git tracking.
+    /// Ensure TASK.md and REVIEW.md are excluded from git tracking.
     ///
-    /// Adds TASK.md to .git/info/exclude (not tracked, leaves no footprint).
+    /// Adds entries to .git/info/exclude (not tracked, leaves no footprint).
     /// For worktrees, uses the common git directory since they share info/exclude.
     fn ensure_git_excludes_task(&self) -> Result<()> {
         use std::process::Command;
@@ -258,37 +258,40 @@ impl Task {
         };
 
         let exclude_path = git_common_dir_path.join("info").join("exclude");
-        let entry = "TASK.md";
+        let entries = ["TASK.md", "REVIEW.md"];
 
         // Ensure the info directory exists
         if let Some(info_dir) = exclude_path.parent() {
             std::fs::create_dir_all(info_dir).context("Failed to create .git/info directory")?;
         }
 
-        if exclude_path.exists() {
-            let content = std::fs::read_to_string(&exclude_path)
-                .context("Failed to read .git/info/exclude")?;
+        let mut content = if exclude_path.exists() {
+            std::fs::read_to_string(&exclude_path)
+                .context("Failed to read .git/info/exclude")?
+        } else {
+            String::new()
+        };
 
-            // Check if TASK.md is already in exclude
+        let mut modified = false;
+        for entry in &entries {
             let is_excluded = content.lines().any(|line| {
                 let trimmed = line.trim();
-                trimmed == entry || trimmed == "/TASK.md"
+                trimmed == *entry || trimmed == format!("/{}", entry)
             });
 
             if !is_excluded {
-                // Append TASK.md to exclude
-                let new_content = if content.ends_with('\n') || content.is_empty() {
-                    format!("{}{}\n", content, entry)
-                } else {
-                    format!("{}\n{}\n", content, entry)
-                };
-                std::fs::write(&exclude_path, new_content)
-                    .context("Failed to update .git/info/exclude")?;
+                if !content.is_empty() && !content.ends_with('\n') {
+                    content.push('\n');
+                }
+                content.push_str(entry);
+                content.push('\n');
+                modified = true;
             }
-        } else {
-            // Create exclude file with TASK.md entry
-            std::fs::write(&exclude_path, format!("{}\n", entry))
-                .context("Failed to create .git/info/exclude")?;
+        }
+
+        if modified {
+            std::fs::write(&exclude_path, &content)
+                .context("Failed to update .git/info/exclude")?;
         }
 
         Ok(())
