@@ -73,11 +73,7 @@ impl Git {
 
     /// Create a new worktree with a new branch
     /// Tries to base on origin/main if available, falls back to local main or HEAD
-    pub fn create_worktree(
-        config: &Config,
-        repo_name: &str,
-        branch_name: &str,
-    ) -> Result<PathBuf> {
+    pub fn create_worktree(config: &Config, repo_name: &str, branch_name: &str) -> Result<PathBuf> {
         Self::create_worktree_impl(config, repo_name, branch_name, false)
     }
 

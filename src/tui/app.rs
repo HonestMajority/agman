@@ -148,9 +148,7 @@ impl App {
         }
 
         // Find the last space before max_width
-        let wrap_at = current_line[..max_width]
-            .rfind(' ')
-            .unwrap_or(max_width);
+        let wrap_at = current_line[..max_width].rfind(' ').unwrap_or(max_width);
 
         if wrap_at == 0 {
             return;
@@ -241,16 +239,19 @@ impl App {
     }
 
     fn load_preview(&mut self) {
-        let (preview_content, notes_content, task_file_content) = if let Some(task) = self.selected_task() {
-            let preview = task
-                .read_agent_log_tail(100)
-                .unwrap_or_else(|_| "No agent log available".to_string());
-            let notes = task.read_notes().unwrap_or_default();
-            let task_file = task.read_task().unwrap_or_else(|_| "No TASK.md available".to_string());
-            (preview, notes, task_file)
-        } else {
-            return;
-        };
+        let (preview_content, notes_content, task_file_content) =
+            if let Some(task) = self.selected_task() {
+                let preview = task
+                    .read_agent_log_tail(100)
+                    .unwrap_or_else(|_| "No agent log available".to_string());
+                let notes = task.read_notes().unwrap_or_default();
+                let task_file = task
+                    .read_task()
+                    .unwrap_or_else(|_| "No TASK.md available".to_string());
+                (preview, notes, task_file)
+            } else {
+                return;
+            };
 
         self.preview_content = preview_content;
         // Scroll to bottom of logs (estimate based on line count)
@@ -314,7 +315,10 @@ impl App {
                         self.log_output("  Sent interrupt signal to agman window".to_string());
                     }
                     Err(e) => {
-                        self.log_output(format!("  Warning: Could not interrupt agman window: {}", e));
+                        self.log_output(format!(
+                            "  Warning: Could not interrupt agman window: {}",
+                            e
+                        ));
                     }
                 }
             }
@@ -581,7 +585,10 @@ impl App {
             }
         };
 
-        self.log_output(format!("Running command '{}' on task {}...", command.name, task_id));
+        self.log_output(format!(
+            "Running command '{}' on task {}...",
+            command.name, task_id
+        ));
 
         // Run agman run-command in background
         let output = Command::new("agman")
@@ -678,8 +685,7 @@ impl App {
                             || name.starts_with('/')
                             || name.ends_with('/')
                         {
-                            wizard.error_message =
-                                Some("Invalid branch name format".to_string());
+                            wizard.error_message = Some("Invalid branch name format".to_string());
                             return Ok(());
                         }
                         name
@@ -774,7 +780,8 @@ impl App {
 
         // Create worktree (use quiet mode to avoid corrupting TUI)
         self.log_output("  Creating worktree...".to_string());
-        let worktree_path = match Git::create_worktree_quiet(&self.config, &repo_name, &branch_name) {
+        let worktree_path = match Git::create_worktree_quiet(&self.config, &repo_name, &branch_name)
+        {
             Ok(path) => path,
             Err(e) => {
                 self.log_output(format!("  Error: {}", e));
@@ -810,9 +817,7 @@ impl App {
 
         // Create tmux session with windows
         self.log_output("  Creating tmux session...".to_string());
-        if let Err(e) =
-            Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)
-        {
+        if let Err(e) = Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path) {
             self.log_output(format!("  Error: {}", e));
             if let Some(w) = &mut self.wizard {
                 w.error_message = Some(format!("Failed to create tmux session: {}", e));
@@ -1003,7 +1008,9 @@ impl App {
                         PreviewPane::Notes => {
                             self.notes_editing = true;
                             self.notes_editor.set_insert_mode();
-                            self.set_status("Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string());
+                            self.set_status(
+                                "Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string(),
+                            );
                         }
                     }
                 }
@@ -1012,7 +1019,9 @@ impl App {
                     if self.preview_pane == PreviewPane::Notes {
                         self.notes_editing = true;
                         self.notes_editor.set_insert_mode();
-                        self.set_status("Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string());
+                        self.set_status(
+                            "Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string(),
+                        );
                     }
                 }
                 KeyCode::Char('t') => {
@@ -1027,26 +1036,22 @@ impl App {
                     // Open command list
                     self.open_command_list();
                 }
-                KeyCode::Char('j') => {
-                    match self.preview_pane {
-                        PreviewPane::Logs => {
-                            self.preview_scroll = self.preview_scroll.saturating_add(1);
-                        }
-                        PreviewPane::Notes => {
-                            self.notes_scroll = self.notes_scroll.saturating_add(1);
-                        }
+                KeyCode::Char('j') => match self.preview_pane {
+                    PreviewPane::Logs => {
+                        self.preview_scroll = self.preview_scroll.saturating_add(1);
                     }
-                }
-                KeyCode::Char('k') => {
-                    match self.preview_pane {
-                        PreviewPane::Logs => {
-                            self.preview_scroll = self.preview_scroll.saturating_sub(1);
-                        }
-                        PreviewPane::Notes => {
-                            self.notes_scroll = self.notes_scroll.saturating_sub(1);
-                        }
+                    PreviewPane::Notes => {
+                        self.notes_scroll = self.notes_scroll.saturating_add(1);
                     }
-                }
+                },
+                KeyCode::Char('k') => match self.preview_pane {
+                    PreviewPane::Logs => {
+                        self.preview_scroll = self.preview_scroll.saturating_sub(1);
+                    }
+                    PreviewPane::Notes => {
+                        self.notes_scroll = self.notes_scroll.saturating_sub(1);
+                    }
+                },
                 KeyCode::Char('l') => {
                     self.preview_pane = PreviewPane::Notes;
                 }
@@ -1142,7 +1147,9 @@ impl App {
     fn open_task_editor(&mut self) {
         // Re-read the task file content from disk to ensure fresh content
         if let Some(task) = self.selected_task() {
-            let content = task.read_task().unwrap_or_else(|_| "No TASK.md available".to_string());
+            let content = task
+                .read_task()
+                .unwrap_or_else(|_| "No TASK.md available".to_string());
             self.task_file_content = content.clone();
             self.task_file_editor = VimTextArea::from_lines(content.lines());
             self.task_file_editor.set_insert_mode();
@@ -1258,33 +1265,31 @@ impl App {
             wizard.error_message = None;
 
             match wizard.step {
-                WizardStep::SelectRepo => {
-                    match key.code {
-                        KeyCode::Esc => {
-                            self.wizard = None;
-                            self.view = View::TaskList;
-                        }
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            if !wizard.repos.is_empty() {
-                                wizard.selected_repo_index =
-                                    (wizard.selected_repo_index + 1) % wizard.repos.len();
-                            }
-                        }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            if !wizard.repos.is_empty() {
-                                wizard.selected_repo_index = if wizard.selected_repo_index == 0 {
-                                    wizard.repos.len() - 1
-                                } else {
-                                    wizard.selected_repo_index - 1
-                                };
-                            }
-                        }
-                        KeyCode::Enter => {
-                            self.wizard_next_step()?;
-                        }
-                        _ => {}
+                WizardStep::SelectRepo => match key.code {
+                    KeyCode::Esc => {
+                        self.wizard = None;
+                        self.view = View::TaskList;
                     }
-                }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if !wizard.repos.is_empty() {
+                            wizard.selected_repo_index =
+                                (wizard.selected_repo_index + 1) % wizard.repos.len();
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if !wizard.repos.is_empty() {
+                            wizard.selected_repo_index = if wizard.selected_repo_index == 0 {
+                                wizard.repos.len() - 1
+                            } else {
+                                wizard.selected_repo_index - 1
+                            };
+                        }
+                    }
+                    KeyCode::Enter => {
+                        self.wizard_next_step()?;
+                    }
+                    _ => {}
+                },
                 WizardStep::SelectBranch => {
                     match key.code {
                         KeyCode::Esc => {
@@ -1306,9 +1311,7 @@ impl App {
                                     // Handle text input
                                     match key.code {
                                         KeyCode::Char('j') | KeyCode::Char('k')
-                                            if !key
-                                                .modifiers
-                                                .contains(KeyModifiers::CONTROL) =>
+                                            if !key.modifiers.contains(KeyModifiers::CONTROL) =>
                                         {
                                             // Pass j/k as text input in create mode
                                             let input = Input::from(event.clone());
@@ -1380,32 +1383,30 @@ impl App {
                         Self::auto_wrap_vim_editor(&mut wizard.description_editor, wrap_width);
                     }
                 }
-                WizardStep::SelectFlow => {
-                    match key.code {
-                        KeyCode::Esc => {
-                            self.wizard_prev_step();
-                        }
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            if !wizard.flows.is_empty() {
-                                wizard.selected_flow_index =
-                                    (wizard.selected_flow_index + 1) % wizard.flows.len();
-                            }
-                        }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            if !wizard.flows.is_empty() {
-                                wizard.selected_flow_index = if wizard.selected_flow_index == 0 {
-                                    wizard.flows.len() - 1
-                                } else {
-                                    wizard.selected_flow_index - 1
-                                };
-                            }
-                        }
-                        KeyCode::Enter => {
-                            self.wizard_next_step()?;
-                        }
-                        _ => {}
+                WizardStep::SelectFlow => match key.code {
+                    KeyCode::Esc => {
+                        self.wizard_prev_step();
                     }
-                }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if !wizard.flows.is_empty() {
+                            wizard.selected_flow_index =
+                                (wizard.selected_flow_index + 1) % wizard.flows.len();
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if !wizard.flows.is_empty() {
+                            wizard.selected_flow_index = if wizard.selected_flow_index == 0 {
+                                wizard.flows.len() - 1
+                            } else {
+                                wizard.selected_flow_index - 1
+                            };
+                        }
+                    }
+                    KeyCode::Enter => {
+                        self.wizard_next_step()?;
+                    }
+                    _ => {}
+                },
             }
         }
         Ok(false)

@@ -15,7 +15,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Check if we're showing a modal that should hide the output pane
     let is_modal_view = matches!(
         app.view,
-        View::DeleteConfirm | View::Feedback | View::NewTaskWizard | View::CommandList | View::TaskEditor
+        View::DeleteConfirm
+            | View::Feedback
+            | View::NewTaskWizard
+            | View::CommandList
+            | View::TaskEditor
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -68,7 +72,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     // Count running and stopped tasks
-    let running_count = app.tasks.iter().filter(|t| t.meta.status == TaskStatus::Running).count();
+    let running_count = app
+        .tasks
+        .iter()
+        .filter(|t| t.meta.status == TaskStatus::Running)
+        .count();
     let stopped_count = app.tasks.len() - running_count;
 
     // Create the outer block first
@@ -116,7 +124,9 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(MIN_TASK_WIDTH);
 
     // Task column width: use max task length, but cap it to available space
-    let task_width = max_task_len.max(MIN_TASK_WIDTH).min(available_width.max(MIN_TASK_WIDTH));
+    let task_width = max_task_len
+        .max(MIN_TASK_WIDTH)
+        .min(available_width.max(MIN_TASK_WIDTH));
 
     // Render header - columns: icon(1) + space(2) + task(dynamic) + gap + status + gap + agent + gap + updated
     let header = Line::from(vec![
@@ -165,12 +175,11 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             let header_line = Line::from(vec![
                 Span::styled(
                     format!("── Running ({}) ", running_count),
-                    Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::LightGreen)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    "─".repeat(50),
-                    Style::default().fg(Color::Rgb(60, 60, 60)),
-                ),
+                Span::styled("─".repeat(50), Style::default().fg(Color::Rgb(60, 60, 60))),
             ]);
             items.push(ListItem::new(header_line));
             shown_running_header = true;
@@ -182,12 +191,11 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             let header_line = Line::from(vec![
                 Span::styled(
                     format!("── Stopped ({}) ", stopped_count),
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    "─".repeat(48),
-                    Style::default().fg(Color::Rgb(40, 40, 40)),
-                ),
+                Span::styled("─".repeat(48), Style::default().fg(Color::Rgb(40, 40, 40))),
             ]);
             items.push(ListItem::new(header_line));
             shown_stopped_header = true;
@@ -334,10 +342,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
     // Split the remaining area into logs and notes panels (60/40)
     let panels = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(60),
-            Constraint::Percentage(40),
-        ])
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(chunks[1]);
 
     draw_logs_panel(f, app, panels[0]);
@@ -399,9 +404,7 @@ fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
             VimMode::Visual => Color::LightYellow,
             VimMode::Operator(_) => Color::LightMagenta,
         };
-        Style::default()
-            .fg(mode_color)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(mode_color).add_modifier(Modifier::BOLD)
     } else if is_focused {
         Style::default()
             .fg(Color::LightGreen)
@@ -426,7 +429,8 @@ fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         );
-        app.notes_editor.textarea
+        app.notes_editor
+            .textarea
             .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
         f.render_widget(&app.notes_editor.textarea, area);
     } else {
@@ -508,7 +512,8 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(mode_color)),
     );
-    app.task_file_editor.textarea
+    app.task_file_editor
+        .textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
     f.render_widget(&app.task_file_editor.textarea, chunks[1]);
@@ -576,7 +581,8 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(mode_color)),
     );
-    app.feedback_editor.textarea
+    app.feedback_editor
+        .textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
     f.render_widget(&app.feedback_editor.textarea, chunks[1]);
@@ -826,7 +832,12 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
             WizardStep::EnterDescription => (3, "Task Description"),
             WizardStep::SelectFlow => (4, "Select Flow"),
         };
-        (wizard.step, step_num, step_title, wizard.error_message.clone())
+        (
+            wizard.step,
+            step_num,
+            step_title,
+            wizard.error_message.clone(),
+        )
     };
 
     // Main wizard container
@@ -1061,15 +1072,13 @@ fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
 
     wizard.description_editor.textarea.set_block(
         Block::default()
-            .title(Span::styled(
-                title,
-                Style::default().fg(mode_color),
-            ))
+            .title(Span::styled(title, Style::default().fg(mode_color)))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(mode_color)),
     );
     wizard
-        .description_editor.textarea
+        .description_editor
+        .textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
     f.render_widget(&wizard.description_editor.textarea, area);

@@ -69,9 +69,10 @@ fn main() -> Result<()> {
             flow,
         }) => cmd_continue(&config, &task_id, feedback.as_deref(), &flow),
 
-        Some(Commands::RunCommand { task_id, command_id }) => {
-            cmd_run_command(&config, &task_id, &command_id)
-        }
+        Some(Commands::RunCommand {
+            task_id,
+            command_id,
+        }) => cmd_run_command(&config, &task_id, &command_id),
 
         Some(Commands::ListCommands) => cmd_list_commands(&config),
 
@@ -105,11 +106,7 @@ fn cmd_new(
     // Check if task already exists
     let task_dir = config.task_dir(repo_name, branch_name);
     if task_dir.exists() {
-        anyhow::bail!(
-            "Task '{}--{}' already exists",
-            repo_name,
-            branch_name
-        );
+        anyhow::bail!("Task '{}--{}' already exists", repo_name, branch_name);
     }
 
     // Verify flow exists
@@ -157,7 +154,10 @@ fn cmd_new(
     println!("  Tmux:      {}", task.meta.tmux_session);
     println!("  Flow:      {}", flow_name);
     println!();
-    println!("Flow is running in tmux. To watch: agman attach {}", task_id);
+    println!(
+        "Flow is running in tmux. To watch: agman attach {}",
+        task_id
+    );
 
     Ok(())
 }
@@ -271,10 +271,7 @@ fn cmd_run(config: &Config, task_id: &str, agent_name: &str, loop_mode: bool) ->
     } else {
         println!("Running agent '{}'...", agent_name);
         runner.run_agent_in_tmux(&mut task, agent_name)?;
-        println!(
-            "Agent started in tmux session: {}",
-            task.meta.tmux_session
-        );
+        println!("Agent started in tmux session: {}", task.meta.tmux_session);
         println!("To attach: agman attach {}", task.meta.task_id());
     }
 
@@ -286,7 +283,11 @@ fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
 
     let mut task = Task::load_by_id(config, task_id)?;
 
-    println!("Running flow '{}' for task '{}'", task.meta.flow_name, task.meta.task_id());
+    println!(
+        "Running flow '{}' for task '{}'",
+        task.meta.flow_name,
+        task.meta.task_id()
+    );
     println!();
 
     let runner = agent::AgentRunner::new(config.clone());
@@ -312,7 +313,12 @@ fn cmd_attach(config: &Config, task_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_continue(config: &Config, task_id: &str, feedback: Option<&str>, flow_name: &str) -> Result<()> {
+fn cmd_continue(
+    config: &Config,
+    task_id: &str,
+    feedback: Option<&str>,
+    flow_name: &str,
+) -> Result<()> {
     config.init_default_files()?;
 
     let mut task = Task::load_by_id(config, task_id)?;

@@ -127,7 +127,10 @@ impl Task {
         task.ensure_git_excludes_task()?;
 
         // Write TASK.md directly to the worktree
-        task.write_task(&format!("# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n", description))?;
+        task.write_task(&format!(
+            "# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n",
+            description
+        ))?;
 
         Ok(task)
     }
@@ -135,18 +138,14 @@ impl Task {
     pub fn load(config: &Config, repo_name: &str, branch_name: &str) -> Result<Self> {
         let dir = config.task_dir(repo_name, branch_name);
         if !dir.exists() {
-            anyhow::bail!(
-                "Task '{}--{}' does not exist",
-                repo_name,
-                branch_name
-            );
+            anyhow::bail!("Task '{}--{}' does not exist", repo_name, branch_name);
         }
 
         let meta_path = dir.join("meta.json");
-        let meta_content = std::fs::read_to_string(&meta_path)
-            .context("Failed to read task meta.json")?;
-        let meta: TaskMeta = serde_json::from_str(&meta_content)
-            .context("Failed to parse task meta.json")?;
+        let meta_content =
+            std::fs::read_to_string(&meta_path).context("Failed to read task meta.json")?;
+        let meta: TaskMeta =
+            serde_json::from_str(&meta_content).context("Failed to parse task meta.json")?;
 
         let task = Self { meta, dir };
 
@@ -282,8 +281,7 @@ impl Task {
 
         // Ensure the info directory exists
         if let Some(info_dir) = exclude_path.parent() {
-            std::fs::create_dir_all(info_dir)
-                .context("Failed to create .git/info directory")?;
+            std::fs::create_dir_all(info_dir).context("Failed to create .git/info directory")?;
         }
 
         if exclude_path.exists() {
@@ -322,7 +320,6 @@ impl Task {
 
         Ok(())
     }
-
 
     fn init_files(&self) -> Result<()> {
         // Create empty files that will be populated later

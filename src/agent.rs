@@ -49,9 +49,8 @@ impl Agent {
         }
 
         // Include git context for refiner and checker agents
-        let needs_git_context = !feedback.is_empty()
-            || self.name == "checker"
-            || self.name == "refiner";
+        let needs_git_context =
+            !feedback.is_empty() || self.name == "checker" || self.name == "refiner";
 
         if needs_git_context {
             // Include feedback if present

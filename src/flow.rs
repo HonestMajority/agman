@@ -109,12 +109,12 @@ impl Flow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum FlowAction {
-    RunAgent(usize),  // Run agent at step index
-    AdvanceStep,      // Move to next step
-    Pause,            // Pause flow, wait for human
-    Complete,         // Task is complete
-    Failed,           // Task failed
-    LoopBack(usize),  // Go back to step index (for loops)
+    RunAgent(usize), // Run agent at step index
+    AdvanceStep,     // Move to next step
+    Pause,           // Pause flow, wait for human
+    Complete,        // Task is complete
+    Failed,          // Task failed
+    LoopBack(usize), // Go back to step index (for loops)
 }
 
 #[allow(dead_code)]

@@ -31,9 +31,12 @@ impl Tmux {
             .args([
                 "new-session",
                 "-d",
-                "-s", session_name,
-                "-c", wd,
-                "-n", "nvim",
+                "-s",
+                session_name,
+                "-c",
+                wd,
+                "-n",
+                "nvim",
             ])
             .output()
             .context("Failed to create tmux session")?;
@@ -58,13 +61,21 @@ impl Tmux {
         let _ = Command::new("tmux")
             .args(["new-window", "-t", session_name, "-n", "claude", "-c", wd])
             .output();
-        Self::send_keys_to_window(session_name, "claude", "claude --dangerously-skip-permissions")?;
+        Self::send_keys_to_window(
+            session_name,
+            "claude",
+            "claude --dangerously-skip-permissions",
+        )?;
 
         // Create zsh window
         let _ = Command::new("tmux")
             .args(["new-window", "-t", session_name, "-n", "zsh", "-c", wd])
             .output();
-        Self::send_keys_to_window(session_name, "zsh", "git status && git branch --show-current")?;
+        Self::send_keys_to_window(
+            session_name,
+            "zsh",
+            "git status && git branch --show-current",
+        )?;
 
         // Create agman window (just a shell, agents will send commands here)
         let _ = Command::new("tmux")

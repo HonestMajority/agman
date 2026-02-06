@@ -33,12 +33,9 @@ impl Config {
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.tasks_dir)
-            .context("Failed to create tasks directory")?;
-        std::fs::create_dir_all(&self.flows_dir)
-            .context("Failed to create flows directory")?;
-        std::fs::create_dir_all(&self.prompts_dir)
-            .context("Failed to create prompts directory")?;
+        std::fs::create_dir_all(&self.tasks_dir).context("Failed to create tasks directory")?;
+        std::fs::create_dir_all(&self.flows_dir).context("Failed to create flows directory")?;
+        std::fs::create_dir_all(&self.prompts_dir).context("Failed to create prompts directory")?;
         std::fs::create_dir_all(&self.commands_dir)
             .context("Failed to create commands directory")?;
         Ok(())
@@ -46,7 +43,8 @@ impl Config {
 
     /// Get task directory: ~/.agman/tasks/<repo>--<branch>/
     pub fn task_dir(&self, repo_name: &str, branch_name: &str) -> PathBuf {
-        self.tasks_dir.join(format!("{}--{}", repo_name, branch_name))
+        self.tasks_dir
+            .join(format!("{}--{}", repo_name, branch_name))
     }
 
     /// Get task ID from repo and branch names
