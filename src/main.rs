@@ -525,10 +525,6 @@ fn cmd_command_flow_run(
         let tmux_session = task.meta.tmux_session.clone();
         let branch_name = task.meta.branch_name.clone();
 
-        // Kill tmux session
-        println!("  Killing tmux session...");
-        let _ = Tmux::kill_session(&tmux_session);
-
         // Remove worktree
         println!("  Removing git worktree...");
         let _ = Git::remove_worktree(&repo_path, &worktree_path);
@@ -542,6 +538,11 @@ fn cmd_command_flow_run(
         task.delete(config)?;
 
         println!("Task '{}' deleted after successful merge.", task_id);
+
+        // Kill tmux session LAST — this process runs inside the tmux session,
+        // so killing it will terminate us. All cleanup must happen before this.
+        println!("  Killing tmux session...");
+        let _ = Tmux::kill_session(&tmux_session);
     } else {
         // Restore original flow settings (only if we're NOT deleting the task)
         task.meta.flow_name = original_flow;
