@@ -238,6 +238,16 @@ impl App {
         Ok(())
     }
 
+    /// Refresh the task list and restore selection to the task with the given ID.
+    /// If the task is no longer present, selection falls back to a valid index.
+    fn refresh_tasks_and_select(&mut self, task_id: &str) -> Result<()> {
+        self.refresh_tasks()?;
+        if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
+            self.selected_index = idx;
+        }
+        Ok(())
+    }
+
     pub fn selected_task(&self) -> Option<&Task> {
         self.tasks.get(self.selected_index)
     }
@@ -487,7 +497,7 @@ impl App {
                     }
                     self.log_output(format!("Flow started for {}", task_id));
                     self.set_status(format!("Feedback submitted for {}", task_id));
-                    self.refresh_tasks()?;
+                    self.refresh_tasks_and_select(&task_id)?;
                 }
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr);
@@ -679,7 +689,7 @@ impl App {
                         self.log_output(line.to_string());
                     }
                 }
-                self.refresh_tasks()?;
+                self.refresh_tasks_and_select(&task_id)?;
                 self.set_status(format!("Started rebase onto {}", branch));
             }
             Ok(o) => {
@@ -756,7 +766,7 @@ impl App {
                         self.log_output(line.to_string());
                     }
                 }
-                self.refresh_tasks()?;
+                self.refresh_tasks_and_select(&task_id)?;
                 self.set_status(format!("Started: {}", command.name));
             }
             Ok(o) => {
@@ -980,7 +990,7 @@ impl App {
         // Success - close wizard and refresh
         self.wizard = None;
         self.view = View::TaskList;
-        self.refresh_tasks()?;
+        self.refresh_tasks_and_select(&task_id)?;
         self.set_status(format!("Created task: {}", task_id));
 
         Ok(())
