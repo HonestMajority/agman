@@ -32,4 +32,11 @@ if [[ "$(uname)" == "Darwin" ]]; then
     codesign -s - "$OUTPUT_DIR/agman" 2>/dev/null || true
 fi
 
+# Reinitialize agman config files
+echo "Running agman init --force..."
+agman init --force
+
+# Ensure git hooks are configured
+git config core.hooksPath .githooks
+
 echo "Done! agman installed at $OUTPUT_DIR/agman"
