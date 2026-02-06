@@ -2182,6 +2182,20 @@ impl App {
 }
 
 pub fn run_tui(config: Config) -> Result<()> {
+    // Remove any stale restart signal file left over from a previous build.
+    // This prevents a "double restart" if the TUI missed the signal (e.g. it
+    // crashed or was not running when release.sh created the file).
+    #[cfg(unix)]
+    {
+        let restart_signal = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".agman/.restart-tui");
+        if restart_signal.exists() {
+            tracing::info!("removing stale .restart-tui signal file at startup");
+            let _ = std::fs::remove_file(&restart_signal);
+        }
+    }
+
     // Create app once (persists across attach/return cycles)
     let mut app = App::new(config)?;
 
@@ -2237,6 +2251,7 @@ pub fn run_tui(config: Config) -> Result<()> {
                     .unwrap_or_default()
                     .join(".agman/.restart-tui");
                 if restart_signal.exists() {
+                    tracing::info!("detected .restart-tui signal file, restarting TUI");
                     let _ = std::fs::remove_file(&restart_signal);
                     disable_raw_mode()?;
                     execute!(
