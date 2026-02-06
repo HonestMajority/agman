@@ -391,7 +391,8 @@ fn cmd_init(config: &Config) -> Result<()> {
     println!("Created stored commands:");
     println!("  create-pr      - Create a draft PR with CI monitoring");
     println!("  address-review - Address review comments with separate commits");
-    println!("  rebase          - Rebase current branch onto another branch");
+    println!("  rebase         - Rebase current branch onto another branch");
+    println!("  monitor-pr     - Monitor GitHub Actions, retry flakes, fix real failures");
     println!();
     println!("Use 'x' in the TUI or 'agman run-command' to run stored commands.");
 
