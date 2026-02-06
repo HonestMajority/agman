@@ -252,7 +252,12 @@ impl AgentRunner {
     /// Run an entire flow to completion
     pub fn run_flow(&self, task: &mut Task) -> Result<StopCondition> {
         let flow = Flow::load(&self.config.flow_path(&task.meta.flow_name))?;
+        self.run_flow_with(task, &flow)
+    }
 
+    /// Run a pre-loaded flow to completion (used by stored commands whose
+    /// flow definitions live outside ~/.agman/flows/)
+    pub fn run_flow_with(&self, task: &mut Task, flow: &Flow) -> Result<StopCondition> {
         println!("Starting flow: {}", flow.name);
         println!();
 

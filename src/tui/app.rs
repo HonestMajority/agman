@@ -4,7 +4,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use std::io;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -90,6 +90,7 @@ pub struct App {
     // Stored commands
     pub commands: Vec<StoredCommand>,
     pub selected_command_index: usize,
+    pub command_list_state: ListState,
     // Feedback queue view
     pub selected_queue_index: usize,
     // Rebase branch picker
@@ -127,6 +128,7 @@ impl App {
             task_file_editor,
             commands,
             selected_command_index: 0,
+            command_list_state: ListState::default(),
             selected_queue_index: 0,
             rebase_branches: Vec::new(),
             selected_rebase_branch_index: 0,
@@ -738,6 +740,7 @@ impl App {
             return;
         }
         self.selected_command_index = 0;
+        self.command_list_state.select(Some(0));
         self.view = View::CommandList;
     }
 
@@ -1622,6 +1625,7 @@ impl App {
                     if !self.commands.is_empty() {
                         self.selected_command_index =
                             (self.selected_command_index + 1) % self.commands.len();
+                        self.command_list_state.select(Some(self.selected_command_index));
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
@@ -1631,6 +1635,7 @@ impl App {
                         } else {
                             self.selected_command_index - 1
                         };
+                        self.command_list_state.select(Some(self.selected_command_index));
                     }
                 }
                 KeyCode::Enter => {

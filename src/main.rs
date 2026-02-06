@@ -447,7 +447,7 @@ fn cmd_run_command(
     task.update_status(TaskStatus::Running)?;
 
     // Run the command flow - commands use the flow format stored in the command file itself
-    // We'll run it step by step using the same flow runner
+    // Load the flow from the command YAML (not from ~/.agman/flows/)
     let flow = Flow::load(&cmd.flow_path)?;
 
     println!("Starting command flow: {}", flow.name);
@@ -455,16 +455,15 @@ fn cmd_run_command(
 
     let runner = agent::AgentRunner::new(config.clone());
 
-    // Temporarily set the flow name to run the command flow
+    // Temporarily set flow step to 0 for the command flow
     let original_flow = task.meta.flow_name.clone();
     let original_step = task.meta.flow_step;
 
-    task.meta.flow_name = command_id.to_string();
     task.meta.flow_step = 0;
     task.save_meta()?;
 
-    // Run the flow
-    let result = runner.run_flow(&mut task)?;
+    // Run the pre-loaded flow directly (bypasses flow_path lookup)
+    let result = runner.run_flow_with(&mut task, &flow)?;
 
     // Restore original flow settings
     task.meta.flow_name = original_flow;

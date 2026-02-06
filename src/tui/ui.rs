@@ -1210,8 +1210,8 @@ fn draw_wizard_footer_direct(
     f.render_widget(para, area);
 }
 
-fn draw_command_list(f: &mut Frame, app: &App) {
-    let area = centered_rect(60, 50, f.area());
+fn draw_command_list(f: &mut Frame, app: &mut App) {
+    let area = centered_rect(60, 70, f.area());
     f.render_widget(Clear, area);
 
     let task_id = app
@@ -1283,17 +1283,19 @@ fn draw_command_list(f: &mut Frame, app: &App) {
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .title(Span::styled(
-                " Select a command (Enter to run, Esc to cancel) ",
-                Style::default().fg(Color::LightGreen),
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightGreen)),
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(Span::styled(
+                    " Select a command (Enter to run, Esc to cancel) ",
+                    Style::default().fg(Color::LightGreen),
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::LightGreen)),
+        )
+        .highlight_style(Style::default());
 
-    f.render_widget(list, chunks[1]);
+    f.render_stateful_widget(list, chunks[1], &mut app.command_list_state);
 }
 
 fn draw_feedback_queue(f: &mut Frame, app: &App) {
