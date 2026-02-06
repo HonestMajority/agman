@@ -393,6 +393,7 @@ fn cmd_init(config: &Config, force: bool) -> Result<()> {
     println!("  create-pr      - Create a draft PR with CI monitoring");
     println!("  address-review - Address review comments with separate commits");
     println!("  rebase         - Rebase current branch onto another branch");
+    println!("  local-merge    - Merge current branch into a local branch, delete task after");
     println!("  monitor-pr     - Monitor GitHub Actions, retry flakes, fix real failures");
     println!();
     println!("Use 'x' in the TUI or 'agman run-command' to run stored commands.");
@@ -418,14 +419,14 @@ fn cmd_run_command(
     println!("  Description: {}", cmd.description);
     println!("  Task: {}", task.meta.task_id());
 
-    // If the command requires a branch arg, write it to .rebase-target in the task dir
+    // If the command requires a branch arg, write it to .branch-target in the task dir
     if cmd.requires_arg.as_deref() == Some("branch") {
         let branch = branch.ok_or_else(|| {
             anyhow::anyhow!("Command '{}' requires --branch argument", command_id)
         })?;
-        let rebase_target_path = task.dir.join(".rebase-target");
-        std::fs::write(&rebase_target_path, branch)?;
-        println!("  Rebase target: {}", branch);
+        let branch_target_path = task.dir.join(".branch-target");
+        std::fs::write(&branch_target_path, branch)?;
+        println!("  Target branch: {}", branch);
     }
 
     println!();
@@ -475,14 +476,14 @@ fn cmd_command_flow_run(
     println!("Running command: {}", cmd.name);
     println!("  Task: {}", task.meta.task_id());
 
-    // If the command requires a branch arg, write it to .rebase-target in the task dir
+    // If the command requires a branch arg, write it to .branch-target in the task dir
     // (may already be written by cmd_run_command, but handle the case where
     // command-flow-run is invoked directly)
     if cmd.requires_arg.as_deref() == Some("branch") {
         if let Some(b) = branch {
-            let rebase_target_path = task.dir.join(".rebase-target");
-            std::fs::write(&rebase_target_path, b)?;
-            println!("  Rebase target: {}", b);
+            let branch_target_path = task.dir.join(".branch-target");
+            std::fs::write(&branch_target_path, b)?;
+            println!("  Target branch: {}", b);
         }
     }
 
@@ -509,13 +510,44 @@ fn cmd_command_flow_run(
     // Run the pre-loaded flow directly (blocking — this runs in tmux)
     let result = runner.run_flow_with(&mut task, &flow)?;
 
-    // Restore original flow settings
-    task.meta.flow_name = original_flow;
-    task.meta.flow_step = original_step;
-    task.save_meta()?;
-
     println!();
     println!("Command '{}' finished with: {}", cmd.name, result);
+
+    // Check for post_action after successful completion
+    let is_success = result == flow::StopCondition::AgentDone || result == flow::StopCondition::TaskComplete;
+    if is_success && cmd.post_action.as_deref() == Some("delete_task") {
+        println!();
+        println!("Post-action: deleting task after successful merge...");
+
+        let task_id = task.meta.task_id();
+        let repo_path = config.repo_path(&task.meta.repo_name);
+        let worktree_path = task.meta.worktree_path.clone();
+        let tmux_session = task.meta.tmux_session.clone();
+        let branch_name = task.meta.branch_name.clone();
+
+        // Kill tmux session
+        println!("  Killing tmux session...");
+        let _ = Tmux::kill_session(&tmux_session);
+
+        // Remove worktree
+        println!("  Removing git worktree...");
+        let _ = Git::remove_worktree(&repo_path, &worktree_path);
+
+        // Delete branch
+        println!("  Deleting git branch...");
+        let _ = Git::delete_branch(&repo_path, &branch_name);
+
+        // Delete task directory
+        println!("  Removing task directory...");
+        task.delete(config)?;
+
+        println!("Task '{}' deleted after successful merge.", task_id);
+    } else {
+        // Restore original flow settings (only if we're NOT deleting the task)
+        task.meta.flow_name = original_flow;
+        task.meta.flow_step = original_step;
+        task.save_meta()?;
+    }
 
     Ok(())
 }

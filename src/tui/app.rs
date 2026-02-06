@@ -134,9 +134,10 @@ pub struct App {
     pub command_list_state: ListState,
     // Feedback queue view
     pub selected_queue_index: usize,
-    // Rebase branch picker
+    // Branch picker (rebase, local-merge, etc.)
     pub rebase_branches: Vec<String>,
     pub selected_rebase_branch_index: usize,
+    pub pending_branch_command: Option<StoredCommand>,
     // Delete mode chooser
     pub delete_mode_index: usize,
 }
@@ -176,6 +177,7 @@ impl App {
             selected_queue_index: 0,
             rebase_branches: Vec::new(),
             selected_rebase_branch_index: 0,
+            pending_branch_command: None,
             delete_mode_index: 0,
         })
     }
@@ -715,7 +717,7 @@ impl App {
         Ok(branches)
     }
 
-    fn open_rebase_branch_picker(&mut self) {
+    fn open_branch_picker(&mut self) {
         let repo_name = match self.selected_task() {
             Some(t) => t.meta.repo_name.clone(),
             None => {
@@ -727,11 +729,27 @@ impl App {
         match self.scan_rebase_branches(&repo_name) {
             Ok(branches) => {
                 if branches.is_empty() {
-                    self.set_status("No branches found for rebase".to_string());
+                    self.set_status("No branches found".to_string());
                     return;
                 }
+
+                // Preselect main/master for local-merge command
+                let preselect_index = if self
+                    .pending_branch_command
+                    .as_ref()
+                    .map(|c| c.id == "local-merge")
+                    .unwrap_or(false)
+                {
+                    branches
+                        .iter()
+                        .position(|b| b == "main" || b == "master")
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
                 self.rebase_branches = branches;
-                self.selected_rebase_branch_index = 0;
+                self.selected_rebase_branch_index = preselect_index;
                 self.view = View::RebaseBranchPicker;
             }
             Err(e) => {
@@ -740,7 +758,16 @@ impl App {
         }
     }
 
-    fn run_rebase_command(&mut self, branch: &str) -> Result<()> {
+    fn run_branch_command(&mut self, branch: &str) -> Result<()> {
+        let command = match self.pending_branch_command.take() {
+            Some(c) => c,
+            None => {
+                self.set_status("No pending branch command".to_string());
+                self.view = View::Preview;
+                return Ok(());
+            }
+        };
+
         let task_id = match self.selected_task() {
             Some(t) => t.meta.task_id(),
             None => {
@@ -751,12 +778,12 @@ impl App {
         };
 
         self.log_output(format!(
-            "Running rebase onto '{}' for task {}...",
-            branch, task_id
+            "Running '{}' with branch '{}' for task {}...",
+            command.name, branch, task_id
         ));
 
         let output = Command::new("agman")
-            .args(["run-command", &task_id, "rebase", "--branch", branch])
+            .args(["run-command", &task_id, &command.id, "--branch", branch])
             .output();
 
         match output {
@@ -768,12 +795,12 @@ impl App {
                     }
                 }
                 self.refresh_tasks_and_select(&task_id)?;
-                self.set_status(format!("Started rebase onto {}", branch));
+                self.set_status(format!("Started: {} onto {}", command.name, branch));
             }
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 self.log_output(format!("Failed: {}", stderr));
-                self.set_status("Failed to run rebase".to_string());
+                self.set_status(format!("Failed to run {}", command.name));
             }
             Err(e) => {
                 self.log_output(format!("Error: {}", e));
@@ -816,7 +843,8 @@ impl App {
 
         // If the command requires a branch argument, open the branch picker
         if command.requires_arg.as_deref() == Some("branch") {
-            self.open_rebase_branch_picker();
+            self.pending_branch_command = Some(command);
+            self.open_branch_picker();
             return Ok(());
         }
 
@@ -2042,7 +2070,7 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if let Some(branch) = self.rebase_branches.get(self.selected_rebase_branch_index).cloned() {
-                        self.run_rebase_command(&branch)?;
+                        self.run_branch_command(&branch)?;
                     }
                 }
                 _ => {}

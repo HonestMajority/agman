@@ -141,6 +141,7 @@ impl Config {
             ("review-implementer", REVIEW_IMPLEMENTER_PROMPT),
             ("pr-check-monitor", PR_CHECK_MONITOR_PROMPT),
             ("pr-reviewer", PR_REVIEWER_PROMPT),
+            ("local-merge-executor", LOCAL_MERGE_EXECUTOR_PROMPT),
         ];
 
         for (name, content) in prompts {
@@ -157,6 +158,7 @@ impl Config {
             ("rebase", REBASE_COMMAND),
             ("monitor-pr", MONITOR_PR_COMMAND),
             ("review-pr", REVIEW_PR_COMMAND),
+            ("local-merge", LOCAL_MERGE_COMMAND),
         ];
 
         for (name, content) in commands {
@@ -389,8 +391,9 @@ steps:
 const REBASE_EXECUTOR_PROMPT: &str = r#"You are a rebase executor agent. Your job is to rebase the current branch onto a target branch, resolving any conflicts along the way.
 
 Instructions:
-1. Read the target branch name from the file `.rebase-target` in the current task directory (the task dir path is in the meta.json, or you can look for .rebase-target in the worktree root or task dir).
-   - If .rebase-target does not exist in the working directory, check the task dir at ~/.agman/tasks/<task_id>/
+1. Read the target branch name from the file `.branch-target` in the current task directory (the task dir path is in the meta.json, or you can look for .branch-target in the worktree root or task dir).
+   - If .branch-target does not exist, also check for `.rebase-target` as a fallback (legacy name)
+   - If neither exists in the working directory, check the task dir at ~/.agman/tasks/<task_id>/
 2. Fetch the latest changes for the target branch from origin (if origin exists):
    ```
    git fetch origin <target_branch>
@@ -414,7 +417,7 @@ Instructions:
    e. Repeat until the rebase is complete
 6. After the rebase is complete, verify the code still compiles by running the build command (e.g., `cargo build`, `npm run build`, etc. - check the project type)
 7. Read TASK.md and verify the task goals are still being met (the code changes haven't been lost)
-8. Clean up: remove the `.rebase-target` file if it exists in the working directory
+8. Clean up: remove the `.branch-target` and `.rebase-target` files if they exist in the working directory or task dir
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -661,6 +664,81 @@ description: Reviews the current PR or full branch diff if no PR exists, writes 
 steps:
   - agent: pr-reviewer
     until: AGENT_DONE
+"#;
+
+const LOCAL_MERGE_COMMAND: &str = r#"name: Local Merge
+id: local-merge
+description: Merge current branch into a local branch, with conflict resolution via rebase
+requires_arg: branch
+post_action: delete_task
+
+steps:
+  - agent: local-merge-executor
+    until: AGENT_DONE
+"#;
+
+const LOCAL_MERGE_EXECUTOR_PROMPT: &str = r#"You are a local merge executor agent. Your job is to merge the current feature branch into a target branch locally, resolving any conflicts along the way.
+
+Instructions:
+1. Read the target branch name from the file `.branch-target` in the current task directory (the task dir path is in the meta.json, or you can look for .branch-target in the worktree root or task dir).
+   - If .branch-target does not exist in the working directory, check the task dir at ~/.agman/tasks/<task_id>/
+2. Identify the current feature branch:
+   ```
+   git rev-parse --abbrev-ref HEAD
+   ```
+3. Ensure all changes on the current branch are committed. If there are uncommitted changes, commit them with a descriptive message.
+4. Fetch the latest changes for the target branch from origin (if origin exists):
+   ```
+   git fetch origin <target_branch>
+   ```
+   If fetch fails (e.g., no remote), that's okay - just use the local branch.
+5. Switch to the target branch:
+   ```
+   git checkout <target_branch>
+   ```
+   If the target branch has a remote tracking branch, pull the latest:
+   ```
+   git pull --ff-only
+   ```
+6. Attempt the merge:
+   ```
+   git merge <feature_branch> --no-ff
+   ```
+7. If there are merge conflicts:
+   a. Abort the merge: `git merge --abort`
+   b. Switch back to the feature branch: `git checkout <feature_branch>`
+   c. Rebase onto the target branch: `git rebase <target_branch>`
+   d. For each conflict during rebase:
+      - Examine the conflict markers in each file
+      - Resolve the conflict using your best judgment:
+        - Prefer keeping the current branch's changes when they implement task-specific features
+        - Accept the target branch's changes for infrastructure, dependencies, or unrelated code
+        - When both sides have meaningful changes, merge them intelligently
+      - After resolving each file: `git add <file>`
+      - Continue the rebase: `git rebase --continue`
+   e. After rebase completes, verify the code still compiles by running the build command (e.g., `cargo build`, `npm run build`, etc. - check the project type)
+   f. Read TASK.md and verify the task goals are still fulfilled (the code changes haven't been lost)
+   g. Switch back to the target branch: `git checkout <target_branch>`
+   h. Retry the merge (should be clean/fast-forward now):
+      ```
+      git merge <feature_branch> --no-ff
+      ```
+8. After successful merge, verify the build still compiles on the target branch.
+9. Switch back to the feature branch (so agman's worktree state is consistent):
+   ```
+   git checkout <feature_branch>
+   ```
+10. Clean up: remove the `.branch-target` file if it exists in the working directory or task dir.
+
+IMPORTANT:
+- Do NOT ask questions or wait for input
+- Do NOT push anything to remote - this is a LOCAL merge only
+- If you cannot resolve a conflict, make your best judgment call
+- If the build fails after merge, try to fix compilation errors
+- If you absolutely cannot resolve the situation, output TASK_BLOCKED
+
+When the merge is complete and code compiles on the target branch, output exactly: AGENT_DONE
+If you cannot complete the merge, output exactly: TASK_BLOCKED
 "#;
 
 const PR_REVIEWER_PROMPT: &str = r#"You are a PR review agent. Your job is to review the current branch's changes thoroughly.

@@ -1539,6 +1539,29 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &App) {
         .map(|t| t.meta.task_id())
         .unwrap_or_else(|| "unknown".to_string());
 
+    // Dynamic title and labels based on the pending command
+    let (picker_title, header_label, list_title) = match app
+        .pending_branch_command
+        .as_ref()
+        .map(|c| c.id.as_str())
+    {
+        Some("local-merge") => (
+            " Merge Branch Picker ",
+            "Merge task into: ",
+            " Select branch to merge into (Enter to select, Esc to cancel) ",
+        ),
+        Some("rebase") => (
+            " Rebase Branch Picker ",
+            "Rebase task: ",
+            " Select branch to rebase onto (Enter to select, Esc to cancel) ",
+        ),
+        _ => (
+            " Branch Picker ",
+            "Task: ",
+            " Select branch (Enter to select, Esc to cancel) ",
+        ),
+    };
+
     // Split into header and list
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1547,7 +1570,7 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &App) {
 
     // Header
     let header = Paragraph::new(Line::from(vec![
-        Span::styled("Rebase task: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(header_label, Style::default().fg(Color::DarkGray)),
         Span::styled(
             task_id,
             Style::default()
@@ -1558,7 +1581,7 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &App) {
     .block(
         Block::default()
             .title(Span::styled(
-                " Rebase Branch Picker ",
+                picker_title,
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD),
@@ -1597,7 +1620,7 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &App) {
     let list = List::new(items).block(
         Block::default()
             .title(Span::styled(
-                " Select branch to rebase onto (Enter to select, Esc to cancel) ",
+                list_title,
                 Style::default().fg(Color::LightGreen),
             ))
             .borders(Borders::ALL)

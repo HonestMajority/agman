@@ -16,6 +16,9 @@ pub struct StoredCommand {
     /// If set, the command requires an argument of this type before running (e.g., "branch")
     #[serde(default)]
     pub requires_arg: Option<String>,
+    /// If set, an action to perform after the command flow completes successfully (e.g., "delete_task")
+    #[serde(default)]
+    pub post_action: Option<String>,
     /// Path to the YAML flow file (relative to commands dir, stored as absolute)
     #[serde(skip)]
     pub flow_path: PathBuf,
