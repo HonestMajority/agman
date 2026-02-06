@@ -1362,9 +1362,9 @@ impl App {
         // Add a 6th tmux window with REVIEW.md open in nvim
         let wd = worktree_path.to_str().unwrap_or(".");
         let _ = std::process::Command::new("tmux")
-            .args(["new-window", "-t", &task.meta.tmux_session, "-n", "REVIEW.md", "-c", wd])
+            .args(["new-window", "-t", &task.meta.tmux_session, "-n", "review", "-c", wd])
             .output();
-        let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "REVIEW.md", "nvim REVIEW.md");
+        let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "review", "nvim REVIEW.md");
 
         // Run the review-pr stored command instead of a flow
         let task_id = task.meta.task_id();
