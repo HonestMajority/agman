@@ -1,1 +1,0 @@
-/Users/nordbjorn/.agman/tasks/agman--fix-x-command/TASK.md
