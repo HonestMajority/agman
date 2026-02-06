@@ -44,8 +44,7 @@ fn main() -> Result<()> {
             repo_name,
             branch_name,
             description,
-            flow,
-        }) => cmd_new(&config, &repo_name, &branch_name, &description, &flow),
+        }) => cmd_new(&config, &repo_name, &branch_name, &description),
 
         Some(Commands::List) => cmd_list(&config),
 
@@ -66,8 +65,7 @@ fn main() -> Result<()> {
         Some(Commands::Continue {
             task_id,
             feedback,
-            flow,
-        }) => cmd_continue(&config, &task_id, feedback.as_deref(), &flow),
+        }) => cmd_continue(&config, &task_id, feedback.as_deref()),
 
         Some(Commands::RunCommand {
             task_id,
@@ -90,9 +88,10 @@ fn cmd_new(
     repo_name: &str,
     branch_name: &str,
     description: &str,
-    flow_name: &str,
 ) -> Result<()> {
     config.init_default_files()?;
+
+    let flow_name = "new";
 
     // Check if repo exists
     let repo_path = config.repo_path(repo_name);
@@ -144,7 +143,7 @@ fn cmd_new(
 
     // Start the flow running in the tmux agman window
     let task_id = task.meta.task_id();
-    println!("Starting flow '{}' in background...", flow_name);
+    println!("Starting flow in background...");
     let flow_cmd = format!("agman flow-run {}", task_id);
     Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd)?;
 
@@ -153,7 +152,6 @@ fn cmd_new(
     println!("  Task ID:   {}", task_id);
     println!("  Worktree:  {}", worktree_path.display());
     println!("  Tmux:      {}", task.meta.tmux_session);
-    println!("  Flow:      {}", flow_name);
     println!();
     println!(
         "Flow is running in tmux. To watch: agman attach {}",
@@ -318,9 +316,10 @@ fn cmd_continue(
     config: &Config,
     task_id: &str,
     feedback: Option<&str>,
-    flow_name: &str,
 ) -> Result<()> {
     config.init_default_files()?;
+
+    let flow_name = "continue";
 
     let mut task = Task::load_by_id(config, task_id)?;
 
@@ -349,7 +348,6 @@ fn cmd_continue(
 
     println!("Continuing task: {}", task.meta.task_id());
     println!("Feedback: {}", feedback_text);
-    println!("Flow: {}", flow_name);
     println!();
 
     // Update task state
@@ -384,25 +382,12 @@ fn cmd_init(config: &Config) -> Result<()> {
     println!("  {}/", config.prompts_dir.display());
     println!("  {}/", config.commands_dir.display());
     println!();
-    println!("Created default flows:");
-    println!("  default.yaml");
-    println!("  tdd.yaml");
-    println!("  review.yaml");
-    println!("  continue.yaml");
-    println!();
-    println!("Created default agent prompts:");
-    println!("  planner.md, coder.md, test-writer.md, tester.md, reviewer.md, refiner.md");
-    println!("  pr-creator.md, ci-monitor.md, ci-fixer.md");
-    println!("  review-reader.md, review-fixer.md, review-summarizer.md");
-    println!("  rebase-executor.md");
-    println!();
     println!("Created stored commands:");
     println!("  create-pr      - Create a draft PR with CI monitoring");
     println!("  address-review - Address review comments with separate commits");
     println!("  rebase          - Rebase current branch onto another branch");
     println!();
     println!("Use 'x' in the TUI or 'agman run-command' to run stored commands.");
-    println!("You can customize these files to fit your workflow.");
 
     Ok(())
 }

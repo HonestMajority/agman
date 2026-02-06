@@ -805,16 +805,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     WizardStep::EnterDescription => {
                         vec![
                             Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
-                            Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
-                            Span::styled(" back", Style::default().fg(Color::DarkGray)),
-                        ]
-                    }
-                    WizardStep::SelectFlow => {
-                        vec![
-                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
                             Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
                             Span::styled("Esc", Style::default().fg(Color::LightRed)),
                             Span::styled(" back", Style::default().fg(Color::DarkGray)),
@@ -889,7 +879,6 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
             WizardStep::SelectRepo => (1, "Select Repository"),
             WizardStep::SelectBranch => (2, "Branch Name"),
             WizardStep::EnterDescription => (3, "Task Description"),
-            WizardStep::SelectFlow => (4, "Select Flow"),
         };
         (
             wizard.step,
@@ -902,7 +891,7 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
     // Main wizard container
     let block = Block::default()
         .title(Span::styled(
-            format!(" New Task [{}/4] {} ", step_num, step_title),
+            format!(" New Task [{}/3] {} ", step_num, step_title),
             Style::default()
                 .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
@@ -928,11 +917,6 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
         }
         WizardStep::SelectBranch => draw_wizard_branch(f, app, chunks[0]),
         WizardStep::EnterDescription => draw_wizard_description(f, app, chunks[0]),
-        WizardStep::SelectFlow => {
-            if let Some(wizard) = &app.wizard {
-                draw_wizard_flow_list(f, wizard, chunks[0]);
-            }
-        }
     }
 
     // Draw error message or help text
@@ -1143,47 +1127,6 @@ fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(&wizard.description_editor.textarea, area);
 }
 
-fn draw_wizard_flow_list(f: &mut Frame, wizard: &super::app::NewTaskWizard, area: Rect) {
-    let items: Vec<ListItem> = wizard
-        .flows
-        .iter()
-        .enumerate()
-        .map(|(i, flow)| {
-            let style = if i == wizard.selected_flow_index {
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::Rgb(40, 40, 60))
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-            let prefix = if i == wizard.selected_flow_index {
-                "▸ "
-            } else {
-                "  "
-            };
-            let default_marker = if flow == "default" { " (default)" } else { "" };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(flow, style),
-                Span::styled(default_marker, Style::default().fg(Color::DarkGray)),
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .title(Span::styled(
-                " Select Flow (Enter to create task) ",
-                Style::default().fg(Color::LightMagenta),
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightMagenta)),
-    );
-
-    f.render_widget(list, area);
-}
-
 fn draw_wizard_footer_direct(
     f: &mut Frame,
     step: WizardStep,
@@ -1200,8 +1143,7 @@ fn draw_wizard_footer_direct(
         let help = match step {
             WizardStep::SelectRepo => "j/k: navigate  Enter: select  Esc: cancel",
             WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
-            WizardStep::EnterDescription => "Ctrl+S: continue  Esc: back",
-            WizardStep::SelectFlow => "j/k: navigate  Enter: create task  Esc: back",
+            WizardStep::EnterDescription => "Ctrl+S: create task  Esc: back",
         };
         Line::from(Span::styled(help, Style::default().fg(Color::DarkGray)))
     };

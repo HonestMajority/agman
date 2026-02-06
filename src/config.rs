@@ -97,10 +97,10 @@ impl Config {
     pub fn init_default_files(&self) -> Result<()> {
         self.ensure_dirs()?;
 
-        // Create default flow if it doesn't exist
-        let default_flow = self.flow_path("default");
-        if !default_flow.exists() {
-            std::fs::write(&default_flow, DEFAULT_FLOW)?;
+        // Create "new" flow if it doesn't exist
+        let new_flow = self.flow_path("new");
+        if !new_flow.exists() {
+            std::fs::write(&new_flow, DEFAULT_FLOW)?;
         }
 
         let tdd_flow = self.flow_path("tdd");
@@ -161,7 +161,7 @@ impl Config {
     }
 }
 
-const DEFAULT_FLOW: &str = r#"name: default
+const DEFAULT_FLOW: &str = r#"name: new
 steps:
   - agent: planner
     until: AGENT_DONE

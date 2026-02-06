@@ -37,7 +37,6 @@ pub enum WizardStep {
     SelectRepo,
     SelectBranch,
     EnterDescription,
-    SelectFlow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,8 +54,6 @@ pub struct NewTaskWizard {
     pub selected_branch_index: usize,
     pub new_branch_editor: TextArea<'static>,
     pub description_editor: VimTextArea<'static>,
-    pub flows: Vec<String>,
-    pub selected_flow_index: usize,
     pub error_message: Option<String>,
 }
 
@@ -471,7 +468,7 @@ impl App {
             // Run agman continue (reads feedback from FEEDBACK.md)
             // Capture output to avoid corrupting TUI
             let output = Command::new("agman")
-                .args(["continue", &task_id, "--flow", "continue"])
+                .args(["continue", &task_id])
                 .output();
 
             match output {
@@ -514,7 +511,6 @@ impl App {
 
     fn start_wizard(&mut self) -> Result<()> {
         let repos = self.scan_repos()?;
-        let flows = self.scan_flows()?;
 
         if repos.is_empty() {
             self.set_status("No repositories found in ~/repos/".to_string());
@@ -528,9 +524,6 @@ impl App {
         let mut description_editor = VimTextArea::new();
         description_editor.set_insert_mode();
 
-        // Find index of "default" flow, or use 0
-        let default_flow_index = flows.iter().position(|f| f == "default").unwrap_or(0);
-
         self.wizard = Some(NewTaskWizard {
             step: WizardStep::SelectRepo,
             repos,
@@ -540,8 +533,6 @@ impl App {
             selected_branch_index: 0,
             new_branch_editor,
             description_editor,
-            flows,
-            selected_flow_index: default_flow_index,
             error_message: None,
         });
 
@@ -580,28 +571,6 @@ impl App {
 
         repos.sort();
         Ok(repos)
-    }
-
-    fn scan_flows(&self) -> Result<Vec<String>> {
-        let flows_dir = &self.config.flows_dir;
-        if !flows_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut flows = Vec::new();
-        for entry in std::fs::read_dir(flows_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.extension().map(|e| e == "yaml").unwrap_or(false) {
-                if let Some(stem) = path.file_stem() {
-                    flows.push(stem.to_string_lossy().to_string());
-                }
-            }
-        }
-
-        flows.sort();
-        Ok(flows)
     }
 
     pub fn scan_commands(&mut self) -> Result<()> {
@@ -904,9 +873,6 @@ impl App {
                     wizard.error_message = Some("Description cannot be empty".to_string());
                     return Ok(());
                 }
-                wizard.step = WizardStep::SelectFlow;
-            }
-            WizardStep::SelectFlow => {
                 // Create the task
                 return self.create_task_from_wizard();
             }
@@ -935,9 +901,6 @@ impl App {
             WizardStep::EnterDescription => {
                 wizard.step = WizardStep::SelectBranch;
             }
-            WizardStep::SelectFlow => {
-                wizard.step = WizardStep::EnterDescription;
-            }
         }
     }
 
@@ -955,7 +918,7 @@ impl App {
             }
         };
         let description = wizard.description_editor.lines_joined().trim().to_string();
-        let flow_name = wizard.flows[wizard.selected_flow_index].clone();
+        let flow_name = "new".to_string();
 
         self.log_output(format!("Creating task {}--{}...", repo_name, branch_name));
 
@@ -1013,7 +976,6 @@ impl App {
         let task_id = task.meta.task_id();
         let flow_cmd = format!("agman flow-run {}", task_id);
         let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd);
-        self.log_output(format!("  Started flow: {}", flow_name));
 
         // Success - close wizard and refresh
         self.wizard = None;
@@ -1580,30 +1542,6 @@ impl App {
                         Self::auto_wrap_vim_editor(&mut wizard.description_editor, wrap_width);
                     }
                 }
-                WizardStep::SelectFlow => match key.code {
-                    KeyCode::Esc => {
-                        self.wizard_prev_step();
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if !wizard.flows.is_empty() {
-                            wizard.selected_flow_index =
-                                (wizard.selected_flow_index + 1) % wizard.flows.len();
-                        }
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        if !wizard.flows.is_empty() {
-                            wizard.selected_flow_index = if wizard.selected_flow_index == 0 {
-                                wizard.flows.len() - 1
-                            } else {
-                                wizard.selected_flow_index - 1
-                            };
-                        }
-                    }
-                    KeyCode::Enter => {
-                        self.wizard_next_step()?;
-                    }
-                    _ => {}
-                },
             }
         }
         Ok(false)
