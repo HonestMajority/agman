@@ -1347,6 +1347,17 @@ impl App {
             return Ok(());
         }
 
+        // Pre-create REVIEW.md so nvim can open it immediately
+        let review_md_path = worktree_path.join("REVIEW.md");
+        std::fs::write(&review_md_path, "# Code Review\n\n(Review in progress...)\n")?;
+
+        // Add a 6th tmux window with REVIEW.md open in nvim
+        let wd = worktree_path.to_str().unwrap_or(".");
+        let _ = std::process::Command::new("tmux")
+            .args(["new-window", "-t", &task.meta.tmux_session, "-n", "REVIEW.md", "-c", wd])
+            .output();
+        let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "REVIEW.md", "nvim REVIEW.md");
+
         // Run the review-pr stored command instead of a flow
         let task_id = task.meta.task_id();
         let review_cmd = format!("agman run-command {} review-pr", task_id);
