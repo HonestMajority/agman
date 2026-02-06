@@ -127,6 +127,7 @@ impl Config {
             ("reviewer", REVIEWER_PROMPT),
             ("refiner", REFINER_PROMPT),
             // Command-specific prompts
+            ("rebase-executor", REBASE_EXECUTOR_PROMPT),
             ("pr-creator", PR_CREATOR_PROMPT),
             ("ci-monitor", CI_MONITOR_PROMPT),
             ("ci-fixer", CI_FIXER_PROMPT),
@@ -146,6 +147,7 @@ impl Config {
         let commands = [
             ("create-pr", CREATE_PR_COMMAND),
             ("address-review", ADDRESS_REVIEW_COMMAND),
+            ("rebase", REBASE_COMMAND),
         ];
 
         for (name, content) in commands {
@@ -341,6 +343,16 @@ steps:
     until: AGENT_DONE
 "#;
 
+const REBASE_COMMAND: &str = r#"name: Rebase
+id: rebase
+description: Rebase current branch onto another branch with conflict resolution
+requires_arg: branch
+
+steps:
+  - agent: rebase-executor
+    until: AGENT_DONE
+"#;
+
 const ADDRESS_REVIEW_COMMAND: &str = r#"name: Address Review
 id: address-review
 description: Addresses all review comments with separate commits and generates response summaries
@@ -357,6 +369,46 @@ steps:
 // ============================================================================
 // Command-specific Agent Prompts
 // ============================================================================
+
+const REBASE_EXECUTOR_PROMPT: &str = r#"You are a rebase executor agent. Your job is to rebase the current branch onto a target branch, resolving any conflicts along the way.
+
+Instructions:
+1. Read the target branch name from the file `.rebase-target` in the current task directory (the task dir path is in the meta.json, or you can look for .rebase-target in the worktree root or task dir).
+   - If .rebase-target does not exist in the working directory, check the task dir at ~/.agman/tasks/<task_id>/
+2. Fetch the latest changes for the target branch from origin (if origin exists):
+   ```
+   git fetch origin <target_branch>
+   ```
+   If fetch fails (e.g., no remote), that's okay - just use the local branch.
+3. Determine the rebase target ref:
+   - If `origin/<target_branch>` exists, rebase onto `origin/<target_branch>`
+   - Otherwise, rebase onto the local `<target_branch>`
+4. Run the rebase:
+   ```
+   git rebase <target_ref>
+   ```
+5. If there are conflicts:
+   a. For each conflicted file, examine the conflict markers
+   b. Resolve the conflict using your best judgment:
+      - Prefer keeping the current branch's changes when they implement task-specific features
+      - Accept the target branch's changes for infrastructure, dependencies, or unrelated code
+      - When both sides have meaningful changes, merge them intelligently
+   c. After resolving each file: `git add <file>`
+   d. Continue the rebase: `git rebase --continue`
+   e. Repeat until the rebase is complete
+6. After the rebase is complete, verify the code still compiles by running the build command (e.g., `cargo build`, `npm run build`, etc. - check the project type)
+7. Read TASK.md and verify the task goals are still being met (the code changes haven't been lost)
+8. Clean up: remove the `.rebase-target` file if it exists in the working directory
+
+IMPORTANT:
+- Do NOT ask questions or wait for input
+- If you cannot resolve a conflict, make your best judgment call
+- If the build fails after rebase, try to fix compilation errors
+- If you absolutely cannot resolve the situation, output TASK_BLOCKED
+
+When the rebase is complete and code compiles, output exactly: AGENT_DONE
+If you cannot complete the rebase, output exactly: TASK_BLOCKED
+"#;
 
 const PR_CREATOR_PROMPT: &str = r#"You are a PR creation agent. Your job is to create a well-crafted draft pull request.
 

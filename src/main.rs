@@ -72,7 +72,8 @@ fn main() -> Result<()> {
         Some(Commands::RunCommand {
             task_id,
             command_id,
-        }) => cmd_run_command(&config, &task_id, &command_id),
+            branch,
+        }) => cmd_run_command(&config, &task_id, &command_id, branch.as_deref()),
 
         Some(Commands::ListCommands) => cmd_list_commands(&config),
 
@@ -393,10 +394,12 @@ fn cmd_init(config: &Config) -> Result<()> {
     println!("  planner.md, coder.md, test-writer.md, tester.md, reviewer.md, refiner.md");
     println!("  pr-creator.md, ci-monitor.md, ci-fixer.md");
     println!("  review-reader.md, review-fixer.md, review-summarizer.md");
+    println!("  rebase-executor.md");
     println!();
     println!("Created stored commands:");
     println!("  create-pr      - Create a draft PR with CI monitoring");
     println!("  address-review - Address review comments with separate commits");
+    println!("  rebase          - Rebase current branch onto another branch");
     println!();
     println!("Use 'x' in the TUI or 'agman run-command' to run stored commands.");
     println!("You can customize these files to fit your workflow.");
@@ -404,7 +407,12 @@ fn cmd_init(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn cmd_run_command(config: &Config, task_id: &str, command_id: &str) -> Result<()> {
+fn cmd_run_command(
+    config: &Config,
+    task_id: &str,
+    command_id: &str,
+    branch: Option<&str>,
+) -> Result<()> {
     config.init_default_files()?;
 
     let mut task = Task::load_by_id(config, task_id)?;
@@ -416,6 +424,17 @@ fn cmd_run_command(config: &Config, task_id: &str, command_id: &str) -> Result<(
     println!("Running command: {}", cmd.name);
     println!("  Description: {}", cmd.description);
     println!("  Task: {}", task.meta.task_id());
+
+    // If the command requires a branch arg, write it to .rebase-target in the task dir
+    if cmd.requires_arg.as_deref() == Some("branch") {
+        let branch = branch.ok_or_else(|| {
+            anyhow::anyhow!("Command '{}' requires --branch argument", command_id)
+        })?;
+        let rebase_target_path = task.dir.join(".rebase-target");
+        std::fs::write(&rebase_target_path, branch)?;
+        println!("  Rebase target: {}", branch);
+    }
+
     println!();
 
     // Ensure tmux session exists

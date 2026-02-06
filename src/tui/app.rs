@@ -29,6 +29,7 @@ pub enum View {
     CommandList,
     TaskEditor,
     FeedbackQueue,
+    RebaseBranchPicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +92,9 @@ pub struct App {
     pub selected_command_index: usize,
     // Feedback queue view
     pub selected_queue_index: usize,
+    // Rebase branch picker
+    pub rebase_branches: Vec<String>,
+    pub selected_rebase_branch_index: usize,
 }
 
 impl App {
@@ -124,6 +128,8 @@ impl App {
             commands,
             selected_command_index: 0,
             selected_queue_index: 0,
+            rebase_branches: Vec::new(),
+            selected_rebase_branch_index: 0,
         })
     }
 
@@ -604,6 +610,122 @@ impl App {
         Ok(())
     }
 
+    fn scan_rebase_branches(&self, repo_name: &str) -> Result<Vec<String>> {
+        let repo_path = self.config.repo_path(repo_name);
+
+        // Get local branches
+        let output = Command::new("git")
+            .current_dir(&repo_path)
+            .args(["branch", "--list", "--format=%(refname:short)"])
+            .output()?;
+
+        let mut branches: Vec<String> = if output.status.success() {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Also get remote-tracking branches
+        let remote_output = Command::new("git")
+            .current_dir(&repo_path)
+            .args(["branch", "-r", "--format=%(refname:short)"])
+            .output()?;
+
+        if remote_output.status.success() {
+            let remote_stdout = String::from_utf8_lossy(&remote_output.stdout);
+            for line in remote_stdout.lines() {
+                let branch = line.trim();
+                // Skip HEAD pointers like origin/HEAD
+                if branch.contains("HEAD") {
+                    continue;
+                }
+                // Only add if not already represented by a local branch
+                // e.g., if we have "main" locally, don't add "origin/main"
+                let short_name = branch.split('/').skip(1).collect::<Vec<_>>().join("/");
+                if !branches.contains(&short_name) {
+                    branches.push(branch.to_string());
+                }
+            }
+        }
+
+        branches.sort();
+        branches.dedup();
+        Ok(branches)
+    }
+
+    fn open_rebase_branch_picker(&mut self) {
+        let repo_name = match self.selected_task() {
+            Some(t) => t.meta.repo_name.clone(),
+            None => {
+                self.set_status("No task selected".to_string());
+                return;
+            }
+        };
+
+        match self.scan_rebase_branches(&repo_name) {
+            Ok(branches) => {
+                if branches.is_empty() {
+                    self.set_status("No branches found for rebase".to_string());
+                    return;
+                }
+                self.rebase_branches = branches;
+                self.selected_rebase_branch_index = 0;
+                self.view = View::RebaseBranchPicker;
+            }
+            Err(e) => {
+                self.set_status(format!("Error scanning branches: {}", e));
+            }
+        }
+    }
+
+    fn run_rebase_command(&mut self, branch: &str) -> Result<()> {
+        let task_id = match self.selected_task() {
+            Some(t) => t.meta.task_id(),
+            None => {
+                self.set_status("No task selected".to_string());
+                self.view = View::Preview;
+                return Ok(());
+            }
+        };
+
+        self.log_output(format!(
+            "Running rebase onto '{}' for task {}...",
+            branch, task_id
+        ));
+
+        let output = Command::new("agman")
+            .args(["run-command", &task_id, "rebase", "--branch", branch])
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                if !stdout.is_empty() {
+                    for line in stdout.lines() {
+                        self.log_output(line.to_string());
+                    }
+                }
+                self.refresh_tasks()?;
+                self.set_status(format!("Started rebase onto {}", branch));
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                self.log_output(format!("Failed: {}", stderr));
+                self.set_status("Failed to run rebase".to_string());
+            }
+            Err(e) => {
+                self.log_output(format!("Error: {}", e));
+                self.set_status(format!("Error: {}", e));
+            }
+        }
+
+        self.view = View::Preview;
+        Ok(())
+    }
+
     fn open_command_list(&mut self) {
         if self.tasks.is_empty() {
             self.set_status("No task selected to run command on".to_string());
@@ -620,19 +742,25 @@ impl App {
     }
 
     fn run_selected_command(&mut self) -> Result<()> {
-        let task_id = match self.selected_task() {
-            Some(t) => t.meta.task_id(),
+        let command = match self.commands.get(self.selected_command_index) {
+            Some(c) => c.clone(),
             None => {
-                self.set_status("No task selected".to_string());
+                self.set_status("No command selected".to_string());
                 self.view = View::TaskList;
                 return Ok(());
             }
         };
 
-        let command = match self.commands.get(self.selected_command_index) {
-            Some(c) => c.clone(),
+        // If the command requires a branch argument, open the branch picker
+        if command.requires_arg.as_deref() == Some("branch") {
+            self.open_rebase_branch_picker();
+            return Ok(());
+        }
+
+        let task_id = match self.selected_task() {
+            Some(t) => t.meta.task_id(),
             None => {
-                self.set_status("No command selected".to_string());
+                self.set_status("No task selected".to_string());
                 self.view = View::TaskList;
                 return Ok(());
             }
@@ -905,6 +1033,7 @@ impl App {
             View::CommandList => self.handle_command_list_event(event),
             View::TaskEditor => self.handle_task_editor_event(event),
             View::FeedbackQueue => self.handle_feedback_queue_event(event),
+            View::RebaseBranchPicker => self.handle_rebase_branch_picker_event(event),
         }
     }
 
@@ -1565,6 +1694,44 @@ impl App {
                 KeyCode::Char('C') => {
                     // Clear all queued feedback
                     self.clear_all_queued_feedback()?;
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_rebase_branch_picker_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = View::Preview;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if !self.rebase_branches.is_empty() {
+                        self.selected_rebase_branch_index =
+                            (self.selected_rebase_branch_index + 1) % self.rebase_branches.len();
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if !self.rebase_branches.is_empty() {
+                        self.selected_rebase_branch_index =
+                            if self.selected_rebase_branch_index == 0 {
+                                self.rebase_branches.len() - 1
+                            } else {
+                                self.selected_rebase_branch_index - 1
+                            };
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(branch) = self.rebase_branches.get(self.selected_rebase_branch_index).cloned() {
+                        self.run_rebase_command(&branch)?;
+                    }
                 }
                 _ => {}
             }

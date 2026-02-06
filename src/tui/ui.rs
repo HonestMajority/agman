@@ -21,6 +21,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::CommandList
             | View::TaskEditor
             | View::FeedbackQueue
+            | View::RebaseBranchPicker
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -65,6 +66,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::FeedbackQueue => {
             draw_preview(f, app, chunks[0]);
             draw_feedback_queue(f, app);
+        }
+        View::RebaseBranchPicker => {
+            draw_preview(f, app, chunks[0]);
+            draw_rebase_branch_picker(f, app);
         }
     }
 
@@ -842,6 +847,16 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" close", Style::default().fg(Color::DarkGray)),
             ]
         }
+        View::RebaseBranchPicker => {
+            vec![
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
+        }
     };
 
     let mut line_spans = help_text;
@@ -1388,6 +1403,83 @@ fn draw_feedback_queue(f: &mut Frame, app: &App) {
             .wrap(Wrap { trim: true });
         f.render_widget(preview, chunks[2]);
     }
+}
+
+fn draw_rebase_branch_picker(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 60, f.area());
+    f.render_widget(Clear, area);
+
+    let task_id = app
+        .selected_task()
+        .map(|t| t.meta.task_id())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Split into header and list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
+
+    // Header
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("Rebase task: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            task_id,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .title(Span::styled(
+                " Rebase Branch Picker ",
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightCyan)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    // Branch list
+    let items: Vec<ListItem> = app
+        .rebase_branches
+        .iter()
+        .enumerate()
+        .map(|(i, branch)| {
+            let style = if i == app.selected_rebase_branch_index {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(40, 40, 60))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let prefix = if i == app.selected_rebase_branch_index {
+                "▸ "
+            } else {
+                "  "
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(branch, style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(Span::styled(
+                " Select branch to rebase onto (Enter to select, Esc to cancel) ",
+                Style::default().fg(Color::LightGreen),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightGreen)),
+    );
+
+    f.render_widget(list, chunks[1]);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

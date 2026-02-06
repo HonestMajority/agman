@@ -13,6 +13,9 @@ pub struct StoredCommand {
     pub id: String,
     /// Description of what the command does
     pub description: String,
+    /// If set, the command requires an argument of this type before running (e.g., "branch")
+    #[serde(default)]
+    pub requires_arg: Option<String>,
     /// Path to the YAML flow file (relative to commands dir, stored as absolute)
     #[serde(skip)]
     pub flow_path: PathBuf,

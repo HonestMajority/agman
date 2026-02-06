@@ -82,6 +82,9 @@ pub enum Commands {
         task_id: String,
         /// Command identifier (e.g., "create-pr", "address-review")
         command_id: String,
+        /// Branch name argument (used by commands like rebase)
+        #[arg(long)]
+        branch: Option<String>,
     },
 
     /// List available stored commands
