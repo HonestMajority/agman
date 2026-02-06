@@ -39,4 +39,7 @@ agman init --force
 # Ensure git hooks are configured
 git config core.hooksPath .githooks
 
+# Signal running TUI to restart with the new binary
+touch "$HOME/.agman/.restart-tui"
+
 echo "Done! agman installed at $OUTPUT_DIR/agman"

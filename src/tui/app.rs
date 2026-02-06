@@ -6,6 +6,8 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use std::io;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -2226,6 +2228,29 @@ pub fn run_tui(config: Config) -> Result<()> {
                     let _ = app.refresh_tasks();
                 }
                 last_refresh = Instant::now();
+            }
+
+            // Check for restart signal (written by release.sh when agman is rebuilt)
+            #[cfg(unix)]
+            {
+                let restart_signal = dirs::home_dir()
+                    .unwrap_or_default()
+                    .join(".agman/.restart-tui");
+                if restart_signal.exists() {
+                    let _ = std::fs::remove_file(&restart_signal);
+                    disable_raw_mode()?;
+                    execute!(
+                        terminal.backend_mut(),
+                        LeaveAlternateScreen,
+                        DisableMouseCapture
+                    )?;
+                    terminal.show_cursor()?;
+                    eprintln!("agman updated — restarting...");
+                    let err = Command::new("agman").exec();
+                    // exec only returns on error
+                    eprintln!("Failed to restart: {err}");
+                    std::process::exit(1);
+                }
             }
 
             // Clear old status messages
