@@ -36,31 +36,24 @@ pub enum View {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizardStep {
     SelectRepo,
-    SelectWorktreeMode,
     SelectBranch,
     EnterDescription,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorktreeMode {
-    CreateNew,
-    UseExisting,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BranchMode {
-    CreateNew,
-    SelectExisting,
+pub enum BranchSource {
+    NewBranch,
+    ExistingBranch,
+    ExistingWorktree,
 }
 
 pub struct NewTaskWizard {
     pub step: WizardStep,
     pub repos: Vec<String>,
     pub selected_repo_index: usize,
-    pub worktree_mode: WorktreeMode,
+    pub branch_source: BranchSource,
     pub existing_worktrees: Vec<(String, PathBuf)>,
     pub selected_worktree_index: usize,
-    pub branch_mode: BranchMode,
     pub existing_branches: Vec<String>,
     pub selected_branch_index: usize,
     pub new_branch_editor: TextArea<'static>,
@@ -573,10 +566,9 @@ impl App {
             step: WizardStep::SelectRepo,
             repos,
             selected_repo_index: 0,
-            worktree_mode: WorktreeMode::CreateNew,
+            branch_source: BranchSource::NewBranch,
             existing_worktrees: Vec::new(),
             selected_worktree_index: 0,
-            branch_mode: BranchMode::CreateNew,
             existing_branches: Vec::new(),
             selected_branch_index: 0,
             new_branch_editor,
@@ -901,48 +893,19 @@ impl App {
                 wizard.selected_branch_index = 0;
                 wizard.existing_worktrees = existing_wts;
                 wizard.selected_worktree_index = 0;
-                wizard.worktree_mode = WorktreeMode::CreateNew;
-                wizard.step = WizardStep::SelectWorktreeMode;
-            }
-            WizardStep::SelectWorktreeMode => {
-                let wizard = self.wizard.as_mut().unwrap();
-                match wizard.worktree_mode {
-                    WorktreeMode::CreateNew => {
-                        wizard.step = WizardStep::SelectBranch;
-                    }
-                    WorktreeMode::UseExisting => {
-                        if wizard.existing_worktrees.is_empty() {
-                            wizard.error_message =
-                                Some("No existing worktrees without tasks".to_string());
-                            return Ok(());
-                        }
-                        // Validate selection and check task doesn't already exist
-                        let (ref branch_name, _) =
-                            wizard.existing_worktrees[wizard.selected_worktree_index];
-                        let repo_name = &wizard.repos[wizard.selected_repo_index];
-                        let task_dir = self.config.task_dir(repo_name, branch_name);
-                        if task_dir.exists() {
-                            wizard.error_message = Some(format!(
-                                "Task '{}--{}' already exists",
-                                repo_name, branch_name
-                            ));
-                            return Ok(());
-                        }
-                        wizard.step = WizardStep::EnterDescription;
-                    }
-                }
+                wizard.branch_source = BranchSource::NewBranch;
+                wizard.step = WizardStep::SelectBranch;
             }
             WizardStep::SelectBranch => {
-                // Validate branch name
-                let branch_name = match wizard.branch_mode {
-                    BranchMode::CreateNew => {
+                // Validate based on branch source
+                let branch_name = match wizard.branch_source {
+                    BranchSource::NewBranch => {
                         let name = wizard.new_branch_editor.lines().join("");
                         let name = name.trim().to_string();
                         if name.is_empty() {
                             wizard.error_message = Some("Branch name cannot be empty".to_string());
                             return Ok(());
                         }
-                        // Check for invalid characters
                         if name.contains(' ')
                             || name.contains("..")
                             || name.starts_with('/')
@@ -953,13 +916,23 @@ impl App {
                         }
                         name
                     }
-                    BranchMode::SelectExisting => {
+                    BranchSource::ExistingBranch => {
                         if wizard.existing_branches.is_empty() {
                             wizard.error_message =
                                 Some("No existing branches available".to_string());
                             return Ok(());
                         }
                         wizard.existing_branches[wizard.selected_branch_index].clone()
+                    }
+                    BranchSource::ExistingWorktree => {
+                        if wizard.existing_worktrees.is_empty() {
+                            wizard.error_message =
+                                Some("No existing worktrees without tasks".to_string());
+                            return Ok(());
+                        }
+                        let (ref branch, _) =
+                            wizard.existing_worktrees[wizard.selected_worktree_index];
+                        branch.clone()
                     }
                 };
 
@@ -1005,21 +978,11 @@ impl App {
                 self.wizard = None;
                 self.view = View::TaskList;
             }
-            WizardStep::SelectWorktreeMode => {
+            WizardStep::SelectBranch => {
                 wizard.step = WizardStep::SelectRepo;
             }
-            WizardStep::SelectBranch => {
-                wizard.step = WizardStep::SelectWorktreeMode;
-            }
             WizardStep::EnterDescription => {
-                match wizard.worktree_mode {
-                    WorktreeMode::UseExisting => {
-                        wizard.step = WizardStep::SelectWorktreeMode;
-                    }
-                    WorktreeMode::CreateNew => {
-                        wizard.step = WizardStep::SelectBranch;
-                    }
-                }
+                wizard.step = WizardStep::SelectBranch;
             }
         }
     }
@@ -1031,22 +994,21 @@ impl App {
         };
 
         let repo_name = wizard.repos[wizard.selected_repo_index].clone();
-        let use_existing = wizard.worktree_mode == WorktreeMode::UseExisting;
 
-        let (branch_name, worktree_path_existing) = if use_existing {
-            let (branch, path) =
-                wizard.existing_worktrees[wizard.selected_worktree_index].clone();
-            (branch, Some(path))
-        } else {
-            let name = match wizard.branch_mode {
-                BranchMode::CreateNew => {
-                    wizard.new_branch_editor.lines().join("").trim().to_string()
-                }
-                BranchMode::SelectExisting => {
-                    wizard.existing_branches[wizard.selected_branch_index].clone()
-                }
-            };
-            (name, None)
+        let (branch_name, worktree_path_existing) = match wizard.branch_source {
+            BranchSource::ExistingWorktree => {
+                let (branch, path) =
+                    wizard.existing_worktrees[wizard.selected_worktree_index].clone();
+                (branch, Some(path))
+            }
+            BranchSource::NewBranch => {
+                let name = wizard.new_branch_editor.lines().join("").trim().to_string();
+                (name, None)
+            }
+            BranchSource::ExistingBranch => {
+                let name = wizard.existing_branches[wizard.selected_branch_index].clone();
+                (name, None)
+            }
         };
 
         let description = wizard.description_editor.lines_joined().trim().to_string();
@@ -1598,78 +1560,38 @@ impl App {
                     }
                     _ => {}
                 },
-                WizardStep::SelectWorktreeMode => match key.code {
-                    KeyCode::Esc => {
-                        self.wizard_prev_step();
-                    }
-                    KeyCode::Tab | KeyCode::BackTab => {
-                        // Toggle between CreateNew and UseExisting
-                        wizard.worktree_mode = match wizard.worktree_mode {
-                            WorktreeMode::CreateNew => WorktreeMode::UseExisting,
-                            WorktreeMode::UseExisting => WorktreeMode::CreateNew,
-                        };
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if wizard.worktree_mode == WorktreeMode::UseExisting
-                            && !wizard.existing_worktrees.is_empty()
-                        {
-                            wizard.selected_worktree_index =
-                                (wizard.selected_worktree_index + 1)
-                                    % wizard.existing_worktrees.len();
-                        }
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        if wizard.worktree_mode == WorktreeMode::UseExisting
-                            && !wizard.existing_worktrees.is_empty()
-                        {
-                            wizard.selected_worktree_index =
-                                if wizard.selected_worktree_index == 0 {
-                                    wizard.existing_worktrees.len() - 1
-                                } else {
-                                    wizard.selected_worktree_index - 1
-                                };
-                        }
-                    }
-                    KeyCode::Enter => {
-                        self.wizard_next_step()?;
-                    }
-                    _ => {}
-                },
                 WizardStep::SelectBranch => {
                     match key.code {
                         KeyCode::Esc => {
                             self.wizard_prev_step();
                         }
-                        KeyCode::Tab | KeyCode::BackTab => {
-                            // Toggle between CreateNew and SelectExisting
-                            wizard.branch_mode = match wizard.branch_mode {
-                                BranchMode::CreateNew => BranchMode::SelectExisting,
-                                BranchMode::SelectExisting => BranchMode::CreateNew,
+                        KeyCode::Tab => {
+                            // Cycle forward: NewBranch → ExistingBranch → ExistingWorktree → NewBranch
+                            wizard.branch_source = match wizard.branch_source {
+                                BranchSource::NewBranch => BranchSource::ExistingBranch,
+                                BranchSource::ExistingBranch => BranchSource::ExistingWorktree,
+                                BranchSource::ExistingWorktree => BranchSource::NewBranch,
+                            };
+                        }
+                        KeyCode::BackTab => {
+                            // Cycle backward
+                            wizard.branch_source = match wizard.branch_source {
+                                BranchSource::NewBranch => BranchSource::ExistingWorktree,
+                                BranchSource::ExistingBranch => BranchSource::NewBranch,
+                                BranchSource::ExistingWorktree => BranchSource::ExistingBranch,
                             };
                         }
                         KeyCode::Enter => {
                             self.wizard_next_step()?;
                         }
                         _ => {
-                            match wizard.branch_mode {
-                                BranchMode::CreateNew => {
-                                    // Handle text input
-                                    match key.code {
-                                        KeyCode::Char('j') | KeyCode::Char('k')
-                                            if !key.modifiers.contains(KeyModifiers::CONTROL) =>
-                                        {
-                                            // Pass j/k as text input in create mode
-                                            let input = Input::from(event.clone());
-                                            wizard.new_branch_editor.input(input);
-                                        }
-                                        _ => {
-                                            let input = Input::from(event.clone());
-                                            wizard.new_branch_editor.input(input);
-                                        }
-                                    }
+                            match wizard.branch_source {
+                                BranchSource::NewBranch => {
+                                    // Handle text input for branch name
+                                    let input = Input::from(event.clone());
+                                    wizard.new_branch_editor.input(input);
                                 }
-                                BranchMode::SelectExisting => {
-                                    // Handle list navigation
+                                BranchSource::ExistingBranch => {
                                     match key.code {
                                         KeyCode::Char('j') | KeyCode::Down => {
                                             if !wizard.existing_branches.is_empty() {
@@ -1685,6 +1607,28 @@ impl App {
                                                         wizard.existing_branches.len() - 1
                                                     } else {
                                                         wizard.selected_branch_index - 1
+                                                    };
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                BranchSource::ExistingWorktree => {
+                                    match key.code {
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            if !wizard.existing_worktrees.is_empty() {
+                                                wizard.selected_worktree_index =
+                                                    (wizard.selected_worktree_index + 1)
+                                                        % wizard.existing_worktrees.len();
+                                            }
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            if !wizard.existing_worktrees.is_empty() {
+                                                wizard.selected_worktree_index =
+                                                    if wizard.selected_worktree_index == 0 {
+                                                        wizard.existing_worktrees.len() - 1
+                                                    } else {
+                                                        wizard.selected_worktree_index - 1
                                                     };
                                             }
                                         }
