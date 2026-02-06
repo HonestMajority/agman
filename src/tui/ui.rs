@@ -624,7 +624,7 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_delete_confirm(f: &mut Frame, app: &App) {
-    let area = centered_rect(50, 30, f.area());
+    let area = centered_rect(55, 45, f.area());
 
     f.render_widget(Clear, area);
 
@@ -633,42 +633,68 @@ fn draw_delete_confirm(f: &mut Frame, app: &App) {
         .map(|t| t.meta.task_id())
         .unwrap_or_else(|| "unknown".to_string());
 
+    let sel = app.delete_mode_index;
+
+    let everything_style = if sel == 0 {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(60, 30, 30))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let task_only_style = if sel == 1 {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(60, 60, 20))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    let everything_prefix = if sel == 0 { "▸ " } else { "  " };
+    let task_only_prefix = if sel == 1 { "▸ " } else { "  " };
+
     let text = vec![
         Line::from(""),
         Line::from(Span::styled(
-            format!("Delete task '{}'?", task_id),
+            format!("  Delete task '{}'?", task_id),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled("This will:", Style::default().fg(Color::Gray))),
         Line::from(Span::styled(
-            "  - Kill the tmux session",
+            format!("{}Delete everything", everything_prefix),
+            everything_style,
+        )),
+        Line::from(Span::styled(
+            "    Kill tmux, remove worktree, delete branch,",
             Style::default().fg(Color::LightRed),
         )),
         Line::from(Span::styled(
-            "  - Remove the git worktree",
-            Style::default().fg(Color::LightRed),
-        )),
-        Line::from(Span::styled(
-            "  - Delete all task files",
+            "    delete task files",
             Style::default().fg(Color::LightRed),
         )),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("[y] ", Style::default().fg(Color::LightGreen)),
-            Span::styled("Yes", Style::default().fg(Color::White)),
-            Span::raw("    "),
-            Span::styled("[n] ", Style::default().fg(Color::LightRed)),
-            Span::styled("No", Style::default().fg(Color::White)),
-        ]),
+        Line::from(Span::styled(
+            format!("{}Delete task only", task_only_prefix),
+            task_only_style,
+        )),
+        Line::from(Span::styled(
+            "    Kill tmux, delete task files, remove TASK.md",
+            Style::default().fg(Color::LightYellow),
+        )),
+        Line::from(Span::styled(
+            "    Keep worktree and branch intact",
+            Style::default().fg(Color::LightYellow),
+        )),
     ];
 
     let popup = Paragraph::new(text).block(
         Block::default()
             .title(Span::styled(
-                " Confirm Delete ",
+                " Delete Task ",
                 Style::default()
                     .fg(Color::LightRed)
                     .add_modifier(Modifier::BOLD),
@@ -763,9 +789,11 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         }
         View::DeleteConfirm => {
             vec![
-                Span::styled("y", Style::default().fg(Color::LightGreen)),
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
                 Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("n/Esc", Style::default().fg(Color::LightRed)),
+                Span::styled("Esc/q", Style::default().fg(Color::LightRed)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]
         }

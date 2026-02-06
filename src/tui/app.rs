@@ -69,6 +69,12 @@ pub struct NewTaskWizard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteMode {
+    Everything,
+    TaskOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewPane {
     Logs,
     Notes,
@@ -104,6 +110,8 @@ pub struct App {
     // Rebase branch picker
     pub rebase_branches: Vec<String>,
     pub selected_rebase_branch_index: usize,
+    // Delete mode chooser
+    pub delete_mode_index: usize,
 }
 
 impl App {
@@ -140,6 +148,7 @@ impl App {
             selected_queue_index: 0,
             rebase_branches: Vec::new(),
             selected_rebase_branch_index: 0,
+            delete_mode_index: 0,
         })
     }
 
@@ -396,7 +405,7 @@ impl App {
         Ok(())
     }
 
-    fn delete_task(&mut self) -> Result<()> {
+    fn delete_task(&mut self, mode: DeleteMode) -> Result<()> {
         if self.tasks.is_empty() {
             return Ok(());
         }
@@ -408,22 +417,37 @@ impl App {
         let worktree_path = task.meta.worktree_path.clone();
         let tmux_session = task.meta.tmux_session.clone();
 
-        self.log_output(format!("Deleting task {}...", task_id));
+        self.log_output(format!("Deleting task {} ({})...", task_id, match mode {
+            DeleteMode::Everything => "everything",
+            DeleteMode::TaskOnly => "task only",
+        }));
 
-        // Kill tmux session
+        // Kill tmux session (both modes)
         let _ = Tmux::kill_session(&tmux_session);
         self.log_output("  Killed tmux session".to_string());
 
-        // Remove worktree
-        let repo_path = self.config.repo_path(&repo_name);
-        let _ = Git::remove_worktree(&repo_path, &worktree_path);
-        self.log_output("  Removed worktree".to_string());
+        match mode {
+            DeleteMode::Everything => {
+                // Remove worktree
+                let repo_path = self.config.repo_path(&repo_name);
+                let _ = Git::remove_worktree(&repo_path, &worktree_path);
+                self.log_output("  Removed worktree".to_string());
 
-        // Delete branch
-        let _ = Git::delete_branch(&repo_path, &branch_name);
-        self.log_output("  Deleted branch".to_string());
+                // Delete branch
+                let _ = Git::delete_branch(&repo_path, &branch_name);
+                self.log_output("  Deleted branch".to_string());
+            }
+            DeleteMode::TaskOnly => {
+                // Remove TASK.md from the worktree so no agman state remains
+                let task_md_path = worktree_path.join("TASK.md");
+                if task_md_path.exists() {
+                    let _ = std::fs::remove_file(&task_md_path);
+                    self.log_output("  Removed TASK.md from worktree".to_string());
+                }
+            }
+        }
 
-        // Delete task directory
+        // Delete task directory (both modes)
         task.delete(&self.config)?;
         self.log_output("  Deleted task files".to_string());
 
@@ -1131,6 +1155,7 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     if !self.tasks.is_empty() {
+                        self.delete_mode_index = 0;
                         self.view = View::DeleteConfirm;
                     }
                 }
@@ -1496,10 +1521,21 @@ impl App {
     fn handle_delete_confirm_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    self.delete_task()?;
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.delete_mode_index = (self.delete_mode_index + 1) % 2;
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.delete_mode_index = if self.delete_mode_index == 0 { 1 } else { 0 };
+                }
+                KeyCode::Enter => {
+                    let mode = if self.delete_mode_index == 0 {
+                        DeleteMode::Everything
+                    } else {
+                        DeleteMode::TaskOnly
+                    };
+                    self.delete_task(mode)?;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
                 }
                 _ => {}
