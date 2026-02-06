@@ -242,14 +242,16 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
 
         // Add section header if needed
         if is_running && !shown_running_header && running_count > 0 {
+            let label = format!("── Running ({}) ", running_count);
+            let fill = (inner.width as usize).saturating_sub(label.len());
             let header_line = Line::from(vec![
                 Span::styled(
-                    format!("── Running ({}) ", running_count),
+                    label,
                     Style::default()
                         .fg(Color::LightGreen)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("─".repeat(50), Style::default().fg(Color::Rgb(60, 60, 60))),
+                Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
             ]);
             items.push(ListItem::new(header_line));
             shown_running_header = true;
@@ -258,14 +260,16 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             if shown_running_header {
                 items.push(ListItem::new(Line::from("")));
             }
+            let label = format!("── Stopped ({}) ", stopped_count);
+            let fill = (inner.width as usize).saturating_sub(label.len());
             let header_line = Line::from(vec![
                 Span::styled(
-                    format!("── Stopped ({}) ", stopped_count),
+                    label,
                     Style::default()
                         .fg(Color::Rgb(140, 140, 140))
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("─".repeat(48), Style::default().fg(Color::Rgb(60, 60, 60))),
+                Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
             ]);
             items.push(ListItem::new(header_line));
             shown_stopped_header = true;
