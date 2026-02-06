@@ -91,35 +91,6 @@ impl Tmux {
         Ok(())
     }
 
-    /// Simple session creation (single window, for backwards compatibility)
-    #[allow(dead_code)]
-    pub fn create_session(session_name: &str, working_dir: &Path) -> Result<()> {
-        if Self::session_exists(session_name) {
-            return Ok(());
-        }
-
-        let output = Command::new("tmux")
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                session_name,
-                "-c",
-                working_dir.to_str().unwrap(),
-            ])
-            .output()
-            .context("Failed to create tmux session")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to create tmux session: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        Ok(())
-    }
-
     pub fn kill_session(session_name: &str) -> Result<()> {
         if !Self::session_exists(session_name) {
             return Ok(());

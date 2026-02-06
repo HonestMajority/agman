@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
     Running,
     Stopped,
@@ -20,36 +21,6 @@ impl std::fmt::Display for TaskStatus {
     }
 }
 
-// Custom serialization to maintain backwards compatibility
-impl Serialize for TaskStatus {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            TaskStatus::Running => serializer.serialize_str("running"),
-            TaskStatus::Stopped => serializer.serialize_str("stopped"),
-        }
-    }
-}
-
-// Custom deserialization to handle migration from old states
-impl<'de> Deserialize<'de> for TaskStatus {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        match s.as_str() {
-            "running" | "working" => Ok(TaskStatus::Running),
-            "stopped" | "paused" | "done" | "failed" => Ok(TaskStatus::Stopped),
-            _ => Err(serde::de::Error::unknown_variant(
-                &s,
-                &["running", "stopped"],
-            )),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMeta {
@@ -246,14 +217,8 @@ impl Task {
 
     /// Ensure TASK.md is excluded from git tracking.
     ///
-    /// Adds TASK.md to the repository's .git/info/exclude file (which is inside
-    /// the .git folder and is not tracked, so it leaves no footprint in the repository).
-    ///
-    /// Also untracks TASK.md from the git index if it was previously tracked (handles
-    /// migration from older versions).
-    ///
-    /// For worktrees, we need to use the common git directory (the main repo's .git)
-    /// since worktrees share the info/exclude file with the main repository.
+    /// Adds TASK.md to .git/info/exclude (not tracked, leaves no footprint).
+    /// For worktrees, uses the common git directory since they share info/exclude.
     fn ensure_git_excludes_task(&self) -> Result<()> {
         use std::process::Command;
 
@@ -309,14 +274,6 @@ impl Task {
             std::fs::write(&exclude_path, format!("{}\n", entry))
                 .context("Failed to create .git/info/exclude")?;
         }
-
-        // Untrack TASK.md from git index if it was previously tracked.
-        // This handles migration from older versions where TASK.md may have been tracked.
-        // If the file wasn't tracked, this command fails silently (which is fine).
-        let _ = Command::new("git")
-            .args(["rm", "--cached", "--quiet", "TASK.md"])
-            .current_dir(&self.meta.worktree_path)
-            .output();
 
         Ok(())
     }
