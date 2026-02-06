@@ -144,9 +144,12 @@ fn cmd_new(
         worktree_path.clone(),
     )?;
 
-    // Create tmux session with windows (nvim, lazygit, agman, zsh)
+    // Create tmux session with windows (nvim, lazygit, claude, zsh, review, agman)
     println!("Creating tmux session with windows...");
     Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)?;
+
+    // Add review window (nvim REVIEW.md) as window 5, agman becomes window 6
+    Tmux::add_review_window(&task.meta.tmux_session, &worktree_path)?;
 
     // Start the flow running in the tmux agman window
     let task_id = task.meta.task_id();
@@ -302,6 +305,44 @@ fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
     println!();
     println!("Flow finished with: {}", result);
 
+    // If review_after is enabled and the flow completed successfully, run review-pr
+    // Re-read meta in case it was updated during the flow
+    task.reload_meta()?;
+    if task.meta.review_after {
+        let is_success = result == flow::StopCondition::AgentDone
+            || result == flow::StopCondition::TaskComplete;
+        if is_success {
+            println!();
+            println!("Running post-flow review...");
+
+            // Wipe REVIEW.md for a clean slate
+            let _ = Tmux::wipe_review_md(&task.meta.worktree_path);
+
+            // Reset review_after so it doesn't re-trigger
+            task.meta.review_after = false;
+            task.save_meta()?;
+
+            // Load and run the review-pr command flow
+            if let Ok(Some(cmd)) =
+                command::StoredCommand::get_by_id(&config.commands_dir, "review-pr")
+            {
+                let review_flow = Flow::load(&cmd.flow_path)?;
+                task.meta.flow_step = 0;
+                task.save_meta()?;
+
+                let review_result = runner.run_flow_with(&mut task, &review_flow)?;
+                println!();
+                println!("Review finished with: {}", review_result);
+            } else {
+                println!("Warning: review-pr command not found, skipping review");
+            }
+        } else {
+            // Flow didn't complete successfully, reset flag
+            task.meta.review_after = false;
+            task.save_meta()?;
+        }
+    }
+
     Ok(())
 }
 
@@ -312,6 +353,7 @@ fn cmd_attach(config: &Config, task_id: &str) -> Result<()> {
         // Create session if it doesn't exist
         println!("Creating tmux session...");
         Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
+        Tmux::add_review_window(&task.meta.tmux_session, &task.meta.worktree_path)?;
     }
 
     Tmux::attach_session(&task.meta.tmux_session)?;
@@ -353,6 +395,9 @@ fn cmd_continue(
         }
     };
 
+    // Wipe REVIEW.md to start fresh
+    let _ = Tmux::wipe_review_md(&task.meta.worktree_path);
+
     println!("Continuing task: {}", task.meta.task_id());
     println!("Feedback: {}", feedback_text);
     println!();
@@ -366,6 +411,7 @@ fn cmd_continue(
     if !Tmux::session_exists(&task.meta.tmux_session) {
         println!("Recreating tmux session...");
         Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
+        Tmux::add_review_window(&task.meta.tmux_session, &task.meta.worktree_path)?;
     }
 
     // Start the flow in tmux
@@ -435,6 +481,7 @@ fn cmd_run_command(
     if !Tmux::session_exists(&task.meta.tmux_session) {
         println!("Recreating tmux session...");
         Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
+        Tmux::add_review_window(&task.meta.tmux_session, &task.meta.worktree_path)?;
     }
 
     // Update task to running state
@@ -472,6 +519,11 @@ fn cmd_command_flow_run(
     // Load the command
     let cmd = command::StoredCommand::get_by_id(&config.commands_dir, command_id)?
         .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?;
+
+    // Wipe REVIEW.md at the start of review-pr (and continue) flows for a clean slate
+    if command_id == "review-pr" {
+        let _ = Tmux::wipe_review_md(&task.meta.worktree_path);
+    }
 
     println!("Running command: {}", cmd.name);
     println!("  Task: {}", task.meta.task_id());

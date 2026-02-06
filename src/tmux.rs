@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
 
+/// Clean initial content written to REVIEW.md
+pub const REVIEW_MD_INITIAL: &str = "# Code Review\n\n(Review in progress...)\n";
+
 pub struct Tmux;
 
 impl Tmux {
@@ -264,5 +267,42 @@ impl Tmux {
             }
             _ => false,
         }
+    }
+
+    /// Add a "review" tmux window with nvim REVIEW.md, then swap it before "agman"
+    /// so that review is window 5 and agman is window 6.
+    ///
+    /// Pre-creates REVIEW.md in working_dir if it doesn't already exist.
+    pub fn add_review_window(session_name: &str, working_dir: &Path) -> Result<()> {
+        // Pre-create REVIEW.md so nvim can open it immediately
+        let review_md_path = working_dir.join("REVIEW.md");
+        if !review_md_path.exists() {
+            std::fs::write(&review_md_path, REVIEW_MD_INITIAL)?;
+        }
+
+        let wd = working_dir.to_str().unwrap_or(".");
+
+        // Create the review window (appended after agman, so it becomes window 6)
+        let _ = Command::new("tmux")
+            .args(["new-window", "-t", session_name, "-n", "review", "-c", wd])
+            .output();
+        Self::send_keys_to_window(session_name, "review", "nvim REVIEW.md")?;
+
+        // Swap review (window 6) and agman (window 5) so review=5, agman=6
+        let review_target = format!("{}:review", session_name);
+        let agman_target = format!("{}:agman", session_name);
+        let _ = Command::new("tmux")
+            .args(["swap-window", "-s", &review_target, "-t", &agman_target])
+            .output();
+
+        Ok(())
+    }
+
+    /// Wipe REVIEW.md to a clean slate in the given working directory.
+    pub fn wipe_review_md(working_dir: &Path) -> Result<()> {
+        let review_md_path = working_dir.join("REVIEW.md");
+        std::fs::write(&review_md_path, REVIEW_MD_INITIAL)
+            .context("Failed to wipe REVIEW.md")?;
+        Ok(())
     }
 }

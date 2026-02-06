@@ -644,10 +644,10 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
 
     f.render_widget(Clear, area);
 
-    let task_id = app
+    let (task_id, review_after) = app
         .selected_task()
-        .map(|t| t.meta.task_id())
-        .unwrap_or_else(|| "unknown".to_string());
+        .map(|t| (t.meta.task_id(), t.meta.review_after))
+        .unwrap_or_else(|| ("unknown".to_string(), false));
 
     let mode = app.feedback_editor.mode();
     let mode_color = match mode {
@@ -659,11 +659,11 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .constraints([Constraint::Length(3), Constraint::Min(5), Constraint::Length(1)])
         .split(area);
 
     // Header
-    let header = Paragraph::new(Line::from(vec![
+    let mut header_spans = vec![
         Span::styled("Feedback for: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             task_id,
@@ -677,7 +677,11 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
             Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled("]", Style::default().fg(Color::DarkGray)),
-    ]))
+    ];
+    if review_after {
+        header_spans.push(Span::styled("  [review: ON]", Style::default().fg(Color::LightGreen)));
+    }
+    let header = Paragraph::new(Line::from(header_spans))
     .block(
         Block::default()
             .title(Span::styled(
@@ -706,6 +710,22 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
     f.render_widget(&app.feedback_editor.textarea, chunks[1]);
+
+    // Review toggle line
+    let review_label = if review_after {
+        Line::from(vec![
+            Span::styled("  End with review: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("YES", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
+            Span::styled("  (Ctrl+R to toggle)", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("  End with review: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("no", Style::default().fg(Color::DarkGray)),
+            Span::styled("  (Ctrl+R to toggle)", Style::default().fg(Color::DarkGray)),
+        ])
+    };
+    f.render_widget(Paragraph::new(review_label), chunks[2]);
 }
 
 fn draw_delete_confirm(f: &mut Frame, app: &App) {
@@ -1288,10 +1308,23 @@ fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
         VimMode::Operator(_) => Color::LightMagenta,
     };
 
+    let review_indicator = if wizard.review_after {
+        " [review: ON]"
+    } else {
+        ""
+    };
+
     let title = format!(
-        " Describe what this task should accomplish [{}] (Ctrl+S to continue) ",
-        mode.indicator()
+        " Describe what this task should accomplish [{}]{} (Ctrl+S to continue) ",
+        mode.indicator(),
+        review_indicator,
     );
+
+    // Split area: editor on top, review toggle indicator at bottom
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(area);
 
     wizard.description_editor.textarea.set_block(
         Block::default()
@@ -1304,7 +1337,23 @@ fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
         .textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
-    f.render_widget(&wizard.description_editor.textarea, area);
+    f.render_widget(&wizard.description_editor.textarea, chunks[0]);
+
+    // Review toggle line
+    let review_label = if wizard.review_after {
+        Line::from(vec![
+            Span::styled("  End with review: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("YES", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
+            Span::styled("  (Ctrl+R to toggle)", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("  End with review: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("no", Style::default().fg(Color::DarkGray)),
+            Span::styled("  (Ctrl+R to toggle)", Style::default().fg(Color::DarkGray)),
+        ])
+    };
+    f.render_widget(Paragraph::new(review_label), chunks[1]);
 }
 
 fn draw_wizard_footer_direct(
@@ -1323,7 +1372,7 @@ fn draw_wizard_footer_direct(
         let help = match step {
             WizardStep::SelectRepo => "j/k: navigate  Enter: select  Esc: cancel",
             WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
-            WizardStep::EnterDescription => "Ctrl+S: create task  Esc: back",
+            WizardStep::EnterDescription => "Ctrl+S: create task  Ctrl+R: toggle review  Esc: back",
         };
         Line::from(Span::styled(help, Style::default().fg(Color::DarkGray)))
     };
