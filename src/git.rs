@@ -165,6 +165,143 @@ impl Git {
         Ok(worktree_path)
     }
 
+    /// Create a worktree for an existing remote branch
+    pub fn create_worktree_for_existing_branch(
+        config: &Config,
+        repo_name: &str,
+        branch_name: &str,
+    ) -> Result<PathBuf> {
+        Self::create_worktree_for_existing_branch_impl(config, repo_name, branch_name, false)
+    }
+
+    /// Create a worktree for an existing remote branch (quiet mode for TUI)
+    pub fn create_worktree_for_existing_branch_quiet(
+        config: &Config,
+        repo_name: &str,
+        branch_name: &str,
+    ) -> Result<PathBuf> {
+        Self::create_worktree_for_existing_branch_impl(config, repo_name, branch_name, true)
+    }
+
+    fn create_worktree_for_existing_branch_impl(
+        config: &Config,
+        repo_name: &str,
+        branch_name: &str,
+        quiet: bool,
+    ) -> Result<PathBuf> {
+        let repo_path = config.repo_path(repo_name);
+
+        if !repo_path.exists() {
+            anyhow::bail!("Repository does not exist: {}", repo_path.display());
+        }
+
+        if !repo_path.join(".git").exists() && !Self::ref_exists(&repo_path, "HEAD") {
+            anyhow::bail!("Not a git repository: {}", repo_path.display());
+        }
+
+        let worktree_base = config.worktree_base(repo_name);
+        let worktree_path = config.worktree_path(repo_name, branch_name);
+
+        if worktree_path.exists() {
+            anyhow::bail!(
+                "Worktree already exists: {}\nIf it's stale, remove with: git -C {:?} worktree remove {:?}",
+                worktree_path.display(),
+                repo_path,
+                worktree_path
+            );
+        }
+
+        std::fs::create_dir_all(&worktree_base)
+            .context("Failed to create worktree base directory")?;
+
+        // Fetch origin
+        if !quiet {
+            print!("  Fetching origin... ");
+        }
+        if Self::fetch_origin(&repo_path)? {
+            if !quiet {
+                println!("done");
+            }
+        } else if !quiet {
+            println!("skipped (no remote)");
+        }
+
+        // Check if branch exists locally or only on remote
+        let local_exists = Self::ref_exists(&repo_path, &format!("refs/heads/{}", branch_name));
+        let remote_exists = Self::ref_exists(&repo_path, &format!("refs/remotes/origin/{}", branch_name));
+
+        if !quiet {
+            println!(
+                "  Creating worktree for existing branch '{}'...",
+                branch_name
+            );
+        }
+
+        let output = if local_exists {
+            // Branch exists locally, just check it out into the worktree
+            Command::new("git")
+                .current_dir(&repo_path)
+                .args([
+                    "worktree",
+                    "add",
+                    worktree_path.to_str().unwrap(),
+                    branch_name,
+                ])
+                .output()
+                .context("Failed to create worktree")?
+        } else if remote_exists {
+            // Branch only on remote — create local tracking branch
+            Command::new("git")
+                .current_dir(&repo_path)
+                .args([
+                    "worktree",
+                    "add",
+                    "-b",
+                    branch_name,
+                    worktree_path.to_str().unwrap(),
+                    &format!("origin/{}", branch_name),
+                ])
+                .output()
+                .context("Failed to create worktree")?
+        } else {
+            anyhow::bail!(
+                "Branch '{}' not found locally or on origin",
+                branch_name
+            );
+        };
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to create worktree: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Pull latest changes
+        if !quiet {
+            print!("  Pulling latest changes... ");
+        }
+        let pull_output = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["pull", "--ff-only"])
+            .output();
+
+        match pull_output {
+            Ok(o) if o.status.success() => {
+                if !quiet {
+                    println!("done");
+                }
+            }
+            _ => {
+                if !quiet {
+                    println!("skipped (no tracking branch or conflicts)");
+                }
+            }
+        }
+
+        Ok(worktree_path)
+    }
+
     /// Remove a worktree and prune stale references
     pub fn remove_worktree(repo_path: &PathBuf, worktree_path: &PathBuf) -> Result<()> {
         tracing::info!(worktree = %worktree_path.display(), "removing worktree");

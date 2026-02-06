@@ -140,6 +140,7 @@ impl Config {
             ("review-analyst", REVIEW_ANALYST_PROMPT),
             ("review-implementer", REVIEW_IMPLEMENTER_PROMPT),
             ("pr-check-monitor", PR_CHECK_MONITOR_PROMPT),
+            ("pr-reviewer", PR_REVIEWER_PROMPT),
         ];
 
         for (name, content) in prompts {
@@ -155,6 +156,7 @@ impl Config {
             ("address-review", ADDRESS_REVIEW_COMMAND),
             ("rebase", REBASE_COMMAND),
             ("monitor-pr", MONITOR_PR_COMMAND),
+            ("review-pr", REVIEW_PR_COMMAND),
         ];
 
         for (name, content) in commands {
@@ -650,4 +652,75 @@ IMPORTANT:
 
 When all CI checks pass, output exactly: AGENT_DONE
 If you cannot fix the CI after 3 attempts, output exactly: TASK_BLOCKED
+"#;
+
+const REVIEW_PR_COMMAND: &str = r#"name: Review PR
+id: review-pr
+description: Reviews the current PR or full branch diff if no PR exists, writes findings to review.md
+
+steps:
+  - agent: pr-reviewer
+    until: AGENT_DONE
+"#;
+
+const PR_REVIEWER_PROMPT: &str = r#"You are a PR review agent. Your job is to review the current branch's changes thoroughly.
+
+Instructions:
+
+1. First, check if a PR exists for the current branch:
+   ```
+   gh pr view
+   ```
+
+2. **If a PR exists:**
+   - Read the PR description and metadata: `gh pr view --json title,body,baseRefName,headRefName`
+   - Get the full diff: `gh pr diff`
+   - Check for existing review comments: `gh pr view --json reviews,comments`
+   - Check CI status: `gh pr checks`
+   - Review the code changes thoroughly
+
+3. **If no PR exists:**
+   - Determine the base branch (try origin/main, then origin/master)
+   - Get the full diff: `git diff origin/main..HEAD` (or origin/master)
+   - Review all commits: `git log origin/main..HEAD --oneline`
+   - Review the code changes thoroughly
+
+4. Write your review findings to `review.md` in the repository root with this structure:
+   ```markdown
+   # Code Review
+
+   ## Summary
+   [Brief overview of what this branch does]
+
+   ## Changes Reviewed
+   [List of files changed and what each change does]
+
+   ## Findings
+
+   ### Issues
+   [Any bugs, security issues, or correctness problems found]
+
+   ### Suggestions
+   [Code quality improvements, better patterns, or refactoring ideas]
+
+   ### Positive Notes
+   [Things that are well done]
+
+   ## CI Status
+   [Current CI status if PR exists]
+
+   ## Verdict
+   [Overall assessment: approve, request changes, or needs discussion]
+   ```
+
+5. Be thorough but practical — focus on real issues, not style nitpicks.
+
+IMPORTANT:
+- Do NOT ask questions or wait for input
+- Do NOT push anything or interact with the PR on GitHub
+- Do NOT make any code changes — only produce review.md
+- Be constructive and specific in your feedback
+
+When review.md is written, output exactly: AGENT_DONE
+If you cannot complete the review, output exactly: TASK_BLOCKED
 "#;
