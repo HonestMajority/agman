@@ -31,6 +31,7 @@ pub enum View {
     TaskEditor,
     FeedbackQueue,
     RebaseBranchPicker,
+    ReviewWizard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +63,20 @@ pub struct NewTaskWizard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewWizardStep {
+    SelectRepo,
+    EnterBranch,
+}
+
+pub struct ReviewWizard {
+    pub step: ReviewWizardStep,
+    pub repos: Vec<String>,
+    pub selected_repo_index: usize,
+    pub branch_editor: TextArea<'static>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteMode {
     Everything,
     TaskOnly,
@@ -89,6 +104,7 @@ pub struct App {
     pub should_quit: bool,
     pub status_message: Option<(String, Instant)>,
     pub wizard: Option<NewTaskWizard>,
+    pub review_wizard: Option<ReviewWizard>,
     pub output_log: Vec<String>,
     pub output_scroll: u16,
     // Task file (TASK.md) viewing/editing (used by modal)
@@ -131,6 +147,7 @@ impl App {
             should_quit: false,
             status_message: None,
             wizard: None,
+            review_wizard: None,
             output_log: Vec::new(),
             output_scroll: 0,
             task_file_content: String::new(),
@@ -1086,6 +1103,180 @@ impl App {
         Ok(())
     }
 
+    // === Review Wizard Methods ===
+
+    fn start_review_wizard(&mut self) -> Result<()> {
+        let repos = self.scan_repos()?;
+
+        if repos.is_empty() {
+            self.set_status("No repositories found in ~/repos/".to_string());
+            return Ok(());
+        }
+
+        let mut branch_editor = Self::create_plain_editor();
+        branch_editor.set_cursor_line_style(ratatui::style::Style::default());
+
+        self.review_wizard = Some(ReviewWizard {
+            step: ReviewWizardStep::SelectRepo,
+            repos,
+            selected_repo_index: 0,
+            branch_editor,
+            error_message: None,
+        });
+
+        self.view = View::ReviewWizard;
+        Ok(())
+    }
+
+    fn review_wizard_next_step(&mut self) -> Result<()> {
+        let wizard = match &mut self.review_wizard {
+            Some(w) => w,
+            None => return Ok(()),
+        };
+
+        wizard.error_message = None;
+
+        match wizard.step {
+            ReviewWizardStep::SelectRepo => {
+                wizard.step = ReviewWizardStep::EnterBranch;
+            }
+            ReviewWizardStep::EnterBranch => {
+                let branch_name = wizard.branch_editor.lines().join("");
+                let branch_name = branch_name.trim().to_string();
+                if branch_name.is_empty() {
+                    wizard.error_message = Some("Branch name cannot be empty".to_string());
+                    return Ok(());
+                }
+                if branch_name.contains(' ')
+                    || branch_name.contains("..")
+                    || branch_name.starts_with('/')
+                    || branch_name.ends_with('/')
+                {
+                    wizard.error_message = Some("Invalid branch name format".to_string());
+                    return Ok(());
+                }
+
+                // Check if task already exists
+                let repo_name = &wizard.repos[wizard.selected_repo_index];
+                let task_dir = self.config.task_dir(repo_name, &branch_name);
+                if task_dir.exists() {
+                    wizard.error_message = Some(format!(
+                        "Task '{}--{}' already exists",
+                        repo_name, branch_name
+                    ));
+                    return Ok(());
+                }
+
+                return self.create_review_task();
+            }
+        }
+
+        Ok(())
+    }
+
+    fn review_wizard_prev_step(&mut self) {
+        let wizard = match &mut self.review_wizard {
+            Some(w) => w,
+            None => return,
+        };
+
+        wizard.error_message = None;
+
+        match wizard.step {
+            ReviewWizardStep::SelectRepo => {
+                self.review_wizard = None;
+                self.view = View::TaskList;
+            }
+            ReviewWizardStep::EnterBranch => {
+                wizard.step = ReviewWizardStep::SelectRepo;
+            }
+        }
+    }
+
+    fn create_review_task(&mut self) -> Result<()> {
+        let wizard = match &self.review_wizard {
+            Some(w) => w,
+            None => return Ok(()),
+        };
+
+        let repo_name = wizard.repos[wizard.selected_repo_index].clone();
+        let branch_name = wizard.branch_editor.lines().join("").trim().to_string();
+
+        self.log_output(format!(
+            "Creating review task {}--{}...",
+            repo_name, branch_name
+        ));
+
+        // Initialize default files (ensures review-pr command exists)
+        self.config.init_default_files(false)?;
+
+        // Create worktree for the existing branch
+        self.log_output("  Creating worktree for existing branch...".to_string());
+        let worktree_path = match Git::create_worktree_for_existing_branch_quiet(
+            &self.config,
+            &repo_name,
+            &branch_name,
+        ) {
+            Ok(path) => {
+                let _ = Git::direnv_allow(&path);
+                path
+            }
+            Err(e) => {
+                self.log_output(format!("  Error: {}", e));
+                if let Some(w) = &mut self.review_wizard {
+                    w.error_message = Some(format!("Failed: {}", e));
+                }
+                return Ok(());
+            }
+        };
+
+        // Create task
+        let description = format!("Review branch {}", branch_name);
+        self.log_output("  Creating task files...".to_string());
+        let task = match Task::create(
+            &self.config,
+            &repo_name,
+            &branch_name,
+            &description,
+            "new",
+            worktree_path.clone(),
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                self.log_output(format!("  Error: {}", e));
+                if let Some(w) = &mut self.review_wizard {
+                    w.error_message = Some(format!("Failed to create task: {}", e));
+                }
+                return Ok(());
+            }
+        };
+
+        // Create tmux session with windows
+        self.log_output("  Creating tmux session...".to_string());
+        if let Err(e) =
+            Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)
+        {
+            self.log_output(format!("  Error: {}", e));
+            if let Some(w) = &mut self.review_wizard {
+                w.error_message = Some(format!("Failed to create tmux session: {}", e));
+            }
+            return Ok(());
+        }
+
+        // Run the review-pr stored command instead of a flow
+        let task_id = task.meta.task_id();
+        let review_cmd = format!("agman run-command {} review-pr", task_id);
+        let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &review_cmd);
+
+        // Success - close wizard and refresh
+        self.review_wizard = None;
+        self.view = View::TaskList;
+        self.refresh_tasks_and_select(&task_id)?;
+        self.set_status(format!("Review started: {}", task_id));
+
+        Ok(())
+    }
+
     pub fn handle_event(&mut self, event: Event) -> Result<bool> {
         self.clear_old_status();
 
@@ -1099,6 +1290,7 @@ impl App {
             View::TaskEditor => self.handle_task_editor_event(event),
             View::FeedbackQueue => self.handle_feedback_queue_event(event),
             View::RebaseBranchPicker => self.handle_rebase_branch_picker_event(event),
+            View::ReviewWizard => self.handle_review_wizard_event(event),
         }
     }
 
@@ -1154,6 +1346,10 @@ impl App {
                 KeyCode::Char('n') => {
                     // Start new task wizard
                     self.start_wizard()?;
+                }
+                KeyCode::Char('r') => {
+                    // Start review wizard
+                    self.start_review_wizard()?;
                 }
                 KeyCode::Char('x') => {
                     // Open command list (go to preview first, like f and t)
@@ -1807,6 +2003,68 @@ impl App {
                     }
                 }
                 _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_review_wizard_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            // Check for Ctrl+C to quit
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            let wizard = match &mut self.review_wizard {
+                Some(w) => w,
+                None => {
+                    self.view = View::TaskList;
+                    return Ok(false);
+                }
+            };
+
+            // Clear error on any keypress
+            wizard.error_message = None;
+
+            match wizard.step {
+                ReviewWizardStep::SelectRepo => match key.code {
+                    KeyCode::Esc => {
+                        self.review_wizard = None;
+                        self.view = View::TaskList;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if !wizard.repos.is_empty() {
+                            wizard.selected_repo_index =
+                                (wizard.selected_repo_index + 1) % wizard.repos.len();
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if !wizard.repos.is_empty() {
+                            wizard.selected_repo_index = if wizard.selected_repo_index == 0 {
+                                wizard.repos.len() - 1
+                            } else {
+                                wizard.selected_repo_index - 1
+                            };
+                        }
+                    }
+                    KeyCode::Enter => {
+                        self.review_wizard_next_step()?;
+                    }
+                    _ => {}
+                },
+                ReviewWizardStep::EnterBranch => match key.code {
+                    KeyCode::Esc => {
+                        self.review_wizard_prev_step();
+                    }
+                    KeyCode::Enter => {
+                        self.review_wizard_next_step()?;
+                    }
+                    _ => {
+                        let input = Input::from(event.clone());
+                        wizard.branch_editor.input(input);
+                    }
+                },
             }
         }
         Ok(false)

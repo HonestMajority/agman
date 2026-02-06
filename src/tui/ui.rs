@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::task::TaskStatus;
 
-use super::app::{App, BranchSource, PreviewPane, View, WizardStep};
+use super::app::{App, BranchSource, PreviewPane, ReviewWizardStep, View, WizardStep};
 use super::vim::VimMode;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -22,6 +22,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::TaskEditor
             | View::FeedbackQueue
             | View::RebaseBranchPicker
+            | View::ReviewWizard
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -70,6 +71,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::RebaseBranchPicker => {
             draw_preview(f, app, chunks[0]);
             draw_rebase_branch_picker(f, app);
+        }
+        View::ReviewWizard => {
+            draw_task_list(f, app, chunks[0]);
+            draw_review_wizard(f, app);
         }
     }
 
@@ -736,6 +741,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("r", Style::default().fg(Color::LightGreen)),
+                Span::styled(" review  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("t", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("x", Style::default().fg(Color::LightMagenta)),
@@ -874,6 +881,32 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("Esc", Style::default().fg(Color::LightRed)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]
+        }
+        View::ReviewWizard => {
+            if let Some(wizard) = &app.review_wizard {
+                match wizard.step {
+                    ReviewWizardStep::SelectRepo => {
+                        vec![
+                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                            Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                        ]
+                    }
+                    ReviewWizardStep::EnterBranch => {
+                        vec![
+                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                            Span::styled(" start review  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                            Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                        ]
+                    }
+                }
+            } else {
+                vec![]
+            }
         }
     };
 
@@ -1527,6 +1560,123 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &App) {
     );
 
     f.render_widget(list, chunks[1]);
+}
+
+fn draw_review_wizard(f: &mut Frame, app: &mut App) {
+    let area = centered_rect(70, 50, f.area());
+    f.render_widget(Clear, area);
+
+    let (step, step_num, step_title, error_message) = {
+        let wizard = match &app.review_wizard {
+            Some(w) => w,
+            None => return,
+        };
+        let (step_num, step_title) = match wizard.step {
+            ReviewWizardStep::SelectRepo => (1, "Select Repository"),
+            ReviewWizardStep::EnterBranch => (2, "Enter Branch Name"),
+        };
+        (
+            wizard.step,
+            step_num,
+            step_title,
+            wizard.error_message.clone(),
+        )
+    };
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" Review Branch [{}/2] {} ", step_num, step_title),
+            Style::default()
+                .fg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::LightMagenta));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(5), Constraint::Length(2)])
+        .split(inner);
+
+    match step {
+        ReviewWizardStep::SelectRepo => {
+            if let Some(wizard) = &app.review_wizard {
+                // Reuse the same list rendering pattern as the new task wizard
+                let items: Vec<ListItem> = wizard
+                    .repos
+                    .iter()
+                    .enumerate()
+                    .map(|(i, repo)| {
+                        let style = if i == wizard.selected_repo_index {
+                            Style::default()
+                                .fg(Color::White)
+                                .bg(Color::Rgb(40, 40, 60))
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        let prefix = if i == wizard.selected_repo_index {
+                            "▸ "
+                        } else {
+                            "  "
+                        };
+                        ListItem::new(Line::from(vec![
+                            Span::styled(prefix, style),
+                            Span::styled(repo, style),
+                        ]))
+                    })
+                    .collect();
+
+                let list = List::new(items).block(
+                    Block::default()
+                        .title(Span::styled(
+                            " Repositories ",
+                            Style::default().fg(Color::DarkGray),
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray)),
+                );
+
+                f.render_widget(list, chunks[0]);
+            }
+        }
+        ReviewWizardStep::EnterBranch => {
+            if let Some(wizard) = &mut app.review_wizard {
+                wizard.branch_editor.set_block(
+                    Block::default()
+                        .title(Span::styled(
+                            " Enter remote branch name to review ",
+                            Style::default().fg(Color::LightGreen),
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightGreen)),
+                );
+                wizard
+                    .branch_editor
+                    .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+                f.render_widget(&wizard.branch_editor, chunks[0]);
+            }
+        }
+    }
+
+    // Draw error or help text
+    let content = if let Some(err) = &error_message {
+        Line::from(vec![
+            Span::styled("Error: ", Style::default().fg(Color::LightRed)),
+            Span::styled(err, Style::default().fg(Color::LightRed)),
+        ])
+    } else {
+        let help = match step {
+            ReviewWizardStep::SelectRepo => "j/k: navigate  Enter: select  Esc: cancel",
+            ReviewWizardStep::EnterBranch => "Enter: start review  Esc: back",
+        };
+        Line::from(Span::styled(help, Style::default().fg(Color::DarkGray)))
+    };
+
+    f.render_widget(Paragraph::new(content), chunks[1]);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
