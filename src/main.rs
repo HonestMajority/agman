@@ -73,6 +73,12 @@ fn main() -> Result<()> {
             branch,
         }) => cmd_run_command(&config, &task_id, &command_id, branch.as_deref()),
 
+        Some(Commands::CommandFlowRun {
+            task_id,
+            command_id,
+            branch,
+        }) => cmd_command_flow_run(&config, &task_id, &command_id, branch.as_deref()),
+
         Some(Commands::ListCommands) => cmd_list_commands(&config),
 
         None => {
@@ -402,7 +408,7 @@ fn cmd_run_command(
 
     let mut task = Task::load_by_id(config, task_id)?;
 
-    // Load the command
+    // Load the command (validate it exists)
     let cmd = command::StoredCommand::get_by_id(&config.commands_dir, command_id)?
         .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?;
 
@@ -431,7 +437,58 @@ fn cmd_run_command(
     // Update task to running state
     task.update_status(TaskStatus::Running)?;
 
-    // Run the command flow - commands use the flow format stored in the command file itself
+    // Dispatch the flow execution to tmux (non-blocking) so the caller returns immediately
+    let mut flow_cmd = format!(
+        "agman command-flow-run {} {}",
+        task.meta.task_id(),
+        command_id
+    );
+    if let Some(b) = branch {
+        flow_cmd.push_str(&format!(" --branch {}", b));
+    }
+    Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd)?;
+
+    println!("Command flow started in tmux.");
+    println!("To watch: agman attach {}", task.meta.task_id());
+
+    Ok(())
+}
+
+/// Run a stored command's flow inside tmux (blocking is fine here since this
+/// runs in the tmux agman window, not in the TUI process).
+fn cmd_command_flow_run(
+    config: &Config,
+    task_id: &str,
+    command_id: &str,
+    branch: Option<&str>,
+) -> Result<()> {
+    config.init_default_files()?;
+
+    let mut task = Task::load_by_id(config, task_id)?;
+
+    // Load the command
+    let cmd = command::StoredCommand::get_by_id(&config.commands_dir, command_id)?
+        .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?;
+
+    println!("Running command: {}", cmd.name);
+    println!("  Task: {}", task.meta.task_id());
+
+    // If the command requires a branch arg, write it to .rebase-target in the task dir
+    // (may already be written by cmd_run_command, but handle the case where
+    // command-flow-run is invoked directly)
+    if cmd.requires_arg.as_deref() == Some("branch") {
+        if let Some(b) = branch {
+            let rebase_target_path = task.dir.join(".rebase-target");
+            std::fs::write(&rebase_target_path, b)?;
+            println!("  Rebase target: {}", b);
+        }
+    }
+
+    println!();
+
+    // Update task to running state
+    task.update_status(TaskStatus::Running)?;
+
     // Load the flow from the command YAML (not from ~/.agman/flows/)
     let flow = Flow::load(&cmd.flow_path)?;
 
@@ -440,14 +497,14 @@ fn cmd_run_command(
 
     let runner = agent::AgentRunner::new(config.clone());
 
-    // Temporarily set flow step to 0 for the command flow
+    // Save original flow settings so we can restore after the command flow
     let original_flow = task.meta.flow_name.clone();
     let original_step = task.meta.flow_step;
 
     task.meta.flow_step = 0;
     task.save_meta()?;
 
-    // Run the pre-loaded flow directly (bypasses flow_path lookup)
+    // Run the pre-loaded flow directly (blocking — this runs in tmux)
     let result = runner.run_flow_with(&mut task, &flow)?;
 
     // Restore original flow settings

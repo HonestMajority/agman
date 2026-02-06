@@ -83,4 +83,16 @@ pub enum Commands {
 
     /// List available stored commands
     ListCommands,
+
+    /// Run a stored command's flow for a task (used internally, runs in tmux)
+    #[command(hide = true)]
+    CommandFlowRun {
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
+        /// Command identifier (e.g., "create-pr", "address-review")
+        command_id: String,
+        /// Branch name argument (used by commands like rebase)
+        #[arg(long)]
+        branch: Option<String>,
+    },
 }
