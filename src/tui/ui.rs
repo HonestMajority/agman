@@ -121,12 +121,47 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .split(inner);
 
     // Calculate dynamic column widths
-    const MIN_TASK_WIDTH: usize = 15;
+    const MIN_REPO_WIDTH: usize = 4; // "REPO" header length
+    const MAX_REPO_WIDTH: usize = 20;
+    const MIN_BRANCH_WIDTH: usize = 6; // "BRANCH" header length
+    const MAX_BRANCH_WIDTH: usize = 30;
     const STATUS_WIDTH: usize = 10;
     const MIN_AGENT_WIDTH: usize = 6; // width of "AGENT" header + 1
     const MAX_AGENT_WIDTH: usize = 25;
     const UPDATED_WIDTH: usize = 10;
     const COL_GAP: &str = "   "; // 3 spaces between columns
+
+    // Scan tasks for longest repo name
+    let max_repo_len = app
+        .tasks
+        .iter()
+        .map(|t| t.meta.repo_name.len())
+        .max()
+        .unwrap_or(MIN_REPO_WIDTH);
+
+    let repo_width = max_repo_len
+        .max(MIN_REPO_WIDTH)
+        .min(MAX_REPO_WIDTH);
+
+    // Scan tasks for longest branch name (including queue suffix)
+    let max_branch_len = app
+        .tasks
+        .iter()
+        .map(|t| {
+            let queue_count = t.queued_feedback_count();
+            let suffix_len = if queue_count > 0 {
+                format!(" (+{})", queue_count).len()
+            } else {
+                0
+            };
+            t.meta.branch_name.len() + suffix_len
+        })
+        .max()
+        .unwrap_or(MIN_BRANCH_WIDTH);
+
+    let branch_width = max_branch_len
+        .max(MIN_BRANCH_WIDTH)
+        .min(MAX_BRANCH_WIDTH);
 
     // Scan tasks for longest agent name
     let max_agent_len = app
@@ -148,29 +183,26 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .min(MAX_AGENT_WIDTH);
 
     // Compute fixed width from actual components:
-    // icon(1) + padding(3) + col_gaps(3*3=9) + status + agent + updated
-    let fixed_cols_width = (1 + 3 + 9 + STATUS_WIDTH + agent_width + UPDATED_WIDTH) as u16;
+    // icon(1) + padding(3) + col_gaps(4*3=12) + status + agent + updated
+    let fixed_cols_width = (1 + 3 + 12 + repo_width + STATUS_WIDTH + agent_width + UPDATED_WIDTH) as u16;
 
     let available_width = inner.width.saturating_sub(fixed_cols_width) as usize;
 
-    // Find the longest task ID
-    let max_task_len = app
-        .tasks
-        .iter()
-        .map(|t| t.meta.task_id().len())
-        .max()
-        .unwrap_or(MIN_TASK_WIDTH);
+    // Cap branch width to available space
+    let branch_width = branch_width.min(available_width.max(MIN_BRANCH_WIDTH));
 
-    // Task column width: use max task length, but cap it to available space
-    let task_width = max_task_len
-        .max(MIN_TASK_WIDTH)
-        .min(available_width.max(MIN_TASK_WIDTH));
-
-    // Render header - columns: icon(1) + space(2) + task(dynamic) + gap + status + gap + agent + gap + updated
+    // Render header - columns: icon(1) + space(2) + repo + gap + branch + gap + status + gap + agent + gap + updated
     let header = Line::from(vec![
         Span::raw("    "),
         Span::styled(
-            format!("{:<width$}", "TASK", width = task_width),
+            format!("{:<width$}", "REPO", width = repo_width),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "BRANCH", width = branch_width),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -230,10 +262,10 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     format!("── Stopped ({}) ", stopped_count),
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(Color::Rgb(140, 140, 140))
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("─".repeat(48), Style::default().fg(Color::Rgb(40, 40, 40))),
+                Span::styled("─".repeat(48), Style::default().fg(Color::Rgb(60, 60, 60))),
             ]);
             items.push(ListItem::new(header_line));
             shown_stopped_header = true;
@@ -242,7 +274,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         // Render the task
         let (status_icon, status_color) = match task.meta.status {
             TaskStatus::Running => ("●", Color::LightGreen),
-            TaskStatus::Stopped => ("○", Color::DarkGray),
+            TaskStatus::Stopped => ("○", Color::Rgb(140, 140, 140)),
         };
 
         // Only show agent if task is running
@@ -251,23 +283,29 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         } else {
             "-"
         };
-        let task_id = task.meta.task_id();
         let status_str = format!("{}", task.meta.status);
 
-        // Build display task ID with optional queue indicator
+        // Build display repo name (truncate if needed)
+        let display_repo = if task.meta.repo_name.len() > repo_width {
+            format!("{}…", &task.meta.repo_name[..repo_width.saturating_sub(1)])
+        } else {
+            task.meta.repo_name.clone()
+        };
+
+        // Build display branch name with optional queue indicator
         let queue_count = task.queued_feedback_count();
         let queue_suffix = if queue_count > 0 {
             format!(" (+{})", queue_count)
         } else {
             String::new()
         };
-        let full_task_id = format!("{}{}", task_id, queue_suffix);
+        let full_branch = format!("{}{}", task.meta.branch_name, queue_suffix);
 
-        // Truncate task_id if needed, with ellipsis
-        let display_task_id = if full_task_id.len() > task_width {
-            format!("{}…", &full_task_id[..task_width.saturating_sub(1)])
+        // Truncate branch if needed, with ellipsis
+        let display_branch = if full_branch.len() > branch_width {
+            format!("{}…", &full_branch[..branch_width.saturating_sub(1)])
         } else {
-            full_task_id.clone()
+            full_branch.clone()
         };
 
         // Dim stopped tasks
@@ -278,7 +316,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 Color::Gray
             }
         } else {
-            Color::Rgb(100, 100, 100)
+            Color::Rgb(140, 140, 140)
         };
 
         let line = Line::from(vec![
@@ -286,7 +324,18 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(status_icon, Style::default().fg(status_color)),
             Span::raw("  "),
             Span::styled(
-                format!("{:<width$}", display_task_id, width = task_width),
+                format!("{:<width$}", display_repo, width = repo_width),
+                if task_index == app.selected_index {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(text_color)
+                },
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:<width$}", display_branch, width = branch_width),
                 if task_index == app.selected_index {
                     Style::default()
                         .fg(Color::White)
@@ -306,7 +355,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 if is_running {
                     Style::default().fg(Color::LightBlue)
                 } else {
-                    Style::default().fg(Color::Rgb(80, 80, 80))
+                    Style::default().fg(Color::Rgb(110, 110, 110))
                 },
             ),
             Span::raw(COL_GAP),
