@@ -245,6 +245,7 @@ You do NOT create a detailed implementation plan — that is the planner's job. 
 1. Read the `# Goal` section in TASK.md to understand the user's request
 2. Search the repository for agent instruction files that contain important rules and design philosophy:
    - `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*`, `.github/copilot-instructions.md`, `CONVENTIONS.md`, `CONTRIBUTING.md`
+   - `.claude/skills/*/SKILL.md` and `.claude/commands/*.md` (Claude Code skills that provide `/slash-command` capabilities)
    - Any other files that define coding standards, architecture, or design philosophy
 3. Use subagents to explore the codebase structure — understand the relevant modules, patterns, and architecture
 4. Identify key design decisions that need to be made
@@ -264,6 +265,7 @@ Rewrite the `# Goal` section of TASK.md to include:
 - High-level design decisions and the reasoning behind them
 - Important constraints or considerations for the implementation
 - Any design philosophy that should guide the planner and coder
+- If Claude Code skills were found (`.claude/skills/` or `.claude/commands/`), include a brief summary of available skills so downstream agents know what `/slash-commands` they can use
 
 Keep the `# Plan` section as-is (the planner will fill it in).
 
@@ -318,9 +320,10 @@ Instructions:
 1. Explore the codebase to understand its structure
 2. Read TASK.md and understand the Goal section thoroughly
 3. The Goal section may already contain rich context, design philosophy, architectural considerations, and high-level decisions (added by the prompt-builder agent). Preserve ALL of this content — do not delete or override it.
-4. Break the goal down into concrete, actionable steps
-5. Identify any dependencies or prerequisites
-6. Update TASK.md — keep the ENTIRE Goal section intact and rewrite ONLY the Plan section with your detailed plan
+4. Check for Claude Code skills in the repo: look for `.claude/skills/*/SKILL.md` and `.claude/commands/*.md`. If any exist, read them to understand what capabilities are available. When writing plan steps, annotate relevant steps with which skill to use (e.g., `- [ ] Run test suite (use /test skill)`). If no skills exist, proceed normally.
+5. Break the goal down into concrete, actionable steps
+6. Identify any dependencies or prerequisites
+7. Update TASK.md — keep the ENTIRE Goal section intact and rewrite ONLY the Plan section with your detailed plan
 
 The TASK.md format is:
 ```
@@ -354,6 +357,8 @@ Instructions:
 3. Write clean, well-structured code
 4. As you complete steps, move them from Remaining to Completed in TASK.md
 5. Commit your changes with clear messages
+
+Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -425,8 +430,9 @@ The TASK.md format is:
 
 Instructions:
 1. Read and understand all the context provided
-2. Focus primarily on the NEW FEEDBACK - this is what matters now
-3. Rewrite TASK.md with:
+2. Check for Claude Code skills in the repo (`.claude/skills/*/SKILL.md` and `.claude/commands/*.md`). If any exist, preserve skill annotations on completed steps and annotate new remaining steps with relevant skills where appropriate.
+3. Focus primarily on the NEW FEEDBACK - this is what matters now
+4. Rewrite TASK.md with:
    - A clear Goal section describing what we're trying to achieve NOW
    - A Plan section with Completed steps (what's been done) and Remaining steps
    - The coder should be able to follow it without any other context
@@ -470,6 +476,8 @@ Based on your review:
 - There's a fundamental issue that prevents completion
 - Human intervention is needed
 - Output exactly: TASK_BLOCKED
+
+Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
 IMPORTANT:
 - Do NOT implement any changes yourself
@@ -558,6 +566,8 @@ Instructions:
 7. Read TASK.md and verify the task goals are still being met (the code changes haven't been lost)
 8. Clean up: remove the `.branch-target` and `.rebase-target` files if they exist in the working directory or task dir
 
+Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
+
 IMPORTANT:
 - Do NOT ask questions or wait for input
 - If you cannot resolve a conflict, make your best judgment call
@@ -604,6 +614,8 @@ Instructions:
    gh pr view --json number,url -q '.url' >> .pr-link
    ```
 
+Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
+
 IMPORTANT:
 - Do NOT ask questions or wait for input
 - Always write the `.pr-link` file after creating or finding a PR
@@ -628,6 +640,8 @@ Common CI failures and fixes:
 - Test failures: Fix the failing test or the code it's testing
 - Lint errors: Fix formatting, unused imports, etc.
 - Build errors: Fix syntax or missing dependencies
+
+Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -695,6 +709,8 @@ Instructions:
 
 5. For items marked `[CHANGE NEEDED]`, include a brief description of what should be changed so the implementer agent knows what to do.
 
+Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
+
 IMPORTANT:
 - Do NOT make any code changes yourself — only produce `REVIEW.md`
 - Do NOT push anything to origin
@@ -727,6 +743,8 @@ Instructions:
       ```
       And update the proposed reply to mention what was changed and the commit hash
 4. After all changes are implemented, do a final review of `REVIEW.md` to make sure it's complete and coherent
+
+Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
 IMPORTANT:
 - Do NOT push anything to origin
@@ -773,6 +791,8 @@ Instructions:
       - Go back to step 1 and monitor again
 
 5. Keep track of fix attempts. If you have attempted 3 fixes for real failures and checks still fail, output TASK_BLOCKED.
+
+Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -857,6 +877,8 @@ Instructions:
    git checkout <feature_branch>
    ```
 10. Clean up: remove the `.branch-target` file if it exists in the working directory or task dir.
+
+Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
