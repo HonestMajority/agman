@@ -148,6 +148,7 @@ pub fn resume_after_answering(task: &mut Task) -> Result<()> {
 ///
 /// Extracts the "running" branch of `App::submit_feedback()`.
 pub fn queue_feedback(task: &Task, feedback: &str) -> Result<usize> {
+    task.append_feedback_to_log(feedback)?;
     task.queue_feedback(feedback)?;
     Ok(task.queued_feedback_count())
 }

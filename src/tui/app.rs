@@ -691,11 +691,6 @@ impl App {
             return Ok(());
         };
 
-        // Log feedback to agent.log for history
-        if let Some(task) = self.selected_task() {
-            let _ = task.append_feedback_to_log(&feedback);
-        }
-
         if is_running {
             // Delegate to use_cases: queue the feedback
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
