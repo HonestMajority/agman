@@ -314,7 +314,14 @@ impl App {
     }
 
     pub fn refresh_tasks(&mut self) -> Result<()> {
+        let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
         self.tasks = Task::list_all(&self.config)?;
+        if let Some(ref id) = prev_task_id {
+            if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == *id) {
+                self.selected_index = idx;
+                return Ok(());
+            }
+        }
         if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
             self.selected_index = self.tasks.len() - 1;
         }
