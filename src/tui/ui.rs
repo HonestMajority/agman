@@ -1115,10 +1115,15 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" review  ", Style::default().fg(Color::DarkGray)),
             ];
             // Show "a: answer" when an InputNeeded task is selected
+            // Show "o: PR" when the selected task has a linked PR
             if let Some(task) = app.selected_task() {
                 if task.meta.status == TaskStatus::InputNeeded {
                     spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
                     spans.push(Span::styled(" answer  ", Style::default().fg(Color::DarkGray)));
+                }
+                if task.meta.linked_pr.is_some() {
+                    spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
+                    spans.push(Span::styled(" PR  ", Style::default().fg(Color::DarkGray)));
                 }
             }
             spans.extend([
@@ -1133,6 +1138,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("d", Style::default().fg(Color::LightCyan)),
                 Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("U", Style::default().fg(Color::LightCyan)),
+                Span::styled(" update  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("W", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" quit", Style::default().fg(Color::DarkGray)),
@@ -1153,10 +1160,15 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
                 ];
                 // Show "a: answer" when an InputNeeded task is selected
+                // Show "o: PR" when the selected task has a linked PR
                 if let Some(task) = app.selected_task() {
                     if task.meta.status == TaskStatus::InputNeeded {
                         spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
                         spans.push(Span::styled(" answer  ", Style::default().fg(Color::DarkGray)));
+                    }
+                    if task.meta.linked_pr.is_some() {
+                        spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
+                        spans.push(Span::styled(" PR  ", Style::default().fg(Color::DarkGray)));
                     }
                 }
                 spans.extend([
@@ -1168,6 +1180,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" queue  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("x", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("W", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("i", Style::default().fg(Color::LightCyan)),
                     Span::styled(" edit  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Enter", Style::default().fg(Color::LightCyan)),
