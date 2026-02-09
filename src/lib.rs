@@ -6,3 +6,4 @@ pub mod git;
 pub mod repo_stats;
 pub mod task;
 pub mod tmux;
+pub mod use_cases;

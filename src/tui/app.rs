@@ -20,6 +20,7 @@ use agman::git::Git;
 use agman::repo_stats::RepoStats;
 use agman::task::{Task, TaskStatus};
 use agman::tmux::Tmux;
+use agman::use_cases;
 
 use super::ui;
 use super::vim::{VimMode, VimTextArea};
@@ -523,7 +524,7 @@ impl App {
     fn save_notes(&mut self) -> Result<()> {
         if let Some(task) = self.selected_task() {
             let notes = self.notes_editor.lines_joined();
-            task.write_notes(&notes)?;
+            use_cases::save_notes(task, &notes)?;
             self.notes_content = notes;
             self.set_status("Notes saved".to_string());
         }
@@ -533,7 +534,7 @@ impl App {
     fn save_task_file(&mut self) -> Result<()> {
         if let Some(task) = self.selected_task() {
             let content = self.task_file_editor.lines_joined();
-            task.write_task(&content)?;
+            use_cases::save_task_file(task, &content)?;
             self.task_file_content = content;
             self.set_status("TASK.md saved".to_string());
         }
@@ -557,7 +558,7 @@ impl App {
 
             self.log_output(format!("Stopping task {}...", task_id));
 
-            // Send Ctrl+C to the agman window to interrupt any running process
+            // Send Ctrl+C to the agman window to interrupt any running process (side effect)
             if Tmux::session_exists(&tmux_session) {
                 match Tmux::send_ctrl_c_to_window(&tmux_session, "agman") {
                     Ok(_) => {
@@ -572,16 +573,12 @@ impl App {
                 }
             }
 
-            // Update task status to Stopped
+            // Delegate business logic to use_cases
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                if let Err(e) = task.update_status(TaskStatus::Stopped) {
-                    self.log_output(format!("  Error updating status: {}", e));
+                if let Err(e) = use_cases::stop_task(task) {
+                    self.log_output(format!("  Error stopping task: {}", e));
                     self.set_status(format!("Error: {}", e));
                     return Ok(());
-                }
-                task.meta.current_agent = None;
-                if let Err(e) = task.save_meta() {
-                    self.log_output(format!("  Error saving meta: {}", e));
                 }
             }
 
@@ -604,12 +601,12 @@ impl App {
                 return Ok(());
             }
 
-            // Update task status back to Running
+            // Delegate business logic to use_cases
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                task.update_status(TaskStatus::Running)?;
+                use_cases::resume_after_answering(task)?;
             }
 
-            // Ensure tmux session exists
+            // Side effects: ensure tmux session and dispatch flow
             if !Tmux::session_exists(&tmux_session) {
                 if let Some(task) = self.selected_task() {
                     let _ = Tmux::create_session_with_windows(
@@ -620,7 +617,6 @@ impl App {
                 }
             }
 
-            // Re-dispatch the flow to tmux
             let flow_cmd = format!("agman flow-run {}", task_id);
             let _ = Tmux::send_keys_to_window(&tmux_session, "agman", &flow_cmd);
 
@@ -639,44 +635,24 @@ impl App {
 
         let task = self.tasks.remove(self.selected_index);
         let task_id = task.meta.task_id();
-        tracing::info!(task_id = %task_id, mode = ?mode, "deleting task via TUI");
-        let repo_name = task.meta.repo_name.clone();
-        let branch_name = task.meta.branch_name.clone();
-        let worktree_path = task.meta.worktree_path.clone();
         let tmux_session = task.meta.tmux_session.clone();
+
+        let uc_mode = match mode {
+            DeleteMode::Everything => use_cases::DeleteMode::Everything,
+            DeleteMode::TaskOnly => use_cases::DeleteMode::TaskOnly,
+        };
 
         self.log_output(format!("Deleting task {} ({})...", task_id, match mode {
             DeleteMode::Everything => "everything",
             DeleteMode::TaskOnly => "task only",
         }));
 
-        // Kill tmux session (both modes)
+        // Kill tmux session (side effect)
         let _ = Tmux::kill_session(&tmux_session);
         self.log_output("  Killed tmux session".to_string());
 
-        match mode {
-            DeleteMode::Everything => {
-                // Remove worktree
-                let repo_path = self.config.repo_path(&repo_name);
-                let _ = Git::remove_worktree(&repo_path, &worktree_path);
-                self.log_output("  Removed worktree".to_string());
-
-                // Delete branch
-                let _ = Git::delete_branch(&repo_path, &branch_name);
-                self.log_output("  Deleted branch".to_string());
-            }
-            DeleteMode::TaskOnly => {
-                // Remove TASK.md from the worktree so no agman state remains
-                let task_md_path = worktree_path.join("TASK.md");
-                if task_md_path.exists() {
-                    let _ = std::fs::remove_file(&task_md_path);
-                    self.log_output("  Removed TASK.md from worktree".to_string());
-                }
-            }
-        }
-
-        // Delete task directory (both modes)
-        task.delete(&self.config)?;
+        // Delegate business logic to use_cases
+        use_cases::delete_task(&self.config, task, uc_mode)?;
         self.log_output("  Deleted task files".to_string());
 
         if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
@@ -726,17 +702,16 @@ impl App {
         }
 
         if is_running {
-            // Queue the feedback for later processing (writes to separate file, not meta.json)
-            if let Some(task) = self.tasks.get(self.selected_index) {
-                task.queue_feedback(&feedback)?;
-                let queue_count = task.queued_feedback_count();
+            // Delegate to use_cases: queue the feedback
+            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                let queue_count = use_cases::queue_feedback(task, &feedback)?;
                 self.log_output(format!("Queued feedback for {} ({} in queue)", task_id, queue_count));
                 self.set_status(format!("Feedback queued ({} in queue)", queue_count));
             }
         } else {
-            // Task is stopped - write feedback and start continue flow immediately
+            // Delegate to use_cases: write immediate feedback
             if let Some(task) = self.selected_task() {
-                task.write_feedback(&feedback)?;
+                use_cases::write_immediate_feedback(task, &feedback)?;
             }
 
             self.log_output(format!("Starting continue flow for {}...", task_id));
@@ -1286,63 +1261,36 @@ impl App {
         let repo_name = wizard.selected_repo_name().to_string();
         tracing::info!(repo = %repo_name, "creating task via wizard");
 
-        let (branch_name, worktree_path_existing) = match wizard.branch_source {
+        let (branch_name, worktree_source) = match wizard.branch_source {
             BranchSource::ExistingWorktree => {
                 let (branch, path) =
                     wizard.existing_worktrees[wizard.selected_worktree_index].clone();
-                (branch, Some(path))
+                (branch, use_cases::WorktreeSource::ExistingWorktree(path))
             }
             BranchSource::NewBranch => {
                 let name = wizard.new_branch_editor.lines().join("").trim().to_string();
-                (name, None)
+                (name, use_cases::WorktreeSource::NewBranch)
             }
             BranchSource::ExistingBranch => {
                 let name = wizard.existing_branches[wizard.selected_branch_index].clone();
-                (name, None)
+                (name, use_cases::WorktreeSource::ExistingBranch)
             }
         };
 
         let description = wizard.description_editor.lines_joined().trim().to_string();
         let review_after = wizard.review_after;
-        let flow_name = "new".to_string();
 
         self.log_output(format!("Creating task {}--{}...", repo_name, branch_name));
 
-        // Initialize default files
-        self.config.init_default_files(false)?;
-
-        let worktree_path = if let Some(existing_path) = worktree_path_existing {
-            // UseExisting mode: skip worktree creation, just use existing path
-            self.log_output("  Using existing worktree...".to_string());
-            let _ = Git::direnv_allow(&existing_path);
-            existing_path
-        } else {
-            // CreateNew mode: create worktree as before
-            self.log_output("  Creating worktree...".to_string());
-            match Git::create_worktree_quiet(&self.config, &repo_name, &branch_name) {
-                Ok(path) => {
-                    let _ = Git::direnv_allow(&path);
-                    path
-                }
-                Err(e) => {
-                    self.log_output(format!("  Error: {}", e));
-                    if let Some(w) = &mut self.wizard {
-                        w.error_message = Some(format!("Failed to create worktree: {}", e));
-                    }
-                    return Ok(());
-                }
-            }
-        };
-
-        // Create task
-        self.log_output("  Creating task files...".to_string());
-        let mut task = match Task::create(
+        // Delegate business logic to use_cases
+        let task = match use_cases::create_task(
             &self.config,
             &repo_name,
             &branch_name,
             &description,
-            &flow_name,
-            worktree_path.clone(),
+            "new",
+            worktree_source,
+            review_after,
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -1354,16 +1302,8 @@ impl App {
             }
         };
 
-        // Ensure TASK.md is excluded from git tracking
-        let _ = task.ensure_git_excludes_task();
-
-        // Set review_after flag if requested
-        if review_after {
-            task.meta.review_after = true;
-            task.save_meta()?;
-        }
-
-        // Create tmux session with windows
+        // Side effects: create tmux session and start flow
+        let worktree_path = task.meta.worktree_path.clone();
         self.log_output("  Creating tmux session...".to_string());
         if let Err(e) = Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path) {
             self.log_output(format!("  Error: {}", e));
@@ -1373,19 +1313,11 @@ impl App {
             return Ok(());
         }
 
-        // Add review window (nvim REVIEW.md) as window 5, agman becomes window 6
         let _ = Tmux::add_review_window(&task.meta.tmux_session, &worktree_path);
 
-        // Start the flow in tmux
         let task_id = task.meta.task_id();
         let flow_cmd = format!("agman flow-run {}", task_id);
         let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd);
-
-        // Increment repo usage stats
-        let stats_path = self.config.repo_stats_path();
-        let mut stats = RepoStats::load(&stats_path);
-        stats.increment(&repo_name);
-        stats.save(&stats_path);
 
         // Success - close wizard and refresh
         self.wizard = None;
@@ -1545,19 +1477,19 @@ impl App {
         };
 
         let repo_name = wizard.selected_repo_name().to_string();
-        let (branch_name, worktree_path_existing) = match wizard.branch_source {
+        let (branch_name, worktree_source) = match wizard.branch_source {
             BranchSource::ExistingWorktree => {
                 let (branch, path) =
                     wizard.existing_worktrees[wizard.selected_worktree_index].clone();
-                (branch, Some(path))
+                (branch, use_cases::WorktreeSource::ExistingWorktree(path))
             }
             BranchSource::NewBranch => {
                 let name = wizard.branch_editor.lines().join("").trim().to_string();
-                (name, None)
+                (name, use_cases::WorktreeSource::ExistingBranch)
             }
             BranchSource::ExistingBranch => {
                 let name = wizard.existing_branches[wizard.selected_branch_index].clone();
-                (name, None)
+                (name, use_cases::WorktreeSource::ExistingBranch)
             }
         };
 
@@ -1566,60 +1498,25 @@ impl App {
             repo_name, branch_name
         ));
 
-        // Initialize default files (ensures review-pr command exists)
-        self.config.init_default_files(false)?;
-
-        // Create or reuse worktree
-        let worktree_path = if let Some(existing_path) = worktree_path_existing {
-            self.log_output("  Using existing worktree...".to_string());
-            let _ = Git::direnv_allow(&existing_path);
-            existing_path
-        } else {
-            self.log_output("  Creating worktree for existing branch...".to_string());
-            match Git::create_worktree_for_existing_branch_quiet(
-                &self.config,
-                &repo_name,
-                &branch_name,
-            ) {
-                Ok(path) => {
-                    let _ = Git::direnv_allow(&path);
-                    path
-                }
-                Err(e) => {
-                    self.log_output(format!("  Error: {}", e));
-                    if let Some(w) = &mut self.review_wizard {
-                        w.error_message = Some(format!("Failed: {}", e));
-                    }
-                    return Ok(());
-                }
-            }
-        };
-
-        // Create task
-        let description = format!("Review branch {}", branch_name);
-        self.log_output("  Creating task files...".to_string());
-        let task = match Task::create(
+        // Delegate business logic to use_cases
+        let task = match use_cases::create_review_task(
             &self.config,
             &repo_name,
             &branch_name,
-            &description,
-            "new",
-            worktree_path.clone(),
+            worktree_source,
         ) {
             Ok(t) => t,
             Err(e) => {
                 self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.review_wizard {
-                    w.error_message = Some(format!("Failed to create task: {}", e));
+                    w.error_message = Some(format!("Failed to create review task: {}", e));
                 }
                 return Ok(());
             }
         };
 
-        // Ensure TASK.md is excluded from git tracking
-        let _ = task.ensure_git_excludes_task();
-
-        // Create tmux session with windows
+        // Side effects: create tmux session and run review command
+        let worktree_path = task.meta.worktree_path.clone();
         self.log_output("  Creating tmux session...".to_string());
         if let Err(e) =
             Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)
@@ -1631,19 +1528,11 @@ impl App {
             return Ok(());
         }
 
-        // Add review window (nvim REVIEW.md) as window 5, agman becomes window 6
         Tmux::add_review_window(&task.meta.tmux_session, &worktree_path)?;
 
-        // Run the review-pr stored command instead of a flow
         let task_id = task.meta.task_id();
         let review_cmd = format!("agman run-command {} review-pr", task_id);
         let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &review_cmd);
-
-        // Increment repo usage stats
-        let stats_path = self.config.repo_stats_path();
-        let mut stats = RepoStats::load(&stats_path);
-        stats.increment(&repo_name);
-        stats.save(&stats_path);
 
         // Success - close wizard and refresh
         self.review_wizard = None;
@@ -2641,8 +2530,7 @@ impl App {
                 return Ok(());
             }
 
-            // Remove the selected item from the queue file
-            task.remove_feedback_queue_item(self.selected_queue_index)?;
+            use_cases::delete_queued_feedback(task, self.selected_queue_index)?;
 
             // Adjust selected index if needed
             let remaining = task.queued_feedback_count();
@@ -2661,8 +2549,8 @@ impl App {
     }
 
     fn clear_all_queued_feedback(&mut self) -> Result<()> {
-        if let Some(task) = self.tasks.get(self.selected_index) {
-            task.clear_feedback_queue()?;
+        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+            use_cases::clear_all_queued_feedback(task)?;
             self.view = View::Preview;
             self.set_status("Queue cleared".to_string());
         }
