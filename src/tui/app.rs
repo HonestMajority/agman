@@ -153,6 +153,8 @@ pub struct App {
     // Task file (TASK.md) viewing/editing (used by modal)
     pub task_file_content: String,
     pub task_file_editor: VimTextArea<'static>,
+    /// When true, saving the task editor will auto-resume the flow (used for answering questions)
+    pub answering_questions: bool,
     // Stored commands
     pub commands: Vec<StoredCommand>,
     pub selected_command_index: usize,
@@ -201,6 +203,7 @@ impl App {
             last_output_time: None,
             task_file_content: String::new(),
             task_file_editor,
+            answering_questions: false,
             commands,
             selected_command_index: 0,
             command_list_state: ListState::default(),
@@ -451,12 +454,12 @@ impl App {
             (
                 t.meta.task_id(),
                 t.meta.tmux_session.clone(),
-                t.meta.status == TaskStatus::Running,
+                t.meta.status,
             )
         });
 
-        if let Some((task_id, tmux_session, is_running)) = task_info {
-            if !is_running {
+        if let Some((task_id, tmux_session, status)) = task_info {
+            if status == TaskStatus::Stopped {
                 self.set_status(format!("Task already stopped: {}", task_id));
                 return Ok(());
             }
@@ -493,6 +496,48 @@ impl App {
 
             self.set_status(format!("Stopped: {}", task_id));
         }
+        Ok(())
+    }
+
+    fn resume_after_answering(&mut self) -> Result<()> {
+        let task_info = self.selected_task().map(|t| {
+            (
+                t.meta.task_id(),
+                t.meta.tmux_session.clone(),
+                t.meta.status,
+            )
+        });
+
+        if let Some((task_id, tmux_session, status)) = task_info {
+            if status != TaskStatus::InputNeeded {
+                return Ok(());
+            }
+
+            // Update task status back to Running
+            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                task.update_status(TaskStatus::Running)?;
+            }
+
+            // Ensure tmux session exists
+            if !Tmux::session_exists(&tmux_session) {
+                if let Some(task) = self.selected_task() {
+                    let _ = Tmux::create_session_with_windows(
+                        &tmux_session,
+                        &task.meta.worktree_path,
+                    );
+                    let _ = Tmux::add_review_window(&tmux_session, &task.meta.worktree_path);
+                }
+            }
+
+            // Re-dispatch the flow to tmux
+            let flow_cmd = format!("agman flow-run {}", task_id);
+            let _ = Tmux::send_keys_to_window(&tmux_session, "agman", &flow_cmd);
+
+            self.log_output(format!("Resumed flow for {} — processing your answers", task_id));
+            self.set_status(format!("Resumed: {}", task_id));
+            self.refresh_tasks_and_select(&task_id)?;
+        }
+
         Ok(())
     }
 
@@ -1578,6 +1623,15 @@ impl App {
                         self.open_task_editor();
                     }
                 }
+                KeyCode::Char('a') => {
+                    // Answer questions (only for InputNeeded tasks)
+                    if let Some(task) = self.selected_task() {
+                        if task.meta.status == TaskStatus::InputNeeded {
+                            self.load_preview();
+                            self.open_task_editor_for_answering();
+                        }
+                    }
+                }
                 KeyCode::Char('U') => {
                     // Manual restart
                     self.restart_confirm_index = 0;
@@ -1690,6 +1744,14 @@ impl App {
                 KeyCode::Char('t') => {
                     // Open TaskEditor modal
                     self.open_task_editor();
+                }
+                KeyCode::Char('a') => {
+                    // Answer questions (only for InputNeeded tasks)
+                    if let Some(task) = self.selected_task() {
+                        if task.meta.status == TaskStatus::InputNeeded {
+                            self.open_task_editor_for_answering();
+                        }
+                    }
                 }
                 KeyCode::Char('f') => {
                     // Give feedback
@@ -1812,6 +1874,16 @@ impl App {
     }
 
     fn open_task_editor(&mut self) {
+        self.answering_questions = false;
+        self.open_task_editor_inner();
+    }
+
+    fn open_task_editor_for_answering(&mut self) {
+        self.answering_questions = true;
+        self.open_task_editor_inner();
+    }
+
+    fn open_task_editor_inner(&mut self) {
         // Re-read the task file content from disk to ensure fresh content
         if let Some(task) = self.selected_task() {
             let content = task
@@ -1841,6 +1913,13 @@ impl App {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
                 self.save_task_file()?;
                 self.task_file_editor.set_normal_mode();
+
+                // If we were answering questions, resume the flow
+                if self.answering_questions {
+                    self.answering_questions = false;
+                    self.resume_after_answering()?;
+                }
+
                 self.view = View::Preview;
                 return Ok(false);
             }

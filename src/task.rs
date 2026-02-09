@@ -6,10 +6,11 @@ use std::path::PathBuf;
 use crate::config::Config;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Running,
     Stopped,
+    InputNeeded,
 }
 
 impl std::fmt::Display for TaskStatus {
@@ -17,6 +18,7 @@ impl std::fmt::Display for TaskStatus {
         match self {
             TaskStatus::Running => write!(f, "running"),
             TaskStatus::Stopped => write!(f, "stopped"),
+            TaskStatus::InputNeeded => write!(f, "input needed"),
         }
     }
 }
@@ -177,16 +179,18 @@ impl Task {
             }
         }
 
-        // Sort by: running tasks first, then by updated_at descending within each group
+        // Sort by: running first, then input_needed, then stopped; within each group by updated_at desc
         tasks.sort_by(|a, b| {
-            let a_running = a.meta.status == TaskStatus::Running;
-            let b_running = b.meta.status == TaskStatus::Running;
-            // Running tasks come first
-            match (a_running, b_running) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                // Within the same group, sort by updated_at descending
-                _ => b.meta.updated_at.cmp(&a.meta.updated_at),
+            let order = |s: TaskStatus| match s {
+                TaskStatus::Running => 0,
+                TaskStatus::InputNeeded => 1,
+                TaskStatus::Stopped => 2,
+            };
+            let ord = order(a.meta.status).cmp(&order(b.meta.status));
+            if ord != std::cmp::Ordering::Equal {
+                ord
+            } else {
+                b.meta.updated_at.cmp(&a.meta.updated_at)
             }
         });
 

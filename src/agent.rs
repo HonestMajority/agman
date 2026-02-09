@@ -303,6 +303,12 @@ impl AgentRunner {
 
                             return Ok(StopCondition::TaskComplete);
                         }
+                        Some(StopCondition::InputNeeded) => {
+                            println!("Agent needs user input - pausing for answers");
+                            task.update_status(TaskStatus::InputNeeded)?;
+                            // Do NOT advance the flow step — re-run same agent after user answers
+                            return Ok(StopCondition::InputNeeded);
+                        }
                         Some(StopCondition::TaskBlocked) => {
                             println!("Task blocked - needs human intervention");
                             match agent_step.on_blocked {
@@ -370,6 +376,10 @@ impl AgentRunner {
                             }
 
                             return Ok(StopCondition::TaskComplete);
+                        }
+                        StopCondition::InputNeeded => {
+                            task.update_status(TaskStatus::InputNeeded)?;
+                            return Ok(StopCondition::InputNeeded);
                         }
                         StopCondition::TaskBlocked => {
                             task.update_status(TaskStatus::Stopped)?;
@@ -457,6 +467,9 @@ impl AgentRunner {
                 match result {
                     Some(StopCondition::TaskComplete) => {
                         return Ok(StopCondition::TaskComplete);
+                    }
+                    Some(StopCondition::InputNeeded) => {
+                        return Ok(StopCondition::InputNeeded);
                     }
                     Some(StopCondition::TaskBlocked) => {
                         return Ok(StopCondition::TaskBlocked);

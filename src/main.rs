@@ -189,6 +189,7 @@ fn cmd_list(config: &Config) -> Result<()> {
     for task in tasks {
         let status_icon = match task.meta.status {
             TaskStatus::Running => "●",
+            TaskStatus::InputNeeded => "?",
             TaskStatus::Stopped => "○",
         };
 
@@ -304,6 +305,12 @@ fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
 
     println!();
     println!("Flow finished with: {}", result);
+
+    // If the flow paused for user input, just print a message and exit
+    if result == flow::StopCondition::InputNeeded {
+        println!("Task needs user input. Check the TUI to answer questions.");
+        return Ok(());
+    }
 
     // If review_after is enabled and the flow completed successfully, run review-pr
     // Re-read meta in case it was updated during the flow
