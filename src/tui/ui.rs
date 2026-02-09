@@ -653,7 +653,7 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
     ];
     if is_answering {
         header_spans.push(Span::styled(
-            "  Add answers under [ANSWERS], then save to resume",
+            "  Fill in your answers under [ANSWERS], then save to resume",
             Style::default().fg(Color::LightYellow),
         ));
     }

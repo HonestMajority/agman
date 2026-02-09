@@ -274,6 +274,7 @@ After enhancing the Goal, evaluate whether the prompt is ready:
 - Add a `[QUESTIONS]` section at the end of TASK.md (after the `# Plan` section)
 - List numbered questions that are specific and actionable
 - Each question should explain WHY you're asking (what decision it impacts)
+- Immediately after `[QUESTIONS]`, add an `[ANSWERS]` section with matching numbered blank slots so the user can fill them in easily
 - Output exactly: INPUT_NEEDED
 
 **If the prompt is well-formulated and complete:**
@@ -294,6 +295,10 @@ After enhancing the Goal, evaluate whether the prompt is ready:
 [QUESTIONS]
 1. Question one — why this matters for the implementation
 2. Question two — what decision this affects
+
+[ANSWERS]
+1.
+2.
 ```
 
 ## Important Rules
