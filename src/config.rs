@@ -356,7 +356,7 @@ Instructions:
 2. Implement each step in the Remaining section in order
 3. Write clean, well-structured code
 4. As you complete steps, move them from Remaining to Completed in TASK.md
-5. Commit your changes with clear messages
+5. Commit your changes using conventional commit messages (e.g. feat:, fix:, refactor:, docs:, test:, chore:). Always commit before finishing — do not leave uncommitted changes.
 
 Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
@@ -364,6 +364,7 @@ IMPORTANT:
 - Do NOT ask questions or wait for input
 - Make reasonable assumptions if something is unclear
 - Just implement the code and finish
+- Do NOT push to origin — only commit locally
 
 When you have finished implementing, output exactly: AGENT_DONE
 If you cannot complete it for some reason, output exactly: TASK_BLOCKED
