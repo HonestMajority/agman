@@ -132,6 +132,7 @@ impl Config {
             ("tester", TESTER_PROMPT),
             ("reviewer", REVIEWER_PROMPT),
             ("refiner", REFINER_PROMPT),
+            ("checker", CHECKER_PROMPT),
             // Command-specific prompts
             ("rebase-executor", REBASE_EXECUTOR_PROMPT),
             ("pr-creator", PR_CREATOR_PROMPT),
@@ -176,9 +177,13 @@ const DEFAULT_FLOW: &str = r#"name: new
 steps:
   - agent: planner
     until: AGENT_DONE
-  - agent: coder
+  - loop:
+      - agent: coder
+        until: AGENT_DONE
+        on_blocked: pause
+      - agent: checker
+        until: AGENT_DONE
     until: TASK_COMPLETE
-    on_blocked: pause
 "#;
 
 const TDD_FLOW: &str = r#"name: tdd
@@ -200,18 +205,26 @@ const REVIEW_FLOW: &str = r#"name: review
 steps:
   - agent: reviewer
     until: AGENT_DONE
-  - agent: coder
+  - loop:
+      - agent: coder
+        until: AGENT_DONE
+        on_blocked: pause
+      - agent: checker
+        until: AGENT_DONE
     until: TASK_COMPLETE
-    on_blocked: pause
 "#;
 
 const CONTINUE_FLOW: &str = r#"name: continue
 steps:
   - agent: refiner
     until: AGENT_DONE
-  - agent: coder
+  - loop:
+      - agent: coder
+        until: AGENT_DONE
+        on_blocked: pause
+      - agent: checker
+        until: AGENT_DONE
     until: TASK_COMPLETE
-    on_blocked: pause
 "#;
 
 const PLANNER_PROMPT: &str = r#"You are a planning agent. Your job is to analyze the task and create a detailed implementation plan.
@@ -259,7 +272,7 @@ IMPORTANT:
 - Make reasonable assumptions if something is unclear
 - Just implement the code and finish
 
-When the task is fully implemented, output exactly: TASK_COMPLETE
+When you have finished implementing, output exactly: AGENT_DONE
 If you cannot complete it for some reason, output exactly: TASK_BLOCKED
 "#;
 
@@ -338,6 +351,44 @@ IMPORTANT:
 
 When you're done writing TASK.md, output exactly: AGENT_DONE
 "#;
+
+const CHECKER_PROMPT: &str = r###"You are a checker agent. Your job is to verify whether the task has been completed successfully.
+
+You have been given:
+- TASK.md containing the goal ("# Goal") and plan ("# Plan")
+- What has been done (git commits and current diff)
+
+Your job is to review the work and make a judgment:
+
+1. Read and understand the goal in the "# Goal" section of TASK.md
+2. Review the plan in the "# Plan" section
+3. Examine the git diff and commits to see what was actually implemented
+4. Determine if the requirements have been met
+
+Based on your review:
+
+**If the task is COMPLETE:**
+- All requirements from the goal are satisfied
+- The implementation matches the plan
+- Output exactly: TASK_COMPLETE
+
+**If the task is INCOMPLETE:**
+- Some requirements are not yet met
+- Update the "## Remaining" section in TASK.md with what still needs to be done
+- Be specific about what's missing
+- Output exactly: AGENT_DONE
+
+**If the task is STUCK:**
+- There's a fundamental issue that prevents completion
+- Human intervention is needed
+- Output exactly: TASK_BLOCKED
+
+IMPORTANT:
+- Do NOT implement any changes yourself
+- Be thorough in your review - check that the code actually does what's required
+- When updating TASK.md, make the remaining steps actionable for the next coder iteration
+- Err on the side of completeness - if it's not clearly done, it's not done
+"###;
 
 // ============================================================================
 // Stored Command Definitions
