@@ -137,7 +137,6 @@ impl Config {
             // Command-specific prompts
             ("rebase-executor", REBASE_EXECUTOR_PROMPT),
             ("pr-creator", PR_CREATOR_PROMPT),
-            ("ci-monitor", CI_MONITOR_PROMPT),
             ("ci-fixer", CI_FIXER_PROMPT),
             ("review-analyst", REVIEW_ANALYST_PROMPT),
             ("review-implementer", REVIEW_IMPLEMENTER_PROMPT),
@@ -489,7 +488,7 @@ description: Creates a draft PR with a good description, monitors CI, and fixes 
 steps:
   - agent: pr-creator
     until: AGENT_DONE
-  - agent: ci-monitor
+  - agent: pr-check-monitor
     until: AGENT_DONE
 "#;
 
@@ -612,40 +611,6 @@ IMPORTANT:
 
 When the PR is created (or already exists) and `.pr-link` is written, output exactly: AGENT_DONE
 If you cannot create the PR for some reason, output exactly: TASK_BLOCKED
-"#;
-
-const CI_MONITOR_PROMPT: &str = r#"You are a CI monitoring agent. Your job is to monitor CI checks and fix any failures.
-
-Instructions:
-0. Check if a `.pr-link` file exists in the repo root. If it does, read the PR number from the first line and use `gh pr checks <number>` instead of `gh pr checks` throughout this workflow.
-
-1. Check the current PR's CI status:
-   ```
-   gh pr checks
-   ```
-2. If all checks pass, you're done!
-3. If checks are still running, wait and check again (use `sleep 30` between checks)
-4. If checks fail:
-   a. Get the failed check details and logs
-   b. Analyze what went wrong
-   c. Fix the issue in the code
-   d. Commit the fix with a clear message like "fix: [description of fix]"
-   e. Push the changes: `git push`
-   f. Go back to step 1 and monitor again
-
-To get CI logs for a failed check:
-```
-gh run view <run-id> --log-failed
-```
-
-IMPORTANT:
-- Do NOT ask questions or wait for input
-- Make reasonable fixes based on the error messages
-- If you've tried fixing 3 times and it still fails, output TASK_BLOCKED
-- Each fix should be a separate commit
-
-When all CI checks pass, output exactly: AGENT_DONE
-If you cannot fix the CI after multiple attempts, output exactly: TASK_BLOCKED
 "#;
 
 const CI_FIXER_PROMPT: &str = r#"You are a CI fixer agent. Your job is to fix a specific CI failure.
