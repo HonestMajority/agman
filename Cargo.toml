@@ -10,7 +10,7 @@ authors = ["agman"]
 clap = { version = "4.4", features = ["derive"] }
 
 # TUI
-ratatui = "0.28"
+ratatui = { version = "0.28", features = ["unstable-rendered-line-info"] }
 crossterm = "0.28"
 
 # Async runtime
