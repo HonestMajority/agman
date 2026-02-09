@@ -91,6 +91,18 @@ pub enum FailAction {
     Continue,
 }
 
+impl FlowStep {
+    pub fn display_label(&self, index: usize) -> String {
+        match self {
+            FlowStep::Agent(s) => format!("{}: {}", index, s.agent),
+            FlowStep::Loop(l) => {
+                let agents: Vec<&str> = l.steps.iter().map(|s| s.agent.as_str()).collect();
+                format!("{}: loop: {}", index, agents.join(" → "))
+            }
+        }
+    }
+}
+
 impl Flow {
     pub fn load(path: &Path) -> Result<Self> {
         tracing::debug!(path = %path.display(), "loading flow");
