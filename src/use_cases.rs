@@ -132,6 +132,30 @@ pub fn stop_task(task: &mut Task) -> Result<()> {
     Ok(())
 }
 
+/// Put a stopped task on hold.
+///
+/// This is the pure business logic behind `App::toggle_hold()`.
+/// Only transitions from Stopped → OnHold.
+pub fn put_on_hold(task: &mut Task) -> Result<()> {
+    if task.meta.status != TaskStatus::Stopped {
+        return Ok(());
+    }
+    task.update_status(TaskStatus::OnHold)?;
+    Ok(())
+}
+
+/// Resume a task from on-hold back to stopped.
+///
+/// This is the pure business logic behind `App::toggle_hold()`.
+/// Only transitions from OnHold → Stopped.
+pub fn resume_from_hold(task: &mut Task) -> Result<()> {
+    if task.meta.status != TaskStatus::OnHold {
+        return Ok(());
+    }
+    task.update_status(TaskStatus::Stopped)?;
+    Ok(())
+}
+
 /// Resume a task after the user has answered questions: set status back to Running.
 ///
 /// This is the pure business logic behind `App::resume_after_answering()`.

@@ -22,6 +22,7 @@ pub enum TaskStatus {
     Running,
     Stopped,
     InputNeeded,
+    OnHold,
 }
 
 impl std::fmt::Display for TaskStatus {
@@ -30,6 +31,7 @@ impl std::fmt::Display for TaskStatus {
             TaskStatus::Running => write!(f, "running"),
             TaskStatus::Stopped => write!(f, "stopped"),
             TaskStatus::InputNeeded => write!(f, "input needed"),
+            TaskStatus::OnHold => write!(f, "on hold"),
         }
     }
 }
@@ -199,6 +201,7 @@ impl Task {
                 TaskStatus::Running => 0,
                 TaskStatus::InputNeeded => 1,
                 TaskStatus::Stopped => 2,
+                TaskStatus::OnHold => 3,
             };
             let ord = order(a.meta.status).cmp(&order(b.meta.status));
             if ord != std::cmp::Ordering::Equal {

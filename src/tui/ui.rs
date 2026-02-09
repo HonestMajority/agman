@@ -108,7 +108,12 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .filter(|t| t.meta.status == TaskStatus::InputNeeded)
         .count();
-    let stopped_count = app.tasks.len() - running_count - input_needed_count;
+    let on_hold_count = app
+        .tasks
+        .iter()
+        .filter(|t| t.meta.status == TaskStatus::OnHold)
+        .count();
+    let stopped_count = app.tasks.len() - running_count - input_needed_count - on_hold_count;
 
     // Create the outer block first
     let block = Block::default()
@@ -260,6 +265,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     let mut shown_running_header = false;
     let mut shown_input_needed_header = false;
     let mut shown_stopped_header = false;
+    let mut shown_on_hold_header = false;
 
     for task in &app.tasks {
         let status = task.meta.status;
@@ -317,6 +323,24 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 items.push(ListItem::new(header_line));
                 shown_stopped_header = true;
             }
+            TaskStatus::OnHold if !shown_on_hold_header && on_hold_count > 0 => {
+                if shown_running_header || shown_input_needed_header || shown_stopped_header {
+                    items.push(ListItem::new(Line::from("")));
+                }
+                let label = format!("── On Hold ({}) ", on_hold_count);
+                let fill = (inner.width as usize).saturating_sub(label.len());
+                let header_line = Line::from(vec![
+                    Span::styled(
+                        label,
+                        Style::default()
+                            .fg(Color::Rgb(180, 140, 60))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+                ]);
+                items.push(ListItem::new(header_line));
+                shown_on_hold_header = true;
+            }
             _ => {}
         }
 
@@ -325,6 +349,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             TaskStatus::Running => ("●", Color::LightGreen),
             TaskStatus::InputNeeded => ("?", Color::LightYellow),
             TaskStatus::Stopped => ("○", Color::Rgb(140, 140, 140)),
+            TaskStatus::OnHold => ("⏸", Color::Rgb(180, 140, 60)),
         };
 
         // Show agent for running and input_needed tasks
@@ -467,6 +492,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
                     TaskStatus::Running => Color::LightGreen,
                     TaskStatus::InputNeeded => Color::LightYellow,
                     TaskStatus::Stopped => Color::DarkGray,
+                    TaskStatus::OnHold => Color::Rgb(180, 140, 60),
                 }),
             ),
             Span::raw("  "),
@@ -1128,6 +1154,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             ];
             // Show "a: answer" when an InputNeeded task is selected
             // Show "o: PR" when the selected task has a linked PR
+            // Show "H hold/unhold" for Stopped/OnHold tasks
             if let Some(task) = app.selected_task() {
                 if task.meta.status == TaskStatus::InputNeeded {
                     spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
@@ -1136,6 +1163,13 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 if task.meta.linked_pr.is_some() {
                     spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
                     spans.push(Span::styled(" PR  ", Style::default().fg(Color::DarkGray)));
+                }
+                if task.meta.status == TaskStatus::Stopped {
+                    spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
+                    spans.push(Span::styled(" hold  ", Style::default().fg(Color::DarkGray)));
+                } else if task.meta.status == TaskStatus::OnHold {
+                    spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
+                    spans.push(Span::styled(" unhold  ", Style::default().fg(Color::DarkGray)));
                 }
             }
             spans.extend([
@@ -1173,6 +1207,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 ];
                 // Show "a: answer" when an InputNeeded task is selected
                 // Show "o: PR" when the selected task has a linked PR
+                // Show "H hold/unhold" for Stopped/OnHold tasks
                 if let Some(task) = app.selected_task() {
                     if task.meta.status == TaskStatus::InputNeeded {
                         spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
@@ -1181,6 +1216,13 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     if task.meta.linked_pr.is_some() {
                         spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
                         spans.push(Span::styled(" PR  ", Style::default().fg(Color::DarkGray)));
+                    }
+                    if task.meta.status == TaskStatus::Stopped {
+                        spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
+                        spans.push(Span::styled(" hold  ", Style::default().fg(Color::DarkGray)));
+                    } else if task.meta.status == TaskStatus::OnHold {
+                        spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
+                        spans.push(Span::styled(" unhold  ", Style::default().fg(Color::DarkGray)));
                     }
                 }
                 spans.extend([
