@@ -1722,7 +1722,7 @@ fn draw_feedback_queue(f: &mut Frame, app: &App) {
 
     let queue = app
         .selected_task()
-        .map(|t| t.read_feedback_queue().to_vec())
+        .map(|t| t.read_feedback_queue())
         .unwrap_or_default();
 
     // Split into header, list, and footer
