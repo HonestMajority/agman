@@ -491,7 +491,7 @@ impl App {
         let (preview_content, notes_content, task_file_content) =
             if let Some(task) = self.selected_task() {
                 let preview = task
-                    .read_agent_log_tail(100)
+                    .read_agent_log_structured_tail(500)
                     .unwrap_or_else(|_| "No agent log available".to_string());
                 let notes = task.read_notes().unwrap_or_default();
                 let task_file = task
@@ -719,6 +719,11 @@ impl App {
             self.view = View::TaskList;
             return Ok(());
         };
+
+        // Log feedback to agent.log for history
+        if let Some(task) = self.selected_task() {
+            let _ = task.append_feedback_to_log(&feedback);
+        }
 
         if is_running {
             // Queue the feedback for later processing (writes to separate file, not meta.json)
