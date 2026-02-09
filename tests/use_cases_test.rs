@@ -255,6 +255,11 @@ fn queue_feedback_on_running_task() {
     assert_eq!(queue.len(), 2);
     assert_eq!(queue[0], "fix the button");
     assert_eq!(queue[1], "also fix the header");
+
+    // Feedback should also be logged to agent.log
+    let log = task.read_agent_log().unwrap();
+    assert!(log.contains("fix the button"));
+    assert!(log.contains("also fix the header"));
 }
 
 // ---------------------------------------------------------------------------
