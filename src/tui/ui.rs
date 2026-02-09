@@ -9,6 +9,7 @@ use ratatui::{
 use crate::task::TaskStatus;
 
 use super::app::{App, BranchSource, PreviewPane, RestartWizardStep, ReviewWizardStep, View, WizardStep};
+use super::log_render;
 use super::vim::VimMode;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -533,14 +534,15 @@ fn draw_logs_panel(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let logs = Paragraph::new(app.preview_content.as_str())
+    let styled_lines = log_render::render_log_lines(&app.preview_content);
+
+    let logs = Paragraph::new(styled_lines)
         .block(
             Block::default()
                 .title(Span::styled(" Logs (Enter: attach tmux) ", title_style))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
-        .style(Style::default().fg(Color::Gray))
         .wrap(Wrap { trim: false })
         .scroll((app.preview_scroll, 0));
 

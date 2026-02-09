@@ -405,6 +405,9 @@ fn cmd_continue(
     // Wipe REVIEW.md to start fresh
     let _ = Tmux::wipe_review_md(&task.meta.worktree_path);
 
+    // Log feedback to agent.log for history
+    let _ = task.append_feedback_to_log(&feedback_text);
+
     println!("Continuing task: {}", task.meta.task_id());
     println!("Feedback: {}", feedback_text);
     println!();

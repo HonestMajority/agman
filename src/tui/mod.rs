@@ -1,4 +1,5 @@
 mod app;
+pub(crate) mod log_render;
 mod ui;
 mod vim;
 
