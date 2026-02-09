@@ -571,7 +571,13 @@ If you cannot complete the rebase, output exactly: TASK_BLOCKED
 const PR_CREATOR_PROMPT: &str = r#"You are a PR creation agent. Your job is to create a well-crafted draft pull request.
 
 Instructions:
-1. Analyze all commits on the current branch compared to main/master:
+1. First, check if a PR already exists for this branch:
+   ```
+   gh pr view --json number,url 2>/dev/null
+   ```
+   If a PR already exists, capture its number and URL, write them to `.pr-link` (see step 5), and output AGENT_DONE.
+
+2. Analyze all commits on the current branch compared to main/master:
    - Run `git log origin/main..HEAD --oneline` to see commits
    - Run `git diff origin/main..HEAD` to see all changes
 2. Understand what the changes accomplish - read through the diffs carefully. Consider the full branch diff as a whole, not individual commits.
@@ -592,19 +598,27 @@ Instructions:
    ```
    gh pr create --draft --title "Your title" --body "Your description"
    ```
+6. After creating the PR (or finding an existing one), write a `.pr-link` file in the current working directory with the PR number on the first line and the PR URL on the second line:
+   ```
+   gh pr view --json number,url -q '.number' > .pr-link
+   gh pr view --json number,url -q '.url' >> .pr-link
+   ```
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
-- If there's already a PR for this branch, just output AGENT_DONE
+- Always write the `.pr-link` file after creating or finding a PR
+- If there's already a PR for this branch, capture its info to `.pr-link` and output AGENT_DONE
 - Check for an existing PR first with `gh pr view --json state` before creating one
 
-When the PR is created (or already exists), output exactly: AGENT_DONE
+When the PR is created (or already exists) and `.pr-link` is written, output exactly: AGENT_DONE
 If you cannot create the PR for some reason, output exactly: TASK_BLOCKED
 "#;
 
 const CI_MONITOR_PROMPT: &str = r#"You are a CI monitoring agent. Your job is to monitor CI checks and fix any failures.
 
 Instructions:
+0. Check if a `.pr-link` file exists in the repo root. If it does, read the PR number from the first line and use `gh pr checks <number>` instead of `gh pr checks` throughout this workflow.
+
 1. Check the current PR's CI status:
    ```
    gh pr checks
@@ -764,6 +778,8 @@ If you cannot continue for some reason, output exactly: TASK_BLOCKED
 const PR_CHECK_MONITOR_PROMPT: &str = r#"You are a PR check monitoring agent. Your job is to monitor GitHub Actions for the current PR, retry flaky failures, and fix real failures.
 
 Instructions:
+0. Check if a `.pr-link` file exists in the repo root. If it does, read the PR number from the first line and use `gh pr checks <number>` instead of `gh pr checks` throughout this workflow.
+
 1. Check the current PR's CI status:
    ```
    gh pr checks
@@ -891,7 +907,9 @@ const PR_REVIEWER_PROMPT: &str = r#"You are a PR review agent. Your job is to re
 
 Instructions:
 
-1. First, check if a PR exists for the current branch:
+0. First, check if a `.pr-link` file exists in the repo root. If it does, read the PR number from the first line and use `gh pr view <number>` to review that specific PR. Skip to step 2 using the linked PR.
+
+1. If no `.pr-link` file exists, check if a PR exists for the current branch:
    ```
    gh pr view
    ```

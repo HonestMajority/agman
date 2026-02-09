@@ -973,6 +973,17 @@ impl App {
             }
         };
 
+        // Guard: refuse create-pr if a PR is already linked
+        if command.id == "create-pr" {
+            if let Some(task) = self.selected_task() {
+                if let Some(ref pr) = task.meta.linked_pr {
+                    self.set_status(format!("PR #{} already linked — use monitor-pr instead.", pr.number));
+                    self.view = View::Preview;
+                    return Ok(());
+                }
+            }
+        }
+
         self.log_output(format!(
             "Running command '{}' on task {}...",
             command.name, task_id
@@ -1652,6 +1663,18 @@ impl App {
                         }
                     }
                 }
+                KeyCode::Char('o') => {
+                    // Open linked PR in browser
+                    let pr_info = self.selected_task().and_then(|t| {
+                        t.meta.linked_pr.as_ref().map(|pr| (pr.number, pr.url.clone()))
+                    });
+                    if let Some((number, url)) = pr_info {
+                        let _ = Command::new("open").arg(&url).spawn();
+                        self.set_status(format!("Opening PR #{}...", number));
+                    } else {
+                        self.set_status("No linked PR".to_string());
+                    }
+                }
                 KeyCode::Char('W') => {
                     // Restart task wizard
                     self.start_restart_wizard()?;
@@ -1854,6 +1877,18 @@ impl App {
                 }
                 KeyCode::Char('S') => {
                     self.stop_task()?;
+                }
+                KeyCode::Char('o') => {
+                    // Open linked PR in browser
+                    let pr_info = self.selected_task().and_then(|t| {
+                        t.meta.linked_pr.as_ref().map(|pr| (pr.number, pr.url.clone()))
+                    });
+                    if let Some((number, url)) = pr_info {
+                        let _ = Command::new("open").arg(&url).spawn();
+                        self.set_status(format!("Opening PR #{}...", number));
+                    } else {
+                        self.set_status("No linked PR".to_string());
+                    }
                 }
                 KeyCode::Char('W') => {
                     self.start_restart_wizard()?;

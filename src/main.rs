@@ -462,7 +462,17 @@ fn cmd_run_command(
 ) -> Result<()> {
     config.init_default_files(false)?;
 
-    let mut task = Task::load_by_id(config, task_id)?;
+    let task = Task::load_by_id(config, task_id)?;
+
+    // Guard: refuse create-pr if a PR is already linked
+    if command_id == "create-pr" {
+        if let Some(ref pr) = task.meta.linked_pr {
+            println!("PR #{} already linked — use monitor-pr instead.", pr.number);
+            return Ok(());
+        }
+    }
+
+    let mut task = task;
 
     // Load the command (validate it exists)
     let cmd = command::StoredCommand::get_by_id(&config.commands_dir, command_id)?
