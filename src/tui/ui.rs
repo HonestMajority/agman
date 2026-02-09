@@ -91,13 +91,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
-    // Count running and stopped tasks
+    // Count tasks by status
     let running_count = app
         .tasks
         .iter()
         .filter(|t| t.meta.status == TaskStatus::Running)
         .count();
-    let stopped_count = app.tasks.len() - running_count;
+    let input_needed_count = app
+        .tasks
+        .iter()
+        .filter(|t| t.meta.status == TaskStatus::InputNeeded)
+        .count();
+    let stopped_count = app.tasks.len() - running_count - input_needed_count;
 
     // Create the outer block first
     let block = Block::default()
@@ -172,7 +177,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .tasks
         .iter()
         .filter_map(|t| {
-            if t.meta.status == TaskStatus::Running {
+            if t.meta.status == TaskStatus::Running || t.meta.status == TaskStatus::InputNeeded {
                 t.meta.current_agent.as_deref()
             } else {
                 None
@@ -235,58 +240,82 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(header), chunks[0]);
 
-    // Build task list (sorted by updated_at, running tasks first)
+    // Build task list (sorted by status: running, input_needed, stopped; then by updated_at)
     let mut items: Vec<ListItem> = Vec::new();
     let mut task_index = 0;
     let mut shown_running_header = false;
+    let mut shown_input_needed_header = false;
     let mut shown_stopped_header = false;
 
     for task in &app.tasks {
-        let is_running = task.meta.status == TaskStatus::Running;
+        let status = task.meta.status;
 
         // Add section header if needed
-        if is_running && !shown_running_header && running_count > 0 {
-            let label = format!("── Running ({}) ", running_count);
-            let fill = (inner.width as usize).saturating_sub(label.len());
-            let header_line = Line::from(vec![
-                Span::styled(
-                    label,
-                    Style::default()
-                        .fg(Color::LightGreen)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
-            ]);
-            items.push(ListItem::new(header_line));
-            shown_running_header = true;
-        } else if !is_running && !shown_stopped_header && stopped_count > 0 {
-            // Add spacing before stopped section if there were running tasks
-            if shown_running_header {
-                items.push(ListItem::new(Line::from("")));
+        match status {
+            TaskStatus::Running if !shown_running_header && running_count > 0 => {
+                let label = format!("── Running ({}) ", running_count);
+                let fill = (inner.width as usize).saturating_sub(label.len());
+                let header_line = Line::from(vec![
+                    Span::styled(
+                        label,
+                        Style::default()
+                            .fg(Color::LightGreen)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+                ]);
+                items.push(ListItem::new(header_line));
+                shown_running_header = true;
             }
-            let label = format!("── Stopped ({}) ", stopped_count);
-            let fill = (inner.width as usize).saturating_sub(label.len());
-            let header_line = Line::from(vec![
-                Span::styled(
-                    label,
-                    Style::default()
-                        .fg(Color::Rgb(140, 140, 140))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
-            ]);
-            items.push(ListItem::new(header_line));
-            shown_stopped_header = true;
+            TaskStatus::InputNeeded if !shown_input_needed_header && input_needed_count > 0 => {
+                if shown_running_header {
+                    items.push(ListItem::new(Line::from("")));
+                }
+                let label = format!("── Input Needed ({}) ", input_needed_count);
+                let fill = (inner.width as usize).saturating_sub(label.len());
+                let header_line = Line::from(vec![
+                    Span::styled(
+                        label,
+                        Style::default()
+                            .fg(Color::LightYellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+                ]);
+                items.push(ListItem::new(header_line));
+                shown_input_needed_header = true;
+            }
+            TaskStatus::Stopped if !shown_stopped_header && stopped_count > 0 => {
+                if shown_running_header || shown_input_needed_header {
+                    items.push(ListItem::new(Line::from("")));
+                }
+                let label = format!("── Stopped ({}) ", stopped_count);
+                let fill = (inner.width as usize).saturating_sub(label.len());
+                let header_line = Line::from(vec![
+                    Span::styled(
+                        label,
+                        Style::default()
+                            .fg(Color::Rgb(140, 140, 140))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+                ]);
+                items.push(ListItem::new(header_line));
+                shown_stopped_header = true;
+            }
+            _ => {}
         }
 
         // Render the task
         let (status_icon, status_color) = match task.meta.status {
             TaskStatus::Running => ("●", Color::LightGreen),
+            TaskStatus::InputNeeded => ("?", Color::LightYellow),
             TaskStatus::Stopped => ("○", Color::Rgb(140, 140, 140)),
         };
 
-        // Only show agent if task is running
-        let agent_str = if is_running {
+        // Show agent for running and input_needed tasks
+        let is_active = status == TaskStatus::Running || status == TaskStatus::InputNeeded;
+        let agent_str = if is_active {
             task.meta.current_agent.as_deref().unwrap_or("-")
         } else {
             "-"
@@ -316,8 +345,8 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             full_branch.clone()
         };
 
-        // Dim stopped tasks
-        let text_color = if is_running {
+        // Dim stopped tasks, highlight input-needed
+        let text_color = if is_active {
             if task_index == app.selected_index {
                 Color::White
             } else {
@@ -360,7 +389,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             Span::raw(COL_GAP),
             Span::styled(
                 format!("{:<width$}", agent_str, width = agent_width),
-                if is_running {
+                if is_active {
                     Style::default().fg(Color::LightBlue)
                 } else {
                     Style::default().fg(Color::Rgb(110, 110, 110))
@@ -395,8 +424,8 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Task info header
     if let Some(task) = app.selected_task() {
-        let is_running = task.meta.status == TaskStatus::Running;
-        let agent_str = if is_running {
+        let is_active = task.meta.status == TaskStatus::Running || task.meta.status == TaskStatus::InputNeeded;
+        let agent_str = if is_active {
             task.meta.current_agent.as_deref().unwrap_or("none")
         } else {
             "none"
@@ -417,6 +446,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
                 format!("{}", task.meta.status),
                 Style::default().fg(match task.meta.status {
                     TaskStatus::Running => Color::LightGreen,
+                    TaskStatus::InputNeeded => Color::LightYellow,
                     TaskStatus::Stopped => Color::DarkGray,
                 }),
             ),
@@ -424,7 +454,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("Agent: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 agent_str,
-                if is_running {
+                if is_active {
                     Style::default().fg(Color::LightBlue)
                 } else {
                     Style::default().fg(Color::DarkGray)
@@ -588,13 +618,25 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
         VimMode::Operator(_) => Color::LightMagenta,
     };
 
+    let is_answering = app.answering_questions;
+    let title_text = if is_answering {
+        " Answer Questions "
+    } else {
+        " TASK.md Editor "
+    };
+    let title_color = if is_answering {
+        Color::LightYellow
+    } else {
+        Color::LightMagenta
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(5)])
         .split(area);
 
     // Header
-    let header = Paragraph::new(Line::from(vec![
+    let mut header_spans = vec![
         Span::styled("Editing: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             task_id,
@@ -608,25 +650,37 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
             Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled("]", Style::default().fg(Color::DarkGray)),
-    ]))
+    ];
+    if is_answering {
+        header_spans.push(Span::styled(
+            "  Add answers under [ANSWERS], then save to resume",
+            Style::default().fg(Color::LightYellow),
+        ));
+    }
+    let header = Paragraph::new(Line::from(header_spans))
     .block(
         Block::default()
             .title(Span::styled(
-                " TASK.md Editor ",
+                title_text,
                 Style::default()
-                    .fg(Color::LightMagenta)
+                    .fg(title_color)
                     .add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightMagenta)),
+            .border_style(Style::default().fg(title_color)),
     );
     f.render_widget(header, chunks[0]);
 
     // Editor
+    let save_hint = if is_answering {
+        " Ctrl+S to save & resume flow, Esc (in normal) to cancel "
+    } else {
+        " Ctrl+S to save & close, Esc (in normal) to cancel "
+    };
     app.task_file_editor.textarea.set_block(
         Block::default()
             .title(Span::styled(
-                " Ctrl+S to save & close, Esc (in normal) to cancel ",
+                save_hint,
                 Style::default().fg(mode_color),
             ))
             .borders(Borders::ALL)
@@ -912,13 +966,22 @@ fn draw_output_pane(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.view {
         View::TaskList => {
-            vec![
+            let mut spans = vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("r", Style::default().fg(Color::LightGreen)),
                 Span::styled(" review  ", Style::default().fg(Color::DarkGray)),
+            ];
+            // Show "a: answer" when an InputNeeded task is selected
+            if let Some(task) = app.selected_task() {
+                if task.meta.status == TaskStatus::InputNeeded {
+                    spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
+                    spans.push(Span::styled(" answer  ", Style::default().fg(Color::DarkGray)));
+                }
+            }
+            spans.extend([
                 Span::styled("t", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("x", Style::default().fg(Color::LightMagenta)),
@@ -933,7 +996,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" quit", Style::default().fg(Color::DarkGray)),
-            ]
+            ]);
+            spans
         }
         View::Preview => {
             if app.notes_editing {
@@ -942,11 +1006,20 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" save & exit editing", Style::default().fg(Color::DarkGray)),
                 ]
             } else {
-                vec![
+                let mut spans = vec![
                     Span::styled("Tab", Style::default().fg(Color::LightCyan)),
                     Span::styled(" pane  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                     Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
+                ];
+                // Show "a: answer" when an InputNeeded task is selected
+                if let Some(task) = app.selected_task() {
+                    if task.meta.status == TaskStatus::InputNeeded {
+                        spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
+                        spans.push(Span::styled(" answer  ", Style::default().fg(Color::DarkGray)));
+                    }
+                }
+                spans.extend([
                     Span::styled("t", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("f", Style::default().fg(Color::LightMagenta)),
@@ -961,7 +1034,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("q", Style::default().fg(Color::LightCyan)),
                     Span::styled(" back", Style::default().fg(Color::DarkGray)),
-                ]
+                ]);
+                spans
             }
         }
         View::TaskEditor => {

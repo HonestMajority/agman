@@ -40,6 +40,7 @@ pub enum StopCondition {
     TaskBlocked,
     TestsPass,
     TestsFail,
+    InputNeeded,
 }
 
 impl std::fmt::Display for StopCondition {
@@ -50,6 +51,7 @@ impl std::fmt::Display for StopCondition {
             StopCondition::TaskBlocked => write!(f, "TASK_BLOCKED"),
             StopCondition::TestsPass => write!(f, "TESTS_PASS"),
             StopCondition::TestsFail => write!(f, "TESTS_FAIL"),
+            StopCondition::InputNeeded => write!(f, "INPUT_NEEDED"),
         }
     }
 }
@@ -67,6 +69,8 @@ impl StopCondition {
             Some(StopCondition::TestsPass)
         } else if output.contains("TESTS_FAIL") {
             Some(StopCondition::TestsFail)
+        } else if output.contains("INPUT_NEEDED") {
+            Some(StopCondition::InputNeeded)
         } else {
             None
         }
@@ -156,6 +160,9 @@ impl FlowExecutor {
         match (step, condition) {
             // Task complete from any agent
             (_, Some(StopCondition::TaskComplete)) => FlowAction::Complete,
+
+            // Input needed - pause flow, don't advance step
+            (_, Some(StopCondition::InputNeeded)) => FlowAction::Pause,
 
             // Task blocked
             (FlowStep::Agent(agent_step), Some(StopCondition::TaskBlocked)) => {
