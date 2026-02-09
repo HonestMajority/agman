@@ -36,9 +36,6 @@ pub struct TaskMeta {
     pub flow_step: usize,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    /// Queue of feedback items to be processed when the task stops
-    #[serde(default)]
-    pub feedback_queue: Vec<String>,
     /// When true, run the review-pr command automatically after the flow completes
     #[serde(default)]
     pub review_after: bool,
@@ -73,7 +70,6 @@ impl TaskMeta {
             flow_step: 0,
             created_at: now,
             updated_at: now,
-            feedback_queue: Vec::new(),
             review_after: false,
             linked_pr: None,
         }
@@ -432,45 +428,88 @@ impl Task {
         Ok(())
     }
 
+    /// Path to the separate feedback queue file (avoids meta.json write conflicts)
+    fn queue_file_path(&self) -> PathBuf {
+        self.dir.join("feedback_queue.json")
+    }
+
+    /// Read the feedback queue from its dedicated file
+    fn read_queue_file(&self) -> Vec<String> {
+        let path = self.queue_file_path();
+        if !path.exists() {
+            return Vec::new();
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Write the feedback queue to its dedicated file (deletes file if empty)
+    fn write_queue_file(&self, queue: &[String]) -> Result<()> {
+        let path = self.queue_file_path();
+        if queue.is_empty() {
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+            }
+        } else {
+            let content = serde_json::to_string_pretty(queue)?;
+            std::fs::write(&path, content)?;
+        }
+        Ok(())
+    }
+
     /// Queue feedback to be processed when the task stops
-    pub fn queue_feedback(&mut self, feedback: &str) -> Result<()> {
-        tracing::debug!(task_id = %self.meta.task_id(), queue_size = self.meta.feedback_queue.len() + 1, "queuing feedback");
-        self.meta.feedback_queue.push(feedback.to_string());
-        self.meta.updated_at = Utc::now();
-        self.save_meta()
+    pub fn queue_feedback(&self, feedback: &str) -> Result<()> {
+        let mut queue = self.read_queue_file();
+        tracing::debug!(task_id = %self.meta.task_id(), queue_size = queue.len() + 1, "queuing feedback");
+        queue.push(feedback.to_string());
+        self.write_queue_file(&queue)
     }
 
     /// Pop the first feedback item from the queue
-    pub fn pop_feedback_queue(&mut self) -> Result<Option<String>> {
-        if self.meta.feedback_queue.is_empty() {
+    pub fn pop_feedback_queue(&self) -> Result<Option<String>> {
+        let mut queue = self.read_queue_file();
+        if queue.is_empty() {
             return Ok(None);
         }
-        let feedback = self.meta.feedback_queue.remove(0);
-        self.meta.updated_at = Utc::now();
-        self.save_meta()?;
+        let feedback = queue.remove(0);
+        self.write_queue_file(&queue)?;
         Ok(Some(feedback))
     }
 
     /// Check if there's queued feedback
     pub fn has_queued_feedback(&self) -> bool {
-        !self.meta.feedback_queue.is_empty()
+        !self.read_queue_file().is_empty()
     }
 
     /// Get the number of queued feedback items
     pub fn queued_feedback_count(&self) -> usize {
-        self.meta.feedback_queue.len()
+        self.read_queue_file().len()
     }
 
     /// Read all queued feedback items (for display purposes)
-    pub fn read_feedback_queue(&self) -> &[String] {
-        &self.meta.feedback_queue
+    pub fn read_feedback_queue(&self) -> Vec<String> {
+        self.read_queue_file()
+    }
+
+    /// Remove a single feedback item by index
+    pub fn remove_feedback_queue_item(&self, index: usize) -> Result<()> {
+        let mut queue = self.read_queue_file();
+        if index < queue.len() {
+            queue.remove(index);
+            self.write_queue_file(&queue)?;
+        }
+        Ok(())
     }
 
     /// Clear all queued feedback
-    pub fn clear_feedback_queue(&mut self) -> Result<()> {
-        self.meta.feedback_queue.clear();
-        self.meta.updated_at = Utc::now();
-        self.save_meta()
+    pub fn clear_feedback_queue(&self) -> Result<()> {
+        let path = self.queue_file_path();
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
     }
 
     pub fn set_linked_pr(&mut self, number: u64, url: String) -> Result<()> {

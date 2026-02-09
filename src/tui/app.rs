@@ -387,6 +387,78 @@ impl App {
         }
     }
 
+    /// Process any stranded feedback queues for stopped tasks.
+    /// This is a safety net: if feedback was queued while a task was running and
+    /// the agent process exited without processing it, the TUI picks it up.
+    pub fn process_stranded_feedback(&mut self) {
+        // Collect (index, task_id) for stopped tasks with queued feedback
+        let stranded: Vec<(usize, String)> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.meta.status == TaskStatus::Stopped && t.has_queued_feedback())
+            .map(|(i, t)| (i, t.meta.task_id()))
+            .collect();
+
+        for (_, task_id) in stranded {
+            // Pop the first queued feedback item
+            let feedback = match self
+                .tasks
+                .iter()
+                .find(|t| t.meta.task_id() == task_id)
+            {
+                Some(task) => match task.pop_feedback_queue() {
+                    Ok(Some(fb)) => fb,
+                    _ => continue,
+                },
+                None => continue,
+            };
+
+            // Write feedback and start continue flow (same as the non-running branch of submit_feedback)
+            if let Some(task) = self.tasks.iter().find(|t| t.meta.task_id() == task_id) {
+                if let Err(e) = task.write_feedback(&feedback) {
+                    self.log_output(format!("Error writing feedback for {}: {}", task_id, e));
+                    continue;
+                }
+            }
+
+            self.log_output(format!(
+                "Processing stranded feedback for {}...",
+                task_id
+            ));
+
+            let output = Command::new("agman")
+                .args(["continue", &task_id])
+                .output();
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    if !stdout.is_empty() {
+                        for line in stdout.lines() {
+                            self.log_output(line.to_string());
+                        }
+                    }
+                    self.log_output(format!("Stranded feedback processed for {}", task_id));
+                    self.set_status(format!("Processing stranded feedback for {}", task_id));
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    self.log_output(format!(
+                        "Failed to process stranded feedback for {}: {}",
+                        task_id, stderr
+                    ));
+                }
+                Err(e) => {
+                    self.log_output(format!("Error processing stranded feedback: {}", e));
+                }
+            }
+
+            // Only process one stranded item per refresh cycle to avoid blocking the TUI
+            break;
+        }
+    }
+
     pub fn clear_old_output(&mut self) {
         if let Some(instant) = &self.last_output_time {
             if instant.elapsed() > Duration::from_secs(7) {
@@ -632,6 +704,13 @@ impl App {
             return Ok(());
         }
 
+        // Reload task status from disk before deciding whether to queue or execute,
+        // since the Feedback view doesn't refresh and the task may have stopped while
+        // the user was typing.
+        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+            let _ = task.reload_meta();
+        }
+
         // Check if task is running - if so, queue the feedback instead
         let (task_id, is_running) = if let Some(task) = self.selected_task() {
             (task.meta.task_id(), task.meta.status == TaskStatus::Running)
@@ -642,8 +721,8 @@ impl App {
         };
 
         if is_running {
-            // Queue the feedback for later processing
-            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+            // Queue the feedback for later processing (writes to separate file, not meta.json)
+            if let Some(task) = self.tasks.get(self.selected_index) {
                 task.queue_feedback(&feedback)?;
                 let queue_count = task.queued_feedback_count();
                 self.log_output(format!("Queued feedback for {} ({} in queue)", task_id, queue_count));
@@ -2545,23 +2624,21 @@ impl App {
     }
 
     fn delete_queued_feedback(&mut self) -> Result<()> {
-        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+        if let Some(task) = self.tasks.get(self.selected_index) {
             let queue_len = task.queued_feedback_count();
             if queue_len == 0 {
                 return Ok(());
             }
 
-            // Remove the selected item from the queue
-            task.meta.feedback_queue.remove(self.selected_queue_index);
-            task.meta.updated_at = chrono::Utc::now();
-            task.save_meta()?;
+            // Remove the selected item from the queue file
+            task.remove_feedback_queue_item(self.selected_queue_index)?;
 
             // Adjust selected index if needed
-            if self.selected_queue_index >= task.queued_feedback_count() && self.selected_queue_index > 0 {
+            let remaining = task.queued_feedback_count();
+            if self.selected_queue_index >= remaining && self.selected_queue_index > 0 {
                 self.selected_queue_index -= 1;
             }
 
-            let remaining = task.queued_feedback_count();
             if remaining == 0 {
                 self.view = View::Preview;
                 self.set_status("Queue cleared".to_string());
@@ -2573,7 +2650,7 @@ impl App {
     }
 
     fn clear_all_queued_feedback(&mut self) -> Result<()> {
-        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+        if let Some(task) = self.tasks.get(self.selected_index) {
             task.clear_feedback_queue()?;
             self.view = View::Preview;
             self.set_status("Queue cleared".to_string());
@@ -2888,6 +2965,8 @@ pub fn run_tui(config: Config) -> Result<()> {
             if last_refresh.elapsed() >= refresh_interval {
                 if app.view == View::TaskList {
                     let _ = app.refresh_tasks();
+                    // Check for stranded feedback queues on stopped tasks
+                    app.process_stranded_feedback();
                 }
                 last_refresh = Instant::now();
             }
