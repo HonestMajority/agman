@@ -1,5 +1,5 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap},
@@ -518,7 +518,14 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
     draw_notes_panel(f, app, panels[1]);
 }
 
-fn draw_logs_panel(f: &mut Frame, app: &App, area: Rect) {
+fn clamp_log_scroll(paragraph: &Paragraph, area: Rect, scroll: u16) -> u16 {
+    let inner = area.inner(Margin::new(1, 1));
+    let total_rows = paragraph.line_count(inner.width) as u16;
+    let max_scroll = total_rows.saturating_sub(inner.height);
+    scroll.min(max_scroll)
+}
+
+fn draw_logs_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.preview_pane == PreviewPane::Logs;
     let border_color = if is_focused {
         Color::LightYellow
@@ -543,8 +550,11 @@ fn draw_logs_panel(f: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color)),
         )
-        .wrap(Wrap { trim: false })
-        .scroll((app.preview_scroll, 0));
+        .wrap(Wrap { trim: false });
+
+    app.preview_scroll = clamp_log_scroll(&logs, area, app.preview_scroll);
+
+    let logs = logs.scroll((app.preview_scroll, 0));
 
     f.render_widget(logs, area);
 }

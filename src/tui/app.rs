@@ -500,9 +500,8 @@ impl App {
             };
 
         self.preview_content = preview_content;
-        // Scroll to bottom of logs (estimate based on line count)
-        let line_count = self.preview_content.lines().count() as u16;
-        self.preview_scroll = line_count.saturating_sub(20); // Leave ~20 lines visible
+        // Request scroll to bottom — will be clamped to the actual max on next render
+        self.preview_scroll = u16::MAX;
         self.notes_content = notes_content.clone();
         self.notes_scroll = 0;
 
@@ -1807,10 +1806,10 @@ impl App {
                     self.preview_pane = PreviewPane::Notes;
                 }
                 KeyCode::Char('G') => {
-                    // Jump to bottom
+                    // Jump to bottom (clamped to actual max on next render)
                     match self.preview_pane {
                         PreviewPane::Logs => {
-                            self.preview_scroll = u16::MAX / 2;
+                            self.preview_scroll = u16::MAX;
                         }
                         PreviewPane::Notes => {
                             self.notes_scroll = u16::MAX / 2;
