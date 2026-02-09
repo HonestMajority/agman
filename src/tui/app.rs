@@ -13,13 +13,13 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
-use crate::command::StoredCommand;
-use crate::config::Config;
-use crate::flow::Flow;
-use crate::git::Git;
-use crate::repo_stats::RepoStats;
-use crate::task::{Task, TaskStatus};
-use crate::tmux::Tmux;
+use agman::command::StoredCommand;
+use agman::config::Config;
+use agman::flow::Flow;
+use agman::git::Git;
+use agman::repo_stats::RepoStats;
+use agman::task::{Task, TaskStatus};
+use agman::tmux::Tmux;
 
 use super::ui;
 use super::vim::{VimMode, VimTextArea};
@@ -1354,6 +1354,9 @@ impl App {
             }
         };
 
+        // Ensure TASK.md is excluded from git tracking
+        let _ = task.ensure_git_excludes_task();
+
         // Set review_after flag if requested
         if review_after {
             task.meta.review_after = true;
@@ -1612,6 +1615,9 @@ impl App {
                 return Ok(());
             }
         };
+
+        // Ensure TASK.md is excluded from git tracking
+        let _ = task.ensure_git_excludes_task();
 
         // Create tmux session with windows
         self.log_output("  Creating tmux session...".to_string());

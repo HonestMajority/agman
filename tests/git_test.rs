@@ -1,0 +1,57 @@
+mod helpers;
+
+use agman::git::Git;
+use helpers::{init_test_repo, test_config};
+
+#[test]
+fn git_create_and_remove_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "feat-branch").unwrap();
+
+    // Worktree directory should exist and contain files
+    assert!(worktree_path.exists());
+    assert!(worktree_path.join("README.md").exists());
+
+    // Remove it
+    let repo_path = config.repo_path("myrepo");
+    Git::remove_worktree(&repo_path, &worktree_path).unwrap();
+    assert!(!worktree_path.exists());
+}
+
+#[test]
+fn git_list_worktrees() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let repo_path = init_test_repo(&tmp, "myrepo");
+
+    Git::create_worktree_quiet(&config, "myrepo", "test-branch").unwrap();
+
+    let worktrees = Git::list_worktrees(&repo_path).unwrap();
+    let branches: Vec<&str> = worktrees.iter().map(|(b, _p)| b.as_str()).collect();
+    assert!(branches.contains(&"main"));
+    assert!(branches.contains(&"test-branch"));
+}
+
+#[test]
+fn git_delete_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let repo_path = init_test_repo(&tmp, "myrepo");
+
+    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "to-delete").unwrap();
+    Git::remove_worktree(&repo_path, &worktree_path).unwrap();
+
+    Git::delete_branch(&repo_path, "to-delete").unwrap();
+
+    // Verify the branch no longer exists
+    let output = std::process::Command::new("git")
+        .args(["branch", "--list", "to-delete"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    let branches = String::from_utf8_lossy(&output.stdout);
+    assert!(!branches.contains("to-delete"));
+}

@@ -122,9 +122,6 @@ impl Task {
         task.save_meta()?;
         task.init_files()?;
 
-        // Ensure TASK.md is excluded from git before writing it
-        task.ensure_git_excludes_task()?;
-
         // Write TASK.md directly to the worktree
         task.write_task(&format!(
             "# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n",
@@ -260,7 +257,7 @@ impl Task {
     ///
     /// Adds entries to .git/info/exclude (not tracked, leaves no footprint).
     /// For worktrees, uses the common git directory since they share info/exclude.
-    fn ensure_git_excludes_task(&self) -> Result<()> {
+    pub fn ensure_git_excludes_task(&self) -> Result<()> {
         use std::process::Command;
 
         // Get the common git directory (main .git for worktrees, regular .git otherwise)

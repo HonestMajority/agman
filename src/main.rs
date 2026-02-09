@@ -1,25 +1,19 @@
-mod agent;
 mod cli;
-mod command;
-mod config;
-mod flow;
-mod git;
 mod logging;
-mod repo_stats;
-mod task;
-mod tmux;
 mod tui;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::io::{self, Write};
 
+use agman::agent;
+use agman::command;
+use agman::config::Config;
+use agman::flow::{self, Flow};
+use agman::git::Git;
+use agman::task::{Task, TaskStatus};
+use agman::tmux::Tmux;
 use cli::{Cli, Commands};
-use config::Config;
-use flow::Flow;
-use git::Git;
-use task::{Task, TaskStatus};
-use tmux::Tmux;
 use tui::run_tui;
 
 fn main() -> Result<()> {
@@ -143,6 +137,9 @@ fn cmd_new(
         flow_name,
         worktree_path.clone(),
     )?;
+
+    // Ensure TASK.md is excluded from git tracking
+    task.ensure_git_excludes_task()?;
 
     // Create tmux session with windows (nvim, lazygit, claude, zsh, review, agman)
     println!("Creating tmux session with windows...");

@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::task::TaskStatus;
+use agman::task::TaskStatus;
 
 use super::app::{App, BranchSource, PreviewPane, RestartWizardStep, ReviewWizardStep, View, WizardStep};
 use super::log_render;
