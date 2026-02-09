@@ -136,8 +136,9 @@ src/
 
 ```bash
 cargo build --release    # Build
-cargo test              # Run tests
-./release.sh            # Build + install to ~/commands/
+cargo nextest run        # Run tests (preferred)
+cargo test               # Run tests (fallback)
+./release.sh             # Build + install to ~/commands/
 ```
 
 ## Debugging
@@ -202,7 +203,7 @@ fn my_new_feature() {
 - **No machine pollution.** All state isolated to `tempfile::TempDir`. No real `~/.agman/`, `~/repos/`, or tmux sessions.
 - **No mocking frameworks.** Real filesystem with temp dirs.
 - **Happy paths only.** One simple test per TUI feature. No edge cases or error handling tests.
-- **Run tests:** `cargo test`
+- **Run tests:** `cargo nextest run` (or `cargo test` as fallback)
 
 ### Test isolation pattern
 

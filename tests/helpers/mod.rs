@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 /// Build a Config rooted in the temp dir.
+#[allow(dead_code)]
 pub fn test_config(tmp: &TempDir) -> Config {
     let base_dir = tmp.path().join(".agman");
     let repos_dir = tmp.path().join("repos");
@@ -11,6 +12,7 @@ pub fn test_config(tmp: &TempDir) -> Config {
 }
 
 /// Create a bare git repo at `<repos>/<name>/` with an initial commit.
+#[allow(dead_code)]
 pub fn init_test_repo(tmp: &TempDir, name: &str) -> PathBuf {
     let repo_path = tmp.path().join("repos").join(name);
     std::fs::create_dir_all(&repo_path).unwrap();
@@ -37,6 +39,7 @@ pub fn init_test_repo(tmp: &TempDir, name: &str) -> PathBuf {
 
 /// Create a minimal Task (directory + meta.json + init files) without real git.
 /// Sets up a fake worktree directory so file I/O methods work.
+#[allow(dead_code)]
 pub fn create_test_task(config: &Config, repo_name: &str, branch_name: &str) -> Task {
     config.ensure_dirs().unwrap();
 
