@@ -7,29 +7,34 @@ agman (Agent Manager) is a Rust CLI/TUI tool for orchestrating stateless AI agen
 - A git worktree
 - A tmux session
 
+## Design Principles
+
+### TUI-only application
+
+agman is exclusively an interactive TUI application. **No user-facing CLI subcommands should ever be added.** The only CLI subcommands permitted are hidden internal commands (`#[command(hide = true)]`) that the TUI invokes as background processes via subprocess or tmux. Current internal commands:
+
+- `flow-run` — runs a flow for a task in a tmux session
+- `continue` — continues a paused task with feedback
+- `run-command` — executes a stored command in a worktree
+- `command-flow-run` — runs a command-driven flow
+
+If you need new functionality, expose it through the TUI interface and implement the business logic in `src/use_cases.rs`. Only add a hidden internal command if the TUI needs to run something in a separate process (e.g., inside a tmux session).
+
 ## Quick Reference
 
 ```bash
 # Build and install
 ./release.sh
 
-# Commands
-agman                    # Launch TUI
-agman new <repo> <branch> "description" [--flow <flow>]
-agman list
-agman attach <task_id>
-agman continue <task_id> "feedback" [--flow continue]
-agman delete <task_id> [-f]
-agman pause <task_id>
-agman resume <task_id>
-agman init
+# Launch TUI (the only user-facing interface)
+agman
 ```
 
 ## Architecture
 
 ```
 src/
-├── main.rs      # CLI entry point, command handlers
+├── main.rs      # Entry point, internal command handlers
 ├── cli.rs       # Clap CLI definitions
 ├── config.rs    # Paths, default flows/prompts
 ├── task.rs      # Task state management
@@ -96,8 +101,9 @@ src/
 
 ## Common Modifications
 
-### Adding a new CLI command
-1. Add variant to `Commands` enum in `cli.rs`
+### Adding a new internal command
+Internal commands are hidden subcommands invoked by the TUI via subprocess or tmux:
+1. Add variant to `Commands` enum in `cli.rs` with `#[command(hide = true)]`
 2. Add match arm in `main.rs`
 3. Implement `cmd_<name>` function
 
@@ -107,7 +113,7 @@ src/
 
 ### Adding a new flow
 1. Create `~/.agman/flows/<name>.yaml`
-2. Use with `agman new --flow <name>` or `agman continue --flow <name>`
+2. Reference in task creation or continue logic
 
 ### Modifying TUI
 - State/logic: `src/tui/app.rs`
@@ -203,6 +209,7 @@ fn my_new_feature() {
 - **No machine pollution.** All state isolated to `tempfile::TempDir`. No real `~/.agman/`, `~/repos/`, or tmux sessions.
 - **No mocking frameworks.** Real filesystem with temp dirs.
 - **Happy paths only.** One simple test per TUI feature. No edge cases or error handling tests.
+- **Test every use case.** Every TUI use case added to `src/use_cases.rs` must have a corresponding happy-path test in `tests/use_cases_test.rs`.
 - **Run tests:** `cargo nextest run` (or `cargo test` as fallback)
 
 ### Test isolation pattern

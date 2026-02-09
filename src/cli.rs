@@ -11,40 +11,6 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Start a new task (creates worktree, tmux session, starts flow)
-    New {
-        /// Repository name (under ~/repos/)
-        repo_name: String,
-        /// Branch name for the task (also used as worktree name)
-        branch_name: String,
-        /// Description of what to build
-        description: String,
-    },
-
-    /// List all tasks
-    List,
-
-    /// Delete a task (removes worktree, tmux session, and task directory)
-    Delete {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-        /// Skip confirmation prompt
-        #[arg(short, long)]
-        force: bool,
-    },
-
-    /// Run a specific agent on a task
-    Run {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-        /// Agent to run
-        #[arg(long)]
-        agent: String,
-        /// Run agent in a loop until stop condition
-        #[arg(long)]
-        r#loop: bool,
-    },
-
     /// Run the entire flow for a task (used internally, runs in tmux)
     #[command(hide = true)]
     FlowRun {
@@ -52,20 +18,8 @@ pub enum Commands {
         task_id: String,
     },
 
-    /// Attach to a task's tmux session
-    Attach {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-    },
-
-    /// Initialize agman (creates directories and default files)
-    Init {
-        /// Overwrite existing flows, prompts, and commands with defaults
-        #[arg(short, long)]
-        force: bool,
-    },
-
     /// Continue a task with follow-up instructions
+    #[command(hide = true)]
     Continue {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
@@ -75,6 +29,7 @@ pub enum Commands {
     },
 
     /// Run a stored command on a task
+    #[command(hide = true)]
     RunCommand {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
@@ -84,9 +39,6 @@ pub enum Commands {
         #[arg(long)]
         branch: Option<String>,
     },
-
-    /// List available stored commands
-    ListCommands,
 
     /// Run a stored command's flow for a task (used internally, runs in tmux)
     #[command(hide = true)]
