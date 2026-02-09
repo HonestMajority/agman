@@ -42,6 +42,15 @@ pub struct TaskMeta {
     /// When true, run the review-pr command automatically after the flow completes
     #[serde(default)]
     pub review_after: bool,
+    /// Linked GitHub PR (number + URL), populated when a PR is created
+    #[serde(default)]
+    pub linked_pr: Option<LinkedPr>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkedPr {
+    pub number: u64,
+    pub url: String,
 }
 
 impl TaskMeta {
@@ -66,6 +75,7 @@ impl TaskMeta {
             updated_at: now,
             feedback_queue: Vec::new(),
             review_after: false,
+            linked_pr: None,
         }
     }
 
@@ -459,6 +469,18 @@ impl Task {
     /// Clear all queued feedback
     pub fn clear_feedback_queue(&mut self) -> Result<()> {
         self.meta.feedback_queue.clear();
+        self.meta.updated_at = Utc::now();
+        self.save_meta()
+    }
+
+    pub fn set_linked_pr(&mut self, number: u64, url: String) -> Result<()> {
+        self.meta.linked_pr = Some(LinkedPr { number, url });
+        self.meta.updated_at = Utc::now();
+        self.save_meta()
+    }
+
+    pub fn clear_linked_pr(&mut self) -> Result<()> {
+        self.meta.linked_pr = None;
         self.meta.updated_at = Utc::now();
         self.save_meta()
     }

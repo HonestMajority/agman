@@ -213,6 +213,23 @@ impl AgentRunner {
             task.clear_feedback()?;
         }
 
+        // Check for .pr-link sidecar file (written by pr-creator or any agent)
+        let pr_link_path = task.meta.worktree_path.join(".pr-link");
+        if pr_link_path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&pr_link_path) {
+                let lines: Vec<&str> = contents.lines().collect();
+                if lines.len() >= 2 {
+                    if let Ok(number) = lines[0].trim().parse::<u64>() {
+                        let url = lines[1].trim().to_string();
+                        tracing::info!(pr_number = number, pr_url = %url, "detected .pr-link, storing linked PR");
+                        task.set_linked_pr(number, url)?;
+                    }
+                }
+            }
+            // Clean up the sidecar file
+            let _ = std::fs::remove_file(&pr_link_path);
+        }
+
         Ok(result)
     }
 
