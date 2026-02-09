@@ -402,25 +402,21 @@ impl App {
             .collect();
 
         for (_, task_id) in stranded {
-            // Pop the first queued feedback item
-            let feedback = match self
+            // Pop the first queued feedback item and write it as immediate feedback
+            match self
                 .tasks
                 .iter()
                 .find(|t| t.meta.task_id() == task_id)
             {
-                Some(task) => match task.pop_feedback_queue() {
-                    Ok(Some(fb)) => fb,
-                    _ => continue,
+                Some(task) => match use_cases::pop_and_apply_feedback(task) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => continue,
+                    Err(e) => {
+                        self.log_output(format!("Error processing feedback for {}: {}", task_id, e));
+                        continue;
+                    }
                 },
                 None => continue,
-            };
-
-            // Write feedback and start continue flow (same as the non-running branch of submit_feedback)
-            if let Some(task) = self.tasks.iter().find(|t| t.meta.task_id() == task_id) {
-                if let Err(e) = task.write_feedback(&feedback) {
-                    self.log_output(format!("Error writing feedback for {}: {}", task_id, e));
-                    continue;
-                }
             }
 
             self.log_output(format!(
@@ -2782,8 +2778,7 @@ impl App {
         let worktree_path = self.tasks[task_idx].meta.worktree_path.clone();
 
         // Set flow_step and status
-        self.tasks[task_idx].meta.flow_step = selected_step_index;
-        self.tasks[task_idx].update_status(TaskStatus::Running)?;
+        use_cases::restart_task(&mut self.tasks[task_idx], selected_step_index)?;
 
         // Ensure tmux session exists
         if !Tmux::session_exists(&tmux_session) {

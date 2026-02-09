@@ -147,7 +147,7 @@ pub fn resume_after_answering(task: &mut Task) -> Result<()> {
 /// Queue feedback on a running task.
 ///
 /// Extracts the "running" branch of `App::submit_feedback()`.
-pub fn queue_feedback(task: &mut Task, feedback: &str) -> Result<usize> {
+pub fn queue_feedback(task: &Task, feedback: &str) -> Result<usize> {
     task.queue_feedback(feedback)?;
     Ok(task.queued_feedback_count())
 }
@@ -161,17 +161,12 @@ pub fn write_immediate_feedback(task: &Task, feedback: &str) -> Result<()> {
 }
 
 /// Delete a single queued feedback item by index.
-pub fn delete_queued_feedback(task: &mut Task, index: usize) -> Result<()> {
-    if index < task.meta.feedback_queue.len() {
-        task.meta.feedback_queue.remove(index);
-        task.meta.updated_at = chrono::Utc::now();
-        task.save_meta()?;
-    }
-    Ok(())
+pub fn delete_queued_feedback(task: &Task, index: usize) -> Result<()> {
+    task.remove_feedback_queue_item(index)
 }
 
 /// Clear all queued feedback.
-pub fn clear_all_queued_feedback(task: &mut Task) -> Result<()> {
+pub fn clear_all_queued_feedback(task: &Task) -> Result<()> {
     task.clear_feedback_queue()
 }
 
@@ -193,6 +188,31 @@ pub fn save_task_file(task: &Task, content: &str) -> Result<()> {
 /// List all stored commands from the commands directory.
 pub fn list_commands(config: &Config) -> Result<Vec<crate::command::StoredCommand>> {
     crate::command::StoredCommand::list_all(&config.commands_dir)
+}
+
+/// Restart a task from a specific flow step: set flow_step and status to Running.
+///
+/// This is the pure business logic behind `App::execute_restart_wizard()`.
+/// It does NOT create tmux sessions or dispatch flow-run — those are side effects.
+pub fn restart_task(task: &mut Task, step_index: usize) -> Result<()> {
+    task.meta.flow_step = step_index;
+    task.update_status(TaskStatus::Running)?;
+    Ok(())
+}
+
+/// Pop the first queued feedback item and write it as immediate feedback.
+///
+/// This is the pure business logic behind `App::process_stranded_feedback()`.
+/// It does NOT run `agman continue` — that's a side effect handled by the caller.
+/// Returns the feedback string if one was popped, or None if the queue was empty.
+pub fn pop_and_apply_feedback(task: &Task) -> Result<Option<String>> {
+    match task.pop_feedback_queue()? {
+        Some(feedback) => {
+            task.write_feedback(&feedback)?;
+            Ok(Some(feedback))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Create a review task for an existing branch.

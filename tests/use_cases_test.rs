@@ -242,18 +242,19 @@ fn resume_after_answering_not_input_needed_is_noop() {
 fn queue_feedback_on_running_task() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    let mut task = create_test_task(&config, "repo", "branch");
+    let task = create_test_task(&config, "repo", "branch");
     // task starts as Running
 
-    let count = use_cases::queue_feedback(&mut task, "fix the button").unwrap();
+    let count = use_cases::queue_feedback(&task, "fix the button").unwrap();
     assert_eq!(count, 1);
 
-    let count2 = use_cases::queue_feedback(&mut task, "also fix the header").unwrap();
+    let count2 = use_cases::queue_feedback(&task, "also fix the header").unwrap();
     assert_eq!(count2, 2);
 
-    assert_eq!(task.meta.feedback_queue.len(), 2);
-    assert_eq!(task.meta.feedback_queue[0], "fix the button");
-    assert_eq!(task.meta.feedback_queue[1], "also fix the header");
+    let queue = task.read_feedback_queue();
+    assert_eq!(queue.len(), 2);
+    assert_eq!(queue[0], "fix the button");
+    assert_eq!(queue[1], "also fix the header");
 }
 
 // ---------------------------------------------------------------------------
@@ -281,17 +282,18 @@ fn write_immediate_feedback_on_stopped_task() {
 fn delete_queued_feedback() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    let mut task = create_test_task(&config, "repo", "branch");
+    let task = create_test_task(&config, "repo", "branch");
 
     task.queue_feedback("a").unwrap();
     task.queue_feedback("b").unwrap();
     task.queue_feedback("c").unwrap();
 
-    use_cases::delete_queued_feedback(&mut task, 1).unwrap();
+    use_cases::delete_queued_feedback(&task, 1).unwrap();
 
-    assert_eq!(task.meta.feedback_queue.len(), 2);
-    assert_eq!(task.meta.feedback_queue[0], "a");
-    assert_eq!(task.meta.feedback_queue[1], "c");
+    let queue = task.read_feedback_queue();
+    assert_eq!(queue.len(), 2);
+    assert_eq!(queue[0], "a");
+    assert_eq!(queue[1], "c");
 }
 
 // ---------------------------------------------------------------------------
@@ -302,14 +304,74 @@ fn delete_queued_feedback() {
 fn clear_all_queued_feedback() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    let mut task = create_test_task(&config, "repo", "branch");
+    let task = create_test_task(&config, "repo", "branch");
 
     task.queue_feedback("a").unwrap();
     task.queue_feedback("b").unwrap();
 
-    use_cases::clear_all_queued_feedback(&mut task).unwrap();
+    use_cases::clear_all_queued_feedback(&task).unwrap();
 
-    assert!(task.meta.feedback_queue.is_empty());
+    assert!(task.read_feedback_queue().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Restart task
+// ---------------------------------------------------------------------------
+
+#[test]
+fn restart_task_sets_flow_step_and_status() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+    task.update_status(TaskStatus::Stopped).unwrap();
+    task.meta.flow_step = 0;
+    task.save_meta().unwrap();
+
+    use_cases::restart_task(&mut task, 2).unwrap();
+
+    assert_eq!(task.meta.flow_step, 2);
+    assert_eq!(task.meta.status, TaskStatus::Running);
+
+    // Persisted to disk
+    let loaded = Task::load(&config, "repo", "branch").unwrap();
+    assert_eq!(loaded.meta.flow_step, 2);
+    assert_eq!(loaded.meta.status, TaskStatus::Running);
+}
+
+// ---------------------------------------------------------------------------
+// Pop and apply feedback
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pop_and_apply_feedback_writes_first_queued_item() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "branch");
+
+    task.queue_feedback("first feedback").unwrap();
+    task.queue_feedback("second feedback").unwrap();
+
+    let result = use_cases::pop_and_apply_feedback(&task).unwrap();
+    assert_eq!(result, Some("first feedback".to_string()));
+
+    // FEEDBACK.md written
+    let fb = task.read_feedback().unwrap();
+    assert_eq!(fb, "first feedback");
+
+    // Queue now has one item
+    let queue = task.read_feedback_queue();
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0], "second feedback");
+}
+
+#[test]
+fn pop_and_apply_feedback_empty_queue_returns_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "branch");
+
+    let result = use_cases::pop_and_apply_feedback(&task).unwrap();
+    assert_eq!(result, None);
 }
 
 // ---------------------------------------------------------------------------
