@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::task::TaskStatus;
 
-use super::app::{App, BranchSource, PreviewPane, ReviewWizardStep, View, WizardStep};
+use super::app::{App, BranchSource, PreviewPane, RestartWizardStep, ReviewWizardStep, View, WizardStep};
 use super::vim::VimMode;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -24,6 +24,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::RebaseBranchPicker
             | View::ReviewWizard
             | View::RestartConfirm
+            | View::RestartWizard
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -80,6 +81,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::RestartConfirm => {
             draw_task_list(f, app, chunks[0]);
             draw_restart_confirm(f, app);
+        }
+        View::RestartWizard => {
+            draw_preview(f, app, chunks[0]);
+            draw_restart_wizard(f, app);
         }
     }
 
@@ -927,6 +932,128 @@ fn draw_restart_confirm(f: &mut Frame, app: &App) {
     f.render_widget(popup, area);
 }
 
+fn draw_restart_wizard(f: &mut Frame, app: &mut App) {
+    let wizard = match &app.restart_wizard {
+        Some(w) => w,
+        None => return,
+    };
+
+    match wizard.step {
+        RestartWizardStep::EditTask => {
+            let area = centered_rect(80, 70, f.area());
+            f.render_widget(Clear, area);
+
+            let task_id = wizard.task_id.clone();
+            let mode = wizard.task_editor.mode();
+            let mode_color = match mode {
+                VimMode::Normal => Color::LightCyan,
+                VimMode::Insert => Color::LightGreen,
+                VimMode::Visual => Color::LightYellow,
+                VimMode::Operator(_) => Color::LightMagenta,
+            };
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(5)])
+                .split(area);
+
+            // Header
+            let header = Paragraph::new(Line::from(vec![
+                Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    &task_id,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  [", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    mode.indicator(),
+                    Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("]", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    "  Ctrl+S save & next, Tab skip, Esc cancel",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        " Restart: Edit TASK.md ",
+                        Style::default()
+                            .fg(Color::LightYellow)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::LightYellow)),
+            );
+            f.render_widget(header, chunks[0]);
+
+            // Editor
+            let wizard = app.restart_wizard.as_mut().unwrap();
+            wizard.task_editor.textarea.set_block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::LightYellow)),
+            );
+            f.render_widget(&wizard.task_editor.textarea, chunks[1]);
+        }
+        RestartWizardStep::SelectAgent => {
+            let area = centered_rect(60, 50, f.area());
+            f.render_widget(Clear, area);
+
+            let task_id = wizard.task_id.clone();
+
+            let mut lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("  Restarting: {}", task_id),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    "  Select which flow step to restart from:",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+            ];
+
+            for (i, label) in wizard.flow_steps.iter().enumerate() {
+                let is_selected = i == wizard.selected_step_index;
+                let prefix = if is_selected { "▸ " } else { "  " };
+                let style = if is_selected {
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(Color::Rgb(30, 50, 30))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("  {}{}", prefix, label),
+                    style,
+                )));
+            }
+
+            let popup = Paragraph::new(lines).block(
+                Block::default()
+                    .title(Span::styled(
+                        " Restart: Pick Starting Step ",
+                        Style::default()
+                            .fg(Color::LightYellow)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::LightYellow)),
+            );
+
+            f.render_widget(popup, area);
+        }
+    }
+}
+
 fn draw_output_pane(f: &mut Frame, app: &App, area: Rect) {
     let lines: Vec<Line> = app
         .output_log
@@ -1143,6 +1270,34 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("Esc/q", Style::default().fg(Color::LightRed)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]
+        }
+        View::RestartWizard => {
+            if let Some(wizard) = &app.restart_wizard {
+                match wizard.step {
+                    RestartWizardStep::EditTask => {
+                        vec![
+                            Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
+                            Span::styled(" save & next  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                            Span::styled(" skip  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                        ]
+                    }
+                    RestartWizardStep::SelectAgent => {
+                        vec![
+                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                            Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                            Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                        ]
+                    }
+                }
+            } else {
+                vec![]
+            }
         }
         View::ReviewWizard => {
             if let Some(wizard) = &app.review_wizard {

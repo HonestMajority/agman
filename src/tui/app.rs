@@ -15,6 +15,7 @@ use tui_textarea::{CursorMove, Input, Key, TextArea};
 
 use crate::command::StoredCommand;
 use crate::config::Config;
+use crate::flow::Flow;
 use crate::git::Git;
 use crate::repo_stats::RepoStats;
 use crate::task::{Task, TaskStatus};
@@ -36,6 +37,7 @@ pub enum View {
     RebaseBranchPicker,
     ReviewWizard,
     RestartConfirm,
+    RestartWizard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +121,20 @@ impl ReviewWizard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartWizardStep {
+    EditTask,
+    SelectAgent,
+}
+
+pub struct RestartWizard {
+    pub step: RestartWizardStep,
+    pub task_editor: VimTextArea<'static>,
+    pub flow_steps: Vec<String>,
+    pub selected_step_index: usize,
+    pub task_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteMode {
     Everything,
     TaskOnly,
@@ -167,7 +183,9 @@ pub struct App {
     pub pending_branch_command: Option<StoredCommand>,
     // Delete mode chooser
     pub delete_mode_index: usize,
-    // Restart modal state
+    // Restart task wizard
+    pub restart_wizard: Option<RestartWizard>,
+    // Restart modal state (binary restart)
     pub restart_pending: bool,
     pub restart_confirm_index: usize,
     pub should_restart: bool,
@@ -212,6 +230,7 @@ impl App {
             selected_rebase_branch_index: 0,
             pending_branch_command: None,
             delete_mode_index: 0,
+            restart_wizard: None,
             restart_pending: false,
             restart_confirm_index: 0,
             should_restart: false,
@@ -1549,6 +1568,7 @@ impl App {
             View::RebaseBranchPicker => self.handle_rebase_branch_picker_event(event),
             View::ReviewWizard => self.handle_review_wizard_event(event),
             View::RestartConfirm => self.handle_restart_confirm_event(event),
+            View::RestartWizard => self.handle_restart_wizard_event(event),
         }
     }
 
@@ -1631,6 +1651,10 @@ impl App {
                             self.open_task_editor_for_answering();
                         }
                     }
+                }
+                KeyCode::Char('W') => {
+                    // Restart task wizard
+                    self.start_restart_wizard()?;
                 }
                 KeyCode::Char('U') => {
                     // Manual restart
@@ -1827,6 +1851,12 @@ impl App {
                             self.notes_scroll = self.notes_scroll.saturating_sub(15);
                         }
                     }
+                }
+                KeyCode::Char('S') => {
+                    self.stop_task()?;
+                }
+                KeyCode::Char('W') => {
+                    self.start_restart_wizard()?;
                 }
                 _ => {}
             }
@@ -2513,6 +2543,253 @@ impl App {
             self.view = View::Preview;
             self.set_status("Queue cleared".to_string());
         }
+        Ok(())
+    }
+
+    // === Restart Wizard Methods ===
+
+    fn start_restart_wizard(&mut self) -> Result<()> {
+        if self.tasks.is_empty() {
+            return Ok(());
+        }
+
+        // Extract task info before mutable borrows
+        let (task_id, status, flow_name, tmux_session, task_content) =
+            match self.selected_task() {
+                Some(t) => (
+                    t.meta.task_id(),
+                    t.meta.status,
+                    t.meta.flow_name.clone(),
+                    t.meta.tmux_session.clone(),
+                    t.read_task().unwrap_or_else(|_| "No TASK.md available".to_string()),
+                ),
+                None => return Ok(()),
+            };
+
+        // If task is running, stop it first
+        if status == TaskStatus::Running {
+            // Inline stop logic (same as stop_task but we already have the info)
+            if Tmux::session_exists(&tmux_session) {
+                let _ = Tmux::send_ctrl_c_to_window(&tmux_session, "agman");
+            }
+            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                let _ = task.update_status(TaskStatus::Stopped);
+                task.meta.current_agent = None;
+                let _ = task.save_meta();
+            }
+            self.log_output(format!("Stopped {} before restart", task_id));
+        }
+
+        // Load flow to enumerate steps
+        let flow_path = self.config.flow_path(&flow_name);
+        let flow = match Flow::load(&flow_path) {
+            Ok(f) => f,
+            Err(e) => {
+                self.set_status(format!("Failed to load flow '{}': {}", flow_name, e));
+                return Ok(());
+            }
+        };
+
+        let flow_steps: Vec<String> = flow
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| s.display_label(i))
+            .collect();
+
+        if flow_steps.is_empty() {
+            self.set_status("Flow has no steps".to_string());
+            return Ok(());
+        }
+
+        // Pre-wrap content for the editor
+        let wrap_width = crossterm::terminal::size()
+            .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
+            .unwrap_or(70);
+        let wrapped = Self::wrap_content(&task_content, wrap_width);
+        let task_editor = VimTextArea::from_lines(wrapped.lines());
+
+        // Load preview if coming from TaskList
+        if self.view == View::TaskList {
+            self.load_preview();
+        }
+
+        self.restart_wizard = Some(RestartWizard {
+            step: RestartWizardStep::EditTask,
+            task_editor,
+            flow_steps,
+            selected_step_index: 0,
+            task_id,
+        });
+
+        self.view = View::RestartWizard;
+        Ok(())
+    }
+
+    fn handle_restart_wizard_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            // Ctrl+C to quit
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            let wizard_step = match &self.restart_wizard {
+                Some(w) => w.step,
+                None => {
+                    self.view = View::Preview;
+                    return Ok(false);
+                }
+            };
+
+            match wizard_step {
+                RestartWizardStep::EditTask => {
+                    // Calculate wrap width
+                    let wrap_width = crossterm::terminal::size()
+                        .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
+                        .unwrap_or(70);
+
+                    // Ctrl+S: save TASK.md and advance to SelectAgent
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('s')
+                    {
+                        // Save TASK.md
+                        let content = self
+                            .restart_wizard
+                            .as_ref()
+                            .map(|w| w.task_editor.lines_joined())
+                            .unwrap_or_default();
+                        let task_id = self
+                            .restart_wizard
+                            .as_ref()
+                            .map(|w| w.task_id.clone())
+                            .unwrap_or_default();
+                        if let Some(task) = self.tasks.iter().find(|t| t.meta.task_id() == task_id)
+                        {
+                            let _ = task.write_task(&content);
+                        }
+                        self.set_status("TASK.md saved".to_string());
+
+                        if let Some(w) = &mut self.restart_wizard {
+                            w.task_editor.set_normal_mode();
+                            w.step = RestartWizardStep::SelectAgent;
+                        }
+                        return Ok(false);
+                    }
+
+                    // Tab: skip to SelectAgent without saving
+                    if key.code == KeyCode::Tab {
+                        if let Some(w) = &mut self.restart_wizard {
+                            w.task_editor.set_normal_mode();
+                            w.step = RestartWizardStep::SelectAgent;
+                        }
+                        return Ok(false);
+                    }
+
+                    let input = Input::from(event.clone());
+                    let was_insert = self
+                        .restart_wizard
+                        .as_ref()
+                        .map(|w| w.task_editor.mode() == VimMode::Insert)
+                        .unwrap_or(false);
+
+                    if let Some(w) = &mut self.restart_wizard {
+                        w.task_editor.input(input.clone());
+                    }
+
+                    let is_normal_now = self
+                        .restart_wizard
+                        .as_ref()
+                        .map(|w| w.task_editor.mode() == VimMode::Normal)
+                        .unwrap_or(false);
+
+                    // Esc in normal mode → cancel wizard
+                    if input.key == Key::Esc && !was_insert && is_normal_now {
+                        self.restart_wizard = None;
+                        self.view = View::Preview;
+                        self.set_status("Restart cancelled".to_string());
+                        return Ok(false);
+                    }
+
+                    // Auto-wrap in insert mode
+                    if let Some(w) = &mut self.restart_wizard {
+                        if w.task_editor.mode() == VimMode::Insert {
+                            Self::auto_wrap_vim_editor(&mut w.task_editor, wrap_width);
+                        }
+                    }
+                }
+                RestartWizardStep::SelectAgent => match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if let Some(w) = &mut self.restart_wizard {
+                            let max = w.flow_steps.len().saturating_sub(1);
+                            if w.selected_step_index < max {
+                                w.selected_step_index += 1;
+                            }
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if let Some(w) = &mut self.restart_wizard {
+                            if w.selected_step_index > 0 {
+                                w.selected_step_index -= 1;
+                            }
+                        }
+                    }
+                    KeyCode::Enter => {
+                        self.execute_restart_wizard()?;
+                    }
+                    KeyCode::Esc => {
+                        // Go back to EditTask step
+                        if let Some(w) = &mut self.restart_wizard {
+                            w.step = RestartWizardStep::EditTask;
+                        }
+                    }
+                    _ => {}
+                },
+            }
+        }
+        Ok(false)
+    }
+
+    fn execute_restart_wizard(&mut self) -> Result<()> {
+        let (task_id, selected_step_index) = match &self.restart_wizard {
+            Some(w) => (w.task_id.clone(), w.selected_step_index),
+            None => return Ok(()),
+        };
+
+        // Find the task and update it
+        let task_idx = match self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
+            Some(i) => i,
+            None => {
+                self.set_status(format!("Task {} not found", task_id));
+                self.restart_wizard = None;
+                self.view = View::TaskList;
+                return Ok(());
+            }
+        };
+
+        let tmux_session = self.tasks[task_idx].meta.tmux_session.clone();
+        let worktree_path = self.tasks[task_idx].meta.worktree_path.clone();
+
+        // Set flow_step and status
+        self.tasks[task_idx].meta.flow_step = selected_step_index;
+        self.tasks[task_idx].update_status(TaskStatus::Running)?;
+
+        // Ensure tmux session exists
+        if !Tmux::session_exists(&tmux_session) {
+            let _ = Tmux::create_session_with_windows(&tmux_session, &worktree_path);
+            let _ = Tmux::add_review_window(&tmux_session, &worktree_path);
+        }
+
+        // Dispatch flow-run
+        let flow_cmd = format!("agman flow-run {}", task_id);
+        let _ = Tmux::send_keys_to_window(&tmux_session, "agman", &flow_cmd);
+
+        // Clean up wizard
+        self.restart_wizard = None;
+        self.view = View::TaskList;
+        self.refresh_tasks_and_select(&task_id)?;
+        self.set_status(format!("Restarted: {} from step {}", task_id, selected_step_index));
+
         Ok(())
     }
 }
