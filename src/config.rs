@@ -574,13 +574,21 @@ Instructions:
 1. Analyze all commits on the current branch compared to main/master:
    - Run `git log origin/main..HEAD --oneline` to see commits
    - Run `git diff origin/main..HEAD` to see all changes
-2. Understand what the changes accomplish - read through the diffs carefully
-3. Write a clear, comprehensive PR description that:
-   - Has a concise title (under 72 chars)
-   - Summarizes what the PR does and why
-   - Lists key changes
-   - Notes any breaking changes or migration steps if applicable
-4. Create the draft PR using the gh CLI:
+2. Understand what the changes accomplish - read through the diffs carefully. Consider the full branch diff as a whole, not individual commits.
+3. Write the PR title using **conventional commits** format: `type(scope): description`
+   - Types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`, `ci`, `perf`, `style`
+   - Scope: the most relevant module or component name (e.g., `tui`, `agent`, `config`, `flow`)
+   - The title must summarize the entire branch diff, not just one commit
+   - Keep under 72 characters
+   - Examples: `feat(tui): add task restart wizard`, `fix(agent): handle missing prompt template gracefully`
+4. Write the PR description as a concise, high-level narrative:
+   - Focus on **what** changed and **why**
+   - Only mention **how** when it adds genuine value (e.g., a non-obvious architectural decision)
+   - Do NOT list every file changed or provide a file-by-file breakdown
+   - Do NOT include boilerplate sections like "Test Plan", "Test Steps", "How to Test", "Checklist", or similar
+   - The description should read as a short paragraph or a few bullet points — not a structured form
+   - Note breaking changes only if they actually exist
+5. Create the draft PR using the gh CLI:
    ```
    gh pr create --draft --title "Your title" --body "Your description"
    ```
@@ -588,8 +596,7 @@ Instructions:
 IMPORTANT:
 - Do NOT ask questions or wait for input
 - If there's already a PR for this branch, just output AGENT_DONE
-- Make sure the description is helpful for reviewers
-- Include any relevant context from commit messages
+- Check for an existing PR first with `gh pr view --json state` before creating one
 
 When the PR is created (or already exists), output exactly: AGENT_DONE
 If you cannot create the PR for some reason, output exactly: TASK_BLOCKED
