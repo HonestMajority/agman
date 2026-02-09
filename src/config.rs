@@ -12,24 +12,25 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn load() -> Result<Self> {
-        let home_dir = dirs::home_dir().context("Could not find home directory")?;
-        let base_dir = home_dir.join(".agman");
-        let repos_dir = home_dir.join("repos");
-
+    pub fn new(base_dir: PathBuf, repos_dir: PathBuf) -> Self {
         let tasks_dir = base_dir.join("tasks");
         let flows_dir = base_dir.join("flows");
         let prompts_dir = base_dir.join("prompts");
         let commands_dir = base_dir.join("commands");
 
-        let config = Self {
+        Self {
             base_dir,
             tasks_dir,
             flows_dir,
             prompts_dir,
             commands_dir,
             repos_dir,
-        };
+        }
+    }
+
+    pub fn load() -> Result<Self> {
+        let home_dir = dirs::home_dir().context("Could not find home directory")?;
+        let config = Self::new(home_dir.join(".agman"), home_dir.join("repos"));
         tracing::debug!(base_dir = %config.base_dir.display(), "config loaded");
         Ok(config)
     }

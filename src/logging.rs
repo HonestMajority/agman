@@ -4,7 +4,7 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
-use crate::config::Config;
+use agman::config::Config;
 
 /// Rotate the log file if it exceeds 1000 lines.
 /// Keeps the most recent 750 lines.
