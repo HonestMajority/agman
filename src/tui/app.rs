@@ -582,6 +582,33 @@ impl App {
         Ok(())
     }
 
+    fn toggle_hold(&mut self) -> Result<()> {
+        let task_info = self
+            .selected_task()
+            .map(|t| (t.meta.task_id(), t.meta.status));
+
+        if let Some((task_id, status)) = task_info {
+            match status {
+                TaskStatus::Stopped => {
+                    if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                        use_cases::put_on_hold(task)?;
+                    }
+                    self.set_status(format!("On hold: {}", task_id));
+                    self.refresh_tasks_and_select(&task_id)?;
+                }
+                TaskStatus::OnHold => {
+                    if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                        use_cases::resume_from_hold(task)?;
+                    }
+                    self.set_status(format!("Resumed: {}", task_id));
+                    self.refresh_tasks_and_select(&task_id)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     fn resume_after_answering(&mut self) -> Result<()> {
         let task_info = self.selected_task().map(|t| {
             (
@@ -1653,6 +1680,9 @@ impl App {
                     self.restart_confirm_index = 0;
                     self.view = View::RestartConfirm;
                 }
+                KeyCode::Char('H') => {
+                    self.toggle_hold()?;
+                }
                 _ => {}
             }
         }
@@ -1861,6 +1891,9 @@ impl App {
                 }
                 KeyCode::Char('W') => {
                     self.start_restart_wizard()?;
+                }
+                KeyCode::Char('H') => {
+                    self.toggle_hold()?;
                 }
                 _ => {}
             }

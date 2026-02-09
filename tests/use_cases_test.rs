@@ -380,6 +380,46 @@ fn pop_and_apply_feedback_empty_queue_returns_none() {
 }
 
 // ---------------------------------------------------------------------------
+// Put on hold
+// ---------------------------------------------------------------------------
+
+#[test]
+fn put_on_hold() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+    task.update_status(TaskStatus::Stopped).unwrap();
+
+    use_cases::put_on_hold(&mut task).unwrap();
+
+    assert_eq!(task.meta.status, TaskStatus::OnHold);
+
+    // Persisted to disk
+    let loaded = Task::load(&config, "repo", "branch").unwrap();
+    assert_eq!(loaded.meta.status, TaskStatus::OnHold);
+}
+
+// ---------------------------------------------------------------------------
+// Resume from hold
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resume_from_hold() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+    task.update_status(TaskStatus::OnHold).unwrap();
+
+    use_cases::resume_from_hold(&mut task).unwrap();
+
+    assert_eq!(task.meta.status, TaskStatus::Stopped);
+
+    // Persisted to disk
+    let loaded = Task::load(&config, "repo", "branch").unwrap();
+    assert_eq!(loaded.meta.status, TaskStatus::Stopped);
+}
+
+// ---------------------------------------------------------------------------
 // List / refresh tasks
 // ---------------------------------------------------------------------------
 
@@ -396,11 +436,15 @@ fn list_tasks_sorted_by_status() {
     let mut t3 = create_test_task(&config, "repo", "input");
     t3.update_status(TaskStatus::InputNeeded).unwrap();
 
+    let mut t4 = create_test_task(&config, "repo", "held");
+    t4.update_status(TaskStatus::OnHold).unwrap();
+
     let tasks = use_cases::list_tasks(&config).unwrap();
-    assert_eq!(tasks.len(), 3);
+    assert_eq!(tasks.len(), 4);
     assert_eq!(tasks[0].meta.status, TaskStatus::Running);
     assert_eq!(tasks[1].meta.status, TaskStatus::InputNeeded);
     assert_eq!(tasks[2].meta.status, TaskStatus::Stopped);
+    assert_eq!(tasks[3].meta.status, TaskStatus::OnHold);
 }
 
 // ---------------------------------------------------------------------------
