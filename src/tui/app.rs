@@ -190,6 +190,8 @@ pub struct App {
     pub restart_pending: bool,
     pub restart_confirm_index: usize,
     pub should_restart: bool,
+    // PR polling
+    pub last_pr_poll: Instant,
 }
 
 impl App {
@@ -235,6 +237,7 @@ impl App {
             restart_pending: false,
             restart_confirm_index: 0,
             should_restart: false,
+            last_pr_poll: Instant::now(),
         })
     }
 
@@ -626,6 +629,7 @@ impl App {
             // Delegate business logic to use_cases
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
                 use_cases::resume_after_answering(task)?;
+                let _ = use_cases::set_review_addressed(task, false);
             }
 
             // Side effects: ensure tmux session and dispatch flow
@@ -726,6 +730,11 @@ impl App {
                 self.set_status(format!("Feedback queued ({} in queue)", queue_count));
             }
         } else {
+            // Clear review_addressed on user interaction
+            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                let _ = use_cases::set_review_addressed(task, false);
+            }
+
             // Delegate to use_cases: write immediate feedback
             if let Some(task) = self.selected_task() {
                 use_cases::write_immediate_feedback(task, &feedback)?;
@@ -1076,6 +1085,14 @@ impl App {
                 if !stdout.is_empty() {
                     for line in stdout.lines() {
                         self.log_output(line.to_string());
+                    }
+                }
+                // Update review_addressed flag based on which command was run
+                if let Some(task) = self.tasks.iter_mut().find(|t| t.meta.task_id() == task_id) {
+                    if command.id == "address-review" {
+                        let _ = use_cases::set_review_addressed(task, true);
+                    } else {
+                        let _ = use_cases::set_review_addressed(task, false);
                     }
                 }
                 self.refresh_tasks_and_select(&task_id)?;
@@ -1682,6 +1699,18 @@ impl App {
                 }
                 KeyCode::Char('H') => {
                     self.toggle_hold()?;
+                }
+                KeyCode::Char('c') => {
+                    // Toggle review_addressed indicator on selected task
+                    if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                        let new_val = !task.meta.review_addressed;
+                        let _ = use_cases::set_review_addressed(task, new_val);
+                        if new_val {
+                            self.set_status("Marked review addressed".to_string());
+                        } else {
+                            self.set_status("Cleared review indicator".to_string());
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -2784,6 +2813,162 @@ impl App {
         Ok(false)
     }
 
+    /// Query a PR's state via `gh pr view`. Returns `(is_merged, review_count)`.
+    /// Returns `None` on any error so polling gracefully skips failures.
+    fn query_pr_state(worktree_path: &std::path::Path, pr_number: u64) -> Option<(bool, u64)> {
+        let output = Command::new("gh")
+            .args([
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "state,reviews",
+            ])
+            .current_dir(worktree_path)
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        let state = json.get("state")?.as_str()?;
+        let is_merged = state == "MERGED";
+        let review_count = json
+            .get("reviews")
+            .and_then(|r| r.as_array())
+            .map(|a| a.len() as u64)
+            .unwrap_or(0);
+
+        Some((is_merged, review_count))
+    }
+
+    /// Poll linked PRs for all eligible (Stopped + has PR) tasks.
+    /// Detects merged PRs (auto-delete) and new reviews (auto-address-review).
+    fn poll_linked_prs(&mut self) {
+        // Collect snapshot of eligible tasks
+        let eligible: Vec<(String, u64, PathBuf, Option<u64>)> = self
+            .tasks
+            .iter()
+            .filter(|t| t.meta.status == TaskStatus::Stopped && t.meta.linked_pr.is_some())
+            .map(|t| {
+                let pr = t.meta.linked_pr.as_ref().unwrap();
+                (
+                    t.meta.task_id(),
+                    pr.number,
+                    t.meta.worktree_path.clone(),
+                    t.meta.last_review_count,
+                )
+            })
+            .collect();
+
+        // Query each PR and decide on actions
+        let mut actions: Vec<(String, u64, use_cases::PrPollAction, u64)> = Vec::new();
+        for (task_id, pr_number, worktree_path, last_review_count) in &eligible {
+            if let Some((is_merged, review_count)) =
+                Self::query_pr_state(worktree_path, *pr_number)
+            {
+                let action = use_cases::determine_pr_poll_action(
+                    TaskStatus::Stopped,
+                    is_merged,
+                    review_count,
+                    *last_review_count,
+                );
+                actions.push((task_id.clone(), *pr_number, action, review_count));
+            }
+        }
+
+        // Process actions (deletions in reverse to avoid index shifting)
+        // First: handle non-delete actions
+        for (task_id, pr_number, action, review_count) in &actions {
+            match action {
+                use_cases::PrPollAction::AddressReview { .. } => {
+                    if let Some(task) = self.tasks.iter_mut().find(|t| t.meta.task_id() == *task_id)
+                    {
+                        let _ = use_cases::update_last_review_count(task, *review_count);
+                        // Clear review_addressed since there's a new unaddressed review
+                        let _ = use_cases::set_review_addressed(task, false);
+                    }
+
+                    // Trigger address-review command
+                    let output = Command::new("agman")
+                        .args(["run-command", task_id, "address-review"])
+                        .output();
+
+                    match output {
+                        Ok(o) if o.status.success() => {
+                            self.log_output(format!(
+                                "Auto-triggered address-review for {}: new review on PR #{}",
+                                task_id, pr_number
+                            ));
+                            // Set review_addressed after successful trigger
+                            if let Some(task) =
+                                self.tasks.iter_mut().find(|t| t.meta.task_id() == *task_id)
+                            {
+                                let _ = use_cases::set_review_addressed(task, true);
+                            }
+                        }
+                        Ok(o) => {
+                            let stderr = String::from_utf8_lossy(&o.stderr);
+                            self.log_output(format!(
+                                "Failed to auto-trigger address-review for {}: {}",
+                                task_id, stderr
+                            ));
+                        }
+                        Err(e) => {
+                            self.log_output(format!(
+                                "Error triggering address-review for {}: {}",
+                                task_id, e
+                            ));
+                        }
+                    }
+                }
+                use_cases::PrPollAction::None => {
+                    // First poll: seed the review count
+                    if let Some(task) = self.tasks.iter_mut().find(|t| t.meta.task_id() == *task_id)
+                    {
+                        if task.meta.last_review_count.is_none() {
+                            let _ = use_cases::update_last_review_count(task, *review_count);
+                        }
+                    }
+                }
+                use_cases::PrPollAction::DeleteMerged => {} // handled below
+            }
+        }
+
+        // Then: handle deletions (collect and process)
+        let to_delete: Vec<(String, u64)> = actions
+            .iter()
+            .filter(|(_, _, action, _)| matches!(action, use_cases::PrPollAction::DeleteMerged))
+            .map(|(task_id, pr_number, _, _)| (task_id.clone(), *pr_number))
+            .collect();
+
+        for (task_id, pr_number) in to_delete {
+            if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
+                let task = self.tasks.remove(idx);
+                let tmux_session = task.meta.tmux_session.clone();
+
+                let _ = Tmux::kill_session(&tmux_session);
+                let _ = use_cases::delete_task(
+                    &self.config,
+                    task,
+                    use_cases::DeleteMode::Everything,
+                );
+
+                self.log_output(format!(
+                    "Auto-deleted task {}: PR #{} merged",
+                    task_id, pr_number
+                ));
+
+                // Adjust selected_index if needed
+                if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
+                    self.selected_index = self.tasks.len() - 1;
+                }
+            }
+        }
+    }
+
     fn execute_restart_wizard(&mut self) -> Result<()> {
         let (task_id, selected_step_index) = match &self.restart_wizard {
             Some(w) => (w.task_id.clone(), w.selected_step_index),
@@ -2806,6 +2991,8 @@ impl App {
 
         // Set flow_step and status
         use_cases::restart_task(&mut self.tasks[task_idx], selected_step_index)?;
+        // Clear review_addressed on restart
+        let _ = use_cases::set_review_addressed(&mut self.tasks[task_idx], false);
 
         // Ensure tmux session exists
         if !Tmux::session_exists(&tmux_session) {
@@ -2890,6 +3077,12 @@ pub fn run_tui(config: Config) -> Result<()> {
                     app.process_stranded_feedback();
                 }
                 last_refresh = Instant::now();
+            }
+
+            // Poll linked PRs every 60 seconds (regardless of view)
+            if app.last_pr_poll.elapsed() >= Duration::from_secs(60) {
+                app.poll_linked_prs();
+                app.last_pr_poll = Instant::now();
             }
 
             // Check for restart signal (written by release.sh when agman is rebuilt)

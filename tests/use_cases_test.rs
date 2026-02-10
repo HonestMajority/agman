@@ -2,7 +2,7 @@ mod helpers;
 
 use agman::repo_stats::RepoStats;
 use agman::task::{Task, TaskStatus};
-use agman::use_cases::{self, DeleteMode, WorktreeSource};
+use agman::use_cases::{self, DeleteMode, PrPollAction, WorktreeSource};
 use helpers::{create_test_task, init_test_repo, test_config};
 
 // ---------------------------------------------------------------------------
@@ -531,4 +531,78 @@ fn create_review_task() {
     // Repo stats incremented
     let stats = RepoStats::load(&config.repo_stats_path());
     assert_eq!(stats.counts.get("myrepo"), Some(&1));
+}
+
+// ---------------------------------------------------------------------------
+// PR poll action: merged PR
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pr_poll_action_merged() {
+    let action = use_cases::determine_pr_poll_action(TaskStatus::Stopped, true, 0, Some(0));
+    assert!(matches!(action, PrPollAction::DeleteMerged));
+}
+
+// ---------------------------------------------------------------------------
+// PR poll action: new review
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pr_poll_action_new_review() {
+    let action = use_cases::determine_pr_poll_action(TaskStatus::Stopped, false, 3, Some(2));
+    assert!(matches!(action, PrPollAction::AddressReview { new_count: 3 }));
+}
+
+// ---------------------------------------------------------------------------
+// PR poll action: first poll (None count)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pr_poll_action_first_poll() {
+    let action = use_cases::determine_pr_poll_action(TaskStatus::Stopped, false, 2, None);
+    assert!(matches!(action, PrPollAction::None));
+}
+
+// ---------------------------------------------------------------------------
+// PR poll action: same count (no change)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pr_poll_action_no_change() {
+    let action = use_cases::determine_pr_poll_action(TaskStatus::Stopped, false, 2, Some(2));
+    assert!(matches!(action, PrPollAction::None));
+}
+
+// ---------------------------------------------------------------------------
+// Set review_addressed flag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_review_addressed_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+    assert!(!task.meta.review_addressed);
+
+    use_cases::set_review_addressed(&mut task, true).unwrap();
+    assert!(task.meta.review_addressed);
+
+    // Reload and verify persistence
+    task.reload_meta().unwrap();
+    assert!(task.meta.review_addressed);
+}
+
+// ---------------------------------------------------------------------------
+// Update last review count
+// ---------------------------------------------------------------------------
+
+#[test]
+fn update_review_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+    assert!(task.meta.last_review_count.is_none());
+
+    use_cases::update_last_review_count(&mut task, 5).unwrap();
+    assert_eq!(task.meta.last_review_count, Some(5));
 }
