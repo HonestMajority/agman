@@ -2185,6 +2185,7 @@ impl App {
                     task.meta.review_after = !task.meta.review_after;
                     let _ = task.save_meta();
                     let state = if task.meta.review_after { "ON" } else { "OFF" };
+                    tracing::info!(task_id = %task.meta.task_id(), review_after = task.meta.review_after, "toggled review_after to {}", state);
                     self.set_status(format!("Review after flow: {}", state));
                 }
                 return Ok(false);
@@ -2763,6 +2764,7 @@ impl App {
                 task.meta.current_agent = None;
                 let _ = task.save_meta();
             }
+            tracing::info!(task_id = %task_id, old_status = "running", new_status = "stopped", "stopped task before restart");
             self.log_output(format!("Stopped {} before restart", task_id));
         }
 

@@ -203,7 +203,6 @@ impl Git {
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!(repo = repo_name, branch = branch_name, error = %err, "worktree creation failed");
             anyhow::bail!("Failed to create worktree: {}", err);
         }
 
