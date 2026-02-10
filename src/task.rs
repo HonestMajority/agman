@@ -196,7 +196,7 @@ impl Task {
                     match Task::load(config, &repo_name, &branch_name) {
                         Ok(task) => tasks.push(task),
                         Err(e) => {
-                            tracing::warn!("Failed to load task '{}': {}", task_id, e);
+                            tracing::warn!(task_id = %task_id, error = %e, "failed to load task");
                         }
                     }
                 }

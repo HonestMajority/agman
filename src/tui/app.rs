@@ -651,6 +651,7 @@ impl App {
                 return Ok(());
             }
 
+            tracing::info!(task_id = %task_id, "TUI: stop task requested");
             self.log_output(format!("Stopping task {}...", task_id));
 
             // Send Ctrl+C to the agman window to interrupt any running process (side effect)
@@ -690,6 +691,7 @@ impl App {
         if let Some((task_id, status)) = task_info {
             match status {
                 TaskStatus::Stopped => {
+                    tracing::info!(task_id = %task_id, "TUI: put on hold requested");
                     if let Some(task) = self.tasks.get_mut(self.selected_index) {
                         use_cases::put_on_hold(task)?;
                     }
@@ -697,6 +699,7 @@ impl App {
                     self.refresh_tasks_and_select(&task_id)?;
                 }
                 TaskStatus::OnHold => {
+                    tracing::info!(task_id = %task_id, "TUI: resume from hold requested");
                     if let Some(task) = self.tasks.get_mut(self.selected_index) {
                         use_cases::resume_from_hold(task)?;
                     }
@@ -735,6 +738,7 @@ impl App {
                 return Ok(());
             }
 
+            tracing::info!(task_id = %task_id, "TUI: resume after answering");
             // Delegate business logic to use_cases
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
                 use_cases::resume_after_answering(task)?;
@@ -777,6 +781,7 @@ impl App {
             DeleteMode::TaskOnly => use_cases::DeleteMode::TaskOnly,
         };
 
+        tracing::info!(task_id = %task_id, mode = ?mode, "TUI: delete task requested");
         self.log_output(format!("Deleting task {} ({})...", task_id, match mode {
             DeleteMode::Everything => "everything",
             DeleteMode::TaskOnly => "task only",
@@ -808,7 +813,8 @@ impl App {
 
     fn submit_feedback(&mut self) -> Result<()> {
         let feedback = self.feedback_editor.lines_joined();
-        tracing::info!("submitting feedback");
+        let task_id_for_log = self.selected_task().map(|t| t.meta.task_id());
+        tracing::info!(task_id = ?task_id_for_log, "submitting feedback");
         if feedback.trim().is_empty() {
             self.set_status("Feedback cannot be empty".to_string());
             self.view = View::Preview;
@@ -1139,9 +1145,10 @@ impl App {
     }
 
     fn run_selected_command(&mut self) -> Result<()> {
+        let task_id_for_log = self.selected_task().map(|t| t.meta.task_id());
         let command = match self.commands.get(self.selected_command_index) {
             Some(c) => {
-                tracing::info!(command = %c.name, "running stored command");
+                tracing::info!(task_id = ?task_id_for_log, command = %c.name, "running stored command");
                 c.clone()
             }
             None => {
@@ -1402,7 +1409,6 @@ impl App {
         };
 
         let repo_name = wizard.selected_repo_name().to_string();
-        tracing::info!(repo = %repo_name, "creating task via wizard");
 
         let (branch_name, worktree_source) = match wizard.branch_source {
             BranchSource::ExistingWorktree => {
@@ -1423,6 +1429,7 @@ impl App {
         let description = wizard.description_editor.lines_joined().trim().to_string();
         let review_after = wizard.review_after;
 
+        tracing::info!(repo = %repo_name, branch = %branch_name, "creating task via wizard");
         self.log_output(format!("Creating task {}--{}...", repo_name, branch_name));
 
         // Delegate business logic to use_cases
@@ -2178,6 +2185,7 @@ impl App {
                     task.meta.review_after = !task.meta.review_after;
                     let _ = task.save_meta();
                     let state = if task.meta.review_after { "ON" } else { "OFF" };
+                    tracing::info!(task_id = %task.meta.task_id(), review_after = task.meta.review_after, "toggled review_after to {}", state);
                     self.set_status(format!("Review after flow: {}", state));
                 }
                 return Ok(false);
@@ -2756,6 +2764,7 @@ impl App {
                 task.meta.current_agent = None;
                 let _ = task.save_meta();
             }
+            tracing::info!(task_id = %task_id, old_status = "running", new_status = "stopped", "stopped task before restart");
             self.log_output(format!("Stopped {} before restart", task_id));
         }
 
@@ -2946,6 +2955,8 @@ impl App {
 
                     if text.is_empty() {
                         // Clear linked PR
+                        let task_id_for_log = self.selected_task().map(|t| t.meta.task_id());
+                        tracing::info!(task_id = ?task_id_for_log, "TUI: clear linked PR");
                         if let Some(task) = self.tasks.get_mut(self.selected_index) {
                             match use_cases::clear_linked_pr(task) {
                                 Ok(()) => self.set_status("PR link cleared".to_string()),
@@ -2956,6 +2967,8 @@ impl App {
                         // Parse as number and set
                         match text.parse::<u64>() {
                             Ok(pr_number) => {
+                                let task_id_for_log = self.selected_task().map(|t| t.meta.task_id());
+                                tracing::info!(task_id = ?task_id_for_log, pr_number, "TUI: set linked PR");
                                 let worktree_path = self
                                     .selected_task()
                                     .map(|t| t.meta.worktree_path.clone());
@@ -3135,6 +3148,7 @@ impl App {
             None => return Ok(()),
         };
 
+        tracing::info!(task_id = %task_id, step = selected_step_index, "TUI: restart task from wizard");
         // Find the task and update it
         let task_idx = match self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
             Some(i) => i,

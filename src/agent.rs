@@ -154,7 +154,7 @@ impl Agent {
 
             // Check for magic strings
             if let Some(condition) = StopCondition::from_output(&line) {
-                tracing::info!(agent = %self.name, condition = %condition, "stop condition detected");
+                tracing::info!(agent = %self.name, task_id = %task.meta.task_id(), condition = %condition, "stop condition detected");
                 last_condition = Some(condition);
             }
 
@@ -179,8 +179,10 @@ impl Agent {
 
         if !status.success() {
             tracing::warn!(
-                "Claude process exited with status: {}",
-                status.code().unwrap_or(-1)
+                agent = %self.name,
+                task_id = %task.meta.task_id(),
+                exit_code = status.code().unwrap_or(-1),
+                "Claude process exited with non-zero status"
             );
         }
 
@@ -221,7 +223,7 @@ impl AgentRunner {
                 if lines.len() >= 2 {
                     if let Ok(number) = lines[0].trim().parse::<u64>() {
                         let url = lines[1].trim().to_string();
-                        tracing::info!(pr_number = number, pr_url = %url, "detected .pr-link, storing linked PR");
+                        tracing::info!(task_id = %task.meta.task_id(), pr_number = number, pr_url = %url, "detected .pr-link, storing linked PR");
                         task.set_linked_pr(number, url)?;
                     }
                 }
@@ -262,7 +264,7 @@ impl AgentRunner {
                 Some(condition) => return Ok(condition),
                 None => {
                     // No magic string detected, keep looping
-                    tracing::info!("No stop condition detected, continuing agent loop");
+                    tracing::info!(agent = agent_name, task_id = %task.meta.task_id(), "no stop condition detected, continuing agent loop");
                     println!("No stop condition detected, running agent again...");
                 }
             }

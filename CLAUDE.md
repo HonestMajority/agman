@@ -153,6 +153,29 @@ cargo test               # Run tests (fallback)
 - Task state: `~/.agman/tasks/<task_id>/meta.json`
 - Check tmux: `tmux ls` then `tmux attach -t <session>`
 
+## Logging Policy
+
+agman uses `tracing` for structured logging to `~/.agman/agman.log` (file only, no stderr). Setup in `src/logging.rs`. Default filter: `agman=debug,warn`.
+
+**Task ID rule.** Always include `task_id` as a structured field when task context is available — it is the primary correlation key. Example: `tracing::info!(task_id = %task.meta.task_id(), "deleting task");`
+
+**Log levels.** `error!` — unrecoverable failures. `warn!` — degraded but non-fatal. `info!` — significant actions and state changes. `debug!` — troubleshooting details. `trace!` — high-frequency iteration detail.
+
+**Error logging.** Log errors where they are *handled*, not where they are propagated. Never log-and-propagate (`error!` + `return Err(...)`) — this duplicates entries.
+
+```rust
+if let Err(e) = use_cases::delete_task(&config, &task_id) {
+    tracing::error!(task_id = %task_id, error = %e, "failed to delete task");
+    self.set_error(format!("Delete failed: {e}"));
+}
+```
+
+**Action logging.** Every user-visible action and state change must produce at least one log line: use-case entry, TUI key handlers that modify state, agent start/stop and magic strings, flow step transitions, git worktree operations.
+
+**Structured fields.** Use consistently: `task_id` (any task op), `repo`/`branch` (git ops), `agent`/`flow`/`step` (execution), `status` (transitions, old+new), `error` (`error = %e`).
+
+**Console output vs. tracing.** `println!` is for user-visible progress in tmux sessions (internal commands). `tracing::*` is for `agman.log`. No `println!` in library code; no `tracing` for tmux user output.
+
 ## Testing
 
 ### Philosophy
