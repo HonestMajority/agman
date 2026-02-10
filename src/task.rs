@@ -55,6 +55,12 @@ pub struct TaskMeta {
     /// Linked GitHub PR (number + URL), populated when a PR is created
     #[serde(default)]
     pub linked_pr: Option<LinkedPr>,
+    /// Number of reviews seen on the linked PR during last poll
+    #[serde(default)]
+    pub last_review_count: Option<u64>,
+    /// Whether the address-review flow has been run since the last review
+    #[serde(default)]
+    pub review_addressed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +91,8 @@ impl TaskMeta {
             updated_at: now,
             review_after: false,
             linked_pr: None,
+            last_review_count: None,
+            review_addressed: false,
         }
     }
 

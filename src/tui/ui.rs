@@ -146,7 +146,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     const MAX_REPO_WIDTH: usize = 20;
     const MIN_BRANCH_WIDTH: usize = 6; // "BRANCH" header length
 
-    const PR_WIDTH: usize = 7; // fits "#99999" plus padding
+    const PR_WIDTH: usize = 10; // fits "#99999 ✓" plus padding
     const STATUS_WIDTH: usize = 10;
     const MIN_AGENT_WIDTH: usize = 6; // width of "AGENT" header + 1
     const MAX_AGENT_WIDTH: usize = 25;
@@ -422,8 +422,18 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw(COL_GAP),
             Span::styled(
-                format!("{:<width$}", task.meta.linked_pr.as_ref().map(|pr| format!("#{}", pr.number)).unwrap_or_default(), width = PR_WIDTH),
-                Style::default().fg(Color::LightMagenta),
+                format!("{:<width$}", task.meta.linked_pr.as_ref().map(|pr| {
+                    if task.meta.review_addressed {
+                        format!("#{} ✓", pr.number)
+                    } else {
+                        format!("#{}", pr.number)
+                    }
+                }).unwrap_or_default(), width = PR_WIDTH),
+                if task.meta.review_addressed {
+                    Style::default().fg(Color::LightGreen)
+                } else {
+                    Style::default().fg(Color::LightMagenta)
+                },
             ),
             Span::raw(COL_GAP),
             Span::styled(
@@ -1170,6 +1180,10 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 } else if task.meta.status == TaskStatus::OnHold {
                     spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
                     spans.push(Span::styled(" unhold  ", Style::default().fg(Color::DarkGray)));
+                }
+                if task.meta.review_addressed {
+                    spans.push(Span::styled("c", Style::default().fg(Color::LightGreen)));
+                    spans.push(Span::styled(" clear ✓  ", Style::default().fg(Color::DarkGray)));
                 }
             }
             spans.extend([

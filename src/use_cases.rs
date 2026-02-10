@@ -240,6 +240,53 @@ pub fn pop_and_apply_feedback(task: &Task) -> Result<Option<String>> {
     }
 }
 
+/// Action to take for a task after polling its linked PR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrPollAction {
+    /// No action needed.
+    None,
+    /// PR was merged — delete the task.
+    DeleteMerged,
+    /// New review detected — run the address-review command.
+    AddressReview { new_count: u64 },
+}
+
+/// Pure decision function: given PR state data, determine what action to take.
+///
+/// - If the PR is merged, always delete.
+/// - If `last_review_count` is `None`, this is the first poll — return `None` (just seed the count).
+/// - If the current count exceeds the stored count, a new review arrived.
+/// - Otherwise, no action.
+pub fn determine_pr_poll_action(
+    _status: TaskStatus,
+    pr_merged: bool,
+    current_review_count: u64,
+    last_review_count: Option<u64>,
+) -> PrPollAction {
+    if pr_merged {
+        return PrPollAction::DeleteMerged;
+    }
+    match last_review_count {
+        Some(prev) if current_review_count > prev => PrPollAction::AddressReview {
+            new_count: current_review_count,
+        },
+        None => PrPollAction::None, // first poll, just seed
+        _ => PrPollAction::None,
+    }
+}
+
+/// Set the `review_addressed` flag on a task and persist to disk.
+pub fn set_review_addressed(task: &mut Task, addressed: bool) -> Result<()> {
+    task.meta.review_addressed = addressed;
+    task.save_meta()
+}
+
+/// Update the `last_review_count` on a task and persist to disk.
+pub fn update_last_review_count(task: &mut Task, count: u64) -> Result<()> {
+    task.meta.last_review_count = Some(count);
+    task.save_meta()
+}
+
 /// Create a review task for an existing branch.
 ///
 /// Similar to `create_task` but uses a review-specific description
