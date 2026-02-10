@@ -154,7 +154,7 @@ impl Agent {
 
             // Check for magic strings
             if let Some(condition) = StopCondition::from_output(&line) {
-                tracing::info!(agent = %self.name, condition = %condition, "stop condition detected");
+                tracing::info!(agent = %self.name, task_id = %task.meta.task_id(), condition = %condition, "stop condition detected");
                 last_condition = Some(condition);
             }
 

@@ -218,11 +218,13 @@ pub fn list_tasks(config: &Config) -> Result<Vec<Task>> {
 
 /// Save notes for a task.
 pub fn save_notes(task: &Task, notes: &str) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), "saving notes");
     task.write_notes(notes)
 }
 
 /// Save TASK.md content for a task.
 pub fn save_task_file(task: &Task, content: &str) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), "saving task file");
     task.write_task(content)
 }
 
@@ -295,12 +297,14 @@ pub fn determine_pr_poll_action(
 
 /// Set the `review_addressed` flag on a task and persist to disk.
 pub fn set_review_addressed(task: &mut Task, addressed: bool) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), addressed, "setting review_addressed flag");
     task.meta.review_addressed = addressed;
     task.save_meta()
 }
 
 /// Update the `last_review_count` on a task and persist to disk.
 pub fn update_last_review_count(task: &mut Task, count: u64) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), count, "updating last review count");
     task.meta.last_review_count = Some(count);
     task.save_meta()
 }
