@@ -358,8 +358,6 @@ Instructions:
 4. As you complete steps, move them from Remaining to Completed in TASK.md
 5. Commit your changes using conventional commit messages (e.g. feat:, fix:, refactor:, docs:, test:, chore:). Always commit before finishing — do not leave uncommitted changes.
 
-Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
-
 IMPORTANT:
 - Do NOT ask questions or wait for input
 - Make reasonable assumptions if something is unclear
@@ -478,8 +476,6 @@ Based on your review:
 - Human intervention is needed
 - Output exactly: TASK_BLOCKED
 
-Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
-
 IMPORTANT:
 - Do NOT implement any changes yourself
 - Be thorough in your review - check that the code actually does what's required
@@ -567,8 +563,6 @@ Instructions:
 7. Read TASK.md and verify the task goals are still being met (the code changes haven't been lost)
 8. Clean up: remove the `.branch-target` and `.rebase-target` files if they exist in the working directory or task dir
 
-Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
-
 IMPORTANT:
 - Do NOT ask questions or wait for input
 - If you cannot resolve a conflict, make your best judgment call
@@ -615,8 +609,6 @@ Instructions:
    gh pr view --json number,url -q '.url' >> .pr-link
    ```
 
-Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
-
 IMPORTANT:
 - Do NOT ask questions or wait for input
 - Always write the `.pr-link` file after creating or finding a PR
@@ -641,8 +633,6 @@ Common CI failures and fixes:
 - Test failures: Fix the failing test or the code it's testing
 - Lint errors: Fix formatting, unused imports, etc.
 - Build errors: Fix syntax or missing dependencies
-
-Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -710,8 +700,6 @@ Instructions:
 
 5. For items marked `[CHANGE NEEDED]`, include a brief description of what should be changed so the implementer agent knows what to do.
 
-Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
-
 IMPORTANT:
 - Do NOT make any code changes yourself — only produce `REVIEW.md`
 - Do NOT push anything to origin
@@ -744,8 +732,6 @@ Instructions:
       ```
       And update the proposed reply to mention what was changed and the commit hash
 4. After all changes are implemented, do a final review of `REVIEW.md` to make sure it's complete and coherent
-
-Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
 IMPORTANT:
 - Do NOT push anything to origin
@@ -792,8 +778,6 @@ Instructions:
       - Go back to step 1 and monitor again
 
 5. Keep track of fix attempts. If you have attempted 3 fixes for real failures and checks still fail, output TASK_BLOCKED.
-
-Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -878,8 +862,6 @@ Instructions:
    git checkout <feature_branch>
    ```
 10. Clean up: remove the `.branch-target` file if it exists in the working directory or task dir.
-
-Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them via the `/skill-name` slash command.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
