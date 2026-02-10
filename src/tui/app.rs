@@ -2940,7 +2940,7 @@ impl App {
     /// Query a PR's state via `gh pr view`. Returns `(is_merged, review_count)`.
     /// Returns `None` on any error so polling gracefully skips failures.
     fn query_pr_state(worktree_path: &std::path::Path, pr_number: u64) -> Option<(bool, u64)> {
-        let output = Command::new("gh")
+        let output = match Command::new("gh")
             .args([
                 "pr",
                 "view",
@@ -2950,13 +2950,27 @@ impl App {
             ])
             .current_dir(worktree_path)
             .output()
-            .ok()?;
+        {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!(pr = pr_number, "gh pr view failed to spawn: {e}");
+                return None;
+            }
+        };
 
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(pr = pr_number, "gh pr view returned non-zero: {stderr}");
             return None;
         }
 
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        let json: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(pr = pr_number, "gh pr view JSON parse failed: {e}");
+                return None;
+            }
+        };
         let state = json.get("state")?.as_str()?;
         let is_merged = state == "MERGED";
         let review_count = json
@@ -2965,6 +2979,7 @@ impl App {
             .map(|a| a.len() as u64)
             .unwrap_or(0);
 
+        tracing::debug!(pr = pr_number, is_merged, review_count, "PR state queried");
         Some((is_merged, review_count))
     }
 
@@ -2987,6 +3002,8 @@ impl App {
             })
             .collect();
 
+        tracing::debug!(count = eligible.len(), "PR poll cycle: eligible tasks");
+
         // Query each PR and decide on actions
         let mut actions: Vec<(String, u64, use_cases::PrPollAction, u64)> = Vec::new();
         for (task_id, pr_number, worktree_path, last_review_count) in &eligible {
@@ -2999,7 +3016,10 @@ impl App {
                     review_count,
                     *last_review_count,
                 );
+                tracing::debug!(task = %task_id, pr = pr_number, action = ?action, "PR poll action decided");
                 actions.push((task_id.clone(), *pr_number, action, review_count));
+            } else {
+                tracing::debug!(task = %task_id, pr = pr_number, "PR poll: skipping, query failed");
             }
         }
 
