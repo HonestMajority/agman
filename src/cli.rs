@@ -51,4 +51,12 @@ pub enum Commands {
         #[arg(long)]
         branch: Option<String>,
     },
+
+    /// Initialize agman configuration (creates default flows, prompts, and commands)
+    #[command(hide = true)]
+    Init {
+        /// Overwrite existing files with defaults
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
 }
