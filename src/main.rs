@@ -53,6 +53,12 @@ fn main() -> Result<()> {
             branch,
         }) => cmd_command_flow_run(&config, &task_id, &command_id, branch.as_deref()),
 
+        Some(Commands::Init { force }) => {
+            config.init_default_files(force)?;
+            println!("agman initialized at {}", config.base_dir.display());
+            Ok(())
+        }
+
         None => {
             // No subcommand - launch TUI
             config.ensure_dirs()?;
