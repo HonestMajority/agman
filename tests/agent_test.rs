@@ -49,3 +49,20 @@ fn agent_build_prompt_with_feedback() {
     assert!(prompt.contains("Follow-up Feedback"));
     assert!(prompt.contains("Please fix the bug in main.rs"));
 }
+
+#[test]
+fn agent_build_prompt_includes_self_improve_footer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.init_default_files(false).unwrap();
+
+    let task = create_test_task(&config, "repo", "branch");
+    task.write_task("# Goal\nBuild something\n").unwrap();
+
+    let agent = Agent::load(&config, "coder").unwrap();
+    let prompt = agent.build_prompt(&task).unwrap();
+
+    assert!(prompt.contains("# Self-Improvement"));
+    assert!(prompt.contains("self-improve"));
+    assert!(prompt.contains("Before outputting your final stop condition"));
+}

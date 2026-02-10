@@ -86,6 +86,11 @@ impl Agent {
             }
         }
 
+        // Append self-improve footer to all prompts
+        prompt.push_str("\n\n---\n\n");
+        prompt.push_str("# Self-Improvement\n");
+        prompt.push_str("**Before outputting your final stop condition**, check if the repository has a self-improvement skill defined in `.claude/skills/` or `.claude/commands/` (commonly named \"self-improve\" or similar). If one exists, run it using the appropriate `/skill-name` slash command. This helps keep project documentation and conventions up to date.\n");
+
         Ok(prompt)
     }
 
