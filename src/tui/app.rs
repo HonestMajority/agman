@@ -246,7 +246,10 @@ impl App {
             last_pr_poll: Instant::now(),
             pr_number_editor: Self::create_plain_editor(),
             #[cfg(target_os = "macos")]
-            caffeinate_process: None,
+            caffeinate_process: std::process::Command::new("caffeinate")
+                .arg("-i")
+                .spawn()
+                .ok(),
         })
     }
 
@@ -259,31 +262,8 @@ impl App {
         self.caffeinate_process = None;
     }
 
-    #[cfg(target_os = "macos")]
-    fn update_sleep_inhibition(&mut self) {
-        let running = self
-            .tasks
-            .iter()
-            .any(|t| t.meta.status == TaskStatus::Running);
-
-        if running && self.caffeinate_process.is_none() {
-            match std::process::Command::new("caffeinate")
-                .arg("-i")
-                .spawn()
-            {
-                Ok(child) => self.caffeinate_process = Some(child),
-                Err(e) => tracing::warn!("failed to spawn caffeinate: {e}"),
-            }
-        } else if !running && self.caffeinate_process.is_some() {
-            self.stop_caffeinate();
-        }
-    }
-
     #[cfg(not(target_os = "macos"))]
     fn stop_caffeinate(&mut self) {}
-
-    #[cfg(not(target_os = "macos"))]
-    fn update_sleep_inhibition(&mut self) {}
 
     fn create_plain_editor() -> TextArea<'static> {
         let mut editor = TextArea::default();
@@ -3194,7 +3174,6 @@ pub fn run_tui(config: Config) -> Result<()> {
         app.view = View::TaskList;
         app.should_quit = false;
         let _ = app.refresh_tasks();
-        app.update_sleep_inhibition();
 
         // Main loop
         let mut attach_session: Option<String> = None;
@@ -3227,7 +3206,6 @@ pub fn run_tui(config: Config) -> Result<()> {
                     // Check for stranded feedback queues on stopped tasks
                     app.process_stranded_feedback();
                 }
-                app.update_sleep_inhibition();
                 last_refresh = Instant::now();
             }
 
