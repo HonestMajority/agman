@@ -333,8 +333,6 @@ impl Task {
     fn init_files(&self) -> Result<()> {
         // Create empty files that will be populated later
         let files = [
-            "progress.md",
-            "compacted-context.md",
             "notes.md",
             "agent.log",
         ];
@@ -354,16 +352,6 @@ impl Task {
         std::fs::read_to_string(&path).context("Failed to read TASK.md")
     }
 
-    pub fn read_progress(&self) -> Result<String> {
-        let path = self.dir.join("progress.md");
-        std::fs::read_to_string(&path).context("Failed to read progress.md")
-    }
-
-    pub fn read_context(&self) -> Result<String> {
-        let path = self.dir.join("compacted-context.md");
-        std::fs::read_to_string(&path).context("Failed to read compacted-context.md")
-    }
-
     pub fn read_notes(&self) -> Result<String> {
         let path = self.dir.join("notes.md");
         std::fs::read_to_string(&path).context("Failed to read notes.md")
@@ -378,13 +366,6 @@ impl Task {
     pub fn read_agent_log(&self) -> Result<String> {
         let path = self.dir.join("agent.log");
         std::fs::read_to_string(&path).context("Failed to read agent.log")
-    }
-
-    pub fn read_agent_log_tail(&self, lines: usize) -> Result<String> {
-        let content = self.read_agent_log()?;
-        let all_lines: Vec<&str> = content.lines().collect();
-        let start = all_lines.len().saturating_sub(lines);
-        Ok(all_lines[start..].join("\n"))
     }
 
     /// Read a structured tail of agent.log that preserves section boundaries.

@@ -59,7 +59,7 @@ pub fn create_test_task(config: &Config, repo_name: &str, branch_name: &str) -> 
     let task = Task { meta, dir };
     task.save_meta().unwrap();
     // Create the same init files that Task::create() makes
-    for file in ["progress.md", "compacted-context.md", "notes.md", "agent.log"] {
+    for file in ["notes.md", "agent.log"] {
         let path = task.dir.join(file);
         if !path.exists() {
             std::fs::write(&path, "").unwrap();

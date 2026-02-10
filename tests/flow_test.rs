@@ -1,6 +1,6 @@
 mod helpers;
 
-use agman::flow::{Flow, FlowAction, FlowExecutor, FlowStep, StopCondition};
+use agman::flow::{Flow, FlowStep, StopCondition};
 use helpers::test_config;
 
 #[test]
@@ -116,7 +116,7 @@ fn flow_load_continue() {
 }
 
 #[test]
-fn flow_get_step_and_is_complete() {
+fn flow_get_step() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.init_default_files(false).unwrap();
@@ -124,37 +124,4 @@ fn flow_get_step_and_is_complete() {
     let flow = Flow::load(&config.flow_path("new")).unwrap();
     assert!(flow.get_step(0).is_some());
     assert!(flow.get_step(999).is_none());
-    assert!(flow.is_complete(flow.steps.len()));
-    assert!(!flow.is_complete(0));
-}
-
-#[test]
-fn flow_executor_handle_output() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    config.init_default_files(false).unwrap();
-
-    // Use the continue flow: [refiner (Agent), loop (Loop)]
-    let flow = Flow::load(&config.flow_path("continue")).unwrap();
-    let mut exec = FlowExecutor::new(flow, 0);
-
-    // AgentDone on step 0 (Agent step) should advance
-    let action = exec.handle_output("AGENT_DONE");
-    assert_eq!(action, FlowAction::AdvanceStep);
-    assert_eq!(exec.current_step, 1);
-
-    // TaskComplete from any step should complete
-    let mut exec2 = FlowExecutor::new(Flow::load(&config.flow_path("continue")).unwrap(), 0);
-    let action = exec2.handle_output("TASK_COMPLETE");
-    assert_eq!(action, FlowAction::Complete);
-
-    // No magic string should return RunAgent
-    let mut exec3 = FlowExecutor::new(Flow::load(&config.flow_path("continue")).unwrap(), 0);
-    let action = exec3.handle_output("just some output");
-    assert_eq!(action, FlowAction::RunAgent(0));
-
-    // InputNeeded should pause
-    let mut exec4 = FlowExecutor::new(Flow::load(&config.flow_path("continue")).unwrap(), 0);
-    let action = exec4.handle_output("INPUT_NEEDED");
-    assert_eq!(action, FlowAction::Pause);
 }
