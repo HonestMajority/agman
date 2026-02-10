@@ -6,7 +6,55 @@ use crate::config::Config;
 
 pub struct Git;
 
+/// Parse `(owner, repo)` from a GitHub remote URL.
+/// Handles both HTTPS (`https://github.com/owner/repo.git`) and
+/// SSH (`git@github.com:owner/repo.git`) formats.
+pub fn parse_github_owner_repo(remote_url: &str) -> Option<(String, String)> {
+    let trimmed = remote_url.trim();
+
+    // Try HTTPS: https://github.com/owner/repo.git
+    if let Some(rest) = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+    {
+        let rest = rest.strip_suffix(".git").unwrap_or(rest);
+        let parts: Vec<&str> = rest.splitn(3, '/').collect();
+        if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+
+    // Try SSH: git@github.com:owner/repo.git
+    if let Some(rest) = trimmed.strip_prefix("git@github.com:") {
+        let rest = rest.strip_suffix(".git").unwrap_or(rest);
+        let parts: Vec<&str> = rest.splitn(3, '/').collect();
+        if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+
+    None
+}
+
 impl Git {
+    /// Get the origin remote URL for a repository.
+    pub fn get_remote_url(repo_path: &PathBuf) -> Result<String> {
+        let output = Command::new("git")
+            .current_dir(repo_path)
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .context("Failed to get remote URL")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "No origin remote found: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
     /// Check if a remote exists
     fn has_remote(repo_path: &PathBuf, remote_name: &str) -> bool {
         Command::new("git")

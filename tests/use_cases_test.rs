@@ -1,5 +1,6 @@
 mod helpers;
 
+use agman::git::parse_github_owner_repo;
 use agman::repo_stats::RepoStats;
 use agman::task::{Task, TaskStatus};
 use agman::use_cases::{self, DeleteMode, PrPollAction, WorktreeSource};
@@ -605,4 +606,102 @@ fn update_review_count() {
 
     use_cases::update_last_review_count(&mut task, 5).unwrap();
     assert_eq!(task.meta.last_review_count, Some(5));
+}
+
+// ---------------------------------------------------------------------------
+// Set linked PR
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_linked_pr() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    // Create a task with a real worktree (has a git repo)
+    let mut task = use_cases::create_task(
+        &config,
+        "myrepo",
+        "pr-branch",
+        "Test PR linking",
+        "new",
+        WorktreeSource::NewBranch,
+        false,
+    )
+    .unwrap();
+
+    // Add an origin remote pointing to a GitHub URL
+    let wt = task.meta.worktree_path.clone();
+    std::process::Command::new("git")
+        .args(["remote", "add", "origin", "https://github.com/testowner/testrepo.git"])
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+
+    use_cases::set_linked_pr(&mut task, 42, &wt).unwrap();
+
+    assert!(task.meta.linked_pr.is_some());
+    let pr = task.meta.linked_pr.as_ref().unwrap();
+    assert_eq!(pr.number, 42);
+    assert_eq!(pr.url, "https://github.com/testowner/testrepo/pull/42");
+}
+
+// ---------------------------------------------------------------------------
+// Clear linked PR
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clear_linked_pr_resets_review_state() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+
+    // Set up a linked PR and review state
+    task.set_linked_pr(10, "https://github.com/o/r/pull/10".to_string())
+        .unwrap();
+    task.meta.review_addressed = true;
+    task.meta.last_review_count = Some(3);
+    task.save_meta().unwrap();
+
+    use_cases::clear_linked_pr(&mut task).unwrap();
+
+    assert!(task.meta.linked_pr.is_none());
+    assert!(!task.meta.review_addressed);
+    assert!(task.meta.last_review_count.is_none());
+
+    // Verify persistence
+    let loaded = Task::load(&config, "repo", "branch").unwrap();
+    assert!(loaded.meta.linked_pr.is_none());
+    assert!(!loaded.meta.review_addressed);
+    assert!(loaded.meta.last_review_count.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Parse GitHub owner/repo from remote URL
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_github_owner_repo_formats() {
+    // HTTPS with .git
+    let (owner, repo) = parse_github_owner_repo("https://github.com/acme/widgets.git").unwrap();
+    assert_eq!(owner, "acme");
+    assert_eq!(repo, "widgets");
+
+    // HTTPS without .git
+    let (owner, repo) = parse_github_owner_repo("https://github.com/acme/widgets").unwrap();
+    assert_eq!(owner, "acme");
+    assert_eq!(repo, "widgets");
+
+    // SSH with .git
+    let (owner, repo) = parse_github_owner_repo("git@github.com:acme/widgets.git").unwrap();
+    assert_eq!(owner, "acme");
+    assert_eq!(repo, "widgets");
+
+    // SSH without .git
+    let (owner, repo) = parse_github_owner_repo("git@github.com:acme/widgets").unwrap();
+    assert_eq!(owner, "acme");
+    assert_eq!(repo, "widgets");
+
+    // Non-GitHub URL returns None
+    assert!(parse_github_owner_repo("https://gitlab.com/acme/widgets.git").is_none());
 }

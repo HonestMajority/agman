@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use crate::config::Config;
-use crate::git::Git;
+use crate::git::{self, Git};
 use crate::repo_stats::RepoStats;
 use crate::task::{Task, TaskStatus};
 
@@ -284,6 +284,24 @@ pub fn set_review_addressed(task: &mut Task, addressed: bool) -> Result<()> {
 /// Update the `last_review_count` on a task and persist to disk.
 pub fn update_last_review_count(task: &mut Task, count: u64) -> Result<()> {
     task.meta.last_review_count = Some(count);
+    task.save_meta()
+}
+
+/// Set the linked PR for a task by constructing the URL from the worktree's origin remote.
+pub fn set_linked_pr(task: &mut Task, pr_number: u64, worktree_path: &PathBuf) -> Result<()> {
+    let remote_url = Git::get_remote_url(worktree_path)?;
+    let (owner, repo) = git::parse_github_owner_repo(&remote_url)
+        .ok_or_else(|| anyhow::anyhow!("Not a GitHub remote: {}", remote_url))?;
+    let url = format!("https://github.com/{}/{}/pull/{}", owner, repo, pr_number);
+    task.set_linked_pr(pr_number, url)
+}
+
+/// Clear the linked PR and reset stale polling state.
+pub fn clear_linked_pr(task: &mut Task) -> Result<()> {
+    task.meta.linked_pr = None;
+    task.meta.last_review_count = None;
+    task.meta.review_addressed = false;
+    task.meta.updated_at = chrono::Utc::now();
     task.save_meta()
 }
 

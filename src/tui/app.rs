@@ -39,6 +39,7 @@ pub enum View {
     ReviewWizard,
     RestartConfirm,
     RestartWizard,
+    SetLinkedPr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +193,8 @@ pub struct App {
     pub should_restart: bool,
     // PR polling
     pub last_pr_poll: Instant,
+    // Set linked PR modal
+    pub pr_number_editor: TextArea<'static>,
 }
 
 impl App {
@@ -238,6 +241,7 @@ impl App {
             restart_confirm_index: 0,
             should_restart: false,
             last_pr_poll: Instant::now(),
+            pr_number_editor: Self::create_plain_editor(),
         })
     }
 
@@ -610,6 +614,18 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn open_set_linked_pr(&mut self) {
+        let mut editor = Self::create_plain_editor();
+        if let Some(task) = self.selected_task() {
+            if let Some(pr) = &task.meta.linked_pr {
+                editor = TextArea::new(vec![pr.number.to_string()]);
+                editor.set_cursor_line_style(ratatui::style::Style::default());
+            }
+        }
+        self.pr_number_editor = editor;
+        self.view = View::SetLinkedPr;
     }
 
     fn resume_after_answering(&mut self) -> Result<()> {
@@ -1593,6 +1609,7 @@ impl App {
             View::ReviewWizard => self.handle_review_wizard_event(event),
             View::RestartConfirm => self.handle_restart_confirm_event(event),
             View::RestartWizard => self.handle_restart_wizard_event(event),
+            View::SetLinkedPr => self.handle_set_linked_pr_event(event),
         }
     }
 
@@ -1711,6 +1728,9 @@ impl App {
                             self.set_status("Cleared review indicator".to_string());
                         }
                     }
+                }
+                KeyCode::Char('P') => {
+                    self.open_set_linked_pr();
                 }
                 _ => {}
             }
@@ -1923,6 +1943,9 @@ impl App {
                 }
                 KeyCode::Char('H') => {
                     self.toggle_hold()?;
+                }
+                KeyCode::Char('P') => {
+                    self.open_set_linked_pr();
                 }
                 _ => {}
             }
@@ -2808,6 +2831,67 @@ impl App {
                     }
                     _ => {}
                 },
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_set_linked_pr_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            match key.code {
+                KeyCode::Esc => {
+                    self.view = View::TaskList;
+                }
+                KeyCode::Enter => {
+                    let text: String = self.pr_number_editor.lines().join("");
+                    let text = text.trim().to_string();
+
+                    if text.is_empty() {
+                        // Clear linked PR
+                        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                            match use_cases::clear_linked_pr(task) {
+                                Ok(()) => self.set_status("PR link cleared".to_string()),
+                                Err(e) => self.set_status(format!("Error: {}", e)),
+                            }
+                        }
+                    } else {
+                        // Parse as number and set
+                        match text.parse::<u64>() {
+                            Ok(pr_number) => {
+                                let worktree_path = self
+                                    .selected_task()
+                                    .map(|t| t.meta.worktree_path.clone());
+                                if let Some(wt) = worktree_path {
+                                    if let Some(task) =
+                                        self.tasks.get_mut(self.selected_index)
+                                    {
+                                        match use_cases::set_linked_pr(task, pr_number, &wt) {
+                                            Ok(()) => self.set_status(format!(
+                                                "Linked PR #{}",
+                                                pr_number
+                                            )),
+                                            Err(e) => {
+                                                self.set_status(format!("Error: {}", e))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                self.set_status("Invalid PR number".to_string());
+                            }
+                        }
+                    }
+                    self.view = View::TaskList;
+                }
+                _ => {
+                    self.pr_number_editor.input(Input::from(event));
+                }
             }
         }
         Ok(false)
