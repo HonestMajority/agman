@@ -26,8 +26,6 @@ impl Agent {
 
     pub fn build_prompt(&self, task: &Task) -> Result<String> {
         let task_content = task.read_task()?;
-        let progress = task.read_progress()?;
-        let context = task.read_context()?;
         let feedback = task.read_feedback()?;
 
         let mut prompt = self.prompt_template.clone();
@@ -41,18 +39,6 @@ impl Agent {
         prompt.push_str("# Current Task\n");
         prompt.push_str(&task_content);
         prompt.push_str("\n\n");
-
-        if !progress.is_empty() {
-            prompt.push_str("# Progress So Far\n");
-            prompt.push_str(&progress);
-            prompt.push_str("\n\n");
-        }
-
-        if !context.is_empty() {
-            prompt.push_str("# Relevant Context\n");
-            prompt.push_str(&context);
-            prompt.push_str("\n\n");
-        }
 
         // Include git context for refiner and checker agents
         let needs_git_context =
@@ -244,26 +230,6 @@ impl AgentRunner {
         }
 
         Ok(result)
-    }
-
-    /// Run agent in tmux (non-blocking, for interactive use)
-    pub fn run_agent_in_tmux(&self, task: &mut Task, agent_name: &str) -> Result<()> {
-        let agent = Agent::load(&self.config, agent_name)?;
-
-        // Update task to show current agent
-        task.update_agent(Some(agent_name.to_string()))?;
-
-        // Log start
-        let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-        task.append_agent_log(&format!(
-            "\n--- Agent: {} started at {} (tmux) ---\n",
-            agent_name, timestamp
-        ))?;
-
-        // Run in tmux (non-blocking)
-        agent.run_in_tmux(task)?;
-
-        Ok(())
     }
 
     /// Run a single agent in a loop until it returns a stop condition
