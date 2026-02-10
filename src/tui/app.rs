@@ -10,6 +10,7 @@ use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
@@ -148,6 +149,67 @@ pub enum PreviewPane {
     Notes,
 }
 
+struct PrPollResult {
+    task_id: String,
+    pr_number: u64,
+    action: use_cases::PrPollAction,
+    review_count: u64,
+}
+
+/// Query a PR's state via `gh pr view`. Returns `(is_merged, review_count)`.
+/// Returns `None` on any error so polling gracefully skips failures.
+fn query_pr_state(worktree_path: &std::path::Path, pr_number: u64) -> Option<(bool, u64)> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "state,reviews",
+        ])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let state = json.get("state")?.as_str()?;
+    let is_merged = state == "MERGED";
+    let review_count = json
+        .get("reviews")
+        .and_then(|r| r.as_array())
+        .map(|a| a.len() as u64)
+        .unwrap_or(0);
+
+    Some((is_merged, review_count))
+}
+
+/// Run PR queries for all eligible tasks. This is the blocking work that
+/// runs on a background thread — calls `gh pr view` for each task.
+fn run_pr_queries(eligible: Vec<(String, u64, PathBuf, Option<u64>)>) -> Vec<PrPollResult> {
+    let mut results = Vec::new();
+    for (task_id, pr_number, worktree_path, last_review_count) in &eligible {
+        if let Some((is_merged, review_count)) = query_pr_state(worktree_path, *pr_number) {
+            let action = use_cases::determine_pr_poll_action(
+                TaskStatus::Stopped,
+                is_merged,
+                review_count,
+                *last_review_count,
+            );
+            results.push(PrPollResult {
+                task_id: task_id.clone(),
+                pr_number: *pr_number,
+                action,
+                review_count,
+            });
+        }
+    }
+    results
+}
+
 pub struct App {
     pub config: Config,
     pub tasks: Vec<Task>,
@@ -193,6 +255,9 @@ pub struct App {
     pub should_restart: bool,
     // PR polling
     pub last_pr_poll: Instant,
+    pr_poll_tx: mpsc::Sender<Vec<PrPollResult>>,
+    pr_poll_rx: mpsc::Receiver<Vec<PrPollResult>>,
+    pr_poll_active: bool,
     // Set linked PR modal
     pub pr_number_editor: TextArea<'static>,
     // Sleep inhibition (macOS: caffeinate process)
@@ -207,6 +272,7 @@ impl App {
         let notes_editor = VimTextArea::new();
         let feedback_editor = VimTextArea::new();
         let task_file_editor = VimTextArea::new();
+        let (pr_poll_tx, pr_poll_rx) = mpsc::channel();
 
         Ok(Self {
             config,
@@ -244,6 +310,9 @@ impl App {
             restart_confirm_index: 0,
             should_restart: false,
             last_pr_poll: Instant::now(),
+            pr_poll_tx,
+            pr_poll_rx,
+            pr_poll_active: false,
             pr_number_editor: Self::create_plain_editor(),
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
@@ -2917,56 +2986,14 @@ impl App {
         Ok(false)
     }
 
-    /// Query a PR's state via `gh pr view`. Returns `(is_merged, review_count)`.
-    /// Returns `None` on any error so polling gracefully skips failures.
-    fn query_pr_state(worktree_path: &std::path::Path, pr_number: u64) -> Option<(bool, u64)> {
-        let output = match Command::new("gh")
-            .args([
-                "pr",
-                "view",
-                &pr_number.to_string(),
-                "--json",
-                "state,reviews",
-            ])
-            .current_dir(worktree_path)
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::warn!(pr = pr_number, "gh pr view failed to spawn: {e}");
-                return None;
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::warn!(pr = pr_number, "gh pr view returned non-zero: {stderr}");
-            return None;
+    /// Spawn a background thread to poll linked PRs for all eligible tasks.
+    /// The thread runs `gh pr view` calls off the main thread and sends results
+    /// back via the channel so the TUI stays responsive.
+    fn start_pr_poll(&mut self) {
+        if self.pr_poll_active {
+            return;
         }
 
-        let json: serde_json::Value = match serde_json::from_slice(&output.stdout) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(pr = pr_number, "gh pr view JSON parse failed: {e}");
-                return None;
-            }
-        };
-        let state = json.get("state")?.as_str()?;
-        let is_merged = state == "MERGED";
-        let review_count = json
-            .get("reviews")
-            .and_then(|r| r.as_array())
-            .map(|a| a.len() as u64)
-            .unwrap_or(0);
-
-        tracing::debug!(pr = pr_number, is_merged, review_count, "PR state queried");
-        Some((is_merged, review_count))
-    }
-
-    /// Poll linked PRs for all eligible (Stopped + has PR) tasks.
-    /// Detects merged PRs (auto-delete) and new reviews (auto-address-review).
-    fn poll_linked_prs(&mut self) {
-        // Collect snapshot of eligible tasks
         let eligible: Vec<(String, u64, PathBuf, Option<u64>)> = self
             .tasks
             .iter()
@@ -2982,53 +3009,54 @@ impl App {
             })
             .collect();
 
-        tracing::debug!(count = eligible.len(), "PR poll cycle: eligible tasks");
-
-        // Query each PR and decide on actions
-        let mut actions: Vec<(String, u64, use_cases::PrPollAction, u64)> = Vec::new();
-        for (task_id, pr_number, worktree_path, last_review_count) in &eligible {
-            if let Some((is_merged, review_count)) =
-                Self::query_pr_state(worktree_path, *pr_number)
-            {
-                let action = use_cases::determine_pr_poll_action(
-                    TaskStatus::Stopped,
-                    is_merged,
-                    review_count,
-                    *last_review_count,
-                );
-                tracing::debug!(task = %task_id, pr = pr_number, action = ?action, "PR poll action decided");
-                actions.push((task_id.clone(), *pr_number, action, review_count));
-            } else {
-                tracing::debug!(task = %task_id, pr = pr_number, "PR poll: skipping, query failed");
-            }
+        if eligible.is_empty() {
+            return;
         }
 
-        // Process actions (deletions in reverse to avoid index shifting)
+        self.pr_poll_active = true;
+        let tx = self.pr_poll_tx.clone();
+
+        std::thread::spawn(move || {
+            let results = run_pr_queries(eligible);
+            let _ = tx.send(results);
+        });
+    }
+
+    /// Check for completed PR poll results (non-blocking) and apply actions.
+    fn apply_pr_poll_results(&mut self) {
+        let results = match self.pr_poll_rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        self.pr_poll_active = false;
+
         // First: handle non-delete actions
-        for (task_id, pr_number, action, review_count) in &actions {
-            match action {
+        for result in &results {
+            match &result.action {
                 use_cases::PrPollAction::AddressReview { .. } => {
-                    if let Some(task) = self.tasks.iter_mut().find(|t| t.meta.task_id() == *task_id)
+                    if let Some(task) = self
+                        .tasks
+                        .iter_mut()
+                        .find(|t| t.meta.task_id() == result.task_id)
                     {
-                        let _ = use_cases::update_last_review_count(task, *review_count);
-                        // Clear review_addressed since there's a new unaddressed review
+                        let _ = use_cases::update_last_review_count(task, result.review_count);
                         let _ = use_cases::set_review_addressed(task, false);
                     }
 
-                    // Trigger address-review command
                     let output = Command::new("agman")
-                        .args(["run-command", task_id, "address-review"])
+                        .args(["run-command", &result.task_id, "address-review"])
                         .output();
 
                     match output {
                         Ok(o) if o.status.success() => {
                             self.log_output(format!(
                                 "Auto-triggered address-review for {}: new review on PR #{}",
-                                task_id, pr_number
+                                result.task_id, result.pr_number
                             ));
-                            // Set review_addressed after successful trigger
-                            if let Some(task) =
-                                self.tasks.iter_mut().find(|t| t.meta.task_id() == *task_id)
+                            if let Some(task) = self
+                                .tasks
+                                .iter_mut()
+                                .find(|t| t.meta.task_id() == result.task_id)
                             {
                                 let _ = use_cases::set_review_addressed(task, true);
                             }
@@ -3037,23 +3065,26 @@ impl App {
                             let stderr = String::from_utf8_lossy(&o.stderr);
                             self.log_output(format!(
                                 "Failed to auto-trigger address-review for {}: {}",
-                                task_id, stderr
+                                result.task_id, stderr
                             ));
                         }
                         Err(e) => {
                             self.log_output(format!(
                                 "Error triggering address-review for {}: {}",
-                                task_id, e
+                                result.task_id, e
                             ));
                         }
                     }
                 }
                 use_cases::PrPollAction::None => {
-                    // First poll: seed the review count
-                    if let Some(task) = self.tasks.iter_mut().find(|t| t.meta.task_id() == *task_id)
+                    if let Some(task) = self
+                        .tasks
+                        .iter_mut()
+                        .find(|t| t.meta.task_id() == result.task_id)
                     {
                         if task.meta.last_review_count.is_none() {
-                            let _ = use_cases::update_last_review_count(task, *review_count);
+                            let _ =
+                                use_cases::update_last_review_count(task, result.review_count);
                         }
                     }
                 }
@@ -3061,11 +3092,11 @@ impl App {
             }
         }
 
-        // Then: handle deletions (collect and process)
-        let to_delete: Vec<(String, u64)> = actions
+        // Then: handle deletions
+        let to_delete: Vec<(String, u64)> = results
             .iter()
-            .filter(|(_, _, action, _)| matches!(action, use_cases::PrPollAction::DeleteMerged))
-            .map(|(task_id, pr_number, _, _)| (task_id.clone(), *pr_number))
+            .filter(|r| matches!(r.action, use_cases::PrPollAction::DeleteMerged))
+            .map(|r| (r.task_id.clone(), r.pr_number))
             .collect();
 
         for (task_id, pr_number) in to_delete {
@@ -3085,7 +3116,6 @@ impl App {
                     task_id, pr_number
                 ));
 
-                // Adjust selected_index if needed
                 if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
                     self.selected_index = self.tasks.len() - 1;
                 }
@@ -3211,9 +3241,12 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Poll linked PRs every 60 seconds (regardless of view)
             if app.last_pr_poll.elapsed() >= Duration::from_secs(60) {
-                app.poll_linked_prs();
+                app.start_pr_poll();
                 app.last_pr_poll = Instant::now();
             }
+
+            // Check for completed background PR poll results (non-blocking)
+            app.apply_pr_poll_results();
 
             // Check for restart signal (written by release.sh when agman is rebuilt)
             #[cfg(unix)]
