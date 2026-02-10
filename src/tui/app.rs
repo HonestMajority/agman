@@ -10,7 +10,7 @@ use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::mpsc;
+use tokio::sync::mpsc as tokio_mpsc;
 use std::time::{Duration, Instant};
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
@@ -255,9 +255,11 @@ pub struct App {
     pub should_restart: bool,
     // PR polling
     pub last_pr_poll: Instant,
-    pr_poll_tx: mpsc::Sender<Vec<PrPollResult>>,
-    pr_poll_rx: mpsc::Receiver<Vec<PrPollResult>>,
+    pr_poll_tx: tokio_mpsc::UnboundedSender<Vec<PrPollResult>>,
+    pr_poll_rx: tokio_mpsc::UnboundedReceiver<Vec<PrPollResult>>,
     pr_poll_active: bool,
+    // Tokio runtime for background async work
+    rt: tokio::runtime::Runtime,
     // Set linked PR modal
     pub pr_number_editor: TextArea<'static>,
     // Sleep inhibition (macOS: caffeinate process)
@@ -272,7 +274,8 @@ impl App {
         let notes_editor = VimTextArea::new();
         let feedback_editor = VimTextArea::new();
         let task_file_editor = VimTextArea::new();
-        let (pr_poll_tx, pr_poll_rx) = mpsc::channel();
+        let (pr_poll_tx, pr_poll_rx) = tokio_mpsc::unbounded_channel();
+        let rt = tokio::runtime::Runtime::new()?;
 
         Ok(Self {
             config,
@@ -313,6 +316,7 @@ impl App {
             pr_poll_tx,
             pr_poll_rx,
             pr_poll_active: false,
+            rt,
             pr_number_editor: Self::create_plain_editor(),
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
@@ -2986,9 +2990,9 @@ impl App {
         Ok(false)
     }
 
-    /// Spawn a background thread to poll linked PRs for all eligible tasks.
-    /// The thread runs `gh pr view` calls off the main thread and sends results
-    /// back via the channel so the TUI stays responsive.
+    /// Spawn a background task to poll linked PRs for all eligible tasks.
+    /// Uses tokio's spawn_blocking to run `gh pr view` calls off the main thread
+    /// and sends results back via the channel so the TUI stays responsive.
     fn start_pr_poll(&mut self) {
         if self.pr_poll_active {
             return;
@@ -3016,8 +3020,10 @@ impl App {
         self.pr_poll_active = true;
         let tx = self.pr_poll_tx.clone();
 
-        std::thread::spawn(move || {
-            let results = run_pr_queries(eligible);
+        self.rt.spawn(async move {
+            let results = tokio::task::spawn_blocking(move || run_pr_queries(eligible))
+                .await
+                .unwrap_or_default();
             let _ = tx.send(results);
         });
     }
