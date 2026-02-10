@@ -1,5 +1,6 @@
+use chrono::Local;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap},
@@ -11,6 +12,14 @@ use agman::task::TaskStatus;
 use super::app::{App, BranchSource, PreviewPane, RestartWizardStep, ReviewWizardStep, View, WizardStep};
 use super::log_render;
 use super::vim::VimMode;
+
+fn clock_title() -> Line<'static> {
+    Line::from(Span::styled(
+        format!(" {} ", Local::now().format("%H:%M")),
+        Style::default().fg(Color::DarkGray),
+    ))
+    .alignment(Alignment::Right)
+}
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     // Check if we're showing a modal that should hide the output pane
@@ -134,6 +143,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ),
         ]))
+        .title(clock_title())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::LightCyan));
 
@@ -543,6 +553,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
                         .fg(Color::LightCyan)
                         .add_modifier(Modifier::BOLD),
                 ))
+                .title(clock_title())
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::LightCyan)),
         );
