@@ -195,6 +195,9 @@ pub struct App {
     pub last_pr_poll: Instant,
     // Set linked PR modal
     pub pr_number_editor: TextArea<'static>,
+    // Sleep inhibition (macOS: caffeinate process)
+    #[cfg(target_os = "macos")]
+    caffeinate_process: Option<std::process::Child>,
 }
 
 impl App {
@@ -242,8 +245,45 @@ impl App {
             should_restart: false,
             last_pr_poll: Instant::now(),
             pr_number_editor: Self::create_plain_editor(),
+            #[cfg(target_os = "macos")]
+            caffeinate_process: None,
         })
     }
+
+    #[cfg(target_os = "macos")]
+    fn stop_caffeinate(&mut self) {
+        if let Some(ref mut child) = self.caffeinate_process {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.caffeinate_process = None;
+    }
+
+    #[cfg(target_os = "macos")]
+    fn update_sleep_inhibition(&mut self) {
+        let running = self
+            .tasks
+            .iter()
+            .any(|t| t.meta.status == TaskStatus::Running);
+
+        if running && self.caffeinate_process.is_none() {
+            match std::process::Command::new("caffeinate")
+                .arg("-i")
+                .spawn()
+            {
+                Ok(child) => self.caffeinate_process = Some(child),
+                Err(e) => tracing::warn!("failed to spawn caffeinate: {e}"),
+            }
+        } else if !running && self.caffeinate_process.is_some() {
+            self.stop_caffeinate();
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn stop_caffeinate(&mut self) {}
+
+    #[cfg(not(target_os = "macos"))]
+    fn update_sleep_inhibition(&mut self) {}
 
     fn create_plain_editor() -> TextArea<'static> {
         let mut editor = TextArea::default();
@@ -3098,6 +3138,12 @@ impl App {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        self.stop_caffeinate();
+    }
+}
+
 pub fn run_tui(config: Config) -> Result<()> {
     // Remove any stale restart signal file left over from a previous build.
     // This prevents a "double restart" if the TUI missed the signal (e.g. it
@@ -3128,6 +3174,7 @@ pub fn run_tui(config: Config) -> Result<()> {
         app.view = View::TaskList;
         app.should_quit = false;
         let _ = app.refresh_tasks();
+        app.update_sleep_inhibition();
 
         // Main loop
         let mut attach_session: Option<String> = None;
@@ -3160,6 +3207,7 @@ pub fn run_tui(config: Config) -> Result<()> {
                     // Check for stranded feedback queues on stopped tasks
                     app.process_stranded_feedback();
                 }
+                app.update_sleep_inhibition();
                 last_refresh = Instant::now();
             }
 
@@ -3208,6 +3256,7 @@ pub fn run_tui(config: Config) -> Result<()> {
         // If user confirmed restart, exec the new binary
         #[cfg(unix)]
         if app.should_restart {
+            app.stop_caffeinate();
             eprintln!("agman updated — restarting...");
             let err = Command::new("agman").exec();
             // exec only returns on error
