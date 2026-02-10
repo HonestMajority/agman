@@ -153,6 +153,70 @@ cargo test               # Run tests (fallback)
 - Task state: `~/.agman/tasks/<task_id>/meta.json`
 - Check tmux: `tmux ls` then `tmux attach -t <session>`
 
+## Logging Policy
+
+agman uses `tracing` for structured logging to `~/.agman/agman.log` (file only, no stderr). Setup in `src/logging.rs`. Default filter: `agman=debug,warn`.
+
+### Task ID rule
+
+**Always include `task_id` as a structured field** when task context is available. This is the primary correlation key for debugging. Every log in `use_cases.rs`, `app.rs`, `agent.rs`, `task.rs`, and `git.rs` that operates on a task must include it.
+
+```rust
+tracing::info!(task_id = %task.meta.task_id(), "deleting task");
+```
+
+### Log levels
+
+- **`error!`** — Operations that failed and could not be recovered. Every handled error must be logged at this level.
+- **`warn!`** — Degraded behavior that doesn't fail the operation (e.g., missing optional file, fallback used).
+- **`info!`** — Significant actions and state changes: task creation, deletion, status transitions, flow steps starting/completing, agent starts/stops, git worktree operations.
+- **`debug!`** — Implementation details useful for troubleshooting: config resolution, file reads/writes, intermediate computation.
+- **`trace!`** — High-frequency iteration-level detail (e.g., polling loops, line-by-line parsing).
+
+### Error logging rule
+
+**Log every error at the point where it is handled, not where it is propagated.** If a function uses `?` to propagate, the caller that matches/unwraps the error must log it.
+
+```rust
+// In app.rs or main.rs — where the error is handled:
+if let Err(e) = use_cases::delete_task(&config, &task_id) {
+    tracing::error!(task_id = %task_id, error = %e, "failed to delete task");
+    self.set_error(format!("Delete failed: {e}"));
+}
+```
+
+Do **not** log-and-propagate (no `error!` followed by `return Err(...)` in the same function) — this creates duplicate log entries.
+
+### Action logging rule
+
+Every user-visible action and significant state change must produce at least one log line. This includes:
+- **use_cases.rs**: Every public function must log its entry at `info!` or `debug!` level with relevant context fields.
+- **tui/app.rs**: Every key press handler that modifies state (create, delete, pause, resume, feedback, attach) must log the action.
+- **agent.rs / flow execution**: Agent start, stop, magic string detection, flow step transitions.
+- **git.rs**: Worktree creation, deletion, branch operations.
+
+### Structured fields
+
+Use these standard field names consistently:
+
+| Field | When to include |
+|-------|----------------|
+| `task_id` | Any operation on a task |
+| `repo` | Git and worktree operations |
+| `branch` | Git and worktree operations |
+| `agent` | Agent execution |
+| `flow` | Flow execution |
+| `status` | Status transitions (include old and new) |
+| `error` | Error logging (`error = %e`) |
+| `step` | Flow step transitions |
+
+### Console output vs. tracing
+
+- **`println!`** — For user-visible progress in tmux sessions (internal commands like `flow-run`, `continue`). These are intentional and correct.
+- **`tracing::*`** — For the debug log file (`~/.agman/agman.log`). Used everywhere except internal command console output.
+
+Do not use `println!` in library code (`use_cases.rs`, `task.rs`, `git.rs`, etc.). Do not use `tracing` for tmux session user output.
+
 ## Testing
 
 ### Philosophy
