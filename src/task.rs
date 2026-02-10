@@ -538,20 +538,6 @@ impl Task {
         Ok(())
     }
 
-    pub fn time_since_update(&self) -> String {
-        let duration = Utc::now().signed_duration_since(self.meta.updated_at);
-
-        if duration.num_days() > 0 {
-            format!("{}d ago", duration.num_days())
-        } else if duration.num_hours() > 0 {
-            format!("{}h ago", duration.num_hours())
-        } else if duration.num_minutes() > 0 {
-            format!("{}m ago", duration.num_minutes())
-        } else {
-            "just now".to_string()
-        }
-    }
-
     /// Write feedback for the refiner agent to process
     pub fn write_feedback(&self, feedback: &str) -> Result<()> {
         let path = self.dir.join("FEEDBACK.md");
