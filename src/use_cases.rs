@@ -31,6 +31,13 @@ pub fn create_task(
     worktree_source: WorktreeSource,
     review_after: bool,
 ) -> Result<Task> {
+    tracing::info!(
+        repo = repo_name,
+        branch = branch_name,
+        flow = flow_name,
+        review_after,
+        "creating task"
+    );
     // Initialize default files (flows, prompts, commands)
     config.init_default_files(false)?;
 
@@ -95,6 +102,7 @@ pub enum DeleteMode {
 /// This is the pure business logic behind `App::delete_task()`.
 /// It does NOT kill tmux sessions — that's a side effect handled by the caller.
 pub fn delete_task(config: &Config, task: Task, mode: DeleteMode) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), mode = ?mode, "deleting task");
     let repo_name = &task.meta.repo_name;
     let branch_name = &task.meta.branch_name;
     let worktree_path = &task.meta.worktree_path;
@@ -126,6 +134,7 @@ pub fn stop_task(task: &mut Task) -> Result<()> {
     if task.meta.status == TaskStatus::Stopped {
         return Ok(());
     }
+    tracing::info!(task_id = %task.meta.task_id(), old_status = %task.meta.status, new_status = "stopped", "stopping task");
     task.update_status(TaskStatus::Stopped)?;
     task.meta.current_agent = None;
     task.save_meta()?;
@@ -140,6 +149,7 @@ pub fn put_on_hold(task: &mut Task) -> Result<()> {
     if task.meta.status != TaskStatus::Stopped {
         return Ok(());
     }
+    tracing::info!(task_id = %task.meta.task_id(), old_status = "stopped", new_status = "on_hold", "putting task on hold");
     task.update_status(TaskStatus::OnHold)?;
     Ok(())
 }
@@ -152,6 +162,7 @@ pub fn resume_from_hold(task: &mut Task) -> Result<()> {
     if task.meta.status != TaskStatus::OnHold {
         return Ok(());
     }
+    tracing::info!(task_id = %task.meta.task_id(), old_status = "on_hold", new_status = "stopped", "resuming task from hold");
     task.update_status(TaskStatus::Stopped)?;
     Ok(())
 }
@@ -164,6 +175,7 @@ pub fn resume_after_answering(task: &mut Task) -> Result<()> {
     if task.meta.status != TaskStatus::InputNeeded {
         return Ok(());
     }
+    tracing::info!(task_id = %task.meta.task_id(), old_status = "input_needed", new_status = "running", "resuming task after answering");
     task.update_status(TaskStatus::Running)?;
     Ok(())
 }
@@ -172,6 +184,7 @@ pub fn resume_after_answering(task: &mut Task) -> Result<()> {
 ///
 /// Extracts the "running" branch of `App::submit_feedback()`.
 pub fn queue_feedback(task: &Task, feedback: &str) -> Result<usize> {
+    tracing::info!(task_id = %task.meta.task_id(), "queuing feedback");
     task.append_feedback_to_log(feedback)?;
     task.queue_feedback(feedback)?;
     Ok(task.queued_feedback_count())
@@ -182,16 +195,19 @@ pub fn queue_feedback(task: &Task, feedback: &str) -> Result<usize> {
 /// Extracts the "stopped" branch of `App::submit_feedback()`.
 /// Does NOT run `agman continue` — that's a side effect handled by the caller.
 pub fn write_immediate_feedback(task: &Task, feedback: &str) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), "writing immediate feedback");
     task.write_feedback(feedback)
 }
 
 /// Delete a single queued feedback item by index.
 pub fn delete_queued_feedback(task: &Task, index: usize) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), index, "deleting queued feedback item");
     task.remove_feedback_queue_item(index)
 }
 
 /// Clear all queued feedback.
 pub fn clear_all_queued_feedback(task: &Task) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), "clearing all queued feedback");
     task.clear_feedback_queue()
 }
 
@@ -220,6 +236,7 @@ pub fn list_commands(config: &Config) -> Result<Vec<crate::command::StoredComman
 /// This is the pure business logic behind `App::execute_restart_wizard()`.
 /// It does NOT create tmux sessions or dispatch flow-run — those are side effects.
 pub fn restart_task(task: &mut Task, step_index: usize) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), step = step_index, old_status = %task.meta.status, new_status = "running", "restarting task");
     task.meta.flow_step = step_index;
     task.update_status(TaskStatus::Running)?;
     Ok(())
@@ -231,6 +248,7 @@ pub fn restart_task(task: &mut Task, step_index: usize) -> Result<()> {
 /// It does NOT run `agman continue` — that's a side effect handled by the caller.
 /// Returns the feedback string if one was popped, or None if the queue was empty.
 pub fn pop_and_apply_feedback(task: &Task) -> Result<Option<String>> {
+    tracing::info!(task_id = %task.meta.task_id(), "popping and applying queued feedback");
     match task.pop_feedback_queue()? {
         Some(feedback) => {
             task.write_feedback(&feedback)?;
@@ -289,6 +307,7 @@ pub fn update_last_review_count(task: &mut Task, count: u64) -> Result<()> {
 
 /// Set the linked PR for a task by constructing the URL from the worktree's origin remote.
 pub fn set_linked_pr(task: &mut Task, pr_number: u64, worktree_path: &PathBuf) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), pr_number, "setting linked PR");
     let remote_url = Git::get_remote_url(worktree_path)?;
     let (owner, repo) = git::parse_github_owner_repo(&remote_url)
         .ok_or_else(|| anyhow::anyhow!("Not a GitHub remote: {}", remote_url))?;
@@ -298,6 +317,7 @@ pub fn set_linked_pr(task: &mut Task, pr_number: u64, worktree_path: &PathBuf) -
 
 /// Clear the linked PR and reset stale polling state.
 pub fn clear_linked_pr(task: &mut Task) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), "clearing linked PR");
     task.meta.linked_pr = None;
     task.meta.last_review_count = None;
     task.meta.review_addressed = false;
@@ -316,6 +336,7 @@ pub fn create_review_task(
     branch_name: &str,
     worktree_source: WorktreeSource,
 ) -> Result<Task> {
+    tracing::info!(repo = repo_name, branch = branch_name, "creating review task");
     let description = format!("Review branch {}", branch_name);
     create_task(
         config,

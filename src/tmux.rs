@@ -108,11 +108,8 @@ impl Tmux {
             .context("Failed to kill tmux session")?;
 
         if !output.status.success() {
-            tracing::warn!(
-                "Failed to kill tmux session {}: {}",
-                session_name,
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let err = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(session = session_name, error = %err, "failed to kill tmux session");
         }
 
         Ok(())

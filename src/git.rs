@@ -88,10 +88,8 @@ impl Git {
             .context("Failed to execute git fetch")?;
 
         if !output.status.success() {
-            tracing::warn!(
-                "Failed to fetch origin: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let err = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(repo = %repo_path.display(), error = %err, "failed to fetch origin");
             return Ok(false);
         }
 
@@ -356,10 +354,8 @@ impl Git {
             .context("Failed to remove worktree")?;
 
         if !output.status.success() {
-            tracing::warn!(
-                "Failed to remove worktree: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let err = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(worktree = %worktree_path.display(), error = %err, "failed to remove worktree");
         }
 
         // Prune stale worktree references
@@ -382,11 +378,8 @@ impl Git {
             .context("Failed to delete branch")?;
 
         if !output.status.success() {
-            tracing::warn!(
-                "Failed to delete branch {}: {}",
-                branch_name,
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let err = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(branch = branch_name, error = %err, "failed to delete branch");
         }
 
         // Delete backup branches (like tlana does)
