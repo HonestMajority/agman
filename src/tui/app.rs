@@ -262,7 +262,7 @@ pub struct App {
     rt: tokio::runtime::Runtime,
     // Set linked PR modal
     pub pr_number_editor: TextArea<'static>,
-    // Sleep inhibition (macOS: caffeinate process)
+    // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
 }
@@ -320,7 +320,7 @@ impl App {
             pr_number_editor: Self::create_plain_editor(),
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
-                .arg("-i")
+                .arg("-dis")
                 .spawn()
                 .ok(),
         })
