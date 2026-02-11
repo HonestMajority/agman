@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -9,6 +10,37 @@ pub struct Config {
     pub prompts_dir: PathBuf,
     pub commands_dir: PathBuf,
     pub repos_dir: PathBuf,
+}
+
+/// On-disk config file (~/.agman/config.toml).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ConfigFile {
+    pub repos_dir: Option<String>,
+}
+
+/// Read `<base_dir>/config.toml`, returning defaults if missing or unparseable.
+pub fn load_config_file(base_dir: &Path) -> ConfigFile {
+    let path = base_dir.join("config.toml");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => match toml::from_str::<ConfigFile>(&contents) {
+            Ok(cf) => cf,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "failed to parse config.toml, using defaults");
+                ConfigFile::default()
+            }
+        },
+        Err(_) => ConfigFile::default(),
+    }
+}
+
+/// Write a `ConfigFile` to `<base_dir>/config.toml`.
+pub fn save_config_file(base_dir: &Path, config_file: &ConfigFile) -> Result<()> {
+    let path = base_dir.join("config.toml");
+    let contents = toml::to_string_pretty(config_file)
+        .context("failed to serialize config.toml")?;
+    std::fs::write(&path, contents)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
 }
 
 impl Config {
@@ -30,8 +62,16 @@ impl Config {
 
     pub fn load() -> Result<Self> {
         let home_dir = dirs::home_dir().context("Could not find home directory")?;
-        let config = Self::new(home_dir.join(".agman"), home_dir.join("repos"));
-        tracing::debug!(base_dir = %config.base_dir.display(), "config loaded");
+        let base_dir = home_dir.join(".agman");
+
+        let config_file = load_config_file(&base_dir);
+        let repos_dir = match config_file.repos_dir {
+            Some(ref path) => PathBuf::from(path),
+            None => home_dir.join("repos"),
+        };
+
+        let config = Self::new(base_dir, repos_dir);
+        tracing::debug!(base_dir = %config.base_dir.display(), repos_dir = %config.repos_dir.display(), "config loaded");
         Ok(config)
     }
 
