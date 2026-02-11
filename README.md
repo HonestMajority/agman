@@ -2,7 +2,13 @@
 
 Agent Manager — a TUI for orchestrating stateless AI agents across isolated git worktrees.
 
-Each task gets its own git branch, worktree, and tmux session (1:1:1). Multiple agents can work on different features simultaneously without branch-switching or context pollution.
+> **Warning: agman is reckless by design.** All Claude agents are executed with `--dangerously-skip-permissions`, which means agents can read, write, and execute anything on your machine without asking for confirmation. Do not use agman on a machine where unrestricted AI access to the filesystem and shell is unacceptable.
+
+## What is agman?
+
+agman gives each AI-driven development task its own git branch, git worktree, and tmux session — a 1:1:1 mapping that keeps tasks fully isolated. Multiple agents can work on different features simultaneously without branch-switching pain or context pollution.
+
+You manage everything from a single TUI dashboard: create tasks, monitor agent progress, give feedback, review PRs, and attach to any task's tmux session — all without leaving the terminal.
 
 **Platform:** macOS. Linux should work but is untested. Windows is not supported.
 
