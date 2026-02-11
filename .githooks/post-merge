@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Only run release on merges to master
+# Only run release on merges to main
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "$BRANCH" != "master" ]]; then
+if [[ "$BRANCH" != "main" ]]; then
     exit 0
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-echo "Merge to master detected — running release script..."
+echo "Merge to main detected — running release script..."
 "$REPO_ROOT/release.sh"
