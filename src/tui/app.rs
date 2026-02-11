@@ -26,6 +26,16 @@ use agman::use_cases;
 use super::ui;
 use super::vim::{VimMode, VimTextArea};
 
+/// Open a URL in the default browser, cross-platform (macOS / Linux).
+fn open_url(url: &str) {
+    let cmd = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = Command::new(cmd).arg(url).spawn();
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     TaskList,
@@ -41,6 +51,67 @@ pub enum View {
     RestartConfirm,
     RestartWizard,
     SetLinkedPr,
+    DirectoryPicker,
+}
+
+/// Which wizard requested the directory picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirPickerOrigin {
+    NewTask,
+    Review,
+}
+
+pub struct DirectoryPicker {
+    pub current_dir: PathBuf,
+    pub entries: Vec<String>,
+    pub selected_index: usize,
+    pub origin: DirPickerOrigin,
+}
+
+impl DirectoryPicker {
+    fn new(start_dir: PathBuf, origin: DirPickerOrigin) -> Self {
+        let mut picker = Self {
+            current_dir: start_dir,
+            entries: Vec::new(),
+            selected_index: 0,
+            origin,
+        };
+        picker.refresh_entries();
+        picker
+    }
+
+    fn refresh_entries(&mut self) {
+        self.entries.clear();
+        if let Ok(read_dir) = std::fs::read_dir(&self.current_dir) {
+            let mut dirs: Vec<String> = read_dir
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .filter(|e| {
+                    !e.file_name()
+                        .to_string_lossy()
+                        .starts_with('.')
+                })
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            dirs.sort();
+            self.entries = dirs;
+        }
+        self.selected_index = 0;
+    }
+
+    fn enter_selected(&mut self) {
+        if let Some(name) = self.entries.get(self.selected_index) {
+            self.current_dir = self.current_dir.join(name);
+            self.refresh_entries();
+        }
+    }
+
+    fn go_up(&mut self) {
+        if let Some(parent) = self.current_dir.parent() {
+            self.current_dir = parent.to_path_buf();
+            self.refresh_entries();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,6 +333,8 @@ pub struct App {
     rt: tokio::runtime::Runtime,
     // Set linked PR modal
     pub pr_number_editor: TextArea<'static>,
+    // Directory picker for repos_dir
+    pub dir_picker: Option<DirectoryPicker>,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -318,6 +391,7 @@ impl App {
             pr_poll_active: false,
             rt,
             pr_number_editor: Self::create_plain_editor(),
+            dir_picker: None,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -905,7 +979,15 @@ impl App {
         let repos = self.scan_repos()?;
 
         if repos.is_empty() {
-            self.set_status("No repositories found in ~/repos/".to_string());
+            // Launch directory picker so the user can choose a repos directory
+            let start = if self.config.repos_dir.exists() {
+                self.config.repos_dir.clone()
+            } else {
+                dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+            };
+            self.dir_picker = Some(DirectoryPicker::new(start, DirPickerOrigin::NewTask));
+            self.view = View::DirectoryPicker;
+            self.set_status(format!("No repos found in {}. Pick a repos directory (s to select, h/l to navigate).", self.config.repos_dir.display()));
             return Ok(());
         }
 
@@ -1484,7 +1566,15 @@ impl App {
         let repos = self.scan_repos()?;
 
         if repos.is_empty() {
-            self.set_status("No repositories found in ~/repos/".to_string());
+            // Launch directory picker so the user can choose a repos directory
+            let start = if self.config.repos_dir.exists() {
+                self.config.repos_dir.clone()
+            } else {
+                dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+            };
+            self.dir_picker = Some(DirectoryPicker::new(start, DirPickerOrigin::Review));
+            self.view = View::DirectoryPicker;
+            self.set_status(format!("No repos found in {}. Pick a repos directory (s to select, h/l to navigate).", self.config.repos_dir.display()));
             return Ok(());
         }
 
@@ -1710,6 +1800,7 @@ impl App {
             View::RestartConfirm => self.handle_restart_confirm_event(event),
             View::RestartWizard => self.handle_restart_wizard_event(event),
             View::SetLinkedPr => self.handle_set_linked_pr_event(event),
+            View::DirectoryPicker => self.handle_directory_picker_event(event),
         }
     }
 
@@ -1799,7 +1890,7 @@ impl App {
                         t.meta.linked_pr.as_ref().map(|pr| (pr.number, pr.url.clone()))
                     });
                     if let Some((number, url)) = pr_info {
-                        let _ = Command::new("open").arg(&url).spawn();
+                        open_url(&url);
                         self.set_status(format!("Opening PR #{}...", number));
                     } else {
                         self.set_status("No linked PR".to_string());
@@ -2032,7 +2123,7 @@ impl App {
                         t.meta.linked_pr.as_ref().map(|pr| (pr.number, pr.url.clone()))
                     });
                     if let Some((number, url)) = pr_info {
-                        let _ = Command::new("open").arg(&url).spawn();
+                        open_url(&url);
                         self.set_status(format!("Opening PR #{}...", number));
                     } else {
                         self.set_status("No linked PR".to_string());
@@ -2998,6 +3089,94 @@ impl App {
                 _ => {
                     self.pr_number_editor.input(Input::from(event));
                 }
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_directory_picker_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    let origin = self.dir_picker.as_ref().map(|p| p.origin);
+                    self.dir_picker = None;
+                    self.view = View::TaskList;
+                    // If cancelled, show a helpful message
+                    match origin {
+                        Some(DirPickerOrigin::NewTask) | Some(DirPickerOrigin::Review) => {
+                            self.set_status("Directory selection cancelled".to_string());
+                        }
+                        None => {}
+                    }
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if let Some(picker) = &mut self.dir_picker {
+                        if !picker.entries.is_empty() {
+                            picker.selected_index =
+                                (picker.selected_index + 1) % picker.entries.len();
+                        }
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if let Some(picker) = &mut self.dir_picker {
+                        if !picker.entries.is_empty() {
+                            picker.selected_index = if picker.selected_index == 0 {
+                                picker.entries.len() - 1
+                            } else {
+                                picker.selected_index - 1
+                            };
+                        }
+                    }
+                }
+                KeyCode::Char('l') | KeyCode::Enter => {
+                    // Enter selected directory
+                    if let Some(picker) = &mut self.dir_picker {
+                        picker.enter_selected();
+                    }
+                }
+                KeyCode::Char('h') | KeyCode::Backspace => {
+                    // Go up one directory
+                    if let Some(picker) = &mut self.dir_picker {
+                        picker.go_up();
+                    }
+                }
+                KeyCode::Char('s') => {
+                    // Select current directory as repos_dir
+                    if let Some(picker) = self.dir_picker.take() {
+                        let selected_dir = picker.current_dir.clone();
+                        let origin = picker.origin;
+
+                        // Save to config.toml
+                        let config_file = agman::config::ConfigFile {
+                            repos_dir: Some(selected_dir.to_string_lossy().to_string()),
+                        };
+                        if let Err(e) = agman::config::save_config_file(&self.config.base_dir, &config_file) {
+                            self.set_status(format!("Failed to save config: {}", e));
+                            self.view = View::TaskList;
+                            return Ok(false);
+                        }
+
+                        // Update in-memory config
+                        self.config.repos_dir = selected_dir;
+                        tracing::info!(repos_dir = %self.config.repos_dir.display(), "repos_dir updated via directory picker");
+
+                        // Resume the original wizard
+                        match origin {
+                            DirPickerOrigin::NewTask => {
+                                self.start_wizard()?;
+                            }
+                            DirPickerOrigin::Review => {
+                                self.start_review_wizard()?;
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         Ok(false)

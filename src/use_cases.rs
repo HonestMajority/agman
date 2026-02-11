@@ -1,10 +1,45 @@
 use anyhow::Result;
 use std::path::PathBuf;
+use std::process::Command;
 
 use crate::config::Config;
 use crate::git::{self, Git};
 use crate::repo_stats::RepoStats;
 use crate::task::{Task, TaskStatus};
+
+/// Required external tools that must be on $PATH.
+const REQUIRED_TOOLS: &[&str] = &["tmux", "git", "claude", "nvim", "lazygit", "gh", "direnv"];
+
+/// Check that all required external tools are present on $PATH.
+/// Returns a list of missing tool names (empty if all present).
+pub fn check_dependencies() -> Vec<String> {
+    let mut missing = Vec::new();
+    for &tool in REQUIRED_TOOLS {
+        let found = Command::new("which")
+            .arg(tool)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !found {
+            missing.push(tool.to_string());
+        }
+    }
+    missing
+}
+
+/// Return an install hint for a missing tool.
+pub fn install_hint(tool: &str) -> &'static str {
+    match tool {
+        "tmux" => "brew install tmux (macOS) / apt install tmux (Linux)",
+        "git" => "brew install git (macOS) / apt install git (Linux)",
+        "claude" => "npm install -g @anthropic-ai/claude-code",
+        "nvim" => "brew install neovim (macOS) / apt install neovim (Linux)",
+        "lazygit" => "brew install lazygit (macOS) / go install github.com/jesseduffield/lazygit@latest",
+        "gh" => "brew install gh (macOS) / apt install gh (Linux)",
+        "direnv" => "brew install direnv (macOS) / apt install direnv (Linux)",
+        _ => "(see tool documentation)",
+    }
+}
 
 /// How to handle the worktree when creating a task.
 pub enum WorktreeSource {

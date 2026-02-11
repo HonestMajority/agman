@@ -677,6 +677,71 @@ fn clear_linked_pr_resets_review_state() {
 }
 
 // ---------------------------------------------------------------------------
+// Config file loading
+// ---------------------------------------------------------------------------
+
+#[test]
+fn config_file_sets_repos_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base_dir = tmp.path().join(".agman");
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    let custom_repos = tmp.path().join("custom-repos");
+    std::fs::create_dir_all(&custom_repos).unwrap();
+
+    // Write a config.toml with custom repos_dir
+    let config_toml = format!("repos_dir = {:?}\n", custom_repos.to_str().unwrap());
+    std::fs::write(base_dir.join("config.toml"), config_toml).unwrap();
+
+    let cf = agman::config::load_config_file(&base_dir);
+    assert_eq!(
+        cf.repos_dir.unwrap(),
+        custom_repos.to_str().unwrap()
+    );
+
+    // Config::new with the loaded value should point to the custom dir
+    let config = agman::config::Config::new(base_dir.clone(), custom_repos.clone());
+    assert_eq!(config.repos_dir, custom_repos);
+}
+
+#[test]
+fn config_file_missing_falls_back_to_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base_dir = tmp.path().join(".agman");
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    // No config.toml — should return defaults
+    let cf = agman::config::load_config_file(&base_dir);
+    assert!(cf.repos_dir.is_none());
+}
+
+#[test]
+fn save_and_load_config_file_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base_dir = tmp.path().join(".agman");
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    let cf = agman::config::ConfigFile {
+        repos_dir: Some("/tmp/my-repos".to_string()),
+    };
+    agman::config::save_config_file(&base_dir, &cf).unwrap();
+
+    let loaded = agman::config::load_config_file(&base_dir);
+    assert_eq!(loaded.repos_dir.unwrap(), "/tmp/my-repos");
+}
+
+// ---------------------------------------------------------------------------
+// Check dependencies
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_dependencies_finds_git() {
+    let missing = use_cases::check_dependencies();
+    // `git` is always available in test environments
+    assert!(!missing.contains(&"git".to_string()));
+}
+
+// ---------------------------------------------------------------------------
 // Parse GitHub owner/repo from remote URL
 // ---------------------------------------------------------------------------
 

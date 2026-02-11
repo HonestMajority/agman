@@ -2,15 +2,13 @@
 set -euo pipefail
 
 # Default output directory
-DEFAULT_DIR="$HOME/commands"
+DEFAULT_DIR="$HOME/.agman/bin"
 OUTPUT_DIR="${1:-$DEFAULT_DIR}"
 
-# Check if output directory exists
+# Ensure output directory exists (auto-create for default, error for custom)
 if [[ ! -d "$OUTPUT_DIR" ]]; then
     if [[ -z "${1:-}" ]]; then
-        echo "Error: $DEFAULT_DIR does not exist."
-        echo "Usage: $0 [output-directory]"
-        exit 1
+        mkdir -p "$OUTPUT_DIR"
     else
         echo "Error: $OUTPUT_DIR does not exist."
         exit 1
@@ -41,7 +39,12 @@ touch "$HOME/.agman/.restart-tui"
 echo "Running agman init --force..."
 agman init --force
 
-# Ensure git hooks are configured
-git config core.hooksPath .githooks
+# Check if the default install dir is in $PATH (only for default dir)
+if [[ -z "${1:-}" ]] && [[ ":$PATH:" != *":$OUTPUT_DIR:"* ]]; then
+    echo ""
+    echo "NOTE: $OUTPUT_DIR is not in your \$PATH. Add this to your shell profile:"
+    echo "  export PATH=\"$OUTPUT_DIR:\$PATH\""
+    echo ""
+fi
 
 echo "Done! agman installed at $OUTPUT_DIR/agman"

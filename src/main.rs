@@ -62,6 +62,22 @@ fn main() -> Result<()> {
         None => {
             // No subcommand - launch TUI
             config.ensure_dirs()?;
+
+            // Check that all required tools are on $PATH
+            let missing = agman::use_cases::check_dependencies();
+            if !missing.is_empty() {
+                eprintln!("Error: the following required tools are not installed:\n");
+                for tool in &missing {
+                    eprintln!(
+                        "  - {}  ({})",
+                        tool,
+                        agman::use_cases::install_hint(tool)
+                    );
+                }
+                eprintln!("\nPlease install the missing tools and try again.");
+                std::process::exit(1);
+            }
+
             run_tui(config)
         }
     }

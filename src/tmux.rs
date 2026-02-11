@@ -20,7 +20,7 @@ impl Tmux {
     /// - nvim: starts nvim
     /// - lazygit: starts lazygit
     /// - claude: starts claude --dangerously-skip-permissions
-    /// - zsh: runs git status
+    /// - shell: runs git status
     /// - agman: shell for agent commands
     pub fn create_session_with_windows(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
@@ -72,13 +72,13 @@ impl Tmux {
             "claude --dangerously-skip-permissions",
         )?;
 
-        // Create zsh window
+        // Create shell window
         let _ = Command::new("tmux")
-            .args(["new-window", "-t", session_name, "-n", "zsh", "-c", wd])
+            .args(["new-window", "-t", session_name, "-n", "shell", "-c", wd])
             .output();
         Self::send_keys_to_window(
             session_name,
-            "zsh",
+            "shell",
             "git status && git branch --show-current",
         )?;
 

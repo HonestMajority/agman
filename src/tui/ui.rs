@@ -9,7 +9,7 @@ use ratatui::{
 
 use agman::task::TaskStatus;
 
-use super::app::{App, BranchSource, PreviewPane, RestartWizardStep, ReviewWizardStep, View, WizardStep};
+use super::app::{App, BranchSource, PreviewPane, RestartWizardStep, ReviewWizardStep, View, WizardStep, DirPickerOrigin};
 use super::log_render;
 use super::vim::VimMode;
 
@@ -36,6 +36,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::RestartConfirm
             | View::RestartWizard
             | View::SetLinkedPr
+            | View::DirectoryPicker
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -100,6 +101,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::SetLinkedPr => {
             draw_task_list(f, app, chunks[0]);
             draw_set_linked_pr(f, app);
+        }
+        View::DirectoryPicker => {
+            draw_task_list(f, app, chunks[0]);
+            draw_directory_picker(f, app);
         }
     }
 
@@ -1452,6 +1457,20 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]
         }
+        View::DirectoryPicker => {
+            vec![
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("l/Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("h", Style::default().fg(Color::LightGreen)),
+                Span::styled(" up  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("s", Style::default().fg(Color::LightGreen)),
+                Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
+        }
     };
 
     let mut line_spans = help_text;
@@ -2368,6 +2387,82 @@ fn draw_set_linked_pr(f: &mut Frame, app: &App) {
         Style::default().fg(Color::DarkGray),
     ));
     f.render_widget(hint, chunks[4]);
+}
+
+fn draw_directory_picker(f: &mut Frame, app: &App) {
+    let area = centered_rect(70, 70, f.area());
+    f.render_widget(Clear, area);
+
+    let picker = match &app.dir_picker {
+        Some(p) => p,
+        None => return,
+    };
+
+    let title = match picker.origin {
+        DirPickerOrigin::NewTask | DirPickerOrigin::Review => " Select Repos Directory ",
+    };
+
+    // Split into header and list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
+
+    // Header: show current path
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("Path: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            picker.current_dir.display().to_string(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightCyan)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    // List of directories
+    let items: Vec<ListItem> = picker
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let style = if i == picker.selected_index {
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let prefix = if i == picker.selected_index {
+                "> "
+            } else {
+                "  "
+            };
+            ListItem::new(Span::styled(format!("{}{}/", prefix, name), style))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(Span::styled(
+                " j/k: navigate  l/Enter: open  h/Backspace: up  s: select  Esc: cancel ",
+                Style::default().fg(Color::DarkGray),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightCyan)),
+    );
+    f.render_widget(list, chunks[1]);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
