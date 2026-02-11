@@ -987,7 +987,7 @@ impl App {
         Ok(())
     }
 
-    fn scan_rebase_branches(&self, repo_name: &str) -> Result<Vec<String>> {
+    fn scan_rebase_branches(&self, repo_name: &str, local_only: bool) -> Result<Vec<String>> {
         let repo_path = self.config.repo_path(repo_name);
 
         // Get local branches
@@ -1005,31 +1005,36 @@ impl App {
             Vec::new()
         };
 
-        // Also get remote-tracking branches
-        let remote_output = Command::new("git")
-            .current_dir(&repo_path)
-            .args(["branch", "-r", "--format=%(refname:short)"])
-            .output()?;
+        if !local_only {
+            // Also get remote-tracking branches
+            let remote_output = Command::new("git")
+                .current_dir(&repo_path)
+                .args(["branch", "-r", "--format=%(refname:short)"])
+                .output()?;
 
-        if remote_output.status.success() {
-            let remote_stdout = String::from_utf8_lossy(&remote_output.stdout);
-            for line in remote_stdout.lines() {
-                let branch = line.trim();
-                // Skip HEAD pointers like origin/HEAD
-                if branch.contains("HEAD") {
-                    continue;
-                }
-                // Only add if not already represented by a local branch
-                // e.g., if we have "main" locally, don't add "origin/main"
-                let short_name = branch.split('/').skip(1).collect::<Vec<_>>().join("/");
-                if !branches.contains(&short_name) {
-                    branches.push(branch.to_string());
+            if remote_output.status.success() {
+                let remote_stdout = String::from_utf8_lossy(&remote_output.stdout);
+                for line in remote_stdout.lines() {
+                    let branch = line.trim();
+                    // Skip HEAD pointers like origin/HEAD
+                    if branch.contains("HEAD") {
+                        continue;
+                    }
+                    // Only add if not already represented by a local branch
+                    // e.g., if we have "main" locally, don't add "origin/main"
+                    let short_name = branch.split('/').skip(1).collect::<Vec<_>>().join("/");
+                    if !branches.contains(&short_name) {
+                        branches.push(branch.to_string());
+                    }
                 }
             }
         }
 
         branches.sort();
         branches.dedup();
+
+        tracing::debug!(repo = %repo_name, count = branches.len(), local_only, "scanned branches for picker");
+
         Ok(branches)
     }
 
@@ -1042,7 +1047,13 @@ impl App {
             }
         };
 
-        match self.scan_rebase_branches(&repo_name) {
+        let local_only = self
+            .pending_branch_command
+            .as_ref()
+            .map(|c| c.id == "local-merge")
+            .unwrap_or(false);
+
+        match self.scan_rebase_branches(&repo_name, local_only) {
             Ok(branches) => {
                 if branches.is_empty() {
                     self.set_status("No branches found".to_string());
