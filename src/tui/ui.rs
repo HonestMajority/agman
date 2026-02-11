@@ -165,6 +165,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     const STATUS_WIDTH: usize = 10;
     const MIN_AGENT_WIDTH: usize = 6; // width of "AGENT" header + 1
     const MAX_AGENT_WIDTH: usize = 25;
+    const UPDATED_WIDTH: usize = 10;
     const COL_GAP: &str = "   "; // 3 spaces between columns
 
     // Scan tasks for longest repo name
@@ -218,15 +219,15 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .min(MAX_AGENT_WIDTH);
 
     // Compute fixed width from actual components:
-    // icon(1) + padding(3) + col_gaps(4*3=12) + repo + pr + status + agent
-    let fixed_cols_width = (1 + 3 + 12 + repo_width + PR_WIDTH + STATUS_WIDTH + agent_width) as u16;
+    // icon(1) + padding(3) + col_gaps(5*3=15) + repo + pr + status + agent + updated
+    let fixed_cols_width = (1 + 3 + 15 + repo_width + PR_WIDTH + STATUS_WIDTH + agent_width + UPDATED_WIDTH) as u16;
 
     let available_width = inner.width.saturating_sub(fixed_cols_width) as usize;
 
     // Cap branch width to available space
     let branch_width = branch_width.min(available_width.max(MIN_BRANCH_WIDTH));
 
-    // Render header - columns: icon(1) + space(2) + repo + gap + branch + gap + status + gap + agent
+    // Render header - columns: icon(1) + space(2) + repo + gap + branch + gap + status + gap + agent + gap + updated
     let header = Line::from(vec![
         Span::raw("    "),
         Span::styled(
@@ -259,6 +260,13 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(COL_GAP),
         Span::styled(
             format!("{:<width$}", "AGENT", width = agent_width),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            "UPDATED",
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
@@ -455,6 +463,11 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Style::default().fg(Color::Rgb(110, 110, 110))
                 },
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                task.time_since_update(),
+                Style::default().fg(Color::DarkGray),
             ),
         ]);
 
