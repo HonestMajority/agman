@@ -367,8 +367,9 @@ IMPORTANT:
 - Make reasonable assumptions if something is unclear
 - Do NOT leave uncommitted changes
 
+If you encounter blockers or need human help, describe the problem clearly in ## Status — the checker will decide whether to block the task.
+
 Output exactly: AGENT_DONE when you've made progress and are ready for review.
-Output exactly: TASK_BLOCKED if you're stuck and need human help.
 "#;
 
 const TEST_WRITER_PROMPT: &str = r#"You are a test-writing agent. Your job is to write tests for the task.
@@ -462,7 +463,10 @@ Instructions:
 - No remaining items that matter
 
 **AGENT_DONE** — output this when more work is needed:
-- Curate TASK.md for the next coder: update ## Remaining with specific, actionable next steps; remove stale or completed items; write a fresh ## Status with your assessment, what's wrong or missing, and clear guidance for the next iteration
+- Curate TASK.md for the next coder:
+  - Update ## Remaining with specific, actionable next steps
+  - Curate ## Completed: keep items that provide useful context for a future agent reading TASK.md cold (e.g., architectural decisions, important setup steps). Remove items that would be misleading or confusing — especially steps describing an approach that was later abandoned in favor of a different approach.
+  - Write a fresh ## Status with your assessment, what's wrong or missing, and clear guidance for the next iteration
 - The next coder has zero prior context — TASK.md must be self-contained and up to date
 
 **TASK_BLOCKED** — output this only when:
