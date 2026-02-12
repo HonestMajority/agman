@@ -333,6 +333,7 @@ pub struct App {
     rt: tokio::runtime::Runtime,
     // Set linked PR modal
     pub pr_number_editor: TextArea<'static>,
+    pub pr_owned_toggle: bool,
     // Directory picker for repos_dir
     pub dir_picker: Option<DirectoryPicker>,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
@@ -391,6 +392,7 @@ impl App {
             pr_poll_active: false,
             rt,
             pr_number_editor: Self::create_plain_editor(),
+            pr_owned_toggle: true,
             dir_picker: None,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
@@ -788,13 +790,16 @@ impl App {
 
     fn open_set_linked_pr(&mut self) {
         let mut editor = Self::create_plain_editor();
+        let mut owned = true;
         if let Some(task) = self.selected_task() {
             if let Some(pr) = &task.meta.linked_pr {
                 editor = TextArea::new(vec![pr.number.to_string()]);
                 editor.set_cursor_line_style(ratatui::style::Style::default());
+                owned = pr.owned;
             }
         }
         self.pr_number_editor = editor;
+        self.pr_owned_toggle = owned;
         self.view = View::SetLinkedPr;
     }
 
@@ -1920,15 +1925,22 @@ impl App {
                     self.toggle_hold()?;
                 }
                 KeyCode::Char('c') => {
-                    // Toggle review_addressed indicator on selected task
-                    if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                        let new_val = !task.meta.review_addressed;
-                        let _ = use_cases::set_review_addressed(task, new_val);
-                        if new_val {
-                            self.set_status("Marked review addressed".to_string());
-                        } else {
-                            self.set_status("Cleared review indicator".to_string());
+                    // Toggle review_addressed indicator on selected task (owned PRs only)
+                    let is_owned = self.selected_task().and_then(|t| {
+                        t.meta.linked_pr.as_ref().map(|pr| pr.owned)
+                    }).unwrap_or(false);
+                    if is_owned {
+                        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                            let new_val = !task.meta.review_addressed;
+                            let _ = use_cases::set_review_addressed(task, new_val);
+                            if new_val {
+                                self.set_status("Marked review addressed".to_string());
+                            } else {
+                                self.set_status("Cleared review indicator".to_string());
+                            }
                         }
+                    } else {
+                        self.set_status("Review tracking only for owned PRs".to_string());
                     }
                 }
                 KeyCode::Char('P') => {
@@ -3051,6 +3063,9 @@ impl App {
                 KeyCode::Esc => {
                     self.view = View::TaskList;
                 }
+                KeyCode::Tab => {
+                    self.pr_owned_toggle = !self.pr_owned_toggle;
+                }
                 KeyCode::Enter => {
                     let text: String = self.pr_number_editor.lines().join("");
                     let text = text.trim().to_string();
@@ -3070,7 +3085,8 @@ impl App {
                         match text.parse::<u64>() {
                             Ok(pr_number) => {
                                 let task_id_for_log = self.selected_task().map(|t| t.meta.task_id());
-                                tracing::info!(task_id = ?task_id_for_log, pr_number, "TUI: set linked PR");
+                                let owned = self.pr_owned_toggle;
+                                tracing::info!(task_id = ?task_id_for_log, pr_number, owned, "TUI: set linked PR");
                                 let worktree_path = self
                                     .selected_task()
                                     .map(|t| t.meta.worktree_path.clone());
@@ -3078,11 +3094,14 @@ impl App {
                                     if let Some(task) =
                                         self.tasks.get_mut(self.selected_index)
                                     {
-                                        match use_cases::set_linked_pr(task, pr_number, &wt) {
-                                            Ok(()) => self.set_status(format!(
-                                                "Linked PR #{}",
-                                                pr_number
-                                            )),
+                                        match use_cases::set_linked_pr(task, pr_number, &wt, owned) {
+                                            Ok(()) => {
+                                                let label = if owned { "mine" } else { "ext" };
+                                                self.set_status(format!(
+                                                    "Linked PR #{} ({})",
+                                                    pr_number, label
+                                                ));
+                                            }
                                             Err(e) => {
                                                 self.set_status(format!("Error: {}", e))
                                             }
@@ -3204,7 +3223,7 @@ impl App {
         let eligible: Vec<(String, u64, PathBuf, Option<u64>)> = self
             .tasks
             .iter()
-            .filter(|t| t.meta.status == TaskStatus::Stopped && t.meta.linked_pr.is_some())
+            .filter(|t| t.meta.status == TaskStatus::Stopped && t.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned))
             .map(|t| {
                 let pr = t.meta.linked_pr.as_ref().unwrap();
                 (

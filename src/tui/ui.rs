@@ -166,7 +166,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     const MAX_REPO_WIDTH: usize = 20;
     const MIN_BRANCH_WIDTH: usize = 6; // "BRANCH" header length
 
-    const PR_WIDTH: usize = 10; // fits "#99999 ✓" plus padding
+    const PR_WIDTH: usize = 12; // fits "#99999 mine" plus padding
     const STATUS_WIDTH: usize = 10;
     const MIN_AGENT_WIDTH: usize = 6; // width of "AGENT" header + 1
     const MAX_AGENT_WIDTH: usize = 25;
@@ -443,16 +443,24 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             Span::raw(COL_GAP),
             Span::styled(
                 format!("{:<width$}", task.meta.linked_pr.as_ref().map(|pr| {
-                    if task.meta.review_addressed {
+                    if !pr.owned {
+                        format!("#{} ext", pr.number)
+                    } else if task.meta.review_addressed {
                         format!("#{} ✓", pr.number)
                     } else {
-                        format!("#{}", pr.number)
+                        format!("#{} mine", pr.number)
                     }
                 }).unwrap_or_default(), width = PR_WIDTH),
-                if task.meta.review_addressed {
-                    Style::default().fg(Color::LightGreen)
+                if let Some(pr) = &task.meta.linked_pr {
+                    if !pr.owned {
+                        Style::default().fg(Color::Gray)
+                    } else if task.meta.review_addressed {
+                        Style::default().fg(Color::LightGreen)
+                    } else {
+                        Style::default().fg(Color::LightMagenta)
+                    }
                 } else {
-                    Style::default().fg(Color::LightMagenta)
+                    Style::default()
                 },
             ),
             Span::raw(COL_GAP),
@@ -1202,7 +1210,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
                     spans.push(Span::styled(" unhold  ", Style::default().fg(Color::DarkGray)));
                 }
-                if task.meta.review_addressed {
+                if task.meta.review_addressed && task.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned) {
                     spans.push(Span::styled("c", Style::default().fg(Color::LightGreen)));
                     spans.push(Span::styled(" clear ✓  ", Style::default().fg(Color::DarkGray)));
                 }
@@ -2358,6 +2366,7 @@ fn draw_set_linked_pr(f: &mut Frame, app: &App) {
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(3),
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -2382,11 +2391,19 @@ fn draw_set_linked_pr(f: &mut Frame, app: &App) {
 
     f.render_widget(&app.pr_number_editor, chunks[2]);
 
+    let (type_label, type_color) = if app.pr_owned_toggle {
+        ("Type: mine (owned)", Color::LightMagenta)
+    } else {
+        ("Type: ext (not owned)", Color::Gray)
+    };
+    let type_line = Paragraph::new(Span::styled(type_label, Style::default().fg(type_color)));
+    f.render_widget(type_line, chunks[3]);
+
     let hint = Paragraph::new(Span::styled(
-        "Enter confirm · Esc cancel",
+        "Enter confirm · Tab toggle type · Esc cancel",
         Style::default().fg(Color::DarkGray),
     ));
-    f.render_widget(hint, chunks[4]);
+    f.render_widget(hint, chunks[5]);
 }
 
 fn draw_directory_picker(f: &mut Frame, app: &App) {

@@ -63,10 +63,16 @@ pub struct TaskMeta {
     pub review_addressed: bool,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkedPr {
     pub number: u64,
     pub url: String,
+    #[serde(default = "default_true")]
+    pub owned: bool,
 }
 
 impl TaskMeta {
@@ -653,8 +659,8 @@ impl Task {
         Ok(())
     }
 
-    pub fn set_linked_pr(&mut self, number: u64, url: String) -> Result<()> {
-        self.meta.linked_pr = Some(LinkedPr { number, url });
+    pub fn set_linked_pr(&mut self, number: u64, url: String, owned: bool) -> Result<()> {
+        self.meta.linked_pr = Some(LinkedPr { number, url, owned });
         self.meta.updated_at = Utc::now();
         self.save_meta()
     }

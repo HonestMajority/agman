@@ -638,12 +638,13 @@ fn set_linked_pr() {
         .output()
         .unwrap();
 
-    use_cases::set_linked_pr(&mut task, 42, &wt).unwrap();
+    use_cases::set_linked_pr(&mut task, 42, &wt, true).unwrap();
 
     assert!(task.meta.linked_pr.is_some());
     let pr = task.meta.linked_pr.as_ref().unwrap();
     assert_eq!(pr.number, 42);
     assert_eq!(pr.url, "https://github.com/testowner/testrepo/pull/42");
+    assert!(pr.owned);
 }
 
 // ---------------------------------------------------------------------------
@@ -657,7 +658,7 @@ fn clear_linked_pr_resets_review_state() {
     let mut task = create_test_task(&config, "repo", "branch");
 
     // Set up a linked PR and review state
-    task.set_linked_pr(10, "https://github.com/o/r/pull/10".to_string())
+    task.set_linked_pr(10, "https://github.com/o/r/pull/10".to_string(), true)
         .unwrap();
     task.meta.review_addressed = true;
     task.meta.last_review_count = Some(3);
@@ -674,6 +675,53 @@ fn clear_linked_pr_resets_review_state() {
     assert!(loaded.meta.linked_pr.is_none());
     assert!(!loaded.meta.review_addressed);
     assert!(loaded.meta.last_review_count.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Set linked PR owned flag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_linked_pr_owned_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    let mut task = use_cases::create_task(
+        &config,
+        "myrepo",
+        "owned-flag-branch",
+        "Test owned flag",
+        "new",
+        WorktreeSource::NewBranch,
+        false,
+    )
+    .unwrap();
+
+    let wt = task.meta.worktree_path.clone();
+    std::process::Command::new("git")
+        .args(["remote", "add", "origin", "https://github.com/testowner/testrepo.git"])
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+
+    // Set as non-owned
+    use_cases::set_linked_pr(&mut task, 42, &wt, false).unwrap();
+    let pr = task.meta.linked_pr.as_ref().unwrap();
+    assert_eq!(pr.number, 42);
+    assert!(!pr.owned);
+
+    // Set as owned
+    use_cases::set_linked_pr(&mut task, 43, &wt, true).unwrap();
+    let pr = task.meta.linked_pr.as_ref().unwrap();
+    assert_eq!(pr.number, 43);
+    assert!(pr.owned);
+
+    // Verify persistence after reload
+    task.reload_meta().unwrap();
+    let pr = task.meta.linked_pr.as_ref().unwrap();
+    assert_eq!(pr.number, 43);
+    assert!(pr.owned);
 }
 
 // ---------------------------------------------------------------------------
