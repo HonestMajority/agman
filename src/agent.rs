@@ -221,7 +221,7 @@ impl AgentRunner {
                     if let Ok(number) = lines[0].trim().parse::<u64>() {
                         let url = lines[1].trim().to_string();
                         tracing::info!(task_id = %task.meta.task_id(), pr_number = number, pr_url = %url, "detected .pr-link, storing linked PR");
-                        task.set_linked_pr(number, url)?;
+                        task.set_linked_pr(number, url, true)?;
                     }
                 }
             }
