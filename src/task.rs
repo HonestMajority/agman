@@ -170,7 +170,7 @@ impl Task {
             Self::load(config, &repo_name, &branch_name)
         } else {
             // Try to find a task that matches just the branch name
-            let tasks = Self::list_all(config)?;
+            let tasks = Self::list_all(config);
             let matching: Vec<_> = tasks
                 .into_iter()
                 .filter(|t| t.meta.branch_name == task_id)
@@ -187,16 +187,37 @@ impl Task {
         }
     }
 
-    pub fn list_all(config: &Config) -> Result<Vec<Task>> {
+    pub fn list_all(config: &Config) -> Vec<Task> {
         let mut tasks = Vec::new();
 
         if !config.tasks_dir.exists() {
-            return Ok(tasks);
+            return tasks;
         }
 
-        for entry in std::fs::read_dir(&config.tasks_dir)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
+        let read_dir = match std::fs::read_dir(&config.tasks_dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                tracing::warn!(path = %config.tasks_dir.display(), error = %e, "failed to read tasks directory");
+                return tasks;
+            }
+        };
+
+        for entry in read_dir {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read task directory entry");
+                    continue;
+                }
+            };
+            let is_dir = match entry.file_type() {
+                Ok(ft) => ft.is_dir(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to get file type for task entry");
+                    continue;
+                }
+            };
+            if is_dir {
                 let task_id = entry.file_name().to_string_lossy().to_string();
                 if let Some((repo_name, branch_name)) = Config::parse_task_id(&task_id) {
                     match Task::load(config, &repo_name, &branch_name) {
@@ -225,7 +246,7 @@ impl Task {
             }
         });
 
-        Ok(tasks)
+        tasks
     }
 
     pub fn save_meta(&self) -> Result<()> {

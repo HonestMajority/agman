@@ -472,7 +472,7 @@ fn list_tasks_sorted_by_status() {
     let mut t4 = create_test_task(&config, "repo", "held");
     t4.update_status(TaskStatus::OnHold).unwrap();
 
-    let tasks = use_cases::list_tasks(&config).unwrap();
+    let tasks = use_cases::list_tasks(&config);
     assert_eq!(tasks.len(), 4);
     assert_eq!(tasks[0].meta.status, TaskStatus::Running);
     assert_eq!(tasks[1].meta.status, TaskStatus::InputNeeded);
