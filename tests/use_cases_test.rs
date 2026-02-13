@@ -535,6 +535,57 @@ fn create_review_task() {
 }
 
 // ---------------------------------------------------------------------------
+// Create task reuses existing worktree for existing branch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_task_reuses_existing_worktree_for_existing_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    // Create a task with a new branch (sets up worktree + branch)
+    let task = use_cases::create_task(
+        &config,
+        "myrepo",
+        "reuse-branch",
+        "Original task",
+        "new",
+        WorktreeSource::NewBranch,
+        false,
+    )
+    .unwrap();
+
+    let worktree_path = task.meta.worktree_path.clone();
+    assert!(worktree_path.exists());
+
+    // Delete the task with TaskOnly mode (keeps worktree + branch)
+    use_cases::delete_task(&config, task, DeleteMode::TaskOnly).unwrap();
+
+    // Worktree still exists, but task metadata is gone
+    assert!(worktree_path.exists());
+    assert!(!config.task_dir("myrepo", "reuse-branch").exists());
+
+    // Create a new task for the same branch with ExistingBranch source —
+    // this should succeed by reusing the existing worktree
+    let task2 = use_cases::create_task(
+        &config,
+        "myrepo",
+        "reuse-branch",
+        "Recreated task",
+        "new",
+        WorktreeSource::ExistingBranch,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(task2.meta.worktree_path, worktree_path);
+    assert!(task2.dir.join("meta.json").exists());
+    let content = task2.read_task().unwrap();
+    assert!(content.contains("Recreated task"));
+}
+
+// ---------------------------------------------------------------------------
 // PR poll action: merged PR
 // ---------------------------------------------------------------------------
 

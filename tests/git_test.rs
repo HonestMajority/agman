@@ -55,3 +55,36 @@ fn git_delete_branch() {
     let branches = String::from_utf8_lossy(&output.stdout);
     assert!(!branches.contains("to-delete"));
 }
+
+#[test]
+fn git_create_worktree_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    let path1 = Git::create_worktree_quiet(&config, "myrepo", "idem-branch").unwrap();
+    assert!(path1.exists());
+
+    // Calling again should succeed and return the same path
+    let path2 = Git::create_worktree_quiet(&config, "myrepo", "idem-branch").unwrap();
+    assert_eq!(path1, path2);
+    assert!(path2.exists());
+}
+
+#[test]
+fn git_create_worktree_for_existing_branch_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    // Create a worktree (this also creates the branch)
+    let path1 = Git::create_worktree_quiet(&config, "myrepo", "exist-branch").unwrap();
+    assert!(path1.exists());
+
+    // Now call create_worktree_for_existing_branch_quiet for the same branch —
+    // the worktree is already on disk, so it should reuse it
+    let path2 =
+        Git::create_worktree_for_existing_branch_quiet(&config, "myrepo", "exist-branch").unwrap();
+    assert_eq!(path1, path2);
+    assert!(path2.exists());
+}

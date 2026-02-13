@@ -153,14 +153,15 @@ impl Git {
         let worktree_base = config.worktree_base(repo_name);
         let worktree_path = config.worktree_path(repo_name, branch_name);
 
-        // Check if worktree already exists
+        // Idempotent: if the worktree already exists on disk, reuse it
         if worktree_path.exists() {
-            anyhow::bail!(
-                "Worktree already exists: {}\nIf it's stale, remove with: git -C {:?} worktree remove {:?}",
-                worktree_path.display(),
-                repo_path,
-                worktree_path
+            tracing::debug!(
+                repo = repo_name,
+                branch = branch_name,
+                path = %worktree_path.display(),
+                "worktree already exists, reusing"
             );
+            return Ok(worktree_path);
         }
 
         // Create worktree base directory if needed
@@ -238,13 +239,15 @@ impl Git {
         let worktree_base = config.worktree_base(repo_name);
         let worktree_path = config.worktree_path(repo_name, branch_name);
 
+        // Idempotent: if the worktree already exists on disk, reuse it
         if worktree_path.exists() {
-            anyhow::bail!(
-                "Worktree already exists: {}\nIf it's stale, remove with: git -C {:?} worktree remove {:?}",
-                worktree_path.display(),
-                repo_path,
-                worktree_path
+            tracing::debug!(
+                repo = repo_name,
+                branch = branch_name,
+                path = %worktree_path.display(),
+                "worktree already exists, reusing"
             );
+            return Ok(worktree_path);
         }
 
         std::fs::create_dir_all(&worktree_base)
