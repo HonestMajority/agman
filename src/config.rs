@@ -2,6 +2,13 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Replace `/` with `-` in branch names so task directories stay flat.
+/// The real branch name is preserved in `meta.json`; the task ID is just a
+/// filesystem-safe lookup key.
+fn sanitize_branch_for_id(branch: &str) -> String {
+    branch.replace('/', "-")
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub base_dir: PathBuf,
@@ -86,13 +93,13 @@ impl Config {
 
     /// Get task directory: ~/.agman/tasks/<repo>--<branch>/
     pub fn task_dir(&self, repo_name: &str, branch_name: &str) -> PathBuf {
-        self.tasks_dir
-            .join(format!("{}--{}", repo_name, branch_name))
+        self.tasks_dir.join(Self::task_id(repo_name, branch_name))
     }
 
-    /// Get task ID from repo and branch names
+    /// Get task ID from repo and branch names.
+    /// Sanitizes `/` in branch names to `-` so the task directory is always flat.
     pub fn task_id(repo_name: &str, branch_name: &str) -> String {
-        format!("{}--{}", repo_name, branch_name)
+        format!("{}--{}", repo_name, sanitize_branch_for_id(branch_name))
     }
 
     /// Parse task ID into (repo_name, branch_name)
@@ -121,8 +128,9 @@ impl Config {
     }
 
     /// Get tmux session name: (<repo>)__<branch>
+    /// Sanitizes `/` in branch names to `-` to avoid issues with tmux target syntax.
     pub fn tmux_session_name(repo_name: &str, branch_name: &str) -> String {
-        format!("({})__{}", repo_name, branch_name)
+        format!("({})__{}", repo_name, sanitize_branch_for_id(branch_name))
     }
 
     pub fn flow_path(&self, flow_name: &str) -> PathBuf {
