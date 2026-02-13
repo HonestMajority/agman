@@ -103,6 +103,51 @@ fn create_task_with_review_after() {
 }
 
 // ---------------------------------------------------------------------------
+// Create setup-only task
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_setup_only_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    let task = use_cases::create_setup_only_task(
+        &config,
+        "myrepo",
+        "empty-branch",
+        WorktreeSource::NewBranch,
+    )
+    .unwrap();
+
+    // Task directory and meta exist
+    assert!(task.dir.join("meta.json").exists());
+    assert_eq!(task.meta.repo_name, "myrepo");
+    assert_eq!(task.meta.branch_name, "empty-branch");
+
+    // Status is Stopped (not Running)
+    assert_eq!(task.meta.status, TaskStatus::Stopped);
+
+    // Flow name is "none"
+    assert_eq!(task.meta.flow_name, "none");
+
+    // TASK.md exists in worktree with empty goal
+    let task_content = task.read_task().unwrap();
+    assert_eq!(task_content, "# Goal\n\n# Plan\n");
+
+    // Worktree exists
+    assert!(task.meta.worktree_path.exists());
+
+    // Repo stats incremented
+    let stats = RepoStats::load(&config.repo_stats_path());
+    assert_eq!(stats.counts.get("myrepo"), Some(&1));
+
+    // Init files created
+    assert!(task.dir.join("notes.md").exists());
+    assert!(task.dir.join("agent.log").exists());
+}
+
+// ---------------------------------------------------------------------------
 // Delete task (everything)
 // ---------------------------------------------------------------------------
 

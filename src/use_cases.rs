@@ -364,6 +364,74 @@ pub fn clear_linked_pr(task: &mut Task) -> Result<()> {
     task.save_meta()
 }
 
+/// Create a setup-only task: set up worktree, create task files, but do NOT start any flow.
+/// The task will have `Stopped` status so the user can attach to the tmux session and explore.
+///
+/// This is the pure business logic behind `App::create_setup_only_task_from_wizard()`.
+/// It does NOT create tmux sessions — those are side effects handled by the TUI caller.
+pub fn create_setup_only_task(
+    config: &Config,
+    repo_name: &str,
+    branch_name: &str,
+    worktree_source: WorktreeSource,
+) -> Result<Task> {
+    tracing::info!(
+        repo = repo_name,
+        branch = branch_name,
+        "creating setup-only task"
+    );
+    // Initialize default files (flows, prompts, commands)
+    config.init_default_files(false)?;
+
+    // Set up or reuse worktree
+    let worktree_path = match worktree_source {
+        WorktreeSource::ExistingWorktree(path) => {
+            let _ = Git::direnv_allow(&path);
+            path
+        }
+        WorktreeSource::NewBranch => {
+            let path = Git::create_worktree_quiet(config, repo_name, branch_name)?;
+            let _ = Git::direnv_allow(&path);
+            path
+        }
+        WorktreeSource::ExistingBranch => {
+            let path =
+                Git::create_worktree_for_existing_branch_quiet(config, repo_name, branch_name)?;
+            let _ = Git::direnv_allow(&path);
+            path
+        }
+    };
+
+    // Create task files
+    let mut task = Task::create(
+        config,
+        repo_name,
+        branch_name,
+        "",
+        "none",
+        worktree_path,
+    )?;
+
+    // Override status to Stopped (Task::create sets Running by default)
+    task.update_status(TaskStatus::Stopped)?;
+
+    // Write a minimal TASK.md (empty goal, ready for user to fill via feedback)
+    task.write_task("# Goal\n\n# Plan\n")?;
+
+    // Ensure TASK.md is excluded from git tracking
+    let _ = task.ensure_git_excludes_task();
+
+    // Increment repo usage stats
+    let stats_path = config.repo_stats_path();
+    let mut stats = RepoStats::load(&stats_path);
+    stats.increment(repo_name);
+    stats.save(&stats_path);
+
+    tracing::info!(task_id = %task.meta.task_id(), "setup-only task created");
+
+    Ok(task)
+}
+
 /// Create a review task for an existing branch.
 ///
 /// Similar to `create_task` but uses a review-specific description
