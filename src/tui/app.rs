@@ -1799,7 +1799,7 @@ impl App {
         if let Some(pr_number) = lookup_pr_for_branch(&task.meta.worktree_path, &branch_name) {
             let task_id = task.meta.task_id();
             let wt = task.meta.worktree_path.clone();
-            match use_cases::set_linked_pr(&mut task, pr_number, &wt) {
+            match use_cases::set_linked_pr(&mut task, pr_number, &wt, false) {
                 Ok(()) => {
                     tracing::info!(task_id = %task_id, pr_number, branch = %branch_name, "linked PR to review task");
                 }
