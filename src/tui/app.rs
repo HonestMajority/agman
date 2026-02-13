@@ -511,18 +511,24 @@ impl App {
 
         let mut result = Vec::new();
         for line in text.lines() {
-            if line.len() <= max_width {
+            if line.chars().count() <= max_width {
                 result.push(line.to_string());
             } else {
                 let mut remaining = line;
-                while remaining.len() > max_width {
-                    let wrap_at = remaining[..max_width]
+                while remaining.chars().count() > max_width {
+                    // Find the byte offset of the max_width-th character
+                    let byte_offset = remaining
+                        .char_indices()
+                        .nth(max_width)
+                        .map(|(i, _)| i)
+                        .unwrap_or(remaining.len());
+                    let wrap_at = remaining[..byte_offset]
                         .rfind(' ')
-                        .unwrap_or(max_width);
+                        .unwrap_or(byte_offset);
                     if wrap_at == 0 {
-                        // No space found, force break at max_width
-                        result.push(remaining[..max_width].to_string());
-                        remaining = &remaining[max_width..];
+                        // No space found, force break at char boundary
+                        result.push(remaining[..byte_offset].to_string());
+                        remaining = &remaining[byte_offset..];
                     } else {
                         result.push(remaining[..wrap_at].to_string());
                         remaining = &remaining[wrap_at..].trim_start();
