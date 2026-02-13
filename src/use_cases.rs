@@ -247,7 +247,7 @@ pub fn clear_all_queued_feedback(task: &Task) -> Result<()> {
 }
 
 /// List all tasks, sorted by status (running > input_needed > stopped) then by updated_at desc.
-pub fn list_tasks(config: &Config) -> Result<Vec<Task>> {
+pub fn list_tasks(config: &Config) -> Vec<Task> {
     Task::list_all(config)
 }
 

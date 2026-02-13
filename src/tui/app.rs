@@ -342,7 +342,7 @@ pub struct App {
 
 impl App {
     pub fn new(config: Config) -> Result<Self> {
-        let tasks = Task::list_all(&config)?;
+        let tasks = Task::list_all(&config);
         let commands = StoredCommand::list_all(&config.commands_dir).unwrap_or_default();
         let notes_editor = VimTextArea::new();
         let feedback_editor = VimTextArea::new();
@@ -510,29 +510,27 @@ impl App {
         result.join("\n")
     }
 
-    pub fn refresh_tasks(&mut self) -> Result<()> {
+    pub fn refresh_tasks(&mut self) {
         let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
-        self.tasks = Task::list_all(&self.config)?;
+        self.tasks = Task::list_all(&self.config);
         if let Some(ref id) = prev_task_id {
             if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == *id) {
                 self.selected_index = idx;
-                return Ok(());
+                return;
             }
         }
         if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
             self.selected_index = self.tasks.len() - 1;
         }
-        Ok(())
     }
 
     /// Refresh the task list and restore selection to the task with the given ID.
     /// If the task is no longer present, selection falls back to a valid index.
-    fn refresh_tasks_and_select(&mut self, task_id: &str) -> Result<()> {
-        self.refresh_tasks()?;
+    fn refresh_tasks_and_select(&mut self, task_id: &str) {
+        self.refresh_tasks();
         if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
             self.selected_index = idx;
         }
-        Ok(())
     }
 
     pub fn selected_task(&self) -> Option<&Task> {
@@ -770,7 +768,7 @@ impl App {
                         use_cases::put_on_hold(task)?;
                     }
                     self.set_status(format!("On hold: {}", task_id));
-                    self.refresh_tasks_and_select(&task_id)?;
+                    self.refresh_tasks_and_select(&task_id);
                 }
                 TaskStatus::OnHold => {
                     tracing::info!(task_id = %task_id, "TUI: resume from hold requested");
@@ -778,7 +776,7 @@ impl App {
                         use_cases::resume_from_hold(task)?;
                     }
                     self.set_status(format!("Resumed: {}", task_id));
-                    self.refresh_tasks_and_select(&task_id)?;
+                    self.refresh_tasks_and_select(&task_id);
                 }
                 _ => {}
             }
@@ -835,7 +833,7 @@ impl App {
 
             self.log_output(format!("Resumed flow for {} — processing your answers", task_id));
             self.set_status(format!("Resumed: {}", task_id));
-            self.refresh_tasks_and_select(&task_id)?;
+            self.refresh_tasks_and_select(&task_id);
         }
 
         Ok(())
@@ -953,7 +951,7 @@ impl App {
                     }
                     self.log_output(format!("Flow started for {}", task_id));
                     self.set_status(format!("Feedback submitted for {}", task_id));
-                    self.refresh_tasks_and_select(&task_id)?;
+                    self.refresh_tasks_and_select(&task_id);
                 }
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr);
@@ -1203,7 +1201,7 @@ impl App {
                         self.log_output(line.to_string());
                     }
                 }
-                self.refresh_tasks_and_select(&task_id)?;
+                self.refresh_tasks_and_select(&task_id);
                 self.set_status(format!("Started: {} onto {}", command.name, branch));
             }
             Ok(o) => {
@@ -1304,7 +1302,7 @@ impl App {
                         let _ = use_cases::set_review_addressed(task, false);
                     }
                 }
-                self.refresh_tasks_and_select(&task_id)?;
+                self.refresh_tasks_and_select(&task_id);
                 self.set_status(format!("Started: {}", command.name));
             }
             Ok(o) => {
@@ -1565,7 +1563,7 @@ impl App {
         // Success - close wizard and refresh
         self.wizard = None;
         self.view = View::TaskList;
-        self.refresh_tasks_and_select(&task_id)?;
+        self.refresh_tasks_and_select(&task_id);
         self.set_status(format!("Created task: {}", task_id));
 
         Ok(())
@@ -1788,7 +1786,7 @@ impl App {
         // Success - close wizard and refresh
         self.review_wizard = None;
         self.view = View::TaskList;
-        self.refresh_tasks_and_select(&task_id)?;
+        self.refresh_tasks_and_select(&task_id);
         self.set_status(format!("Review started: {}", task_id));
 
         Ok(())
@@ -1845,7 +1843,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('R') => {
-                    self.refresh_tasks()?;
+                    self.refresh_tasks();
                     self.set_status("Refreshed task list".to_string());
                 }
                 KeyCode::Char('f') => {
@@ -3371,7 +3369,7 @@ impl App {
         // Clean up wizard
         self.restart_wizard = None;
         self.view = View::TaskList;
-        self.refresh_tasks_and_select(&task_id)?;
+        self.refresh_tasks_and_select(&task_id);
         self.set_status(format!("Restarted: {} from step {}", task_id, selected_step_index));
 
         Ok(())
@@ -3413,7 +3411,7 @@ pub fn run_tui(config: Config) -> Result<()> {
         // Reset view state when returning from attach
         app.view = View::TaskList;
         app.should_quit = false;
-        let _ = app.refresh_tasks();
+        app.refresh_tasks();
 
         // Main loop
         let mut attach_session: Option<String> = None;
@@ -3442,7 +3440,7 @@ pub fn run_tui(config: Config) -> Result<()> {
             // Periodic refresh of task list (every 3 seconds, only in TaskList view)
             if last_refresh.elapsed() >= refresh_interval {
                 if app.view == View::TaskList {
-                    let _ = app.refresh_tasks();
+                    app.refresh_tasks();
                     // Check for stranded feedback queues on stopped tasks
                     app.process_stranded_feedback();
                 }
