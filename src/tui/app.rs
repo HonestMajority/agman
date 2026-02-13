@@ -1667,7 +1667,7 @@ impl App {
         let task_id = task.meta.task_id();
         self.wizard = None;
         self.view = View::TaskList;
-        self.refresh_tasks_and_select(&task_id)?;
+        self.refresh_tasks_and_select(&task_id);
         self.set_status(format!("Created setup-only task: {}", task_id));
 
         Ok(())
