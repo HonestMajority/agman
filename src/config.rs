@@ -123,8 +123,10 @@ impl Config {
     }
 
     /// Get worktree path: ~/repos/<repo>-wt/<branch>/
+    /// Sanitizes `/` in branch names to `-` so the worktree directory is flat.
     pub fn worktree_path(&self, repo_name: &str, branch_name: &str) -> PathBuf {
-        self.worktree_base(repo_name).join(branch_name)
+        self.worktree_base(repo_name)
+            .join(sanitize_branch_for_id(branch_name))
     }
 
     /// Get tmux session name: (<repo>)__<branch>

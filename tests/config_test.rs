@@ -35,6 +35,28 @@ fn config_worktree_path() {
 }
 
 #[test]
+fn config_worktree_path_with_slash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    let path = config.worktree_path("myrepo", "feat/foo");
+    assert_eq!(path, tmp.path().join("repos/myrepo-wt/feat-foo"));
+}
+
+#[test]
+fn config_task_id_with_slash() {
+    assert_eq!(Config::task_id("repo", "feat/foo"), "repo--feat-foo");
+}
+
+#[test]
+fn config_tmux_session_name_with_slash() {
+    assert_eq!(
+        Config::tmux_session_name("repo", "feat/foo"),
+        "(repo)__feat-foo"
+    );
+}
+
+#[test]
 fn config_task_id_and_parse() {
     assert_eq!(Config::task_id("repo", "branch"), "repo--branch");
 
