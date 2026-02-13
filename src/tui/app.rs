@@ -258,6 +258,30 @@ fn query_pr_state(worktree_path: &std::path::Path, pr_number: u64) -> Option<(bo
     Some((is_merged, review_count))
 }
 
+/// Look up the PR number for a branch using `gh pr list`.
+/// Returns `None` if no PR is found or on any error.
+fn lookup_pr_for_branch(worktree_path: &std::path::Path, branch_name: &str) -> Option<u64> {
+    let output = Command::new("gh")
+        .args([
+            "pr", "list",
+            "--head", branch_name,
+            "--json", "number",
+            "--limit", "1",
+        ])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let arr = json.as_array()?;
+    let first = arr.first()?;
+    first.get("number")?.as_u64()
+}
+
 /// Run PR queries for all eligible tasks. This is the blocking work that
 /// runs on a background thread — calls `gh pr view` for each task.
 fn run_pr_queries(eligible: Vec<(String, u64, PathBuf, Option<u64>)>) -> Vec<PrPollResult> {
@@ -1755,7 +1779,7 @@ impl App {
         ));
 
         // Delegate business logic to use_cases
-        let task = match use_cases::create_review_task(
+        let mut task = match use_cases::create_review_task(
             &self.config,
             &repo_name,
             &branch_name,
@@ -1770,6 +1794,22 @@ impl App {
                 return Ok(());
             }
         };
+
+        // Best-effort: look up the PR for this branch and link it
+        if let Some(pr_number) = lookup_pr_for_branch(&task.meta.worktree_path, &branch_name) {
+            let task_id = task.meta.task_id();
+            let wt = task.meta.worktree_path.clone();
+            match use_cases::set_linked_pr(&mut task, pr_number, &wt) {
+                Ok(()) => {
+                    tracing::info!(task_id = %task_id, pr_number, branch = %branch_name, "linked PR to review task");
+                }
+                Err(e) => {
+                    tracing::warn!(task_id = %task_id, branch = %branch_name, error = %e, "failed to set linked PR");
+                }
+            }
+        } else {
+            tracing::debug!(branch = %branch_name, "no PR found for branch, skipping PR link");
+        }
 
         // Side effects: create tmux session and run review command
         let worktree_path = task.meta.worktree_path.clone();
