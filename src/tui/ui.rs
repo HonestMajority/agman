@@ -1694,7 +1694,7 @@ fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let title = format!(
-        " Describe what this task should accomplish [{}]{} (Ctrl+S to continue) ",
+        " Describe task goal (empty = setup only) [{}]{} (Ctrl+S to continue) ",
         mode.indicator(),
         review_indicator,
     );
@@ -1751,7 +1751,7 @@ fn draw_wizard_footer_direct(
         let help = match step {
             WizardStep::SelectRepo => "j/k: navigate  Enter: select  Esc: cancel",
             WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
-            WizardStep::EnterDescription => "Ctrl+S: create task  Ctrl+R: toggle review  Esc: back",
+            WizardStep::EnterDescription => "Ctrl+S: create task (empty = setup only)  Ctrl+R: toggle review  Esc: back",
         };
         Line::from(Span::styled(help, Style::default().fg(Color::DarkGray)))
     };

@@ -1494,8 +1494,8 @@ impl App {
                 let description = wizard.description_editor.lines_joined();
                 let description = description.trim();
                 if description.is_empty() {
-                    wizard.error_message = Some("Description cannot be empty".to_string());
-                    return Ok(());
+                    // Empty description = setup-only mode
+                    return self.create_setup_only_task_from_wizard();
                 }
                 // Create the task
                 return self.create_task_from_wizard();
@@ -1600,6 +1600,75 @@ impl App {
         self.view = View::TaskList;
         self.refresh_tasks_and_select(&task_id);
         self.set_status(format!("Created task: {}", task_id));
+
+        Ok(())
+    }
+
+    fn create_setup_only_task_from_wizard(&mut self) -> Result<()> {
+        let wizard = match &self.wizard {
+            Some(w) => w,
+            None => return Ok(()),
+        };
+
+        let repo_name = wizard.selected_repo_name().to_string();
+
+        let (branch_name, worktree_source) = match wizard.branch_source {
+            BranchSource::ExistingWorktree => {
+                let (branch, path) =
+                    wizard.existing_worktrees[wizard.selected_worktree_index].clone();
+                (branch, use_cases::WorktreeSource::ExistingWorktree(path))
+            }
+            BranchSource::NewBranch => {
+                let name = wizard.new_branch_editor.lines().join("").trim().to_string();
+                (name, use_cases::WorktreeSource::NewBranch)
+            }
+            BranchSource::ExistingBranch => {
+                let name = wizard.existing_branches[wizard.selected_branch_index].clone();
+                (name, use_cases::WorktreeSource::ExistingBranch)
+            }
+        };
+
+        tracing::info!(repo = %repo_name, branch = %branch_name, "creating setup-only task via wizard");
+        self.log_output(format!("Creating setup-only task {}--{}...", repo_name, branch_name));
+
+        // Delegate business logic to use_cases
+        let task = match use_cases::create_setup_only_task(
+            &self.config,
+            &repo_name,
+            &branch_name,
+            worktree_source,
+        ) {
+            Ok(t) => t,
+            Err(e) => {
+                self.log_output(format!("  Error: {}", e));
+                if let Some(w) = &mut self.wizard {
+                    w.error_message = Some(format!("Failed to create task: {}", e));
+                }
+                return Ok(());
+            }
+        };
+
+        // Side effects: create tmux session (but do NOT start any flow)
+        let worktree_path = task.meta.worktree_path.clone();
+        self.log_output("  Creating tmux session...".to_string());
+        if let Err(e) = Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path) {
+            self.log_output(format!("  Error: {}", e));
+            if let Some(w) = &mut self.wizard {
+                w.error_message = Some(format!("Failed to create tmux session: {}", e));
+            }
+            return Ok(());
+        }
+
+        let _ = Tmux::add_review_window(&task.meta.tmux_session, &worktree_path);
+
+        // No flow-run command sent — this is the key difference from create_task_from_wizard
+
+        // Success - close wizard and refresh
+        let task_id = task.meta.task_id();
+        self.wizard = None;
+        self.view = View::TaskList;
+        self.refresh_tasks_and_select(&task_id)?;
+        self.set_status(format!("Created setup-only task: {}", task_id));
 
         Ok(())
     }
