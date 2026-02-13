@@ -83,15 +83,29 @@ pub fn create_task(
             path
         }
         WorktreeSource::NewBranch => {
-            let path = Git::create_worktree_quiet(config, repo_name, branch_name)?;
-            let _ = Git::direnv_allow(&path);
-            path
+            let candidate = config.worktree_path(repo_name, branch_name);
+            if candidate.exists() {
+                tracing::info!(repo = repo_name, branch = branch_name, "worktree already exists, reusing");
+                let _ = Git::direnv_allow(&candidate);
+                candidate
+            } else {
+                let path = Git::create_worktree_quiet(config, repo_name, branch_name)?;
+                let _ = Git::direnv_allow(&path);
+                path
+            }
         }
         WorktreeSource::ExistingBranch => {
-            let path =
-                Git::create_worktree_for_existing_branch_quiet(config, repo_name, branch_name)?;
-            let _ = Git::direnv_allow(&path);
-            path
+            let candidate = config.worktree_path(repo_name, branch_name);
+            if candidate.exists() {
+                tracing::info!(repo = repo_name, branch = branch_name, "worktree already exists, reusing");
+                let _ = Git::direnv_allow(&candidate);
+                candidate
+            } else {
+                let path =
+                    Git::create_worktree_for_existing_branch_quiet(config, repo_name, branch_name)?;
+                let _ = Git::direnv_allow(&path);
+                path
+            }
         }
     };
 

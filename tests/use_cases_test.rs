@@ -83,6 +83,38 @@ fn create_task_with_existing_worktree() {
 }
 
 #[test]
+fn create_task_reuses_existing_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    // Create a worktree via git (simulates a worktree that already exists on disk)
+    let wt_path =
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "reuse-branch").unwrap();
+    assert!(wt_path.exists());
+
+    // Now create a task with ExistingBranch — should reuse the worktree instead of failing
+    let task = use_cases::create_task(
+        &config,
+        "myrepo",
+        "reuse-branch",
+        "Reuse existing worktree",
+        "new",
+        WorktreeSource::ExistingBranch,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(task.meta.worktree_path, wt_path);
+    assert!(task.dir.join("meta.json").exists());
+    assert_eq!(task.meta.branch_name, "reuse-branch");
+
+    // TASK.md written to the reused worktree
+    let task_content = task.read_task().unwrap();
+    assert!(task_content.contains("Reuse existing worktree"));
+}
+
+#[test]
 fn create_task_with_review_after() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
