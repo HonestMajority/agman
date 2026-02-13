@@ -932,7 +932,7 @@ fn create_task_with_slash_in_branch_name() {
     assert_eq!(task.meta.branch_name, "chore/my-feature");
 
     // list_tasks() finds the task
-    let tasks = use_cases::list_tasks(&config).unwrap();
+    let tasks = use_cases::list_tasks(&config);
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].meta.branch_name, "chore/my-feature");
 
