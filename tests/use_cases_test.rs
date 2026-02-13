@@ -770,3 +770,42 @@ fn parse_github_owner_repo_formats() {
     // Non-GitHub URL returns None
     assert!(parse_github_owner_repo("https://gitlab.com/acme/widgets.git").is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Task with slash in branch name
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_task_with_slash_in_branch_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    let task = use_cases::create_task(
+        &config,
+        "myrepo",
+        "chore/my-feature",
+        "Fix something",
+        "new",
+        WorktreeSource::NewBranch,
+        false,
+    )
+    .unwrap();
+
+    // Task directory is flat (no nested dirs from the slash)
+    let expected_dir = config.tasks_dir.join("myrepo--chore-my-feature");
+    assert_eq!(task.dir, expected_dir);
+    assert!(task.dir.join("meta.json").exists());
+
+    // meta.json preserves the original branch name
+    assert_eq!(task.meta.branch_name, "chore/my-feature");
+
+    // list_tasks() finds the task
+    let tasks = use_cases::list_tasks(&config).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].meta.branch_name, "chore/my-feature");
+
+    // Task::load() works via the sanitized task_id
+    let loaded = Task::load(&config, "myrepo", "chore/my-feature").unwrap();
+    assert_eq!(loaded.meta.branch_name, "chore/my-feature");
+}
