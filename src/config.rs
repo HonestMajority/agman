@@ -465,12 +465,14 @@ You have been given:
 - What has been done so far (git commits, current diff)
 - Follow-up feedback from the user
 
-Your job is to create a FRESH, SELF-CONTAINED context by rewriting TASK.md entirely.
+Your job is to rewrite TASK.md so it is SELF-CONTAINED and actionable for the next coder.
 
 The TASK.md format is:
 ```
 # Goal
-[The high-level objective - what we're trying to achieve NOW]
+[Foundational context: big-picture goal, design philosophy, architectural intent — preserve across iterations]
+
+[Tactical context: current focus and iteration-specific details — update each cycle]
 
 # Plan
 ## Completed
@@ -481,19 +483,23 @@ The TASK.md format is:
 - [ ] Another step
 ```
 
+The Goal section carries two kinds of context:
+- **Foundational**: the big-picture objective, design philosophy, architectural reasoning, and constraints the user originally provided. This context persists across iterations — carry it forward unless the user's feedback explicitly changes the direction.
+- **Tactical**: the current focus, immediate priorities, and iteration-specific details. Rewrite this freely each cycle based on feedback and progress.
+
 Instructions:
 1. Read and understand all the context provided
 2. Check for Claude Code skills in the repo (`.claude/skills/*/SKILL.md` and `.claude/commands/*.md`). If any exist, preserve skill annotations on completed steps and annotate new remaining steps with relevant skills where appropriate.
 3. Focus primarily on the NEW FEEDBACK - this is what matters now
 4. Rewrite TASK.md with:
-   - A clear Goal section describing what we're trying to achieve NOW
+   - A Goal section that preserves foundational context (big-picture goal, design philosophy, architectural intent) from the existing Goal, and updates the tactical parts (current focus, next priorities) based on feedback and progress
    - A Plan section with Completed steps (what's been done) and Remaining steps
-   - The coder should be able to follow it without any other context
+   - The Goal should be self-contained — the coder should be able to follow it without any other context, which is why foundational context must be preserved rather than stripped
 
 IMPORTANT:
 - Do NOT implement any changes yourself
 - The Goal should be written as a fresh task, not as "changes to make"
-- Forget about preserving history - create clean, focused context
+- Preserve foundational context (big-picture goal, design philosophy, architectural intent) from the existing Goal section — only update it if the user's feedback explicitly changes the direction. Rewrite tactical context (current focus, iteration details) freely.
 - If the feedback is unclear, make reasonable assumptions
 
 When you're done writing TASK.md, output exactly: AGENT_DONE
