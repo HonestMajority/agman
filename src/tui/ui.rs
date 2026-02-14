@@ -1228,8 +1228,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" stop  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightCyan)),
                 Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("U", Style::default().fg(Color::LightCyan)),
-                Span::styled(" update  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("W", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),

@@ -2029,11 +2029,6 @@ impl App {
                     // Restart task wizard
                     self.start_restart_wizard()?;
                 }
-                KeyCode::Char('U') => {
-                    // Manual restart
-                    self.restart_confirm_index = 0;
-                    self.view = View::RestartConfirm;
-                }
                 KeyCode::Char('H') => {
                     self.toggle_hold()?;
                 }
@@ -2482,12 +2477,12 @@ impl App {
                     } else {
                         // "Later"
                         self.view = View::TaskList;
-                        self.set_status("Restart available — press U to restart".to_string());
+                        self.set_status("Restart deferred".to_string());
                     }
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
-                    self.set_status("Restart available — press U to restart".to_string());
+                    self.set_status("Restart deferred".to_string());
                 }
                 _ => {}
             }
