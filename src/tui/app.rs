@@ -7,7 +7,6 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use std::io;
 #[cfg(unix)]
-use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::Command;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -48,7 +47,6 @@ pub enum View {
     FeedbackQueue,
     RebaseBranchPicker,
     ReviewWizard,
-    RestartConfirm,
     RestartWizard,
     SetLinkedPr,
     DirectoryPicker,
@@ -344,10 +342,6 @@ pub struct App {
     pub delete_mode_index: usize,
     // Restart task wizard
     pub restart_wizard: Option<RestartWizard>,
-    // Restart modal state (binary restart)
-    pub restart_pending: bool,
-    pub restart_confirm_index: usize,
-    pub should_restart: bool,
     // PR polling
     pub last_pr_poll: Instant,
     pr_poll_tx: tokio_mpsc::UnboundedSender<Vec<PrPollResult>>,
@@ -407,9 +401,6 @@ impl App {
             pending_branch_command: None,
             delete_mode_index: 0,
             restart_wizard: None,
-            restart_pending: false,
-            restart_confirm_index: 0,
-            should_restart: false,
             last_pr_poll: Instant::now(),
             pr_poll_tx,
             pr_poll_rx,
@@ -1926,7 +1917,6 @@ impl App {
             View::FeedbackQueue => self.handle_feedback_queue_event(event),
             View::RebaseBranchPicker => self.handle_rebase_branch_picker_event(event),
             View::ReviewWizard => self.handle_review_wizard_event(event),
-            View::RestartConfirm => self.handle_restart_confirm_event(event),
             View::RestartWizard => self.handle_restart_wizard_event(event),
             View::SetLinkedPr => self.handle_set_linked_pr_event(event),
             View::DirectoryPicker => self.handle_directory_picker_event(event),
@@ -2028,11 +2018,6 @@ impl App {
                 KeyCode::Char('W') => {
                     // Restart task wizard
                     self.start_restart_wizard()?;
-                }
-                KeyCode::Char('U') => {
-                    // Manual restart
-                    self.restart_confirm_index = 0;
-                    self.view = View::RestartConfirm;
                 }
                 KeyCode::Char('H') => {
                     self.toggle_hold()?;
@@ -2459,35 +2444,6 @@ impl App {
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
-                }
-                _ => {}
-            }
-        }
-        Ok(false)
-    }
-
-    fn handle_restart_confirm_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.restart_confirm_index = (self.restart_confirm_index + 1) % 2;
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.restart_confirm_index = if self.restart_confirm_index == 0 { 1 } else { 0 };
-                }
-                KeyCode::Enter => {
-                    if self.restart_confirm_index == 0 {
-                        // "Restart now"
-                        self.should_restart = true;
-                    } else {
-                        // "Later"
-                        self.view = View::TaskList;
-                        self.set_status("Restart available — press U to restart".to_string());
-                    }
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.view = View::TaskList;
-                    self.set_status("Restart available — press U to restart".to_string());
                 }
                 _ => {}
             }
@@ -3517,20 +3473,6 @@ impl Drop for App {
 }
 
 pub fn run_tui(config: Config) -> Result<()> {
-    // Remove any stale restart signal file left over from a previous build.
-    // This prevents a "double restart" if the TUI missed the signal (e.g. it
-    // crashed or was not running when release.sh created the file).
-    #[cfg(unix)]
-    {
-        let restart_signal = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".agman/.restart-tui");
-        if restart_signal.exists() {
-            tracing::info!("removing stale .restart-tui signal file at startup");
-            let _ = std::fs::remove_file(&restart_signal);
-        }
-    }
-
     // Create app once (persists across attach/return cycles)
     let mut app = App::new(config)?;
 
@@ -3566,7 +3508,7 @@ pub fn run_tui(config: Config) -> Result<()> {
                     break;
                 }
 
-                if app.should_quit || app.should_restart {
+                if app.should_quit {
                     break;
                 }
             }
@@ -3590,28 +3532,6 @@ pub fn run_tui(config: Config) -> Result<()> {
             // Check for completed background PR poll results (non-blocking)
             app.apply_pr_poll_results();
 
-            // Check for restart signal (written by release.sh when agman is rebuilt)
-            #[cfg(unix)]
-            {
-                let restart_signal = dirs::home_dir()
-                    .unwrap_or_default()
-                    .join(".agman/.restart-tui");
-                if restart_signal.exists() {
-                    tracing::info!("detected .restart-tui signal file, deferring to restart modal");
-                    let _ = std::fs::remove_file(&restart_signal);
-                    app.restart_pending = true;
-                }
-            }
-
-            // Show restart modal when no other modal is active
-            if app.restart_pending
-                && matches!(app.view, View::TaskList | View::Preview)
-            {
-                app.restart_confirm_index = 0;
-                app.view = View::RestartConfirm;
-                app.restart_pending = false;
-            }
-
             // Clear old status messages
             app.clear_old_status();
             app.clear_old_output();
@@ -3625,17 +3545,6 @@ pub fn run_tui(config: Config) -> Result<()> {
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;
-
-        // If user confirmed restart, exec the new binary
-        #[cfg(unix)]
-        if app.should_restart {
-            app.stop_caffeinate();
-            eprintln!("agman updated — restarting...");
-            let err = Command::new("agman").exec();
-            // exec only returns on error
-            eprintln!("Failed to restart: {err}");
-            std::process::exit(1);
-        }
 
         // If user requested quit, exit the outer loop
         if app.should_quit {

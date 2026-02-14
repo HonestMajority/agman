@@ -33,7 +33,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::FeedbackQueue
             | View::RebaseBranchPicker
             | View::ReviewWizard
-            | View::RestartConfirm
             | View::RestartWizard
             | View::SetLinkedPr
             | View::DirectoryPicker
@@ -89,10 +88,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::ReviewWizard => {
             draw_task_list(f, app, chunks[0]);
             draw_review_wizard(f, app);
-        }
-        View::RestartConfirm => {
-            draw_task_list(f, app, chunks[0]);
-            draw_restart_confirm(f, app);
         }
         View::RestartWizard => {
             draw_preview(f, app, chunks[0]);
@@ -960,68 +955,6 @@ fn draw_delete_confirm(f: &mut Frame, app: &App) {
     f.render_widget(popup, area);
 }
 
-fn draw_restart_confirm(f: &mut Frame, app: &App) {
-    let area = centered_rect(50, 35, f.area());
-
-    f.render_widget(Clear, area);
-
-    let sel = app.restart_confirm_index;
-
-    let restart_style = if sel == 0 {
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(30, 40, 60))
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-    let later_style = if sel == 1 {
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(30, 40, 60))
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-
-    let restart_prefix = if sel == 0 { "▸ " } else { "  " };
-    let later_prefix = if sel == 1 { "▸ " } else { "  " };
-
-    let text = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "  A new version of agman is available.",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("{}Restart now", restart_prefix),
-            restart_style,
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("{}Later", later_prefix),
-            later_style,
-        )),
-    ];
-
-    let popup = Paragraph::new(text).block(
-        Block::default()
-            .title(Span::styled(
-                " Restart agman ",
-                Style::default()
-                    .fg(Color::LightCyan)
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightCyan)),
-    );
-
-    f.render_widget(popup, area);
-}
-
 fn draw_restart_wizard(f: &mut Frame, app: &mut App) {
     let wizard = match &app.restart_wizard {
         Some(w) => w,
@@ -1228,8 +1161,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" stop  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightCyan)),
                 Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("U", Style::default().fg(Color::LightCyan)),
-                Span::styled(" update  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("W", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
@@ -1386,16 +1317,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("Enter", Style::default().fg(Color::LightGreen)),
                 Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc", Style::default().fg(Color::LightRed)),
-                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-            ]
-        }
-        View::RestartConfirm => {
-            vec![
-                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Esc/q", Style::default().fg(Color::LightRed)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]
         }

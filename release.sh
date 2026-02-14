@@ -30,11 +30,6 @@ if [[ "$(uname)" == "Darwin" ]]; then
     codesign -s - "$OUTPUT_DIR/agman" 2>/dev/null || true
 fi
 
-# Signal running TUI to restart with the new binary.
-# This is done BEFORE `agman init` so the TUI gets the restart signal even
-# if init fails (the restarted TUI will run its own init anyway).
-touch "$HOME/.agman/.restart-tui"
-
 # Reinitialize agman config files
 echo "Running agman init --force..."
 agman init --force
