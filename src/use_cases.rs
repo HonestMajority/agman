@@ -45,7 +45,8 @@ pub fn install_hint(tool: &str) -> &'static str {
 /// How to handle the worktree when creating a task.
 pub enum WorktreeSource {
     /// Create a brand-new worktree with a new branch.
-    NewBranch,
+    /// If `base_branch` is `Some`, use it as the base ref; otherwise auto-detect.
+    NewBranch { base_branch: Option<String> },
     /// Create a worktree for an existing remote/local branch.
     ExistingBranch,
     /// Reuse an existing worktree directory.
@@ -83,14 +84,14 @@ pub fn create_task(
             let _ = Git::direnv_allow(&path);
             path
         }
-        WorktreeSource::NewBranch => {
+        WorktreeSource::NewBranch { base_branch } => {
             let candidate = config.worktree_path(repo_name, branch_name);
             if candidate.exists() {
                 tracing::info!(repo = repo_name, branch = branch_name, "worktree already exists, reusing");
                 let _ = Git::direnv_allow(&candidate);
                 candidate
             } else {
-                let path = Git::create_worktree_quiet(config, repo_name, branch_name)?;
+                let path = Git::create_worktree_quiet(config, repo_name, branch_name, base_branch.as_deref())?;
                 let _ = Git::direnv_allow(&path);
                 path
             }
@@ -440,8 +441,8 @@ pub fn create_setup_only_task(
             let _ = Git::direnv_allow(&path);
             path
         }
-        WorktreeSource::NewBranch => {
-            let path = Git::create_worktree_quiet(config, repo_name, branch_name)?;
+        WorktreeSource::NewBranch { base_branch } => {
+            let path = Git::create_worktree_quiet(config, repo_name, branch_name, base_branch.as_deref())?;
             let _ = Git::direnv_allow(&path);
             path
         }
@@ -699,7 +700,7 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> 
             let _ = Git::direnv_allow(&candidate);
             candidate
         } else {
-            let path = Git::create_worktree_quiet(config, repo_name, &task.meta.branch_name)
+            let path = Git::create_worktree_quiet(config, repo_name, &task.meta.branch_name, None)
                 .with_context(|| format!("Failed to create worktree for repo '{}'", repo_name))?;
             let _ = Git::direnv_allow(&path);
             path

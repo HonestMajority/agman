@@ -1677,6 +1677,8 @@ fn draw_wizard_branch(f: &mut Frame, app: &mut App, area: Rect) {
         f,
         wizard.branch_source,
         &mut wizard.new_branch_editor,
+        Some(&mut wizard.base_branch_editor),
+        wizard.base_branch_focus,
         &wizard.existing_branches,
         wizard.selected_branch_index,
         &wizard.existing_worktrees,
@@ -2149,6 +2151,8 @@ fn draw_branch_tabs(
     f: &mut Frame,
     branch_source: BranchSource,
     branch_editor: &mut tui_textarea::TextArea<'static>,
+    base_branch_editor: Option<&mut tui_textarea::TextArea<'static>>,
+    base_branch_focus: bool,
     existing_branches: &[String],
     selected_branch_index: usize,
     existing_worktrees: &[(String, std::path::PathBuf)],
@@ -2157,8 +2161,11 @@ fn draw_branch_tabs(
     new_branch_label: &str,
     area: Rect,
 ) {
+    let has_base = base_branch_editor.is_some();
     let content_constraint = match branch_source {
-        BranchSource::NewBranch => Constraint::Length(3),
+        BranchSource::NewBranch => {
+            if has_base { Constraint::Length(7) } else { Constraint::Length(3) }
+        }
         BranchSource::ExistingBranch | BranchSource::ExistingWorktree => Constraint::Min(3),
     };
 
@@ -2227,17 +2234,64 @@ fn draw_branch_tabs(
     // Draw content for the selected tab
     match branch_source {
         BranchSource::NewBranch => {
-            branch_editor.set_block(
-                Block::default()
-                    .title(Span::styled(
-                        new_branch_label.to_string(),
-                        Style::default().fg(Color::LightGreen),
-                    ))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::LightGreen)),
-            );
-            branch_editor.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
-            f.render_widget(&*branch_editor, chunks[1]);
+            if let Some(base_editor) = base_branch_editor {
+                // Two stacked fields: branch name + base branch
+                let field_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(3), Constraint::Length(1), Constraint::Length(3)])
+                    .split(chunks[1]);
+
+                let branch_focused = !base_branch_focus;
+                let branch_border_color = if branch_focused { Color::LightGreen } else { Color::DarkGray };
+                let base_border_color = if base_branch_focus { Color::LightGreen } else { Color::DarkGray };
+                let branch_title_color = if branch_focused { Color::LightGreen } else { Color::DarkGray };
+                let base_title_color = if base_branch_focus { Color::LightGreen } else { Color::DarkGray };
+
+                branch_editor.set_block(
+                    Block::default()
+                        .title(Span::styled(
+                            new_branch_label.to_string(),
+                            Style::default().fg(branch_title_color),
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(branch_border_color)),
+                );
+                if branch_focused {
+                    branch_editor.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+                } else {
+                    branch_editor.set_cursor_style(Style::default());
+                }
+                f.render_widget(&*branch_editor, field_chunks[0]);
+
+                base_editor.set_block(
+                    Block::default()
+                        .title(Span::styled(
+                            " Base branch (↑↓ to switch) ",
+                            Style::default().fg(base_title_color),
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(base_border_color)),
+                );
+                if base_branch_focus {
+                    base_editor.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+                } else {
+                    base_editor.set_cursor_style(Style::default());
+                }
+                f.render_widget(&*base_editor, field_chunks[2]);
+            } else {
+                // Single field (no base branch editor — used by review wizard)
+                branch_editor.set_block(
+                    Block::default()
+                        .title(Span::styled(
+                            new_branch_label.to_string(),
+                            Style::default().fg(Color::LightGreen),
+                        ))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightGreen)),
+                );
+                branch_editor.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+                f.render_widget(&*branch_editor, chunks[1]);
+            }
         }
         BranchSource::ExistingBranch => {
             if existing_branches.is_empty() {
@@ -2408,6 +2462,8 @@ fn draw_review_wizard(f: &mut Frame, app: &mut App) {
                     f,
                     wizard.branch_source,
                     &mut wizard.branch_editor,
+                    None,
+                    false,
                     &wizard.existing_branches,
                     wizard.selected_branch_index,
                     &wizard.existing_worktrees,

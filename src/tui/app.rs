@@ -140,6 +140,9 @@ pub struct NewTaskWizard {
     pub existing_branches: Vec<String>,
     pub selected_branch_index: usize,
     pub new_branch_editor: TextArea<'static>,
+    pub base_branch_editor: TextArea<'static>,
+    /// Which field has focus in the NewBranch tab: false = branch name, true = base branch.
+    pub base_branch_focus: bool,
     pub description_editor: VimTextArea<'static>,
     pub error_message: Option<String>,
     pub review_after: bool,
@@ -1104,6 +1107,9 @@ impl App {
         let mut new_branch_editor = Self::create_plain_editor();
         new_branch_editor.set_cursor_line_style(ratatui::style::Style::default());
 
+        let mut base_branch_editor = Self::create_plain_editor();
+        base_branch_editor.set_cursor_line_style(ratatui::style::Style::default());
+
         // Description editor uses vim mode, start in insert mode
         let mut description_editor = VimTextArea::new();
         description_editor.set_insert_mode();
@@ -1119,6 +1125,8 @@ impl App {
             existing_branches: Vec::new(),
             selected_branch_index: 0,
             new_branch_editor,
+            base_branch_editor,
+            base_branch_focus: false,
             description_editor,
             error_message: None,
             review_after: false,
@@ -1574,10 +1582,19 @@ impl App {
                     // (no existing branches/worktrees to pick from)
                     wizard.existing_branches = Vec::new();
                     wizard.existing_worktrees = Vec::new();
+                    // Pre-fill base branch with default
+                    wizard.base_branch_editor.select_all();
+                    wizard.base_branch_editor.cut();
+                    wizard.base_branch_editor.insert_str("origin/main");
+                    wizard.base_branch_focus = false;
                 } else {
                     // Single-repo: scan branches and worktrees as before
                     let branches = self.scan_branches(&repo_name)?;
                     let existing_wts = self.scan_existing_worktrees(&repo_name)?;
+
+                    // Pre-fill base branch editor with auto-detected base ref
+                    let repo_path = self.config.repo_path(&repo_name);
+                    let base_ref = Git::find_base_ref(&repo_path);
 
                     let wizard = self.wizard.as_mut().unwrap();
                     wizard.is_multi_repo = false;
@@ -1587,6 +1604,11 @@ impl App {
                     wizard.selected_worktree_index = 0;
                     wizard.branch_source = BranchSource::NewBranch;
                     wizard.step = WizardStep::SelectBranch;
+                    // Set base branch editor content
+                    wizard.base_branch_editor.select_all();
+                    wizard.base_branch_editor.cut();
+                    wizard.base_branch_editor.insert_str(&base_ref);
+                    wizard.base_branch_focus = false;
                 }
             }
             WizardStep::SelectBranch => {
@@ -1706,7 +1728,9 @@ impl App {
             }
             BranchSource::NewBranch => {
                 let bname = wizard.new_branch_editor.lines().join("").trim().to_string();
-                (bname, use_cases::WorktreeSource::NewBranch)
+                let base = wizard.base_branch_editor.lines().join("").trim().to_string();
+                let base_branch = if base.is_empty() { None } else { Some(base) };
+                (bname, use_cases::WorktreeSource::NewBranch { base_branch })
             }
             BranchSource::ExistingBranch => {
                 let bname = wizard.existing_branches[wizard.selected_branch_index].clone();
@@ -1827,7 +1851,9 @@ impl App {
             }
             BranchSource::NewBranch => {
                 let name = wizard.new_branch_editor.lines().join("").trim().to_string();
-                (name, use_cases::WorktreeSource::NewBranch)
+                let base = wizard.base_branch_editor.lines().join("").trim().to_string();
+                let base_branch = if base.is_empty() { None } else { Some(base) };
+                (name, use_cases::WorktreeSource::NewBranch { base_branch })
             }
             BranchSource::ExistingBranch => {
                 let name = wizard.existing_branches[wizard.selected_branch_index].clone();
@@ -2789,9 +2815,17 @@ impl App {
                         _ => {
                             match wizard.branch_source {
                                 BranchSource::NewBranch => {
-                                    // Handle text input for branch name
-                                    let input = Input::from(event.clone());
-                                    wizard.new_branch_editor.input(input);
+                                    // Up/Down toggle focus between branch name and base branch fields
+                                    if key.code == KeyCode::Up || key.code == KeyCode::Down {
+                                        wizard.base_branch_focus = !wizard.base_branch_focus;
+                                    } else {
+                                        let input = Input::from(event.clone());
+                                        if wizard.base_branch_focus {
+                                            wizard.base_branch_editor.input(input);
+                                        } else {
+                                            wizard.new_branch_editor.input(input);
+                                        }
+                                    }
                                 }
                                 BranchSource::ExistingBranch => {
                                     match key.code {

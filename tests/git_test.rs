@@ -9,7 +9,7 @@ fn git_create_and_remove_worktree() {
     let config = test_config(&tmp);
     let _repo_path = init_test_repo(&tmp, "myrepo");
 
-    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "feat-branch").unwrap();
+    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "feat-branch", None).unwrap();
 
     // Worktree directory should exist and contain files
     assert!(worktree_path.exists());
@@ -27,7 +27,7 @@ fn git_list_worktrees() {
     let config = test_config(&tmp);
     let repo_path = init_test_repo(&tmp, "myrepo");
 
-    Git::create_worktree_quiet(&config, "myrepo", "test-branch").unwrap();
+    Git::create_worktree_quiet(&config, "myrepo", "test-branch", None).unwrap();
 
     let worktrees = Git::list_worktrees(&repo_path).unwrap();
     let branches: Vec<&str> = worktrees.iter().map(|(b, _p)| b.as_str()).collect();
@@ -41,7 +41,7 @@ fn git_delete_branch() {
     let config = test_config(&tmp);
     let repo_path = init_test_repo(&tmp, "myrepo");
 
-    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "to-delete").unwrap();
+    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "to-delete", None).unwrap();
     Git::remove_worktree(&repo_path, &worktree_path).unwrap();
 
     Git::delete_branch(&repo_path, "to-delete").unwrap();
@@ -62,11 +62,11 @@ fn git_create_worktree_idempotent() {
     let config = test_config(&tmp);
     let _repo_path = init_test_repo(&tmp, "myrepo");
 
-    let path1 = Git::create_worktree_quiet(&config, "myrepo", "idem-branch").unwrap();
+    let path1 = Git::create_worktree_quiet(&config, "myrepo", "idem-branch", None).unwrap();
     assert!(path1.exists());
 
     // Calling again should succeed and return the same path
-    let path2 = Git::create_worktree_quiet(&config, "myrepo", "idem-branch").unwrap();
+    let path2 = Git::create_worktree_quiet(&config, "myrepo", "idem-branch", None).unwrap();
     assert_eq!(path1, path2);
     assert!(path2.exists());
 }
@@ -78,7 +78,7 @@ fn git_create_worktree_for_existing_branch_idempotent() {
     let _repo_path = init_test_repo(&tmp, "myrepo");
 
     // Create a worktree (this also creates the branch)
-    let path1 = Git::create_worktree_quiet(&config, "myrepo", "exist-branch").unwrap();
+    let path1 = Git::create_worktree_quiet(&config, "myrepo", "exist-branch", None).unwrap();
     assert!(path1.exists());
 
     // Now call create_worktree_for_existing_branch_quiet for the same branch —

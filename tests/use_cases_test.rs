@@ -22,7 +22,7 @@ fn create_task_with_new_branch() {
         "feat-branch",
         "Build the widget",
         "new",
-        WorktreeSource::NewBranch,
+        WorktreeSource::NewBranch { base_branch: None },
         false,
     )
     .unwrap();
@@ -90,7 +90,7 @@ fn create_task_reuses_existing_worktree() {
 
     // Create a worktree via git (simulates a worktree that already exists on disk)
     let wt_path =
-        agman::git::Git::create_worktree_quiet(&config, "myrepo", "reuse-branch").unwrap();
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "reuse-branch", None).unwrap();
     assert!(wt_path.exists());
 
     // Now create a task with ExistingBranch — should reuse the worktree instead of failing
@@ -126,12 +126,54 @@ fn create_task_with_review_after() {
         "feat-review",
         "Desc",
         "new",
-        WorktreeSource::NewBranch,
+        WorktreeSource::NewBranch { base_branch: None },
         true,
     )
     .unwrap();
 
     assert!(task.meta.review_after);
+}
+
+// ---------------------------------------------------------------------------
+// Create task with custom base branch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_task_with_custom_base_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let repo_path = init_test_repo(&tmp, "myrepo");
+
+    // Create a branch "feature-base" to use as the base
+    std::process::Command::new("git")
+        .args(["branch", "feature-base"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+
+    let task = use_cases::create_task(
+        &config,
+        "myrepo",
+        "derived-branch",
+        "Build on feature-base",
+        "new",
+        WorktreeSource::NewBranch {
+            base_branch: Some("feature-base".to_string()),
+        },
+        false,
+    )
+    .unwrap();
+
+    // Task directory and meta exist
+    assert!(task.dir.join("meta.json").exists());
+    assert_eq!(task.meta.branch_name, "derived-branch");
+
+    // Worktree exists
+    assert!(task.meta.primary_repo().worktree_path.exists());
+
+    // TASK.md written
+    let task_content = task.read_task().unwrap();
+    assert!(task_content.contains("Build on feature-base"));
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +190,7 @@ fn create_setup_only_task() {
         &config,
         "myrepo",
         "empty-branch",
-        WorktreeSource::NewBranch,
+        WorktreeSource::NewBranch { base_branch: None },
     )
     .unwrap();
 
@@ -195,7 +237,7 @@ fn delete_task_everything() {
         "to-delete",
         "desc",
         "new",
-        WorktreeSource::NewBranch,
+        WorktreeSource::NewBranch { base_branch: None },
         false,
     )
     .unwrap();
@@ -229,7 +271,7 @@ fn delete_task_only() {
         "task-only-del",
         "desc",
         "new",
-        WorktreeSource::NewBranch,
+        WorktreeSource::NewBranch { base_branch: None },
         false,
     )
     .unwrap();
@@ -627,7 +669,7 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
         "reuse-branch",
         "Original task",
         "new",
-        WorktreeSource::NewBranch,
+        WorktreeSource::NewBranch { base_branch: None },
         false,
     )
     .unwrap();
@@ -752,7 +794,7 @@ fn set_linked_pr() {
         "pr-branch",
         "Test PR linking",
         "new",
-        WorktreeSource::NewBranch,
+        WorktreeSource::NewBranch { base_branch: None },
         false,
     )
     .unwrap();
@@ -821,7 +863,7 @@ fn set_linked_pr_owned_flag() {
         "owned-flag-branch",
         "Test owned flag",
         "new",
-        WorktreeSource::NewBranch,
+        WorktreeSource::NewBranch { base_branch: None },
         false,
     )
     .unwrap();
@@ -977,8 +1019,8 @@ fn delete_multi_repo_task() {
     .unwrap();
 
     // Manually populate repos (simulating what setup_repos_from_task_md would do)
-    let wt_a = agman::git::Git::create_worktree_quiet(&config, "repo-a", "multi-del").unwrap();
-    let wt_b = agman::git::Git::create_worktree_quiet(&config, "repo-b", "multi-del").unwrap();
+    let wt_a = agman::git::Git::create_worktree_quiet(&config, "repo-a", "multi-del", None).unwrap();
+    let wt_b = agman::git::Git::create_worktree_quiet(&config, "repo-b", "multi-del", None).unwrap();
 
     task.meta.repos = vec![
         agman::task::RepoEntry {
@@ -1289,7 +1331,7 @@ fn create_task_with_slash_in_branch_name() {
         "chore/my-feature",
         "Fix something",
         "new",
-        WorktreeSource::NewBranch,
+        WorktreeSource::NewBranch { base_branch: None },
         false,
     )
     .unwrap();
