@@ -396,13 +396,13 @@ pub fn update_last_review_count(task: &mut Task, count: u64) -> Result<()> {
 }
 
 /// Set the linked PR for a task by constructing the URL from the worktree's origin remote.
-pub fn set_linked_pr(task: &mut Task, pr_number: u64, worktree_path: &PathBuf, owned: bool) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), pr_number, owned, "setting linked PR");
+pub fn set_linked_pr(task: &mut Task, pr_number: u64, worktree_path: &PathBuf, owned: bool, author: Option<String>) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), pr_number, owned, author = ?author, "setting linked PR");
     let remote_url = Git::get_remote_url(worktree_path)?;
     let (owner, repo) = git::parse_github_owner_repo(&remote_url)
         .ok_or_else(|| anyhow::anyhow!("Not a GitHub remote: {}", remote_url))?;
     let url = format!("https://github.com/{}/{}/pull/{}", owner, repo, pr_number);
-    task.set_linked_pr(pr_number, url, owned)
+    task.set_linked_pr(pr_number, url, owned, author)
 }
 
 /// Clear the linked PR and reset stale polling state.

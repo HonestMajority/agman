@@ -171,7 +171,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     const MAX_REPO_WIDTH: usize = 20;
     const MIN_BRANCH_WIDTH: usize = 6; // "BRANCH" header length
 
-    const PR_WIDTH: usize = 12; // fits "#99999 mine" plus padding
+    const PR_WIDTH: usize = 20; // fits "#99999 (author_name)" plus padding
     const STATUS_WIDTH: usize = 10;
     const MIN_AGENT_WIDTH: usize = 6; // width of "AGENT" header + 1
     const MAX_AGENT_WIDTH: usize = 25;
@@ -460,7 +460,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 format!("{:<width$}", task.meta.linked_pr.as_ref().map(|pr| {
                     if !pr.owned {
-                        format!("#{} ext", pr.number)
+                        format!("#{} ({})", pr.number, pr.author.as_deref().unwrap_or("ext"))
                     } else if task.meta.review_addressed {
                         format!("#{} ✓", pr.number)
                     } else {

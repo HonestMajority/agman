@@ -765,13 +765,14 @@ fn set_linked_pr() {
         .output()
         .unwrap();
 
-    use_cases::set_linked_pr(&mut task, 42, &wt, true).unwrap();
+    use_cases::set_linked_pr(&mut task, 42, &wt, true, None).unwrap();
 
     assert!(task.meta.linked_pr.is_some());
     let pr = task.meta.linked_pr.as_ref().unwrap();
     assert_eq!(pr.number, 42);
     assert_eq!(pr.url, "https://github.com/testowner/testrepo/pull/42");
     assert!(pr.owned);
+    assert!(pr.author.is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -785,7 +786,7 @@ fn clear_linked_pr_resets_review_state() {
     let mut task = create_test_task(&config, "repo", "branch");
 
     // Set up a linked PR and review state
-    task.set_linked_pr(10, "https://github.com/o/r/pull/10".to_string(), true)
+    task.set_linked_pr(10, "https://github.com/o/r/pull/10".to_string(), true, None)
         .unwrap();
     task.meta.review_addressed = true;
     task.meta.last_review_count = Some(3);
@@ -832,14 +833,15 @@ fn set_linked_pr_owned_flag() {
         .output()
         .unwrap();
 
-    // Set as non-owned
-    use_cases::set_linked_pr(&mut task, 42, &wt, false).unwrap();
+    // Set as non-owned with author
+    use_cases::set_linked_pr(&mut task, 42, &wt, false, Some("octocat".to_string())).unwrap();
     let pr = task.meta.linked_pr.as_ref().unwrap();
     assert_eq!(pr.number, 42);
     assert!(!pr.owned);
+    assert_eq!(pr.author.as_deref(), Some("octocat"));
 
-    // Set as owned
-    use_cases::set_linked_pr(&mut task, 43, &wt, true).unwrap();
+    // Set as owned (no author)
+    use_cases::set_linked_pr(&mut task, 43, &wt, true, None).unwrap();
     let pr = task.meta.linked_pr.as_ref().unwrap();
     assert_eq!(pr.number, 43);
     assert!(pr.owned);
