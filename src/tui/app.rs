@@ -387,6 +387,7 @@ pub struct App {
 
 impl App {
     pub fn new(config: Config) -> Result<Self> {
+        use_cases::migrate_old_tasks(&config);
         let tasks = Task::list_all(&config);
         let commands = StoredCommand::list_all(&config.commands_dir).unwrap_or_default();
         let notes_editor = VimTextArea::new();

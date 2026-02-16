@@ -546,6 +546,126 @@ pub fn parse_repos_from_task_md(content: &str) -> Vec<String> {
     repos
 }
 
+/// Migrate old-format `meta.json` files in-place to the new multi-repo format.
+///
+/// Old format had `repo_name`, `tmux_session`, `worktree_path` at the top level.
+/// New format renames `repo_name` to `name` and nests per-repo fields inside `repos`.
+///
+/// Also copies TASK.md from the worktree to the task directory if it only exists
+/// in the worktree (pre-refactor location).
+///
+/// This runs at TUI startup and is a one-time migration — once files are rewritten,
+/// they stay in the new format.
+pub fn migrate_old_tasks(config: &Config) {
+    if !config.tasks_dir.exists() {
+        return;
+    }
+
+    let read_dir = match std::fs::read_dir(&config.tasks_dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read tasks dir for migration");
+            return;
+        }
+    };
+
+    for entry in read_dir {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        if !is_dir {
+            continue;
+        }
+
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        let task_dir = entry.path();
+
+        if let Err(e) = migrate_single_task(&task_dir, &dir_name) {
+            tracing::warn!(task_id = %dir_name, error = %e, "failed to migrate old task");
+        }
+    }
+}
+
+fn migrate_single_task(task_dir: &std::path::Path, dir_name: &str) -> anyhow::Result<()> {
+    let meta_path = task_dir.join("meta.json");
+    if !meta_path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&meta_path)?;
+    let mut val: serde_json::Value = serde_json::from_str(&content)?;
+
+    let obj = match val.as_object_mut() {
+        Some(o) => o,
+        None => return Ok(()),
+    };
+
+    // Detect old format: has "repo_name" at top level AND does NOT have "repos"
+    let has_repo_name = obj.contains_key("repo_name");
+    let has_repos = obj.contains_key("repos");
+
+    if !has_repo_name || has_repos {
+        tracing::debug!(task_id = %dir_name, "skipping task (already new format or unrecognized)");
+        return Ok(());
+    }
+
+    // Extract old values before mutation
+    let repo_name = obj
+        .get("repo_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let worktree_path = obj
+        .get("worktree_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let tmux_session = obj
+        .get("tmux_session")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Transform: rename repo_name → name
+    obj.insert("name".to_string(), serde_json::Value::String(repo_name.clone()));
+    obj.remove("repo_name");
+
+    // Transform: create repos array from old top-level fields
+    let repo_entry = serde_json::json!({
+        "repo_name": repo_name,
+        "worktree_path": worktree_path,
+        "tmux_session": tmux_session,
+    });
+    obj.insert("repos".to_string(), serde_json::Value::Array(vec![repo_entry]));
+    obj.remove("tmux_session");
+    obj.remove("worktree_path");
+
+    // Add parent_dir: null if missing
+    if !obj.contains_key("parent_dir") {
+        obj.insert("parent_dir".to_string(), serde_json::Value::Null);
+    }
+
+    // Write back
+    let new_content = serde_json::to_string_pretty(&val)?;
+    std::fs::write(&meta_path, new_content)?;
+
+    tracing::info!(task_id = %dir_name, "migrated old-format meta.json");
+
+    // TASK.md migration: copy from worktree to task dir if missing
+    let task_md_in_dir = task_dir.join("TASK.md");
+    if !task_md_in_dir.exists() && !worktree_path.is_empty() {
+        let worktree_task_md = PathBuf::from(&worktree_path).join("TASK.md");
+        if worktree_task_md.exists() {
+            std::fs::copy(&worktree_task_md, &task_md_in_dir)?;
+            tracing::info!(task_id = %dir_name, "copied TASK.md from worktree to task dir");
+        }
+    }
+
+    Ok(())
+}
+
 /// Post-hook: read `# Repos` from TASK.md, create worktrees + tmux sessions,
 /// and populate `task.meta.repos`.
 ///
