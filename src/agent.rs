@@ -126,8 +126,14 @@ impl Agent {
             task.dir.join("agent.log").display()
         );
 
-        // Send to the agman window in tmux
-        Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &cmd)?;
+        // Send to the agman window in tmux.
+        // For multi-repo tasks, the flow runs in the parent-dir session, not per-repo sessions.
+        let tmux_target = if task.meta.parent_dir.is_some() {
+            Config::tmux_session_name(&task.meta.name, &task.meta.branch_name)
+        } else {
+            task.meta.primary_repo().tmux_session.clone()
+        };
+        Tmux::send_keys_to_window(&tmux_target, "agman", &cmd)?;
 
         Ok(())
     }
@@ -136,6 +142,20 @@ impl Agent {
     pub fn run_direct(&self, task: &Task) -> Result<Option<StopCondition>> {
         tracing::info!(agent = %self.name, task_id = %task.meta.task_id(), "starting agent (direct)");
         let prompt = self.build_prompt(task)?;
+
+        // Determine working directory: parent_dir for multi-repo, worktree for single-repo
+        let working_dir = match task.meta.parent_dir.as_deref() {
+            Some(parent) => parent.to_path_buf(),
+            None => {
+                if !task.meta.has_repos() {
+                    anyhow::bail!(
+                        "No repos configured and no parent_dir for task '{}'",
+                        task.meta.task_id()
+                    );
+                }
+                task.meta.primary_repo().worktree_path.clone()
+            }
+        };
 
         // Log start
         let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
@@ -149,7 +169,7 @@ impl Agent {
         let mut child = Command::new("claude")
             .arg("-p") // print mode
             .arg("--dangerously-skip-permissions") // allow file operations without confirmation
-            .current_dir(task.meta.parent_dir.as_deref().unwrap_or(&task.meta.primary_repo().worktree_path))
+            .current_dir(&working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

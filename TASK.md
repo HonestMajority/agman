@@ -259,10 +259,8 @@ In `AgentRunner::run_agent()` (at `agent.rs:216-229`), the `.pr-link` file is ch
 - [x] `ensure_git_excludes_task()` simplified to REVIEW.md only, iterates all repos
 - [x] `get_git_diff()` / `get_git_log_summary()` multi-repo support with repo name headers
 - [x] `post_hook: Option<String>` field on `AgentStep` in flow.rs
-- [x] `Agent::run_direct()` uses `parent_dir` or `primary_repo().worktree_path`
 - [x] `.pr-link` sidecar checks all repo worktree paths + parent_dir
 - [x] `delete_task()` iterates all repos for worktree/branch/tmux cleanup
-- [x] All `main.rs` command handlers updated for multi-repo (`cmd_flow_run`, `cmd_continue`, `cmd_run_command`, `cmd_command_flow_run`)
 - [x] `new-multi` flow, `repo-inspector` prompt in config.rs, `init_default_files()` updated
 - [x] `setup_repos_from_task_md()` use case — parser + idempotent setup with incremental saves
 - [x] Post-hook execution in `run_flow_with()` via `execute_post_hook()`
@@ -272,26 +270,25 @@ In `AgentRunner::run_agent()` (at `agent.rs:216-229`), the `.pr-link` file is ch
 - [x] All `primary_repo()` calls in app.rs guarded (30+ sites: delete, stop, resume, restart, attach, PR poll, branch picker, set_linked_pr)
 - [x] `[M]` visual indicator for multi-repo tasks in TUI
 - [x] Test helpers and existing tests updated for new data model
-- [x] 6 new multi-repo tests (creation, parsing, deletion, flow) — all 79 pass
-- [x] Fixed `build_prompt()` condition: `repos.len() > 1` → `is_multi_repo() && !repos.is_empty()`
-- [x] Added `has_repos()` guard to `run_in_tmux()` — returns error instead of panicking on empty repos
-- [x] Fixed `resume_after_answering()` to iterate all repos when recreating tmux sessions (matches `cmd_continue` pattern)
-- [x] Added happy-path test for `setup_repos_from_task_md()` — tests worktree creation and meta persistence
+- [x] 7 new multi-repo tests (creation, parsing, deletion, flow, setup_repos) — all 80 pass
 - [x] Made tmux calls in `setup_repos_from_task_md()` non-fatal (warn + skip instead of propagating errors)
 
 ## Remaining
 
-(No remaining items — implementation complete.)
+(No remaining items — all planned work is complete.)
 
 ## Status
 
-### Iteration 5 — bug fixes and missing test
+### Iteration 7 — fix critical bugs
 
-**Build:** Compiles. **Tests:** All 80 pass (80 = 79 prior + 1 new test).
+**Build:** Compiles. **Tests:** All 80 pass.
 
-**Changes made:**
-1. **`build_prompt()` condition** (`agent.rs:47`): Changed `task.meta.repos.len() > 1` to `task.meta.is_multi_repo() && !task.meta.repos.is_empty()`. This ensures multi-repo tasks that select only one repo still get the `# Repo Worktrees` section in agent prompts.
-2. **`run_in_tmux()` guard** (`agent.rs:110-113`): Added early bail with descriptive error when `!task.meta.has_repos()`. Prevents panic on empty repos vector.
-3. **`resume_after_answering()` tmux recreation** (`app.rs:877-892`): Replaced single-session check with a loop over all `task.meta.repos`, matching the pattern used in `cmd_continue` (`main.rs:209-215`). Also handles the no-repos case for multi-repo tasks pre-setup.
-4. **`setup_repos_from_task_md()` tmux resilience** (`use_cases.rs:588-594`): Changed tmux session creation from `?` (fatal) to warn-and-skip. This is correct because tmux is a UI side-effect; the core logic (worktree creation + meta population) should succeed independently. Also enables testing without a tmux server.
-5. **New test `setup_repos_from_task_md`** (`tests/use_cases_test.rs`): Creates two repos, a multi-repo task, writes TASK.md with `# Repos` section, calls `setup_repos_from_task_md()`, asserts repos are populated, worktrees exist, and meta is persisted to disk.
+**Fixed `run_direct()` eager-evaluation panic** (`agent.rs`). Replaced `.current_dir(task.meta.parent_dir.as_deref().unwrap_or(&task.meta.primary_repo().worktree_path))` with a `match` expression that only calls `primary_repo()` in the `None` branch. Added an explicit bail if `parent_dir` is `None` and `repos` is empty, preventing index-out-of-bounds panic for multi-repo tasks before `setup_repos` runs.
+
+**Fixed tmux session routing for multi-repo tasks.** All four dispatch sites now correctly use the parent-dir session (`Config::tmux_session_name(&name, &branch)`) for multi-repo tasks:
+- `run_in_tmux()` (agent.rs) — sends claude command to parent-dir session
+- `cmd_continue()` (main.rs) — dispatches flow-run to parent-dir session, ensures it exists
+- `cmd_run_command()` (main.rs) — dispatches command-flow-run to parent-dir session, ensures it exists
+- `cmd_command_flow_run()` (main.rs) — includes parent-dir session in cleanup during delete post-action
+
+Also ensured `cmd_continue` and `cmd_run_command` recreate the parent-dir tmux session if it doesn't exist (matching how they already recreate per-repo sessions).

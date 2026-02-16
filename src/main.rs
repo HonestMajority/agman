@@ -214,9 +214,19 @@ fn cmd_continue(
         }
     }
 
-    // Start the flow in the primary repo's tmux session
+    // For multi-repo tasks, also ensure the parent-dir session exists (the flow runs there)
+    let tmux_target = if let Some(ref parent_dir) = task.meta.parent_dir {
+        let session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+        if !Tmux::session_exists(&session) {
+            println!("Recreating parent-dir tmux session...");
+            Tmux::create_session_with_windows(&session, parent_dir)?;
+        }
+        session
+    } else {
+        task.meta.primary_repo().tmux_session.clone()
+    };
     let flow_cmd = format!("agman flow-run {}", task.meta.task_id());
-    Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &flow_cmd)?;
+    Tmux::send_keys_to_window(&tmux_target, "agman", &flow_cmd)?;
 
     println!("Flow started in tmux.");
     println!("To watch: agman attach {}", task.meta.task_id());
@@ -280,7 +290,18 @@ fn cmd_run_command(
     // Update task to running state
     task.update_status(TaskStatus::Running)?;
 
-    // Dispatch the flow execution to tmux (non-blocking) so the caller returns immediately
+    // Dispatch the flow execution to tmux (non-blocking) so the caller returns immediately.
+    // For multi-repo tasks, also ensure the parent-dir session exists and dispatch there.
+    let tmux_target = if let Some(ref parent_dir) = task.meta.parent_dir {
+        let session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+        if !Tmux::session_exists(&session) {
+            println!("Recreating parent-dir tmux session...");
+            Tmux::create_session_with_windows(&session, parent_dir)?;
+        }
+        session
+    } else {
+        task.meta.primary_repo().tmux_session.clone()
+    };
     let mut flow_cmd = format!(
         "agman command-flow-run {} {}",
         task.meta.task_id(),
@@ -289,7 +310,7 @@ fn cmd_run_command(
     if let Some(b) = branch {
         flow_cmd.push_str(&format!(" --branch {}", b));
     }
-    Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &flow_cmd)?;
+    Tmux::send_keys_to_window(&tmux_target, "agman", &flow_cmd)?;
 
     println!("Command flow started in tmux.");
     println!("To watch: agman attach {}", task.meta.task_id());
@@ -373,8 +394,12 @@ fn cmd_command_flow_run(
         let task_id = task.meta.task_id();
         let branch_name = task.meta.branch_name.clone();
 
-        // Collect all tmux sessions to kill last (we may be running in one)
-        let tmux_sessions: Vec<String> = task.meta.repos.iter().map(|r| r.tmux_session.clone()).collect();
+        // Collect all tmux sessions to kill last (we may be running in one).
+        // For multi-repo tasks, also include the parent-dir session.
+        let mut tmux_sessions: Vec<String> = task.meta.repos.iter().map(|r| r.tmux_session.clone()).collect();
+        if task.meta.parent_dir.is_some() {
+            tmux_sessions.push(Config::tmux_session_name(&task.meta.name, &task.meta.branch_name));
+        }
 
         // Remove worktrees and branches for all repos
         for repo in &task.meta.repos {
