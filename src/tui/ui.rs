@@ -173,11 +173,17 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     const UPDATED_WIDTH: usize = 10;
     const COL_GAP: &str = "   "; // 3 spaces between columns
 
-    // Scan tasks for longest repo name
+    // Scan tasks for longest repo name (multi-repo tasks get [M] prefix)
     let max_repo_len = app
         .tasks
         .iter()
-        .map(|t| t.meta.name.len())
+        .map(|t| {
+            if t.meta.is_multi_repo() {
+                t.meta.name.len() + 4 // "[M] " prefix
+            } else {
+                t.meta.name.len()
+            }
+        })
         .max()
         .unwrap_or(MIN_REPO_WIDTH);
 
@@ -381,11 +387,16 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         };
         let status_str = format!("{}", task.meta.status);
 
-        // Build display repo name (truncate if needed)
-        let display_repo = if task.meta.name.len() > repo_width {
-            format!("{}…", &task.meta.name[..repo_width.saturating_sub(1)])
+        // Build display repo name (truncate if needed, prefix multi-repo tasks)
+        let repo_label = if task.meta.is_multi_repo() {
+            format!("[M] {}", task.meta.name)
         } else {
             task.meta.name.clone()
+        };
+        let display_repo = if repo_label.len() > repo_width {
+            format!("{}…", &repo_label[..repo_width.saturating_sub(1)])
+        } else {
+            repo_label
         };
 
         // Build display branch name with optional queue indicator

@@ -393,60 +393,9 @@ impl Task {
     /// For worktrees, uses the common git directory since they share info/exclude.
     /// TASK.md no longer needs excluding since it now lives in the task dir.
     pub fn ensure_git_excludes_task(&self) -> Result<()> {
-        use std::process::Command;
-
         for repo in &self.meta.repos {
-            if !repo.worktree_path.exists() {
-                continue;
-            }
-
-            let output = Command::new("git")
-                .args(["rev-parse", "--git-common-dir"])
-                .current_dir(&repo.worktree_path)
-                .output()
-                .context("Failed to get git common directory")?;
-
-            if !output.status.success() {
-                continue;
-            }
-
-            let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let git_common_dir_path = if std::path::Path::new(&git_common_dir).is_absolute() {
-                std::path::PathBuf::from(&git_common_dir)
-            } else {
-                repo.worktree_path.join(&git_common_dir)
-            };
-
-            let exclude_path = git_common_dir_path.join("info").join("exclude");
-            let entry = "REVIEW.md";
-
-            if let Some(info_dir) = exclude_path.parent() {
-                std::fs::create_dir_all(info_dir).context("Failed to create .git/info directory")?;
-            }
-
-            let mut content = if exclude_path.exists() {
-                std::fs::read_to_string(&exclude_path)
-                    .context("Failed to read .git/info/exclude")?
-            } else {
-                String::new()
-            };
-
-            let is_excluded = content.lines().any(|line| {
-                let trimmed = line.trim();
-                trimmed == entry || trimmed == format!("/{}", entry)
-            });
-
-            if !is_excluded {
-                if !content.is_empty() && !content.ends_with('\n') {
-                    content.push('\n');
-                }
-                content.push_str(entry);
-                content.push('\n');
-                std::fs::write(&exclude_path, &content)
-                    .context("Failed to update .git/info/exclude")?;
-            }
+            self.ensure_git_excludes_for_worktree(&repo.worktree_path)?;
         }
-
         Ok(())
     }
 
