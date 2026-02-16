@@ -77,12 +77,12 @@ src/
 ### Agent
 - Prompt template in `~/.agman/prompts/<name>.md`
 - Executed via `claude -p --dangerously-skip-permissions`
-- Outputs magic strings: `AGENT_DONE`, `TASK_COMPLETE`, `TASK_BLOCKED`, `TESTS_PASS`, `TESTS_FAIL`
+- Outputs magic strings: `AGENT_DONE`, `TASK_COMPLETE`, `TESTS_PASS`, `TESTS_FAIL`, `INPUT_NEEDED`
 
 ### Stop Conditions
 - `AGENT_DONE` - Agent finished its work, advance to next step
 - `TASK_COMPLETE` - Task is done, mark as complete
-- `TASK_BLOCKED` - Needs human intervention, pause
+- `INPUT_NEEDED` - Needs human input, pause
 - `TESTS_PASS` / `TESTS_FAIL` - For test-driven flows
 
 ## File Locations
