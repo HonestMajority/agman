@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 use crate::config::Config;
-use crate::flow::{BlockedAction, Flow, FlowStep, StopCondition};
+use crate::flow::{Flow, FlowStep, StopCondition};
 use crate::task::{Task, TaskStatus};
 use crate::tmux::Tmux;
 
@@ -305,26 +305,6 @@ impl AgentRunner {
                             // Do NOT advance the flow step — re-run same agent after user answers
                             return Ok(StopCondition::InputNeeded);
                         }
-                        Some(StopCondition::TaskBlocked) => {
-                            println!("Task blocked - needs human intervention");
-                            match agent_step.on_blocked {
-                                Some(BlockedAction::Continue) => {
-                                    println!("on_blocked: continue - advancing to next step");
-                                    task.advance_flow_step()?;
-                                }
-                                _ => {
-                                    println!("on_blocked: stop - stopping flow");
-                                    task.update_status(TaskStatus::Stopped)?;
-
-                                    // Check for queued feedback and process it
-                                    if let Some(result) = self.process_queued_feedback(task)? {
-                                        return Ok(result);
-                                    }
-
-                                    return Ok(StopCondition::TaskBlocked);
-                                }
-                            }
-                        }
                         Some(StopCondition::AgentDone) => {
                             if agent_step.until == StopCondition::AgentDone {
                                 println!("Agent done - advancing to next step");
@@ -376,16 +356,6 @@ impl AgentRunner {
                         StopCondition::InputNeeded => {
                             task.update_status(TaskStatus::InputNeeded)?;
                             return Ok(StopCondition::InputNeeded);
-                        }
-                        StopCondition::TaskBlocked => {
-                            task.update_status(TaskStatus::Stopped)?;
-
-                            // Check for queued feedback and process it
-                            if let Some(result) = self.process_queued_feedback(task)? {
-                                return Ok(result);
-                            }
-
-                            return Ok(StopCondition::TaskBlocked);
                         }
                         _ => {
                             // Loop completed, advance to next step
@@ -465,9 +435,6 @@ impl AgentRunner {
                     }
                     Some(StopCondition::InputNeeded) => {
                         return Ok(StopCondition::InputNeeded);
-                    }
-                    Some(StopCondition::TaskBlocked) => {
-                        return Ok(StopCondition::TaskBlocked);
                     }
                     Some(condition) if condition == until => {
                         println!("Loop condition {:?} met", until);

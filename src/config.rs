@@ -233,7 +233,6 @@ steps:
   - loop:
       - agent: coder
         until: AGENT_DONE
-        on_blocked: pause
       - agent: checker
         until: AGENT_DONE
     until: TASK_COMPLETE
@@ -261,7 +260,6 @@ steps:
   - loop:
       - agent: coder
         until: AGENT_DONE
-        on_blocked: pause
       - agent: checker
         until: AGENT_DONE
     until: TASK_COMPLETE
@@ -274,7 +272,6 @@ steps:
   - loop:
       - agent: coder
         until: AGENT_DONE
-        on_blocked: pause
       - agent: checker
         until: AGENT_DONE
     until: TASK_COMPLETE
@@ -317,10 +314,16 @@ Rewrite the `# Goal` section of TASK.md to include:
 - Any design philosophy that should guide the planner and coder
 - If Claude Code skills were found (`.claude/skills/` or `.claude/commands/`), include a brief summary of available skills so downstream agents know what `/slash-commands` they can use
 
+**You MUST resolve all design decisions.** The planner's job is tactical (ordering steps, identifying files) — not architectural. Do not defer decisions to the planner or coder with phrases like "the planner should decide", "options: A, B, or C", or "we could do X or Y". For each design decision:
+- If you can decide based on codebase analysis and project philosophy, make the decision and state it clearly with reasoning
+- If you genuinely need user input to decide, use `INPUT_NEEDED` (see Step 4)
+
 Keep the `# Plan` section as-is (the planner will fill it in).
 
 ### Step 4: Decide — Questions or Done?
-After enhancing the Goal, evaluate whether the prompt is ready:
+After enhancing the Goal, perform a self-check before deciding:
+- Scan the Goal for any unresolved decisions, tentative language ("should probably", "might want to", "the planner/coder should decide"), or listed-but-unchosen options
+- If any are found, either resolve them now or ask the user via `INPUT_NEEDED`
 
 **If you have questions that need user input:**
 - Add a `[QUESTIONS]` section at the end of TASK.md (after the `# Plan` section)
@@ -329,7 +332,7 @@ After enhancing the Goal, evaluate whether the prompt is ready:
 - Immediately after `[QUESTIONS]`, add an `[ANSWERS]` section with matching numbered blank slots so the user can fill them in easily
 - Output exactly: INPUT_NEEDED
 
-**If the prompt is well-formulated and complete:**
+**If the prompt is well-formulated and complete — with ALL design decisions resolved:**
 - Ensure there is no `[QUESTIONS]` section remaining
 - Output exactly: AGENT_DONE
 
@@ -360,7 +363,8 @@ After enhancing the Goal, evaluate whether the prompt is ready:
 - When incorporating answers, remove BOTH `[QUESTIONS]` and `[ANSWERS]` sections
 - Keep questions specific and decision-oriented, not vague
 - The enhanced Goal should be self-contained — the planner should not need additional context
-- When you're done (no more questions), output exactly: AGENT_DONE
+- Do NOT output AGENT_DONE until all design questions are answered and all architectural choices are decided
+- When you're done (no more questions, all decisions resolved), output exactly: AGENT_DONE
 - When you need user input, output exactly: INPUT_NEEDED
 "###;
 
@@ -391,12 +395,13 @@ The TASK.md format is:
 ```
 
 IMPORTANT:
-- Do NOT ask questions or wait for input
 - Do NOT delete or modify the Goal section — it contains important context and design decisions
-- Make reasonable assumptions if something is unclear
+- Make reasonable assumptions if something is unclear — the prompt_builder should have resolved all major design decisions
+- If you encounter specific implementation details that genuinely need user input and were not addressed in the Goal section, output `INPUT_NEEDED` with a `[QUESTIONS]` and `[ANSWERS]` section appended to TASK.md. This should be rare.
 - Just investigate, write the plan, and finish
 
 When you are done, output exactly: AGENT_DONE
+If you need user input on implementation details, output exactly: INPUT_NEEDED
 "#;
 
 const CODER_PROMPT: &str = r#"You are a coding agent in a coder↔checker loop. After you finish, a checker will review your work and may send you back for another pass. Partial progress is the expected workflow — you will be called again.
@@ -431,7 +436,7 @@ Instructions:
 4. Ensure tests are runnable and properly structured
 
 When you're done writing tests, output: AGENT_DONE
-If you need human input, output: TASK_BLOCKED
+If you need human input, output: INPUT_NEEDED
 "#;
 
 const TESTER_PROMPT: &str = r#"You are a testing agent. Your job is to run tests and report results.
@@ -443,7 +448,7 @@ Instructions:
 
 If all tests pass, output: TESTS_PASS
 If tests fail, output: TESTS_FAIL
-If you need human help, output: TASK_BLOCKED
+If you need human help, output: INPUT_NEEDED
 "#;
 
 const REVIEWER_PROMPT: &str = r#"You are a code review agent. Your job is to review code quality and suggest improvements.
@@ -455,7 +460,7 @@ Instructions:
 4. Document your findings
 
 When you're done reviewing, output: AGENT_DONE
-If critical issues need human attention, output: TASK_BLOCKED
+If critical issues need human attention, output: INPUT_NEEDED
 "#;
 
 const REFINER_PROMPT: &str = r#"You are a refiner agent. Your job is to synthesize feedback and create a clear, fresh context for the next agent.
@@ -505,32 +510,44 @@ IMPORTANT:
 When you're done writing TASK.md, output exactly: AGENT_DONE
 "#;
 
-const CHECKER_PROMPT: &str = r###"You are a checker agent — the quality gatekeeper in a coder↔checker loop. Your judgment decides whether the coder runs again or the task is done. Sending the coder for another pass is cheap and often the right call. Be skeptical by default.
+const CHECKER_PROMPT: &str = r###"You are a checker agent — the quality gatekeeper in a coder↔checker loop. Sending the coder for another pass is cheap and often the right call. Your default stance is skepticism: assume there is more work to do unless you are absolutely certain everything is done to a high standard.
 
 Instructions:
 1. Read TASK.md: understand the Goal, review ## Completed and ## Remaining, read ## Status for the coder's self-assessment, problems, and concerns
 2. Examine git diff and commits to see what was actually implemented
 3. Verify BOTH completion AND quality: Is the code clean, well-structured, and handling edge cases? Don't just check boxes — check substance.
-4. Assume there's more work to do unless everything is clearly, thoroughly done.
+4. If a build command is available (e.g., `cargo build`, `npm run build`), run it. If tests are available, run them. Do not declare completion without verifying the code compiles and tests pass.
 
-**TASK_COMPLETE** — output this ONLY when:
-- ALL requirements from the Goal are satisfied
-- Code quality is good (clean, well-structured, no obvious issues)
-- No remaining items that matter
+You have exactly three possible outputs:
 
-**AGENT_DONE** — output this when more work is needed:
-- Curate TASK.md for the next coder:
-  - Update ## Remaining with specific, actionable next steps
-  - Curate ## Completed: keep items that provide useful context for a future agent reading TASK.md cold (e.g., architectural decisions, important setup steps). Remove items that would be misleading or confusing — especially steps describing an approach that was later abandoned in favor of a different approach.
-  - Write a fresh ## Status with your assessment, what's wrong or missing, and clear guidance for the next iteration
+**AGENT_DONE** (the default — use this almost always):
+- Curate TASK.md for the next coder iteration
+- Update ## Remaining with specific, actionable next steps for any unfinished or substandard work
+- Curate ## Completed: keep items that provide useful context for a future agent reading TASK.md cold (e.g., architectural decisions, important setup steps). Remove items that would be misleading or confusing — especially steps describing an approach that was later abandoned.
+- Write a fresh ## Status with your assessment, what's wrong or missing, and clear guidance for the next iteration
 - The next coder has zero prior context — TASK.md must be self-contained and up to date
 
-**TASK_BLOCKED** — output this only when:
-- A fundamental issue prevents progress without human intervention
+**TASK_COMPLETE** (extremely rare — the nuclear option):
+Use this ONLY when ALL of the following are true:
+- Every single requirement from the Goal is satisfied — not "mostly done", not "the important parts are done", ALL of it
+- Every item in ## Remaining has been completed and verified
+- The code compiles successfully
+- Tests pass (if the project has tests)
+- Code quality is good — no obvious issues, no TODO comments for things that should have been done, no half-implemented features
+- You would bet your reputation that there is genuinely nothing left to do
+
+Default to AGENT_DONE. If you feel even 1% uncertain about whether everything is truly complete, output AGENT_DONE with updated ## Remaining items. The cost of one more coder iteration is trivial. The cost of prematurely declaring completion is high.
+
+**INPUT_NEEDED** — when you cannot properly assess completion or need user guidance on something specific:
+- Add a `[QUESTIONS]` section at the end of TASK.md with numbered questions
+- Add a matching `[ANSWERS]` section with blank slots
+- This should be rare — only use when you genuinely cannot proceed without user input
 
 IMPORTANT:
 - Do NOT implement any changes yourself — only review and update TASK.md
 - A fresh coder will read TASK.md cold. Make it clear, complete, and actionable.
+- Default to skepticism: if in doubt whether something is done, keep it in ## Remaining
+- When in doubt between AGENT_DONE and TASK_COMPLETE, ALWAYS choose AGENT_DONE
 "###;
 
 // ============================================================================
@@ -617,10 +634,10 @@ IMPORTANT:
 - Do NOT ask questions or wait for input
 - If you cannot resolve a conflict, make your best judgment call
 - If the build fails after rebase, try to fix compilation errors
-- If you absolutely cannot resolve the situation, output TASK_BLOCKED
+- If you absolutely cannot resolve the situation, output INPUT_NEEDED
 
 When the rebase is complete and code compiles, output exactly: AGENT_DONE
-If you cannot complete the rebase, output exactly: TASK_BLOCKED
+If you cannot complete the rebase, output exactly: INPUT_NEEDED
 "#;
 
 const PR_CREATOR_PROMPT: &str = r#"You are a PR creation agent. Your job is to create a well-crafted draft pull request.
@@ -666,7 +683,7 @@ IMPORTANT:
 - Check for an existing PR first with `gh pr view --json state` before creating one
 
 When the PR is created (or already exists) and `.pr-link` is written, output exactly: AGENT_DONE
-If you cannot create the PR for some reason, output exactly: TASK_BLOCKED
+If you cannot create the PR for some reason, output exactly: INPUT_NEEDED
 "#;
 
 const CI_FIXER_PROMPT: &str = r#"You are a CI fixer agent. Your job is to fix a specific CI failure.
@@ -690,7 +707,7 @@ IMPORTANT:
 - Each fix should be a separate commit
 
 When the fix is committed and pushed, output exactly: AGENT_DONE
-If you cannot fix the issue, output exactly: TASK_BLOCKED
+If you cannot fix the issue, output exactly: INPUT_NEEDED
 "#;
 
 const REVIEW_ANALYST_PROMPT: &str = r#"You are a review analyst agent. Your job is to read all PR review comments, think through each one critically in the context of the full PR work, and produce a `REVIEW.md` file with your analysis and proposed replies.
@@ -761,7 +778,7 @@ IMPORTANT:
 
 When `REVIEW.md` is created, output exactly: AGENT_DONE
 If there are no review comments to analyze, create a `REVIEW.md` noting that and output: AGENT_DONE
-If you cannot read the reviews, output exactly: TASK_BLOCKED
+If you cannot read the reviews, output exactly: INPUT_NEEDED
 "#;
 
 const REVIEW_IMPLEMENTER_PROMPT: &str = r#"You are a review implementer agent. Your job is to read `REVIEW.md`, implement any agreed-upon code changes, and update `REVIEW.md` with commit hashes.
@@ -793,7 +810,7 @@ IMPORTANT:
 - Do NOT ask questions or wait for input
 
 When all changes are implemented and `REVIEW.md` is updated, output exactly: AGENT_DONE
-If you cannot continue for some reason, output exactly: TASK_BLOCKED
+If you cannot continue for some reason, output exactly: INPUT_NEEDED
 "#;
 
 const PR_CHECK_MONITOR_PROMPT: &str = r#"You are a PR check monitoring agent. Your job is to monitor GitHub Actions for the current PR, retry flaky failures, and fix real failures.
@@ -827,7 +844,7 @@ Instructions:
       - Push the commit: `git push`
       - Go back to step 1 and monitor again
 
-5. Keep track of fix attempts. If you have attempted 3 fixes for real failures and checks still fail, output TASK_BLOCKED.
+5. Keep track of fix attempts. If you have attempted 3 fixes for real failures and checks still fail, output INPUT_NEEDED.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -837,7 +854,7 @@ IMPORTANT:
 - Be patient with running checks — poll every 30 seconds
 
 When all CI checks pass, output exactly: AGENT_DONE
-If you cannot fix the CI after 3 attempts, output exactly: TASK_BLOCKED
+If you cannot fix the CI after 3 attempts, output exactly: INPUT_NEEDED
 "#;
 
 const REVIEW_PR_COMMAND: &str = r#"name: Review PR
@@ -918,10 +935,10 @@ IMPORTANT:
 - Do NOT push anything to remote - this is a LOCAL merge only
 - If you cannot resolve a conflict, make your best judgment call
 - If the build fails after merge, try to fix compilation errors
-- If you absolutely cannot resolve the situation, output TASK_BLOCKED
+- If you absolutely cannot resolve the situation, output INPUT_NEEDED
 
 When the merge is complete and code compiles on the target branch, output exactly: AGENT_DONE
-If you cannot complete the merge, output exactly: TASK_BLOCKED
+If you cannot complete the merge, output exactly: INPUT_NEEDED
 "#;
 
 const PR_REVIEWER_PROMPT: &str = r#"You are a PR review agent. Your job is to review the current branch's changes thoroughly.
@@ -985,5 +1002,5 @@ IMPORTANT:
 - Be constructive and specific in your feedback
 
 When REVIEW.md is written, output exactly: AGENT_DONE
-If you cannot complete the review, output exactly: TASK_BLOCKED
+If you cannot complete the review, output exactly: INPUT_NEEDED
 "#;
