@@ -199,7 +199,7 @@ impl Git {
             .args([
                 "worktree",
                 "add",
-                "-b",
+                "-B",
                 branch_name,
                 worktree_path.to_str().unwrap(),
                 &base_ref,

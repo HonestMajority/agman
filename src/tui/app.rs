@@ -1685,6 +1685,7 @@ impl App {
             ) {
                 Ok(t) => t,
                 Err(e) => {
+                    tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to create multi-repo task");
                     self.log_output(format!("  Error: {}", e));
                     if let Some(w) = &mut self.wizard {
                         w.error_message = Some(format!("Failed to create task: {}", e));
@@ -1698,6 +1699,7 @@ impl App {
             let tmux_session = Config::tmux_session_name(&name, &branch_name);
             self.log_output("  Creating tmux session for repo-inspector...".to_string());
             if let Err(e) = Tmux::create_session_with_windows(&tmux_session, &parent_dir) {
+                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to create tmux session for multi-repo task");
                 self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
                     w.error_message = Some(format!("Failed to create tmux session: {}", e));
@@ -1727,6 +1729,7 @@ impl App {
             ) {
                 Ok(t) => t,
                 Err(e) => {
+                    tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to create task");
                     self.log_output(format!("  Error: {}", e));
                     if let Some(w) = &mut self.wizard {
                         w.error_message = Some(format!("Failed to create task: {}", e));
@@ -1739,6 +1742,7 @@ impl App {
             let worktree_path = task.meta.primary_repo().worktree_path.clone();
             self.log_output("  Creating tmux session...".to_string());
             if let Err(e) = Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path) {
+                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to create tmux session");
                 self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
                     w.error_message = Some(format!("Failed to create tmux session: {}", e));
