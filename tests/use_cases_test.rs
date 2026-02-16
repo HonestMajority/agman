@@ -29,17 +29,17 @@ fn create_task_with_new_branch() {
 
     // Task directory and meta exist
     assert!(task.dir.join("meta.json").exists());
-    assert_eq!(task.meta.repo_name, "myrepo");
+    assert_eq!(task.meta.name, "myrepo");
     assert_eq!(task.meta.branch_name, "feat-branch");
     assert_eq!(task.meta.status, TaskStatus::Running);
     assert_eq!(task.meta.flow_name, "new");
 
-    // TASK.md written to worktree
+    // TASK.md written to task directory
     let task_content = task.read_task().unwrap();
     assert!(task_content.contains("Build the widget"));
 
     // Worktree exists
-    assert!(task.meta.worktree_path.exists());
+    assert!(task.meta.primary_repo().worktree_path.exists());
 
     // Repo stats incremented
     let stats = RepoStats::load(&config.repo_stats_path());
@@ -78,7 +78,7 @@ fn create_task_with_existing_worktree() {
     )
     .unwrap();
 
-    assert_eq!(task.meta.worktree_path, wt_path);
+    assert_eq!(task.meta.primary_repo().worktree_path, wt_path);
     assert!(task.dir.join("meta.json").exists());
 }
 
@@ -105,7 +105,7 @@ fn create_task_reuses_existing_worktree() {
     )
     .unwrap();
 
-    assert_eq!(task.meta.worktree_path, wt_path);
+    assert_eq!(task.meta.primary_repo().worktree_path, wt_path);
     assert!(task.dir.join("meta.json").exists());
     assert_eq!(task.meta.branch_name, "reuse-branch");
 
@@ -154,7 +154,7 @@ fn create_setup_only_task() {
 
     // Task directory and meta exist
     assert!(task.dir.join("meta.json").exists());
-    assert_eq!(task.meta.repo_name, "myrepo");
+    assert_eq!(task.meta.name, "myrepo");
     assert_eq!(task.meta.branch_name, "empty-branch");
 
     // Status is Stopped (not Running)
@@ -163,12 +163,12 @@ fn create_setup_only_task() {
     // Flow name is "none"
     assert_eq!(task.meta.flow_name, "none");
 
-    // TASK.md exists in worktree with empty goal
+    // TASK.md exists in task directory with empty goal
     let task_content = task.read_task().unwrap();
     assert_eq!(task_content, "# Goal\n\n# Plan\n");
 
     // Worktree exists
-    assert!(task.meta.worktree_path.exists());
+    assert!(task.meta.primary_repo().worktree_path.exists());
 
     // Repo stats incremented
     let stats = RepoStats::load(&config.repo_stats_path());
@@ -201,7 +201,7 @@ fn delete_task_everything() {
     .unwrap();
 
     let task_dir = task.dir.clone();
-    let worktree_path = task.meta.worktree_path.clone();
+    let worktree_path = task.meta.primary_repo().worktree_path.clone();
     assert!(task_dir.exists());
     assert!(worktree_path.exists());
 
@@ -235,15 +235,14 @@ fn delete_task_only() {
     .unwrap();
 
     let task_dir = task.dir.clone();
-    let worktree_path = task.meta.worktree_path.clone();
-    let task_md = worktree_path.join("TASK.md");
+    let worktree_path = task.meta.primary_repo().worktree_path.clone();
+    let task_md = task_dir.join("TASK.md");
     assert!(task_md.exists());
 
     use_cases::delete_task(&config, task, DeleteMode::TaskOnly).unwrap();
 
-    // Task dir removed
+    // Task dir removed (including TASK.md which now lives in task dir)
     assert!(!task_dir.exists());
-    // TASK.md removed from worktree
     assert!(!task_md.exists());
     // Worktree directory itself still exists (branch preserved)
     assert!(worktree_path.exists());
@@ -603,7 +602,7 @@ fn create_review_task() {
     // Task created with review description
     let task_content = task.read_task().unwrap();
     assert!(task_content.contains("Review branch review-branch"));
-    assert_eq!(task.meta.repo_name, "myrepo");
+    assert_eq!(task.meta.name, "myrepo");
     assert_eq!(task.meta.branch_name, "review-branch");
 
     // Repo stats incremented
@@ -633,7 +632,7 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
     )
     .unwrap();
 
-    let worktree_path = task.meta.worktree_path.clone();
+    let worktree_path = task.meta.primary_repo().worktree_path.clone();
     assert!(worktree_path.exists());
 
     // Delete the task with TaskOnly mode (keeps worktree + branch)
@@ -656,7 +655,7 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
     )
     .unwrap();
 
-    assert_eq!(task2.meta.worktree_path, worktree_path);
+    assert_eq!(task2.meta.primary_repo().worktree_path, worktree_path);
     assert!(task2.dir.join("meta.json").exists());
     let content = task2.read_task().unwrap();
     assert!(content.contains("Recreated task"));
@@ -759,7 +758,7 @@ fn set_linked_pr() {
     .unwrap();
 
     // Add an origin remote pointing to a GitHub URL
-    let wt = task.meta.worktree_path.clone();
+    let wt = task.meta.primary_repo().worktree_path.clone();
     std::process::Command::new("git")
         .args(["remote", "add", "origin", "https://github.com/testowner/testrepo.git"])
         .current_dir(&wt)
@@ -826,7 +825,7 @@ fn set_linked_pr_owned_flag() {
     )
     .unwrap();
 
-    let wt = task.meta.worktree_path.clone();
+    let wt = task.meta.primary_repo().worktree_path.clone();
     std::process::Command::new("git")
         .args(["remote", "add", "origin", "https://github.com/testowner/testrepo.git"])
         .current_dir(&wt)
@@ -850,6 +849,217 @@ fn set_linked_pr_owned_flag() {
     let pr = task.meta.linked_pr.as_ref().unwrap();
     assert_eq!(pr.number, 43);
     assert!(pr.owned);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-repo task creation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_multi_repo_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let parent_dir = tmp.path().join("repos");
+    std::fs::create_dir_all(&parent_dir).unwrap();
+
+    let task = use_cases::create_multi_repo_task(
+        &config,
+        "repos",
+        "multi-feat",
+        "Implement cross-repo feature",
+        "new-multi",
+        parent_dir.clone(),
+        false,
+    )
+    .unwrap();
+
+    // Task directory and meta exist
+    assert!(task.dir.join("meta.json").exists());
+    assert_eq!(task.meta.name, "repos");
+    assert_eq!(task.meta.branch_name, "multi-feat");
+    assert_eq!(task.meta.status, TaskStatus::Running);
+    assert_eq!(task.meta.flow_name, "new-multi");
+
+    // Repos starts empty (repo-inspector hasn't run yet)
+    assert!(task.meta.repos.is_empty());
+
+    // parent_dir is set
+    assert_eq!(task.meta.parent_dir, Some(parent_dir));
+
+    // TASK.md written to task dir
+    let task_content = task.read_task().unwrap();
+    assert!(task_content.contains("Implement cross-repo feature"));
+
+    // Init files created
+    assert!(task.dir.join("notes.md").exists());
+    assert!(task.dir.join("agent.log").exists());
+
+    // Default flows/prompts created (including new-multi)
+    assert!(config.flow_path("new-multi").exists());
+    assert!(config.prompt_path("repo-inspector").exists());
+}
+
+// ---------------------------------------------------------------------------
+// Parse repos from TASK.md
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_repos_from_task_md() {
+    let content = r#"# Goal
+Build a cross-repo feature.
+
+# Repos
+- frontend: Contains the UI components
+- backend: Contains the API
+- shared-lib: Common types used by both
+
+# Plan
+(To be created by planner agent)
+"#;
+
+    let repos = use_cases::parse_repos_from_task_md(content);
+    assert_eq!(repos, vec!["frontend", "backend", "shared-lib"]);
+}
+
+#[test]
+fn parse_repos_from_task_md_empty() {
+    let content = r#"# Goal
+Just a goal.
+
+# Plan
+Some plan.
+"#;
+
+    let repos = use_cases::parse_repos_from_task_md(content);
+    assert!(repos.is_empty());
+}
+
+#[test]
+fn parse_repos_from_task_md_no_colon() {
+    let content = r#"# Repos
+- repo-without-rationale
+- repo-with-rationale: some reason
+"#;
+
+    let repos = use_cases::parse_repos_from_task_md(content);
+    assert_eq!(repos, vec!["repo-without-rationale", "repo-with-rationale"]);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-repo task deletion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn delete_multi_repo_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    // Create two repos
+    let _repo1 = init_test_repo(&tmp, "repo-a");
+    let _repo2 = init_test_repo(&tmp, "repo-b");
+
+    let parent_dir = tmp.path().join("repos");
+
+    // Create the multi-repo task
+    let mut task = use_cases::create_multi_repo_task(
+        &config,
+        "repos",
+        "multi-del",
+        "Multi delete test",
+        "new-multi",
+        parent_dir,
+        false,
+    )
+    .unwrap();
+
+    // Manually populate repos (simulating what setup_repos_from_task_md would do)
+    let wt_a = agman::git::Git::create_worktree_quiet(&config, "repo-a", "multi-del").unwrap();
+    let wt_b = agman::git::Git::create_worktree_quiet(&config, "repo-b", "multi-del").unwrap();
+
+    task.meta.repos = vec![
+        agman::task::RepoEntry {
+            repo_name: "repo-a".to_string(),
+            worktree_path: wt_a.clone(),
+            tmux_session: "(repo-a)__multi-del".to_string(),
+        },
+        agman::task::RepoEntry {
+            repo_name: "repo-b".to_string(),
+            worktree_path: wt_b.clone(),
+            tmux_session: "(repo-b)__multi-del".to_string(),
+        },
+    ];
+    task.save_meta().unwrap();
+
+    let task_dir = task.dir.clone();
+    assert!(task_dir.exists());
+    assert!(wt_a.exists());
+    assert!(wt_b.exists());
+
+    use_cases::delete_task(&config, task, DeleteMode::Everything).unwrap();
+
+    // Task dir removed
+    assert!(!task_dir.exists());
+    // Both worktrees removed
+    assert!(!wt_a.exists());
+    assert!(!wt_b.exists());
+}
+
+// ---------------------------------------------------------------------------
+// Setup repos from TASK.md (post-hook)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn setup_repos_from_task_md() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    // Create two git repos under the parent dir
+    let _repo1 = init_test_repo(&tmp, "frontend");
+    let _repo2 = init_test_repo(&tmp, "backend");
+
+    let parent_dir = tmp.path().join("repos");
+
+    // Create a multi-repo task (starts with empty repos)
+    let mut task = use_cases::create_multi_repo_task(
+        &config,
+        "repos",
+        "cross-repo",
+        "Build cross-repo feature",
+        "new-multi",
+        parent_dir,
+        false,
+    )
+    .unwrap();
+
+    assert!(task.meta.repos.is_empty());
+
+    // Write TASK.md with a # Repos section (simulating repo-inspector output)
+    task.write_task(
+        "# Goal\nBuild cross-repo feature\n\n# Repos\n- frontend: UI components\n- backend: API server\n\n# Plan\n(To be created)\n",
+    )
+    .unwrap();
+
+    // Run the setup_repos post-hook logic
+    // Note: tmux calls will fail silently (no tmux in test), but worktree
+    // creation and meta persistence should succeed.
+    use_cases::setup_repos_from_task_md(&config, &mut task).unwrap();
+
+    // Repos should be populated
+    assert_eq!(task.meta.repos.len(), 2);
+    assert_eq!(task.meta.repos[0].repo_name, "frontend");
+    assert_eq!(task.meta.repos[1].repo_name, "backend");
+
+    // Worktrees should exist
+    assert!(task.meta.repos[0].worktree_path.exists());
+    assert!(task.meta.repos[1].worktree_path.exists());
+
+    // Meta should be persisted — reload from disk and verify
+    let reloaded = Task::load(&config, "repos", "cross-repo").unwrap();
+    assert_eq!(reloaded.meta.repos.len(), 2);
+    assert_eq!(reloaded.meta.repos[0].repo_name, "frontend");
+    assert_eq!(reloaded.meta.repos[1].repo_name, "backend");
 }
 
 // ---------------------------------------------------------------------------

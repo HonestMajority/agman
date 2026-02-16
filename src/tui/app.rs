@@ -52,6 +52,7 @@ pub enum View {
     RestartWizard,
     SetLinkedPr,
     DirectoryPicker,
+    SessionPicker,
 }
 
 /// Which wizard requested the directory picker.
@@ -142,6 +143,10 @@ pub struct NewTaskWizard {
     pub description_editor: VimTextArea<'static>,
     pub error_message: Option<String>,
     pub review_after: bool,
+    /// True when a multi-repo parent directory was selected (not a git repo).
+    pub is_multi_repo: bool,
+    /// For multi-repo: tracks which entries in repos list are parent dirs (by index into repos vec).
+    pub multi_repo_indices: std::collections::HashSet<usize>,
 }
 
 impl NewTaskWizard {
@@ -150,12 +155,23 @@ impl NewTaskWizard {
         self.favorite_repos.len() + self.repos.len()
     }
 
-    /// Resolve the current selection to a repo name
+    /// Resolve the current selection to a clean name (strips `[multi] ` prefix if present).
     pub fn selected_repo_name(&self) -> &str {
-        if self.selected_repo_index < self.favorite_repos.len() {
+        let raw = if self.selected_repo_index < self.favorite_repos.len() {
             &self.favorite_repos[self.selected_repo_index].0
         } else {
             &self.repos[self.selected_repo_index - self.favorite_repos.len()]
+        };
+        raw.strip_prefix("[multi] ").unwrap_or(raw)
+    }
+
+    /// Whether the current selection is a multi-repo parent directory.
+    pub fn is_selected_multi_repo(&self) -> bool {
+        if self.selected_repo_index < self.favorite_repos.len() {
+            false // favorites are always single-repo git repos
+        } else {
+            let repos_idx = self.selected_repo_index - self.favorite_repos.len();
+            self.multi_repo_indices.contains(&repos_idx)
         }
     }
 }
@@ -360,6 +376,10 @@ pub struct App {
     pub pr_owned_toggle: bool,
     // Directory picker for repos_dir
     pub dir_picker: Option<DirectoryPicker>,
+    // Session picker for multi-repo attach
+    pub session_picker_sessions: Vec<(String, String)>, // (repo_name, tmux_session)
+    pub selected_session_index: usize,
+    pub attach_session_name: Option<String>,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -418,6 +438,9 @@ impl App {
             pr_number_editor: Self::create_plain_editor(),
             pr_owned_toggle: true,
             dir_picker: None,
+            session_picker_sessions: Vec::new(),
+            selected_session_index: 0,
+            attach_session_name: None,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -741,12 +764,16 @@ impl App {
     }
 
     fn stop_task(&mut self) -> Result<()> {
-        let task_info = self.selected_task().map(|t| {
-            (
-                t.meta.task_id(),
-                t.meta.tmux_session.clone(),
-                t.meta.status,
-            )
+        let task_info = self.selected_task().and_then(|t| {
+            // For multi-repo tasks without repos, use the parent session name
+            let tmux_session = if t.meta.has_repos() {
+                t.meta.primary_repo().tmux_session.clone()
+            } else if t.meta.is_multi_repo() {
+                Config::tmux_session_name(&t.meta.name, &t.meta.branch_name)
+            } else {
+                return None;
+            };
+            Some((t.meta.task_id(), tmux_session, t.meta.status))
         });
 
         if let Some((task_id, tmux_session, status)) = task_info {
@@ -832,12 +859,15 @@ impl App {
     }
 
     fn resume_after_answering(&mut self) -> Result<()> {
-        let task_info = self.selected_task().map(|t| {
-            (
-                t.meta.task_id(),
-                t.meta.tmux_session.clone(),
-                t.meta.status,
-            )
+        let task_info = self.selected_task().and_then(|t| {
+            let tmux_session = if t.meta.has_repos() {
+                t.meta.primary_repo().tmux_session.clone()
+            } else if t.meta.is_multi_repo() {
+                Config::tmux_session_name(&t.meta.name, &t.meta.branch_name)
+            } else {
+                return None;
+            };
+            Some((t.meta.task_id(), tmux_session, t.meta.status))
         });
 
         if let Some((task_id, tmux_session, status)) = task_info {
@@ -852,14 +882,19 @@ impl App {
                 let _ = use_cases::set_review_addressed(task, false);
             }
 
-            // Side effects: ensure tmux session and dispatch flow
-            if !Tmux::session_exists(&tmux_session) {
-                if let Some(task) = self.selected_task() {
-                    let _ = Tmux::create_session_with_windows(
-                        &tmux_session,
-                        &task.meta.worktree_path,
-                    );
-                    let _ = Tmux::add_review_window(&tmux_session, &task.meta.worktree_path);
+            // Side effects: ensure tmux sessions exist for all repos and dispatch flow
+            if let Some(task) = self.selected_task() {
+                for repo in &task.meta.repos {
+                    if !Tmux::session_exists(&repo.tmux_session) {
+                        let _ = Tmux::create_session_with_windows(&repo.tmux_session, &repo.worktree_path);
+                        let _ = Tmux::add_review_window(&repo.tmux_session, &repo.worktree_path);
+                    }
+                }
+                // For multi-repo tasks with no repos yet, ensure the primary session exists
+                if !task.meta.has_repos() && !Tmux::session_exists(&tmux_session) {
+                    if let Some(ref parent) = task.meta.parent_dir {
+                        let _ = Tmux::create_session_with_windows(&tmux_session, parent);
+                    }
                 }
             }
 
@@ -881,7 +916,6 @@ impl App {
 
         let task = self.tasks.remove(self.selected_index);
         let task_id = task.meta.task_id();
-        let tmux_session = task.meta.tmux_session.clone();
 
         let uc_mode = match mode {
             DeleteMode::Everything => use_cases::DeleteMode::Everything,
@@ -894,9 +928,18 @@ impl App {
             DeleteMode::TaskOnly => "task only",
         }));
 
-        // Kill tmux session (side effect)
-        let _ = Tmux::kill_session(&tmux_session);
-        self.log_output("  Killed tmux session".to_string());
+        // Kill tmux sessions for all repos (side effect)
+        if task.meta.has_repos() {
+            for repo in &task.meta.repos {
+                let _ = Tmux::kill_session(&repo.tmux_session);
+            }
+        }
+        // Also kill the parent-dir session (used for repo-inspector in multi-repo tasks)
+        if task.meta.is_multi_repo() {
+            let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+            let _ = Tmux::kill_session(&parent_session);
+        }
+        self.log_output("  Killed tmux session(s)".to_string());
 
         // Delegate business logic to use_cases
         use_cases::delete_task(&self.config, task, uc_mode)?;
@@ -1009,7 +1052,7 @@ impl App {
     // === Wizard Methods ===
 
     fn start_wizard(&mut self) -> Result<()> {
-        let repos = self.scan_repos()?;
+        let (repos, multi_repo_indices) = self.scan_repos_with_parents()?;
 
         if repos.is_empty() {
             // Launch directory picker so the user can choose a repos directory
@@ -1055,24 +1098,32 @@ impl App {
             description_editor,
             error_message: None,
             review_after: false,
+            is_multi_repo: false,
+            multi_repo_indices,
         });
 
         self.view = View::NewTaskWizard;
         Ok(())
     }
 
-    fn scan_repos(&self) -> Result<Vec<String>> {
+    /// Scan the repos directory for git repos and parent directories containing git repos.
+    ///
+    /// Returns `(repos, multi_repo_indices)` where `multi_repo_indices` tracks
+    /// which entries in `repos` are parent directories (not actual git repos).
+    /// Parent dirs are prefixed with `[multi] ` for display.
+    fn scan_repos_with_parents(&self) -> Result<(Vec<String>, std::collections::HashSet<usize>)> {
         let repos_dir = &self.config.repos_dir;
         if !repos_dir.exists() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), std::collections::HashSet::new()));
         }
 
-        let mut repos = Vec::new();
+        let mut git_repos = Vec::new();
+        let mut parent_dirs = Vec::new();
+
         for entry in std::fs::read_dir(repos_dir)? {
             let entry = entry?;
             let path = entry.path();
 
-            // Skip if not a directory
             if !path.is_dir() {
                 continue;
             }
@@ -1084,7 +1135,59 @@ impl App {
                 continue;
             }
 
-            // Check if it's a git repo
+            if path.join(".git").exists() {
+                git_repos.push(name);
+            } else {
+                // Check if this is a parent dir containing git repos
+                let has_git_children = std::fs::read_dir(&path)
+                    .map(|rd| {
+                        rd.filter_map(|e| e.ok())
+                            .any(|e| e.path().is_dir() && e.path().join(".git").exists())
+                    })
+                    .unwrap_or(false);
+                if has_git_children {
+                    parent_dirs.push(format!("[multi] {}", name));
+                }
+            }
+        }
+
+        git_repos.sort();
+        parent_dirs.sort();
+
+        // Parent dirs go first, then git repos
+        let mut multi_repo_indices = std::collections::HashSet::new();
+        for i in 0..parent_dirs.len() {
+            multi_repo_indices.insert(i);
+        }
+
+        let mut all = parent_dirs;
+        all.extend(git_repos);
+
+        Ok((all, multi_repo_indices))
+    }
+
+    /// Scan for git repos only (used by review wizard which doesn't support multi-repo).
+    fn scan_repos(&self) -> Result<Vec<String>> {
+        let repos_dir = &self.config.repos_dir;
+        if !repos_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut repos = Vec::new();
+        for entry in std::fs::read_dir(repos_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if !path.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            if name.ends_with("-wt") {
+                continue;
+            }
+
             if path.join(".git").exists() {
                 repos.push(name);
             }
@@ -1155,7 +1258,17 @@ impl App {
 
     fn open_branch_picker(&mut self) {
         let repo_name = match self.selected_task() {
-            Some(t) => t.meta.repo_name.clone(),
+            Some(t) => {
+                if t.meta.is_multi_repo() {
+                    self.set_status("Branch picker not supported for multi-repo tasks".to_string());
+                    return;
+                }
+                if !t.meta.has_repos() {
+                    self.set_status("Task has no repos configured yet".to_string());
+                    return;
+                }
+                t.meta.primary_repo().repo_name.clone()
+            }
             None => {
                 self.set_status("No task selected".to_string());
                 return;
@@ -1374,7 +1487,7 @@ impl App {
         let existing_tasks: std::collections::HashSet<String> = self
             .tasks
             .iter()
-            .filter(|t| t.meta.repo_name == repo_name)
+            .filter(|t| t.meta.name == repo_name)
             .map(|t| t.meta.branch_name.clone())
             .collect();
 
@@ -1392,7 +1505,7 @@ impl App {
         let existing_tasks: std::collections::HashSet<String> = self
             .tasks
             .iter()
-            .filter(|t| t.meta.repo_name == repo_name)
+            .filter(|t| t.meta.name == repo_name)
             .map(|t| t.meta.branch_name.clone())
             .collect();
 
@@ -1424,18 +1537,33 @@ impl App {
 
         match wizard.step {
             WizardStep::SelectRepo => {
-                // Scan both branches and existing worktrees for selected repo
+                let is_multi = wizard.is_selected_multi_repo();
                 let repo_name = wizard.selected_repo_name().to_string();
-                let branches = self.scan_branches(&repo_name)?;
-                let existing_wts = self.scan_existing_worktrees(&repo_name)?;
 
-                let wizard = self.wizard.as_mut().unwrap();
-                wizard.existing_branches = branches;
-                wizard.selected_branch_index = 0;
-                wizard.existing_worktrees = existing_wts;
-                wizard.selected_worktree_index = 0;
-                wizard.branch_source = BranchSource::NewBranch;
-                wizard.step = WizardStep::SelectBranch;
+                if is_multi {
+                    // Multi-repo: skip branch step, go straight to description
+                    let wizard = self.wizard.as_mut().unwrap();
+                    wizard.is_multi_repo = true;
+                    wizard.branch_source = BranchSource::NewBranch;
+                    wizard.step = WizardStep::SelectBranch;
+                    // For multi-repo, SelectBranch only shows the new-branch editor
+                    // (no existing branches/worktrees to pick from)
+                    wizard.existing_branches = Vec::new();
+                    wizard.existing_worktrees = Vec::new();
+                } else {
+                    // Single-repo: scan branches and worktrees as before
+                    let branches = self.scan_branches(&repo_name)?;
+                    let existing_wts = self.scan_existing_worktrees(&repo_name)?;
+
+                    let wizard = self.wizard.as_mut().unwrap();
+                    wizard.is_multi_repo = false;
+                    wizard.existing_branches = branches;
+                    wizard.selected_branch_index = 0;
+                    wizard.existing_worktrees = existing_wts;
+                    wizard.selected_worktree_index = 0;
+                    wizard.branch_source = BranchSource::NewBranch;
+                    wizard.step = WizardStep::SelectBranch;
+                }
             }
             WizardStep::SelectBranch => {
                 // Validate based on branch source
@@ -1493,7 +1621,16 @@ impl App {
             WizardStep::EnterDescription => {
                 let description = wizard.description_editor.lines_joined();
                 let description = description.trim();
+                let is_multi = wizard.is_multi_repo;
                 if description.is_empty() {
+                    if is_multi {
+                        // Multi-repo tasks require a description (the repo-inspector
+                        // agent needs it to decide which repos are involved)
+                        let wizard = self.wizard.as_mut().unwrap();
+                        wizard.error_message =
+                            Some("Multi-repo tasks require a description".to_string());
+                        return Ok(());
+                    }
                     // Empty description = setup-only mode
                     return self.create_setup_only_task_from_wizard();
                 }
@@ -1534,7 +1671,8 @@ impl App {
             None => return Ok(()),
         };
 
-        let repo_name = wizard.selected_repo_name().to_string();
+        let name = wizard.selected_repo_name().to_string();
+        let is_multi = wizard.is_multi_repo;
 
         let (branch_name, worktree_source) = match wizard.branch_source {
             BranchSource::ExistingWorktree => {
@@ -1543,63 +1681,108 @@ impl App {
                 (branch, use_cases::WorktreeSource::ExistingWorktree(path))
             }
             BranchSource::NewBranch => {
-                let name = wizard.new_branch_editor.lines().join("").trim().to_string();
-                (name, use_cases::WorktreeSource::NewBranch)
+                let bname = wizard.new_branch_editor.lines().join("").trim().to_string();
+                (bname, use_cases::WorktreeSource::NewBranch)
             }
             BranchSource::ExistingBranch => {
-                let name = wizard.existing_branches[wizard.selected_branch_index].clone();
-                (name, use_cases::WorktreeSource::ExistingBranch)
+                let bname = wizard.existing_branches[wizard.selected_branch_index].clone();
+                (bname, use_cases::WorktreeSource::ExistingBranch)
             }
         };
 
         let description = wizard.description_editor.lines_joined().trim().to_string();
         let review_after = wizard.review_after;
 
-        tracing::info!(repo = %repo_name, branch = %branch_name, "creating task via wizard");
-        self.log_output(format!("Creating task {}--{}...", repo_name, branch_name));
+        tracing::info!(name = %name, branch = %branch_name, is_multi, "creating task via wizard");
+        self.log_output(format!("Creating task {}--{}...", name, branch_name));
 
-        // Delegate business logic to use_cases
-        let task = match use_cases::create_task(
-            &self.config,
-            &repo_name,
-            &branch_name,
-            &description,
-            "new",
-            worktree_source,
-            review_after,
-        ) {
-            Ok(t) => t,
-            Err(e) => {
+        if is_multi {
+            // Multi-repo path: create task with no worktrees, start repo-inspector flow
+            let parent_dir = self.config.repos_dir.join(&name);
+            let task = match use_cases::create_multi_repo_task(
+                &self.config,
+                &name,
+                &branch_name,
+                &description,
+                "new-multi",
+                parent_dir.clone(),
+                review_after,
+            ) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.log_output(format!("  Error: {}", e));
+                    if let Some(w) = &mut self.wizard {
+                        w.error_message = Some(format!("Failed to create task: {}", e));
+                    }
+                    return Ok(());
+                }
+            };
+
+            // Create a temporary tmux session for the repo-inspector to run in
+            // (working dir = parent directory)
+            let tmux_session = Config::tmux_session_name(&name, &branch_name);
+            self.log_output("  Creating tmux session for repo-inspector...".to_string());
+            if let Err(e) = Tmux::create_session_with_windows(&tmux_session, &parent_dir) {
                 self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
-                    w.error_message = Some(format!("Failed to create task: {}", e));
+                    w.error_message = Some(format!("Failed to create tmux session: {}", e));
                 }
                 return Ok(());
             }
-        };
 
-        // Side effects: create tmux session and start flow
-        let worktree_path = task.meta.worktree_path.clone();
-        self.log_output("  Creating tmux session...".to_string());
-        if let Err(e) = Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path) {
-            self.log_output(format!("  Error: {}", e));
-            if let Some(w) = &mut self.wizard {
-                w.error_message = Some(format!("Failed to create tmux session: {}", e));
+            let task_id = task.meta.task_id();
+            let flow_cmd = format!("agman flow-run {}", task_id);
+            let _ = Tmux::send_keys_to_window(&tmux_session, "agman", &flow_cmd);
+
+            // Success - close wizard and refresh
+            self.wizard = None;
+            self.view = View::TaskList;
+            self.refresh_tasks_and_select(&task_id);
+            self.set_status(format!("Created multi-repo task: {}", task_id));
+        } else {
+            // Single-repo path: existing behavior
+            let task = match use_cases::create_task(
+                &self.config,
+                &name,
+                &branch_name,
+                &description,
+                "new",
+                worktree_source,
+                review_after,
+            ) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.log_output(format!("  Error: {}", e));
+                    if let Some(w) = &mut self.wizard {
+                        w.error_message = Some(format!("Failed to create task: {}", e));
+                    }
+                    return Ok(());
+                }
+            };
+
+            // Side effects: create tmux session and start flow
+            let worktree_path = task.meta.primary_repo().worktree_path.clone();
+            self.log_output("  Creating tmux session...".to_string());
+            if let Err(e) = Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path) {
+                self.log_output(format!("  Error: {}", e));
+                if let Some(w) = &mut self.wizard {
+                    w.error_message = Some(format!("Failed to create tmux session: {}", e));
+                }
+                return Ok(());
             }
-            return Ok(());
+
+            let _ = Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path);
+
+            let task_id = task.meta.task_id();
+            let flow_cmd = format!("agman flow-run {}", task_id);
+            let _ = Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &flow_cmd);
+
+            // Success - close wizard and refresh
+            self.wizard = None;
+            self.view = View::TaskList;
+            self.refresh_tasks_and_select(&task_id);
+            self.set_status(format!("Created task: {}", task_id));
         }
-
-        let _ = Tmux::add_review_window(&task.meta.tmux_session, &worktree_path);
-
-        let task_id = task.meta.task_id();
-        let flow_cmd = format!("agman flow-run {}", task_id);
-        let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd);
-
-        // Success - close wizard and refresh
-        self.wizard = None;
-        self.view = View::TaskList;
-        self.refresh_tasks_and_select(&task_id);
-        self.set_status(format!("Created task: {}", task_id));
 
         Ok(())
     }
@@ -1649,9 +1832,9 @@ impl App {
         };
 
         // Side effects: create tmux session (but do NOT start any flow)
-        let worktree_path = task.meta.worktree_path.clone();
+        let worktree_path = task.meta.primary_repo().worktree_path.clone();
         self.log_output("  Creating tmux session...".to_string());
-        if let Err(e) = Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path) {
+        if let Err(e) = Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path) {
             self.log_output(format!("  Error: {}", e));
             if let Some(w) = &mut self.wizard {
                 w.error_message = Some(format!("Failed to create tmux session: {}", e));
@@ -1659,7 +1842,7 @@ impl App {
             return Ok(());
         }
 
-        let _ = Tmux::add_review_window(&task.meta.tmux_session, &worktree_path);
+        let _ = Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path);
 
         // No flow-run command sent — this is the key difference from create_task_from_wizard
 
@@ -1869,9 +2052,9 @@ impl App {
         };
 
         // Best-effort: look up the PR for this branch and link it
-        if let Some(pr_number) = lookup_pr_for_branch(&task.meta.worktree_path, &branch_name) {
+        if let Some(pr_number) = lookup_pr_for_branch(&task.meta.primary_repo().worktree_path, &branch_name) {
             let task_id = task.meta.task_id();
-            let wt = task.meta.worktree_path.clone();
+            let wt = task.meta.primary_repo().worktree_path.clone();
             match use_cases::set_linked_pr(&mut task, pr_number, &wt, false) {
                 Ok(()) => {
                     tracing::info!(task_id = %task_id, pr_number, branch = %branch_name, "linked PR to review task");
@@ -1885,10 +2068,10 @@ impl App {
         }
 
         // Side effects: create tmux session and run review command
-        let worktree_path = task.meta.worktree_path.clone();
+        let worktree_path = task.meta.primary_repo().worktree_path.clone();
         self.log_output("  Creating tmux session...".to_string());
         if let Err(e) =
-            Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)
+            Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path)
         {
             self.log_output(format!("  Error: {}", e));
             if let Some(w) = &mut self.review_wizard {
@@ -1897,11 +2080,11 @@ impl App {
             return Ok(());
         }
 
-        Tmux::add_review_window(&task.meta.tmux_session, &worktree_path)?;
+        Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path)?;
 
         let task_id = task.meta.task_id();
         let review_cmd = format!("agman run-command {} review-pr", task_id);
-        let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &review_cmd);
+        let _ = Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &review_cmd);
 
         // Success - close wizard and refresh
         self.review_wizard = None;
@@ -1930,6 +2113,7 @@ impl App {
             View::RestartWizard => self.handle_restart_wizard_event(event),
             View::SetLinkedPr => self.handle_set_linked_pr_event(event),
             View::DirectoryPicker => self.handle_directory_picker_event(event),
+            View::SessionPicker => self.handle_session_picker_event(event),
         }
     }
 
@@ -2134,8 +2318,30 @@ impl App {
                     match self.preview_pane {
                         PreviewPane::Logs => {
                             if let Some(task) = self.selected_task() {
-                                if Tmux::session_exists(&task.meta.tmux_session) {
-                                    return Ok(true);
+                                if task.meta.is_multi_repo() && task.meta.repos.len() > 1 {
+                                    // Multi-repo with multiple repos — show session picker
+                                    let sessions: Vec<(String, String)> = task
+                                        .meta
+                                        .repos
+                                        .iter()
+                                        .filter(|r| Tmux::session_exists(&r.tmux_session))
+                                        .map(|r| (r.repo_name.clone(), r.tmux_session.clone()))
+                                        .collect();
+                                    if !sessions.is_empty() {
+                                        self.session_picker_sessions = sessions;
+                                        self.selected_session_index = 0;
+                                        self.view = View::SessionPicker;
+                                    }
+                                } else if task.meta.has_repos() {
+                                    if Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
+                                        return Ok(true);
+                                    }
+                                } else if task.meta.is_multi_repo() {
+                                    // Multi-repo task with no repos yet — try the parent session
+                                    let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+                                    if Tmux::session_exists(&parent_session) {
+                                        return Ok(true);
+                                    }
                                 }
                             }
                         }
@@ -2543,20 +2749,25 @@ impl App {
                             self.wizard_prev_step();
                         }
                         KeyCode::Tab => {
-                            // Cycle forward: NewBranch → ExistingBranch → ExistingWorktree → NewBranch
-                            wizard.branch_source = match wizard.branch_source {
-                                BranchSource::NewBranch => BranchSource::ExistingBranch,
-                                BranchSource::ExistingBranch => BranchSource::ExistingWorktree,
-                                BranchSource::ExistingWorktree => BranchSource::NewBranch,
-                            };
+                            // Multi-repo: locked to NewBranch, no cycling
+                            if !wizard.is_multi_repo {
+                                // Cycle forward: NewBranch → ExistingBranch → ExistingWorktree → NewBranch
+                                wizard.branch_source = match wizard.branch_source {
+                                    BranchSource::NewBranch => BranchSource::ExistingBranch,
+                                    BranchSource::ExistingBranch => BranchSource::ExistingWorktree,
+                                    BranchSource::ExistingWorktree => BranchSource::NewBranch,
+                                };
+                            }
                         }
                         KeyCode::BackTab => {
-                            // Cycle backward
-                            wizard.branch_source = match wizard.branch_source {
-                                BranchSource::NewBranch => BranchSource::ExistingWorktree,
-                                BranchSource::ExistingBranch => BranchSource::NewBranch,
-                                BranchSource::ExistingWorktree => BranchSource::ExistingBranch,
-                            };
+                            if !wizard.is_multi_repo {
+                                // Cycle backward
+                                wizard.branch_source = match wizard.branch_source {
+                                    BranchSource::NewBranch => BranchSource::ExistingWorktree,
+                                    BranchSource::ExistingBranch => BranchSource::NewBranch,
+                                    BranchSource::ExistingWorktree => BranchSource::ExistingBranch,
+                                };
+                            }
                         }
                         KeyCode::Enter => {
                             self.wizard_next_step()?;
@@ -2797,6 +3008,47 @@ impl App {
         Ok(false)
     }
 
+    fn handle_session_picker_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = View::Preview;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if !self.session_picker_sessions.is_empty() {
+                        self.selected_session_index =
+                            (self.selected_session_index + 1) % self.session_picker_sessions.len();
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if !self.session_picker_sessions.is_empty() {
+                        self.selected_session_index = if self.selected_session_index == 0 {
+                            self.session_picker_sessions.len() - 1
+                        } else {
+                            self.selected_session_index - 1
+                        };
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some((_, session)) =
+                        self.session_picker_sessions.get(self.selected_session_index)
+                    {
+                        self.attach_session_name = Some(session.clone());
+                        self.view = View::Preview;
+                        return Ok(true);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
     fn handle_review_wizard_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             // Check for Ctrl+C to quit
@@ -2965,13 +3217,22 @@ impl App {
         // Extract task info before mutable borrows
         let (task_id, status, flow_name, tmux_session, task_content) =
             match self.selected_task() {
-                Some(t) => (
-                    t.meta.task_id(),
-                    t.meta.status,
-                    t.meta.flow_name.clone(),
-                    t.meta.tmux_session.clone(),
-                    t.read_task().unwrap_or_else(|_| "No TASK.md available".to_string()),
-                ),
+                Some(t) => {
+                    let tmux_session = if t.meta.has_repos() {
+                        t.meta.primary_repo().tmux_session.clone()
+                    } else if t.meta.is_multi_repo() {
+                        Config::tmux_session_name(&t.meta.name, &t.meta.branch_name)
+                    } else {
+                        return Ok(());
+                    };
+                    (
+                        t.meta.task_id(),
+                        t.meta.status,
+                        t.meta.flow_name.clone(),
+                        tmux_session,
+                        t.read_task().unwrap_or_else(|_| "No TASK.md available".to_string()),
+                    )
+                }
                 None => return Ok(()),
             };
 
@@ -3197,7 +3458,8 @@ impl App {
                                 tracing::info!(task_id = ?task_id_for_log, pr_number, owned, "TUI: set linked PR");
                                 let worktree_path = self
                                     .selected_task()
-                                    .map(|t| t.meta.worktree_path.clone());
+                                    .filter(|t| t.meta.has_repos())
+                                    .map(|t| t.meta.primary_repo().worktree_path.clone());
                                 if let Some(wt) = worktree_path {
                                     if let Some(task) =
                                         self.tasks.get_mut(self.selected_index)
@@ -3331,13 +3593,17 @@ impl App {
         let eligible: Vec<(String, u64, PathBuf, Option<u64>)> = self
             .tasks
             .iter()
-            .filter(|t| t.meta.status == TaskStatus::Stopped && t.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned))
+            .filter(|t| {
+                t.meta.status == TaskStatus::Stopped
+                    && t.meta.has_repos()
+                    && t.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned)
+            })
             .map(|t| {
                 let pr = t.meta.linked_pr.as_ref().unwrap();
                 (
                     t.meta.task_id(),
                     pr.number,
-                    t.meta.worktree_path.clone(),
+                    t.meta.primary_repo().worktree_path.clone(),
                     t.meta.last_review_count,
                 )
             })
@@ -3438,9 +3704,16 @@ impl App {
         for (task_id, pr_number) in to_delete {
             if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
                 let task = self.tasks.remove(idx);
-                let tmux_session = task.meta.tmux_session.clone();
 
-                let _ = Tmux::kill_session(&tmux_session);
+                // Kill all tmux sessions for the task
+                for repo in &task.meta.repos {
+                    let _ = Tmux::kill_session(&repo.tmux_session);
+                }
+                if task.meta.is_multi_repo() {
+                    let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+                    let _ = Tmux::kill_session(&parent_session);
+                }
+
                 let _ = use_cases::delete_task(
                     &self.config,
                     task,
@@ -3477,8 +3750,23 @@ impl App {
             }
         };
 
-        let tmux_session = self.tasks[task_idx].meta.tmux_session.clone();
-        let worktree_path = self.tasks[task_idx].meta.worktree_path.clone();
+        let task_meta = &self.tasks[task_idx].meta;
+        let (tmux_session, working_dir) = if task_meta.has_repos() {
+            (
+                task_meta.primary_repo().tmux_session.clone(),
+                task_meta.primary_repo().worktree_path.clone(),
+            )
+        } else if task_meta.is_multi_repo() {
+            (
+                Config::tmux_session_name(&task_meta.name, &task_meta.branch_name),
+                task_meta.parent_dir.clone().unwrap_or_default(),
+            )
+        } else {
+            self.set_status(format!("Task {} has no repos configured", task_id));
+            self.restart_wizard = None;
+            self.view = View::TaskList;
+            return Ok(());
+        };
 
         // Set flow_step and status
         use_cases::restart_task(&mut self.tasks[task_idx], selected_step_index)?;
@@ -3487,8 +3775,10 @@ impl App {
 
         // Ensure tmux session exists
         if !Tmux::session_exists(&tmux_session) {
-            let _ = Tmux::create_session_with_windows(&tmux_session, &worktree_path);
-            let _ = Tmux::add_review_window(&tmux_session, &worktree_path);
+            let _ = Tmux::create_session_with_windows(&tmux_session, &working_dir);
+            if self.tasks[task_idx].meta.has_repos() {
+                let _ = Tmux::add_review_window(&tmux_session, &working_dir);
+            }
         }
 
         // Dispatch flow-run
@@ -3555,8 +3845,16 @@ pub fn run_tui(config: Config) -> Result<()> {
                 let should_attach = app.handle_event(event)?;
 
                 if should_attach {
-                    if let Some(task) = app.selected_task() {
-                        attach_session = Some(task.meta.tmux_session.clone());
+                    // Session picker sets attach_session_name directly
+                    if let Some(session) = app.attach_session_name.take() {
+                        attach_session = Some(session);
+                    } else if let Some(task) = app.selected_task() {
+                        if task.meta.has_repos() {
+                            attach_session = Some(task.meta.primary_repo().tmux_session.clone());
+                        } else if task.meta.is_multi_repo() {
+                            // Multi-repo with no repos yet — attach to parent session
+                            attach_session = Some(Config::tmux_session_name(&task.meta.name, &task.meta.branch_name));
+                        }
                     }
                     break;
                 }

@@ -37,6 +37,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::RestartWizard
             | View::SetLinkedPr
             | View::DirectoryPicker
+            | View::SessionPicker
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -106,6 +107,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_task_list(f, app, chunks[0]);
             draw_directory_picker(f, app);
         }
+        View::SessionPicker => {
+            draw_preview(f, app, chunks[0]);
+            draw_session_picker(f, app);
+        }
     }
 
     if output_height > 0 {
@@ -173,11 +178,17 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     const UPDATED_WIDTH: usize = 10;
     const COL_GAP: &str = "   "; // 3 spaces between columns
 
-    // Scan tasks for longest repo name
+    // Scan tasks for longest repo name (multi-repo tasks get [M] prefix)
     let max_repo_len = app
         .tasks
         .iter()
-        .map(|t| t.meta.repo_name.len())
+        .map(|t| {
+            if t.meta.is_multi_repo() {
+                t.meta.name.len() + 4 // "[M] " prefix
+            } else {
+                t.meta.name.len()
+            }
+        })
         .max()
         .unwrap_or(MIN_REPO_WIDTH);
 
@@ -381,11 +392,16 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         };
         let status_str = format!("{}", task.meta.status);
 
-        // Build display repo name (truncate if needed)
-        let display_repo = if task.meta.repo_name.len() > repo_width {
-            format!("{}…", &task.meta.repo_name[..repo_width.saturating_sub(1)])
+        // Build display repo name (truncate if needed, prefix multi-repo tasks)
+        let repo_label = if task.meta.is_multi_repo() {
+            format!("[M] {}", task.meta.name)
         } else {
-            task.meta.repo_name.clone()
+            task.meta.name.clone()
+        };
+        let display_repo = if repo_label.len() > repo_width {
+            format!("{}…", &repo_label[..repo_width.saturating_sub(1)])
+        } else {
+            repo_label
         };
 
         // Build display branch name with optional queue indicator
@@ -1377,7 +1393,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" close", Style::default().fg(Color::DarkGray)),
             ]
         }
-        View::RebaseBranchPicker => {
+        View::RebaseBranchPicker | View::SessionPicker => {
             vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
@@ -2046,6 +2062,80 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &App) {
         Block::default()
             .title(Span::styled(
                 list_title,
+                Style::default().fg(Color::LightGreen),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightGreen)),
+    );
+
+    f.render_widget(list, chunks[1]);
+}
+
+fn draw_session_picker(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 50, f.area());
+    f.render_widget(Clear, area);
+
+    let task_id = app
+        .selected_task()
+        .map(|t| t.meta.task_id())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
+
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            task_id,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .title(Span::styled(
+                " Attach to Session ",
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightCyan)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    let items: Vec<ListItem> = app
+        .session_picker_sessions
+        .iter()
+        .enumerate()
+        .map(|(i, (repo_name, _session))| {
+            let style = if i == app.selected_session_index {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(40, 40, 60))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let prefix = if i == app.selected_session_index {
+                "▸ "
+            } else {
+                "  "
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(repo_name, style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(Span::styled(
+                " Select repo session (Enter to attach, Esc to cancel) ",
                 Style::default().fg(Color::LightGreen),
             ))
             .borders(Borders::ALL)

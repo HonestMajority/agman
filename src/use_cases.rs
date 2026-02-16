@@ -1,11 +1,12 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::Config;
 use crate::git::{self, Git};
 use crate::repo_stats::RepoStats;
-use crate::task::{Task, TaskStatus};
+use crate::task::{RepoEntry, Task, TaskStatus};
+use crate::tmux::Tmux;
 
 /// Required external tools that must be on $PATH.
 const REQUIRED_TOOLS: &[&str] = &["tmux", "git", "claude", "nvim", "lazygit", "gh", "direnv"];
@@ -137,6 +138,45 @@ pub fn create_task(
     Ok(task)
 }
 
+/// Create a multi-repo task: set up task dir and TASK.md, but no worktrees yet.
+/// Repos will be populated by the `setup_repos` post-hook after the repo-inspector runs.
+///
+/// This is the pure business logic behind multi-repo task creation in the wizard.
+/// It does NOT create tmux sessions or start flows — those are side effects
+/// handled by the TUI caller.
+pub fn create_multi_repo_task(
+    config: &Config,
+    name: &str,
+    branch_name: &str,
+    description: &str,
+    flow_name: &str,
+    parent_dir: PathBuf,
+    review_after: bool,
+) -> Result<Task> {
+    tracing::info!(
+        name = name,
+        branch = branch_name,
+        flow = flow_name,
+        parent_dir = %parent_dir.display(),
+        review_after,
+        "creating multi-repo task"
+    );
+
+    // Initialize default files (flows, prompts, commands)
+    config.init_default_files(false)?;
+
+    // Create task files (no worktrees — repos not yet determined)
+    let mut task = Task::create_multi(config, name, branch_name, description, flow_name, parent_dir)?;
+
+    // Set review_after flag if requested
+    if review_after {
+        task.meta.review_after = true;
+        task.save_meta()?;
+    }
+
+    Ok(task)
+}
+
 /// How to delete a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteMode {
@@ -152,25 +192,22 @@ pub enum DeleteMode {
 /// It does NOT kill tmux sessions — that's a side effect handled by the caller.
 pub fn delete_task(config: &Config, task: Task, mode: DeleteMode) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), mode = ?mode, "deleting task");
-    let repo_name = &task.meta.repo_name;
-    let branch_name = &task.meta.branch_name;
-    let worktree_path = &task.meta.worktree_path;
 
     match mode {
         DeleteMode::Everything => {
-            let repo_path = config.repo_path(repo_name);
-            let _ = Git::remove_worktree(&repo_path, worktree_path);
-            let _ = Git::delete_branch(&repo_path, branch_name);
+            // Remove worktrees and branches for all repos
+            for repo in &task.meta.repos {
+                let repo_path = config.repo_path(&repo.repo_name);
+                let _ = Git::remove_worktree(&repo_path, &repo.worktree_path);
+                let _ = Git::delete_branch(&repo_path, &task.meta.branch_name);
+            }
         }
         DeleteMode::TaskOnly => {
-            let task_md_path = worktree_path.join("TASK.md");
-            if task_md_path.exists() {
-                let _ = std::fs::remove_file(&task_md_path);
-            }
+            // TASK.md is in the task dir now, no worktree cleanup needed
         }
     }
 
-    // Delete task directory
+    // Delete task directory (includes TASK.md)
     task.delete(config)?;
     Ok(())
 }
@@ -468,4 +505,119 @@ pub fn create_review_task(
         worktree_source,
         false,
     )
+}
+
+/// Parse repo names from the `# Repos` section in TASK.md content.
+///
+/// Expects lines matching `- <name>: <rationale>` under the `# Repos` heading.
+/// Returns just the repo names.
+pub fn parse_repos_from_task_md(content: &str) -> Vec<String> {
+    let mut repos = Vec::new();
+    let mut in_repos_section = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed == "# Repos" {
+            in_repos_section = true;
+            continue;
+        }
+
+        // A new top-level heading ends the Repos section
+        if in_repos_section && trimmed.starts_with("# ") {
+            break;
+        }
+
+        if in_repos_section {
+            if let Some(rest) = trimmed.strip_prefix("- ") {
+                // Extract repo name before the colon
+                let name = if let Some(colon_pos) = rest.find(':') {
+                    rest[..colon_pos].trim()
+                } else {
+                    rest.trim()
+                };
+                if !name.is_empty() {
+                    repos.push(name.to_string());
+                }
+            }
+        }
+    }
+
+    repos
+}
+
+/// Post-hook: read `# Repos` from TASK.md, create worktrees + tmux sessions,
+/// and populate `task.meta.repos`.
+///
+/// Called after the repo-inspector agent finishes (via the `setup_repos` post-hook).
+pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> {
+    let task_content = task
+        .read_task()
+        .context("Failed to read TASK.md for repo setup")?;
+    let repo_names = parse_repos_from_task_md(&task_content);
+
+    if repo_names.is_empty() {
+        anyhow::bail!(
+            "No repos found in TASK.md # Repos section for task '{}'",
+            task.meta.task_id()
+        );
+    }
+
+    tracing::info!(
+        task_id = %task.meta.task_id(),
+        repos = ?repo_names,
+        "setting up repos from TASK.md"
+    );
+
+    let mut entries = Vec::new();
+
+    for repo_name in &repo_names {
+        // Check if worktree already exists (idempotent on retry after partial failure)
+        let candidate = config.worktree_path(repo_name, &task.meta.branch_name);
+        let worktree_path = if candidate.exists() {
+            tracing::info!(repo = repo_name, branch = %task.meta.branch_name, "worktree already exists, reusing");
+            let _ = Git::direnv_allow(&candidate);
+            candidate
+        } else {
+            let path = Git::create_worktree_quiet(config, repo_name, &task.meta.branch_name)
+                .with_context(|| format!("Failed to create worktree for repo '{}'", repo_name))?;
+            let _ = Git::direnv_allow(&path);
+            path
+        };
+
+        // Create tmux session (best-effort — tmux may not be available in tests)
+        let tmux_session = Config::tmux_session_name(repo_name, &task.meta.branch_name);
+        if !Tmux::session_exists(&tmux_session) {
+            if let Err(e) = Tmux::create_session_with_windows(&tmux_session, &worktree_path) {
+                tracing::warn!(repo = repo_name, error = %e, "failed to create tmux session (non-fatal)");
+            } else {
+                let _ = Tmux::add_review_window(&tmux_session, &worktree_path);
+            }
+        }
+
+        // Ensure REVIEW.md is excluded from git tracking
+        let _ = task.ensure_git_excludes_for_worktree(&worktree_path);
+
+        entries.push(RepoEntry {
+            repo_name: repo_name.clone(),
+            worktree_path,
+            tmux_session,
+        });
+
+        // Save incrementally so partial progress is preserved on failure
+        task.meta.repos = entries.clone();
+        task.save_meta()?;
+    }
+
+    // Final save (entries == task.meta.repos at this point, but be explicit)
+    task.meta.repos = entries;
+    task.save_meta()?;
+
+    tracing::info!(
+        task_id = %task.meta.task_id(),
+        repo_count = repo_names.len(),
+        "repos setup complete"
+    );
+
+    Ok(())
 }

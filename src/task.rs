@@ -37,18 +37,33 @@ impl std::fmt::Display for TaskStatus {
 }
 
 
+/// A single repo entry within a task. For single-repo tasks there is exactly one;
+/// for multi-repo tasks there is one per repo.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoEntry {
+    pub repo_name: String,
+    pub worktree_path: PathBuf,
+    pub tmux_session: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMeta {
-    pub repo_name: String,
+    /// For single-repo tasks this equals the repo name; for multi-repo tasks
+    /// it is the parent directory name (e.g. "repos").
+    pub name: String,
     pub branch_name: String,
     pub status: TaskStatus,
-    pub tmux_session: String,
-    pub worktree_path: PathBuf,
+    /// All repos involved in this task. Single-repo tasks have exactly one entry.
+    pub repos: Vec<RepoEntry>,
     pub flow_name: String,
     pub current_agent: Option<String>,
     pub flow_step: usize,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// For multi-repo tasks: the parent directory containing all repos.
+    /// None for single-repo tasks.
+    #[serde(default)]
+    pub parent_dir: Option<PathBuf>,
     /// When true, run the review-pr command automatically after the flow completes
     #[serde(default)]
     pub review_after: bool,
@@ -77,24 +92,29 @@ pub struct LinkedPr {
 
 impl TaskMeta {
     pub fn new(
-        repo_name: String,
+        name: String,
         branch_name: String,
         worktree_path: PathBuf,
         flow_name: String,
     ) -> Self {
         let now = Utc::now();
-        let tmux_session = Config::tmux_session_name(&repo_name, &branch_name);
+        let tmux_session = Config::tmux_session_name(&name, &branch_name);
+        let repo_entry = RepoEntry {
+            repo_name: name.clone(),
+            worktree_path,
+            tmux_session,
+        };
         Self {
-            repo_name,
+            name,
             branch_name,
             status: TaskStatus::Running,
-            tmux_session,
-            worktree_path,
+            repos: vec![repo_entry],
             flow_name,
             current_agent: None,
             flow_step: 0,
             created_at: now,
             updated_at: now,
+            parent_dir: None,
             review_after: false,
             linked_pr: None,
             last_review_count: None,
@@ -102,9 +122,52 @@ impl TaskMeta {
         }
     }
 
-    /// Get the task ID (repo--branch format)
+    /// Create a TaskMeta for a multi-repo task (starts with empty repos).
+    pub fn new_multi(
+        name: String,
+        branch_name: String,
+        parent_dir: PathBuf,
+        flow_name: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            name,
+            branch_name,
+            status: TaskStatus::Running,
+            repos: vec![],
+            flow_name,
+            current_agent: None,
+            flow_step: 0,
+            created_at: now,
+            updated_at: now,
+            parent_dir: Some(parent_dir),
+            review_after: false,
+            linked_pr: None,
+            last_review_count: None,
+            review_addressed: false,
+        }
+    }
+
+    /// Get the task ID (name--branch format)
     pub fn task_id(&self) -> String {
-        Config::task_id(&self.repo_name, &self.branch_name)
+        Config::task_id(&self.name, &self.branch_name)
+    }
+
+    /// Get the primary (first) repo entry. Panics if repos is empty.
+    pub fn primary_repo(&self) -> &RepoEntry {
+        &self.repos[0]
+    }
+
+    /// Whether this is a multi-repo task.
+    /// Uses `parent_dir` as the indicator, not repos count, because multi-repo
+    /// tasks start with empty repos (before `setup_repos` post-hook runs).
+    pub fn is_multi_repo(&self) -> bool {
+        self.parent_dir.is_some()
+    }
+
+    /// Returns true if repos have been populated (safe to call `primary_repo()`).
+    pub fn has_repos(&self) -> bool {
+        !self.repos.is_empty()
     }
 }
 
@@ -117,18 +180,18 @@ pub struct Task {
 impl Task {
     pub fn create(
         config: &Config,
-        repo_name: &str,
+        name: &str,
         branch_name: &str,
         description: &str,
         flow_name: &str,
         worktree_path: PathBuf,
     ) -> Result<Self> {
-        tracing::info!(repo = repo_name, branch = branch_name, flow = flow_name, "creating task");
-        let dir = config.task_dir(repo_name, branch_name);
+        tracing::info!(repo = name, branch = branch_name, flow = flow_name, "creating task");
+        let dir = config.task_dir(name, branch_name);
         std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
 
         let meta = TaskMeta::new(
-            repo_name.to_string(),
+            name.to_string(),
             branch_name.to_string(),
             worktree_path.clone(),
             flow_name.to_string(),
@@ -138,7 +201,40 @@ impl Task {
         task.save_meta()?;
         task.init_files()?;
 
-        // Write TASK.md directly to the worktree
+        // Write TASK.md to the task directory
+        task.write_task(&format!(
+            "# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n",
+            description
+        ))?;
+
+        Ok(task)
+    }
+
+    /// Create a multi-repo task: task dir + TASK.md, but no worktrees yet.
+    /// Repos will be populated later by the setup_repos post-hook.
+    pub fn create_multi(
+        config: &Config,
+        name: &str,
+        branch_name: &str,
+        description: &str,
+        flow_name: &str,
+        parent_dir: PathBuf,
+    ) -> Result<Self> {
+        tracing::info!(name = name, branch = branch_name, flow = flow_name, "creating multi-repo task");
+        let dir = config.task_dir(name, branch_name);
+        std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
+
+        let meta = TaskMeta::new_multi(
+            name.to_string(),
+            branch_name.to_string(),
+            parent_dir,
+            flow_name.to_string(),
+        );
+
+        let task = Self { meta, dir };
+        task.save_meta()?;
+        task.init_files()?;
+
         task.write_task(&format!(
             "# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n",
             description
@@ -286,41 +382,52 @@ impl Task {
     }
 
     pub fn write_task(&self, content: &str) -> Result<()> {
-        let task_path = self.meta.worktree_path.join("TASK.md");
+        let task_path = self.dir.join("TASK.md");
         std::fs::write(&task_path, content)?;
         Ok(())
     }
 
-    /// Ensure TASK.md and REVIEW.md are excluded from git tracking.
+    /// Ensure REVIEW.md is excluded from git tracking in all repo worktrees.
     ///
     /// Adds entries to .git/info/exclude (not tracked, leaves no footprint).
     /// For worktrees, uses the common git directory since they share info/exclude.
+    /// TASK.md no longer needs excluding since it now lives in the task dir.
     pub fn ensure_git_excludes_task(&self) -> Result<()> {
+        for repo in &self.meta.repos {
+            self.ensure_git_excludes_for_worktree(&repo.worktree_path)?;
+        }
+        Ok(())
+    }
+
+    /// Ensure REVIEW.md is excluded from git tracking for a specific worktree path.
+    /// Used during multi-repo setup when repos are added after initial task creation.
+    pub fn ensure_git_excludes_for_worktree(&self, worktree_path: &std::path::Path) -> Result<()> {
         use std::process::Command;
 
-        // Get the common git directory (main .git for worktrees, regular .git otherwise)
-        // --git-common-dir returns the shared directory for worktrees
+        if !worktree_path.exists() {
+            return Ok(());
+        }
+
         let output = Command::new("git")
             .args(["rev-parse", "--git-common-dir"])
-            .current_dir(&self.meta.worktree_path)
+            .current_dir(worktree_path)
             .output()
             .context("Failed to get git common directory")?;
 
         if !output.status.success() {
-            anyhow::bail!("Failed to determine git common directory");
+            return Ok(());
         }
 
         let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let git_common_dir_path = if std::path::Path::new(&git_common_dir).is_absolute() {
             std::path::PathBuf::from(&git_common_dir)
         } else {
-            self.meta.worktree_path.join(&git_common_dir)
+            worktree_path.join(&git_common_dir)
         };
 
         let exclude_path = git_common_dir_path.join("info").join("exclude");
-        let entries = ["TASK.md", "REVIEW.md"];
+        let entry = "REVIEW.md";
 
-        // Ensure the info directory exists
         if let Some(info_dir) = exclude_path.parent() {
             std::fs::create_dir_all(info_dir).context("Failed to create .git/info directory")?;
         }
@@ -332,24 +439,17 @@ impl Task {
             String::new()
         };
 
-        let mut modified = false;
-        for entry in &entries {
-            let is_excluded = content.lines().any(|line| {
-                let trimmed = line.trim();
-                trimmed == *entry || trimmed == format!("/{}", entry)
-            });
+        let is_excluded = content.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == entry || trimmed == format!("/{}", entry)
+        });
 
-            if !is_excluded {
-                if !content.is_empty() && !content.ends_with('\n') {
-                    content.push('\n');
-                }
-                content.push_str(entry);
+        if !is_excluded {
+            if !content.is_empty() && !content.ends_with('\n') {
                 content.push('\n');
-                modified = true;
             }
-        }
-
-        if modified {
+            content.push_str(entry);
+            content.push('\n');
             std::fs::write(&exclude_path, &content)
                 .context("Failed to update .git/info/exclude")?;
         }
@@ -375,7 +475,7 @@ impl Task {
     }
 
     pub fn read_task(&self) -> Result<String> {
-        let path = self.meta.worktree_path.join("TASK.md");
+        let path = self.dir.join("TASK.md");
         std::fs::read_to_string(&path).context("Failed to read TASK.md")
     }
 
@@ -536,7 +636,7 @@ impl Task {
 
     pub fn delete(self, config: &Config) -> Result<()> {
         tracing::info!(task_id = %self.meta.task_id(), "deleting task");
-        let dir = config.task_dir(&self.meta.repo_name, &self.meta.branch_name);
+        let dir = config.task_dir(&self.meta.name, &self.meta.branch_name);
         if dir.exists() {
             std::fs::remove_dir_all(&dir)?;
         }
@@ -689,31 +789,80 @@ impl Task {
         self.save_meta()
     }
 
-    /// Get the git diff for the worktree
+    /// Get the git diff for the worktree(s).
+    /// For multi-repo tasks, concatenates diffs from all repos with headers.
     pub fn get_git_diff(&self) -> Result<String> {
         use std::process::Command;
 
-        let output = Command::new("git")
-            .args(["diff", "HEAD"])
-            .current_dir(&self.meta.worktree_path)
-            .output()
-            .context("Failed to run git diff")?;
+        if self.meta.repos.is_empty() {
+            return Ok(String::new());
+        }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        if self.meta.repos.len() == 1 {
+            let output = Command::new("git")
+                .args(["diff", "HEAD"])
+                .current_dir(&self.meta.repos[0].worktree_path)
+                .output()
+                .context("Failed to run git diff")?;
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+
+        let mut result = String::new();
+        for repo in &self.meta.repos {
+            if !repo.worktree_path.exists() {
+                continue;
+            }
+            let output = Command::new("git")
+                .args(["diff", "HEAD"])
+                .current_dir(&repo.worktree_path)
+                .output()
+                .context("Failed to run git diff")?;
+            let diff = String::from_utf8_lossy(&output.stdout);
+            if !diff.is_empty() {
+                result.push_str(&format!("## {}\n", repo.repo_name));
+                result.push_str(&diff);
+                result.push('\n');
+            }
+        }
+        Ok(result)
     }
 
-    /// Get a summary of commits on this branch
+    /// Get a summary of commits on this branch.
+    /// For multi-repo tasks, concatenates logs from all repos with headers.
     pub fn get_git_log_summary(&self) -> Result<String> {
         use std::process::Command;
 
-        // Try to get commits since branching from main/master
-        let output = Command::new("git")
-            .args(["log", "--oneline", "-20"])
-            .current_dir(&self.meta.worktree_path)
-            .output()
-            .context("Failed to run git log")?;
+        if self.meta.repos.is_empty() {
+            return Ok(String::new());
+        }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        if self.meta.repos.len() == 1 {
+            let output = Command::new("git")
+                .args(["log", "--oneline", "-20"])
+                .current_dir(&self.meta.repos[0].worktree_path)
+                .output()
+                .context("Failed to run git log")?;
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+
+        let mut result = String::new();
+        for repo in &self.meta.repos {
+            if !repo.worktree_path.exists() {
+                continue;
+            }
+            let output = Command::new("git")
+                .args(["log", "--oneline", "-20"])
+                .current_dir(&repo.worktree_path)
+                .output()
+                .context("Failed to run git log")?;
+            let log = String::from_utf8_lossy(&output.stdout);
+            if !log.is_empty() {
+                result.push_str(&format!("## {}\n", repo.repo_name));
+                result.push_str(&log);
+                result.push('\n');
+            }
+        }
+        Ok(result)
     }
 
     /// Reset flow step to 0 for re-running

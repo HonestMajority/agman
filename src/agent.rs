@@ -35,7 +35,27 @@ impl Agent {
         prompt.push_str("# Skills\n");
         prompt.push_str("Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them.\n");
 
+        // Add task directory info so agents know where TASK.md lives
         prompt.push_str("\n\n---\n\n");
+        prompt.push_str("# Task Directory\n");
+        prompt.push_str(&format!(
+            "TASK.md is located at: {}/TASK.md\n",
+            task.dir.display()
+        ));
+
+        // For multi-repo tasks, list all repos and their worktree paths
+        if task.meta.is_multi_repo() && !task.meta.repos.is_empty() {
+            prompt.push_str("\n# Repo Worktrees\n");
+            for repo in &task.meta.repos {
+                prompt.push_str(&format!(
+                    "- {}: {}\n",
+                    repo.repo_name,
+                    repo.worktree_path.display()
+                ));
+            }
+        }
+
+        prompt.push_str("\n---\n\n");
         prompt.push_str("# Current Task\n");
         prompt.push_str(&task_content);
         prompt.push_str("\n\n");
@@ -88,6 +108,9 @@ impl Agent {
 
     /// Run agent in tmux's agman window
     pub fn run_in_tmux(&self, task: &Task) -> Result<()> {
+        if !task.meta.has_repos() {
+            anyhow::bail!("No repos configured for task '{}'", task.meta.task_id());
+        }
         let prompt = self.build_prompt(task)?;
 
         // Write prompt to a temp file in the task directory
@@ -103,8 +126,14 @@ impl Agent {
             task.dir.join("agent.log").display()
         );
 
-        // Send to the agman window in tmux
-        Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &cmd)?;
+        // Send to the agman window in tmux.
+        // For multi-repo tasks, the flow runs in the parent-dir session, not per-repo sessions.
+        let tmux_target = if task.meta.parent_dir.is_some() {
+            Config::tmux_session_name(&task.meta.name, &task.meta.branch_name)
+        } else {
+            task.meta.primary_repo().tmux_session.clone()
+        };
+        Tmux::send_keys_to_window(&tmux_target, "agman", &cmd)?;
 
         Ok(())
     }
@@ -113,6 +142,20 @@ impl Agent {
     pub fn run_direct(&self, task: &Task) -> Result<Option<StopCondition>> {
         tracing::info!(agent = %self.name, task_id = %task.meta.task_id(), "starting agent (direct)");
         let prompt = self.build_prompt(task)?;
+
+        // Determine working directory: parent_dir for multi-repo, worktree for single-repo
+        let working_dir = match task.meta.parent_dir.as_deref() {
+            Some(parent) => parent.to_path_buf(),
+            None => {
+                if !task.meta.has_repos() {
+                    anyhow::bail!(
+                        "No repos configured and no parent_dir for task '{}'",
+                        task.meta.task_id()
+                    );
+                }
+                task.meta.primary_repo().worktree_path.clone()
+            }
+        };
 
         // Log start
         let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
@@ -126,7 +169,7 @@ impl Agent {
         let mut child = Command::new("claude")
             .arg("-p") // print mode
             .arg("--dangerously-skip-permissions") // allow file operations without confirmation
-            .current_dir(&task.meta.worktree_path)
+            .current_dir(&working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -213,20 +256,32 @@ impl AgentRunner {
         }
 
         // Check for .pr-link sidecar file (written by pr-creator or any agent)
-        let pr_link_path = task.meta.worktree_path.join(".pr-link");
-        if pr_link_path.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&pr_link_path) {
-                let lines: Vec<&str> = contents.lines().collect();
-                if lines.len() >= 2 {
-                    if let Ok(number) = lines[0].trim().parse::<u64>() {
-                        let url = lines[1].trim().to_string();
-                        tracing::info!(task_id = %task.meta.task_id(), pr_number = number, pr_url = %url, "detected .pr-link, storing linked PR");
-                        task.set_linked_pr(number, url, true)?;
+        // Check all repo worktree paths, then parent_dir
+        let mut pr_link_candidates: Vec<std::path::PathBuf> = task
+            .meta
+            .repos
+            .iter()
+            .map(|r| r.worktree_path.join(".pr-link"))
+            .collect();
+        if let Some(ref parent) = task.meta.parent_dir {
+            pr_link_candidates.push(parent.join(".pr-link"));
+        }
+        for pr_link_path in &pr_link_candidates {
+            if pr_link_path.exists() {
+                if let Ok(contents) = std::fs::read_to_string(pr_link_path) {
+                    let lines: Vec<&str> = contents.lines().collect();
+                    if lines.len() >= 2 {
+                        if let Ok(number) = lines[0].trim().parse::<u64>() {
+                            let url = lines[1].trim().to_string();
+                            tracing::info!(task_id = %task.meta.task_id(), pr_number = number, pr_url = %url, "detected .pr-link, storing linked PR");
+                            task.set_linked_pr(number, url, true)?;
+                        }
                     }
                 }
+                // Clean up the sidecar file
+                let _ = std::fs::remove_file(pr_link_path);
+                break;
             }
-            // Clean up the sidecar file
-            let _ = std::fs::remove_file(&pr_link_path);
         }
 
         Ok(result)
@@ -307,6 +362,11 @@ impl AgentRunner {
                         }
                         Some(StopCondition::AgentDone) => {
                             if agent_step.until == StopCondition::AgentDone {
+                                // Execute post-hook if configured
+                                if let Some(ref hook) = agent_step.post_hook {
+                                    println!("Running post-hook: {}", hook);
+                                    self.execute_post_hook(hook, task)?;
+                                }
                                 println!("Agent done - advancing to next step");
                                 task.advance_flow_step()?;
                             } else {
@@ -352,6 +412,22 @@ impl AgentRunner {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Execute a named post-hook after an agent step completes.
+    fn execute_post_hook(&self, hook: &str, task: &mut Task) -> Result<()> {
+        match hook {
+            "setup_repos" => {
+                tracing::info!(task_id = %task.meta.task_id(), "executing setup_repos post-hook");
+                crate::use_cases::setup_repos_from_task_md(&self.config, task)?;
+                Ok(())
+            }
+            _ => {
+                tracing::warn!(task_id = %task.meta.task_id(), hook = hook, "unknown post-hook, ignoring");
+                println!("Warning: unknown post-hook '{}', ignoring", hook);
+                Ok(())
             }
         }
     }
