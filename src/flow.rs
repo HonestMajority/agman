@@ -35,8 +35,6 @@ pub struct LoopStep {
 pub enum StopCondition {
     AgentDone,
     TaskComplete,
-    TestsPass,
-    TestsFail,
     InputNeeded,
 }
 
@@ -45,8 +43,6 @@ impl std::fmt::Display for StopCondition {
         match self {
             StopCondition::AgentDone => write!(f, "AGENT_DONE"),
             StopCondition::TaskComplete => write!(f, "TASK_COMPLETE"),
-            StopCondition::TestsPass => write!(f, "TESTS_PASS"),
-            StopCondition::TestsFail => write!(f, "TESTS_FAIL"),
             StopCondition::InputNeeded => write!(f, "INPUT_NEEDED"),
         }
     }
@@ -59,10 +55,6 @@ impl StopCondition {
             Some(StopCondition::AgentDone)
         } else if output.contains("TASK_COMPLETE") {
             Some(StopCondition::TaskComplete)
-        } else if output.contains("TESTS_PASS") {
-            Some(StopCondition::TestsPass)
-        } else if output.contains("TESTS_FAIL") {
-            Some(StopCondition::TestsFail)
         } else if output.contains("INPUT_NEEDED") {
             Some(StopCondition::InputNeeded)
         } else {

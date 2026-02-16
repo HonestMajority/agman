@@ -10,7 +10,6 @@ enum LogLineKind {
     UserFeedbackEnd,
     UserFeedbackBody,
     StopConditionSuccess,
-    StopConditionFailure,
     StopConditionInput,
     ErrorLine,
     TrimmedIndicator,
@@ -51,14 +50,8 @@ fn classify_line(line: &str, in_feedback_block: &mut bool) -> LogLineKind {
     }
 
     // Stop condition magic strings
-    if trimmed.contains("AGENT_DONE")
-        || trimmed.contains("TASK_COMPLETE")
-        || trimmed.contains("TESTS_PASS")
-    {
+    if trimmed.contains("AGENT_DONE") || trimmed.contains("TASK_COMPLETE") {
         return LogLineKind::StopConditionSuccess;
-    }
-    if trimmed.contains("TESTS_FAIL") {
-        return LogLineKind::StopConditionFailure;
     }
     if trimmed.contains("INPUT_NEEDED") {
         return LogLineKind::StopConditionInput;
@@ -128,12 +121,6 @@ fn style_structural_line<'a>(line: &'a str, kind: LogLineKind) -> Line<'a> {
             line,
             Style::default()
                 .fg(Color::LightGreen)
-                .add_modifier(Modifier::BOLD),
-        )),
-        LogLineKind::StopConditionFailure => Line::from(Span::styled(
-            line,
-            Style::default()
-                .fg(Color::LightRed)
                 .add_modifier(Modifier::BOLD),
         )),
         LogLineKind::StopConditionInput => Line::from(Span::styled(

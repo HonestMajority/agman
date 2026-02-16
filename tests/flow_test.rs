@@ -18,14 +18,6 @@ fn stop_condition_from_output() {
         None
     );
     assert_eq!(
-        StopCondition::from_output("TESTS_PASS"),
-        Some(StopCondition::TestsPass)
-    );
-    assert_eq!(
-        StopCondition::from_output("TESTS_FAIL"),
-        Some(StopCondition::TestsFail)
-    );
-    assert_eq!(
         StopCondition::from_output("INPUT_NEEDED"),
         Some(StopCondition::InputNeeded)
     );
@@ -66,27 +58,6 @@ fn flow_load_default() {
             assert_eq!(l.steps.len(), 2);
             assert_eq!(l.steps[0].agent, "coder");
             assert_eq!(l.steps[1].agent, "checker");
-        }
-        _ => panic!("expected Loop step"),
-    }
-}
-
-#[test]
-fn flow_load_tdd() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    config.init_default_files(false).unwrap();
-
-    let flow = Flow::load(&config.flow_path("tdd")).unwrap();
-    assert_eq!(flow.name, "tdd");
-    assert_eq!(flow.steps.len(), 2); // planner, loop
-
-    match &flow.steps[1] {
-        FlowStep::Loop(l) => {
-            assert_eq!(l.steps.len(), 3);
-            assert_eq!(l.steps[0].agent, "test-writer");
-            assert_eq!(l.steps[1].agent, "coder");
-            assert_eq!(l.steps[2].agent, "tester");
         }
         _ => panic!("expected Loop step"),
     }

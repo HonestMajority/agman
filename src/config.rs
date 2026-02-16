@@ -160,11 +160,6 @@ impl Config {
             std::fs::write(&new_flow, DEFAULT_FLOW)?;
         }
 
-        let tdd_flow = self.flow_path("tdd");
-        if force || !tdd_flow.exists() {
-            std::fs::write(&tdd_flow, TDD_FLOW)?;
-        }
-
         let review_flow = self.flow_path("review");
         if force || !review_flow.exists() {
             std::fs::write(&review_flow, REVIEW_FLOW)?;
@@ -180,8 +175,6 @@ impl Config {
             ("prompt-builder", PROMPT_BUILDER_PROMPT),
             ("planner", PLANNER_PROMPT),
             ("coder", CODER_PROMPT),
-            ("test-writer", TEST_WRITER_PROMPT),
-            ("tester", TESTER_PROMPT),
             ("reviewer", REVIEWER_PROMPT),
             ("refiner", REFINER_PROMPT),
             ("checker", CHECKER_PROMPT),
@@ -235,21 +228,6 @@ steps:
         until: AGENT_DONE
       - agent: checker
         until: AGENT_DONE
-    until: TASK_COMPLETE
-"#;
-
-const TDD_FLOW: &str = r#"name: tdd
-steps:
-  - agent: planner
-    until: AGENT_DONE
-  - loop:
-      - agent: test-writer
-        until: AGENT_DONE
-      - agent: coder
-        until: AGENT_DONE
-      - agent: tester
-        until: TESTS_PASS
-        on_fail: continue
     until: TASK_COMPLETE
 "#;
 
@@ -425,30 +403,6 @@ IMPORTANT:
 If you encounter blockers or need human help, describe the problem clearly in ## Status — the checker will decide whether to block the task.
 
 Output exactly: AGENT_DONE when you've made progress and are ready for review.
-"#;
-
-const TEST_WRITER_PROMPT: &str = r#"You are a test-writing agent. Your job is to write tests for the task.
-
-Instructions:
-1. Read the plan and understand what needs to be tested
-2. Write comprehensive unit tests
-3. Write integration tests where appropriate
-4. Ensure tests are runnable and properly structured
-
-When you're done writing tests, output: AGENT_DONE
-If you need human input, output: INPUT_NEEDED
-"#;
-
-const TESTER_PROMPT: &str = r#"You are a testing agent. Your job is to run tests and report results.
-
-Instructions:
-1. Run all relevant tests
-2. Analyze any failures
-3. Report results clearly
-
-If all tests pass, output: TESTS_PASS
-If tests fail, output: TESTS_FAIL
-If you need human help, output: INPUT_NEEDED
 "#;
 
 const REVIEWER_PROMPT: &str = r#"You are a code review agent. Your job is to review code quality and suggest improvements.

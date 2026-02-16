@@ -316,17 +316,6 @@ impl AgentRunner {
                                 );
                             }
                         }
-                        Some(StopCondition::TestsPass) => {
-                            if agent_step.until == StopCondition::TestsPass {
-                                println!("Tests pass - advancing to next step");
-                                task.advance_flow_step()?;
-                            }
-                        }
-                        Some(StopCondition::TestsFail) => {
-                            println!("Tests failed");
-                            // For test failures, we typically want to loop back or continue
-                            // The flow should handle this
-                        }
                         None => {
                             // No stop condition - agent will be run again
                             println!("No stop condition from agent - running again");
@@ -439,11 +428,6 @@ impl AgentRunner {
                     Some(condition) if condition == until => {
                         println!("Loop condition {:?} met", until);
                         return Ok(condition);
-                    }
-                    Some(StopCondition::TestsFail) => {
-                        // Tests failed, loop back to start
-                        println!("Tests failed, restarting loop");
-                        break; // Break inner loop to restart
                     }
                     _ => {
                         // Continue to next agent in loop
