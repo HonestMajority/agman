@@ -1336,16 +1336,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         View::NewTaskWizard => {
             if let Some(wizard) = &app.wizard {
                 match wizard.step {
-                    WizardStep::SelectRepo => {
-                        vec![
-                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                            Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
-                            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-                        ]
-                    }
                     WizardStep::SelectBranch => {
                         vec![
                             Span::styled("Tab", Style::default().fg(Color::LightCyan)),
@@ -1523,7 +1513,6 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
         };
         let total = 2;
         let (step_num, step_title) = match wizard.step {
-            WizardStep::SelectRepo => (1, "Branch / Worktree"), // unreachable but handle gracefully
             WizardStep::SelectBranch => (1, "Branch / Worktree"),
             WizardStep::EnterDescription => (2, "Task Description"),
         };
@@ -1570,9 +1559,6 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
 
     // Draw step-specific content
     match step {
-        WizardStep::SelectRepo => {
-            // SelectRepo is no longer used as a wizard step
-        }
         WizardStep::SelectBranch => draw_wizard_branch(f, app, chunks[0]),
         WizardStep::EnterDescription => draw_wizard_description(f, app, chunks[0]),
     }
@@ -1769,7 +1755,6 @@ fn draw_wizard_footer_direct(
     } else {
         // Show contextual help
         let help = match step {
-            WizardStep::SelectRepo => "j/k: navigate  Enter: select  Esc: cancel",
             WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
             WizardStep::EnterDescription => "Ctrl+S: create task (empty = setup only)  Ctrl+R: toggle review  Esc: back",
         };

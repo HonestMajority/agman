@@ -159,10 +159,6 @@ impl DirectoryPicker {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizardStep {
-    /// No longer used as a wizard step — repo selection happens in the DirectoryPicker.
-    /// Kept for match exhaustiveness in rendering code.
-    #[allow(dead_code)]
-    SelectRepo,
     SelectBranch,
     EnterDescription,
 }
@@ -1540,11 +1536,6 @@ impl App {
         wizard.error_message = None;
 
         match wizard.step {
-            WizardStep::SelectRepo => {
-                // SelectRepo is no longer used as a wizard step — repo selection
-                // happens in the DirectoryPicker before the wizard is created.
-                // This branch should be unreachable.
-            }
             WizardStep::SelectBranch => {
                 // Validate based on branch source
                 let branch_name = match wizard.branch_source {
@@ -1631,11 +1622,6 @@ impl App {
         wizard.error_message = None;
 
         match wizard.step {
-            WizardStep::SelectRepo => {
-                // No longer reachable, but handle gracefully
-                self.wizard = None;
-                self.view = View::TaskList;
-            }
             WizardStep::SelectBranch => {
                 // Go back to directory picker for repo selection
                 self.wizard = None;
@@ -2697,10 +2683,6 @@ impl App {
             wizard.error_message = None;
 
             match wizard.step {
-                WizardStep::SelectRepo => {
-                    // SelectRepo is no longer used as a wizard step — repo selection
-                    // happens in the DirectoryPicker. This should be unreachable.
-                }
                 WizardStep::SelectBranch => {
                     match key.code {
                         KeyCode::Esc => {
