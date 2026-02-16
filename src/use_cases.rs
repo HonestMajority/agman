@@ -572,18 +572,26 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> 
     let mut entries = Vec::new();
 
     for repo_name in &repo_names {
-        // Create worktree
-        let worktree_path =
-            Git::create_worktree_quiet(config, repo_name, &task.meta.branch_name)
+        // Check if worktree already exists (idempotent on retry after partial failure)
+        let candidate = config.worktree_path(repo_name, &task.meta.branch_name);
+        let worktree_path = if candidate.exists() {
+            tracing::info!(repo = repo_name, branch = %task.meta.branch_name, "worktree already exists, reusing");
+            let _ = Git::direnv_allow(&candidate);
+            candidate
+        } else {
+            let path = Git::create_worktree_quiet(config, repo_name, &task.meta.branch_name)
                 .with_context(|| format!("Failed to create worktree for repo '{}'", repo_name))?;
+            let _ = Git::direnv_allow(&path);
+            path
+        };
 
-        let _ = Git::direnv_allow(&worktree_path);
-
-        // Create tmux session
+        // Create tmux session (idempotent — create_session_with_windows handles existing)
         let tmux_session = Config::tmux_session_name(repo_name, &task.meta.branch_name);
-        Tmux::create_session_with_windows(&tmux_session, &worktree_path)
-            .with_context(|| format!("Failed to create tmux session for repo '{}'", repo_name))?;
-        let _ = Tmux::add_review_window(&tmux_session, &worktree_path);
+        if !Tmux::session_exists(&tmux_session) {
+            Tmux::create_session_with_windows(&tmux_session, &worktree_path)
+                .with_context(|| format!("Failed to create tmux session for repo '{}'", repo_name))?;
+            let _ = Tmux::add_review_window(&tmux_session, &worktree_path);
+        }
 
         // Ensure REVIEW.md is excluded from git tracking
         let _ = task.ensure_git_excludes_for_worktree(&worktree_path);
@@ -593,8 +601,13 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> 
             worktree_path,
             tmux_session,
         });
+
+        // Save incrementally so partial progress is preserved on failure
+        task.meta.repos = entries.clone();
+        task.save_meta()?;
     }
 
+    // Final save (entries == task.meta.repos at this point, but be explicit)
     task.meta.repos = entries;
     task.save_meta()?;
 
