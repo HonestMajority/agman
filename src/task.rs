@@ -725,4 +725,36 @@ impl Task {
         self.meta.updated_at = Utc::now();
         self.save_meta()
     }
+
+    /// Check if TASK.md has remaining work items (unchecked `- [ ]` items
+    /// under the `## Remaining` heading).
+    ///
+    /// Returns `true` if there are unchecked items or if TASK.md is unreadable
+    /// (fail-safe: assume work remains). Returns `false` only when the
+    /// Remaining section exists and contains no unchecked items.
+    pub fn has_remaining_work(&self) -> bool {
+        let content = match self.read_task() {
+            Ok(c) => c,
+            Err(_) => return true, // fail-safe
+        };
+
+        let mut in_remaining = false;
+        for line in content.lines() {
+            let trimmed = line.trim();
+
+            if in_remaining {
+                // Stop scanning at the next heading (## or #)
+                if trimmed.starts_with("## ") || trimmed.starts_with("# ") {
+                    break;
+                }
+                if trimmed.starts_with("- [ ]") {
+                    return true;
+                }
+            } else if trimmed == "## Remaining" {
+                in_remaining = true;
+            }
+        }
+
+        false
+    }
 }

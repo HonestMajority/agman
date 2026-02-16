@@ -948,6 +948,40 @@ fn parse_github_owner_repo_formats() {
 }
 
 // ---------------------------------------------------------------------------
+// has_remaining_work
+// ---------------------------------------------------------------------------
+
+#[test]
+fn has_remaining_work_with_unchecked_items() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "remaining");
+
+    // Write TASK.md with unchecked items in ## Remaining
+    task.write_task(
+        "# Goal\nDo stuff\n\n# Plan\n## Completed\n- [x] Done thing\n\n## Remaining\n- [ ] Next step\n- [ ] Another step\n",
+    )
+    .unwrap();
+
+    assert!(task.has_remaining_work());
+}
+
+#[test]
+fn has_remaining_work_empty_remaining() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "done");
+
+    // Write TASK.md with empty ## Remaining section
+    task.write_task(
+        "# Goal\nDo stuff\n\n# Plan\n## Completed\n- [x] Done thing\n- [x] Other thing\n\n## Remaining\n\n## Status\nAll done.\n",
+    )
+    .unwrap();
+
+    assert!(!task.has_remaining_work());
+}
+
+// ---------------------------------------------------------------------------
 // Task with slash in branch name
 // ---------------------------------------------------------------------------
 

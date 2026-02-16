@@ -473,6 +473,21 @@ impl AgentRunner {
                         println!("Loop condition {:?} met", until);
                         return Ok(condition);
                     }
+                    Some(StopCondition::AgentDone) if until == StopCondition::TaskComplete => {
+                        // In a loop that waits for TASK_COMPLETE, an AGENT_DONE from
+                        // the checker (or any agent) triggers a remaining-work check.
+                        // If TASK.md's ## Remaining section is empty, the task is done.
+                        if !task.has_remaining_work() {
+                            tracing::info!(
+                                task_id = %task.meta.task_id(),
+                                agent = %agent_step.agent,
+                                "no remaining work in TASK.md — treating as TASK_COMPLETE"
+                            );
+                            println!("No remaining work items — task complete");
+                            return Ok(StopCondition::TaskComplete);
+                        }
+                        // Otherwise continue the loop
+                    }
                     Some(StopCondition::TestsFail) => {
                         // Tests failed, loop back to start
                         println!("Tests failed, restarting loop");
