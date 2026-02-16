@@ -298,6 +298,7 @@ You do NOT create a detailed implementation plan — that is the planner's job. 
    - Any other files that define coding standards, architecture, or design philosophy
 3. Use subagents to explore the codebase structure — understand the relevant modules, patterns, and architecture
 4. Identify key design decisions that need to be made
+5. While investigating, assess whether the requested work is actually needed — the feature may already exist, the bug may not be present, or the concern may already be addressed
 
 ### Step 2: Check for Answered Questions
 If there is a `[QUESTIONS]` section AND a `[ANSWERS]` section in TASK.md:
@@ -322,7 +323,7 @@ Rewrite the `# Goal` section of TASK.md to include:
 
 Keep the `# Plan` section as-is (the planner will fill it in).
 
-### Step 4: Decide — Questions or Done?
+### Step 4: Decide — Questions, Done, or No Work Needed?
 After enhancing the Goal, perform a self-check before deciding:
 - Scan the Goal for any unresolved decisions, tentative language ("should probably", "might want to", "the planner/coder should decide"), or listed-but-unchosen options
 - If any are found, either resolve them now or ask the user via `INPUT_NEEDED`
@@ -337,6 +338,14 @@ After enhancing the Goal, perform a self-check before deciding:
 **If the prompt is well-formulated and complete — with ALL design decisions resolved:**
 - Ensure there is no `[QUESTIONS]` section remaining
 - Output exactly: AGENT_DONE
+
+**If the requested work is already done or unnecessary:**
+Only choose this path when your investigation has made you **confidently certain** that no code changes are needed. Examples: the feature already exists and works correctly, the bug is not present, or the concern is already handled.
+- Rewrite the `# Goal` section to describe what was investigated and the conclusion (e.g., "Investigated whether X handles Y correctly and found it already does because...")
+- Rewrite the `# Plan` section with a `## Completed` subsection documenting the investigation outcome (e.g., `- [x] Investigated X — confirmed it already works correctly`)
+- Leave `## Remaining` empty
+- Output exactly: TASK_COMPLETE
+- **When in doubt, proceed normally** with AGENT_DONE or INPUT_NEEDED — only use TASK_COMPLETE when you are certain
 
 ## TASK.md Format
 ```
@@ -368,6 +377,8 @@ After enhancing the Goal, perform a self-check before deciding:
 - Do NOT output AGENT_DONE until all design questions are answered and all architectural choices are decided
 - When you're done (no more questions, all decisions resolved), output exactly: AGENT_DONE
 - When you need user input, output exactly: INPUT_NEEDED
+- When you are **confidently certain** the requested work is already done or unnecessary, output exactly: TASK_COMPLETE (update TASK.md first to document your finding)
+- Be conservative about TASK_COMPLETE — when in doubt, proceed with AGENT_DONE and let the planner/coder investigate further
 "###;
 
 const PLANNER_PROMPT: &str = r#"You are a planning agent. Your job is to analyze the task and create a detailed implementation plan.
@@ -474,7 +485,8 @@ Instructions:
 1. Read and understand all the context provided
 2. Check for Claude Code skills in the repo (`.claude/skills/*/SKILL.md` and `.claude/commands/*.md`). If any exist, preserve skill annotations on completed steps and annotate new remaining steps with relevant skills where appropriate.
 3. Focus primarily on the NEW FEEDBACK - this is what matters now
-4. Rewrite TASK.md with:
+4. Before rewriting TASK.md, assess whether the feedback's concerns are already addressed — examine the git diff and commit log provided to you. The feature may already be implemented, the bug may already be fixed, or the requested behavior may already be present.
+5. Rewrite TASK.md with:
    - A Goal section that preserves foundational context (big-picture goal, design philosophy, architectural intent) from the existing Goal, and updates the tactical parts (current focus, next priorities) based on feedback and progress
    - A Plan section with Completed steps (what's been done) and Remaining steps
    - The Goal should be self-contained — the coder should be able to follow it without any other context, which is why foundational context must be preserved rather than stripped
@@ -485,7 +497,14 @@ IMPORTANT:
 - Preserve foundational context (big-picture goal, design philosophy, architectural intent) from the existing Goal section — only update it if the user's feedback explicitly changes the direction. Rewrite tactical context (current focus, iteration details) freely.
 - If the feedback is unclear, make reasonable assumptions
 
-When you're done writing TASK.md, output exactly: AGENT_DONE
+**If the feedback requires code changes** (the normal case):
+- Output exactly: AGENT_DONE
+
+**If the feedback's concerns are already fully addressed** (only when you are **confidently certain** after examining the git context):
+- Rewrite TASK.md to document what you investigated and the conclusion (e.g., "The user asked to ensure X handles Y correctly. Examining the git diff shows this was already implemented in commit abc123...")
+- Use `## Completed` to record the investigation, leave `## Remaining` empty
+- Output exactly: TASK_COMPLETE
+- **When in doubt, proceed normally** with AGENT_DONE — only use TASK_COMPLETE when you are certain no further changes are needed
 "#;
 
 const CHECKER_PROMPT: &str = r###"You are a checker agent — the quality gatekeeper in a coder↔checker loop. Sending the coder for another pass is cheap and often the right call. Your default stance is skepticism: assume there is more work to do unless you are absolutely certain everything is done to a high standard.
