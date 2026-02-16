@@ -175,6 +175,11 @@ impl Config {
             std::fs::write(&continue_flow, CONTINUE_FLOW)?;
         }
 
+        let new_multi_flow = self.flow_path("new-multi");
+        if force || !new_multi_flow.exists() {
+            std::fs::write(&new_multi_flow, NEW_MULTI_FLOW)?;
+        }
+
         // Create default prompts if they don't exist
         let prompts = [
             ("prompt-builder", PROMPT_BUILDER_PROMPT),
@@ -185,6 +190,7 @@ impl Config {
             ("reviewer", REVIEWER_PROMPT),
             ("refiner", REFINER_PROMPT),
             ("checker", CHECKER_PROMPT),
+            ("repo-inspector", REPO_INSPECTOR_PROMPT),
             // Command-specific prompts
             ("rebase-executor", REBASE_EXECUTOR_PROMPT),
             ("pr-creator", PR_CREATOR_PROMPT),
@@ -270,6 +276,24 @@ steps:
 const CONTINUE_FLOW: &str = r#"name: continue
 steps:
   - agent: refiner
+    until: AGENT_DONE
+  - loop:
+      - agent: coder
+        until: AGENT_DONE
+        on_blocked: pause
+      - agent: checker
+        until: AGENT_DONE
+    until: TASK_COMPLETE
+"#;
+
+const NEW_MULTI_FLOW: &str = r#"name: new-multi
+steps:
+  - agent: repo-inspector
+    until: AGENT_DONE
+    post_hook: setup_repos
+  - agent: prompt-builder
+    until: AGENT_DONE
+  - agent: planner
     until: AGENT_DONE
   - loop:
       - agent: coder
@@ -916,6 +940,37 @@ IMPORTANT:
 
 When the merge is complete and code compiles on the target branch, output exactly: AGENT_DONE
 If you cannot complete the merge, output exactly: TASK_BLOCKED
+"#;
+
+const REPO_INSPECTOR_PROMPT: &str = r#"You are a repo-inspector agent. Your job is to inspect a directory containing multiple git repos and determine which repos are relevant to the current task.
+
+Instructions:
+1. Read TASK.md to understand the goal of this task
+2. List the git repositories in the current working directory (look for directories containing `.git`)
+3. For each repo, briefly inspect it:
+   - Read the README if one exists
+   - Look at the directory structure
+   - Check recent commits or code to understand what the repo does
+4. Determine which repos are relevant to the task goal
+5. Write a `# Repos` section into TASK.md (after the `# Goal` section, before `# Plan`) listing the relevant repos
+
+The `# Repos` section format MUST be exactly:
+```
+# Repos
+- repo-name-1: Brief rationale for including this repo
+- repo-name-2: Brief rationale for including this repo
+```
+
+Each line must start with `- ` followed by the repo directory name (not the full path), then `: `, then a brief rationale.
+
+IMPORTANT:
+- Do NOT ask questions or wait for input
+- Only include repos that are genuinely relevant to the task
+- The repo names must exactly match the directory names under the working directory
+- Do NOT modify the `# Goal` section
+- Do NOT create a plan — only determine which repos are involved
+
+When you're done, output exactly: AGENT_DONE
 "#;
 
 const PR_REVIEWER_PROMPT: &str = r#"You are a PR review agent. Your job is to review the current branch's changes thoroughly.

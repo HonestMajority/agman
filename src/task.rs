@@ -122,6 +122,32 @@ impl TaskMeta {
         }
     }
 
+    /// Create a TaskMeta for a multi-repo task (starts with empty repos).
+    pub fn new_multi(
+        name: String,
+        branch_name: String,
+        parent_dir: PathBuf,
+        flow_name: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            name,
+            branch_name,
+            status: TaskStatus::Running,
+            repos: vec![],
+            flow_name,
+            current_agent: None,
+            flow_step: 0,
+            created_at: now,
+            updated_at: now,
+            parent_dir: Some(parent_dir),
+            review_after: false,
+            linked_pr: None,
+            last_review_count: None,
+            review_addressed: false,
+        }
+    }
+
     /// Get the task ID (name--branch format)
     pub fn task_id(&self) -> String {
         Config::task_id(&self.name, &self.branch_name)
@@ -169,6 +195,39 @@ impl Task {
         task.init_files()?;
 
         // Write TASK.md directly to the worktree
+        task.write_task(&format!(
+            "# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n",
+            description
+        ))?;
+
+        Ok(task)
+    }
+
+    /// Create a multi-repo task: task dir + TASK.md, but no worktrees yet.
+    /// Repos will be populated later by the setup_repos post-hook.
+    pub fn create_multi(
+        config: &Config,
+        name: &str,
+        branch_name: &str,
+        description: &str,
+        flow_name: &str,
+        parent_dir: PathBuf,
+    ) -> Result<Self> {
+        tracing::info!(name = name, branch = branch_name, flow = flow_name, "creating multi-repo task");
+        let dir = config.task_dir(name, branch_name);
+        std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
+
+        let meta = TaskMeta::new_multi(
+            name.to_string(),
+            branch_name.to_string(),
+            parent_dir,
+            flow_name.to_string(),
+        );
+
+        let task = Self { meta, dir };
+        task.save_meta()?;
+        task.init_files()?;
+
         task.write_task(&format!(
             "# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n",
             description
@@ -379,6 +438,64 @@ impl Task {
                 std::fs::write(&exclude_path, &content)
                     .context("Failed to update .git/info/exclude")?;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Ensure REVIEW.md is excluded from git tracking for a specific worktree path.
+    /// Used during multi-repo setup when repos are added after initial task creation.
+    pub fn ensure_git_excludes_for_worktree(&self, worktree_path: &std::path::Path) -> Result<()> {
+        use std::process::Command;
+
+        if !worktree_path.exists() {
+            return Ok(());
+        }
+
+        let output = Command::new("git")
+            .args(["rev-parse", "--git-common-dir"])
+            .current_dir(worktree_path)
+            .output()
+            .context("Failed to get git common directory")?;
+
+        if !output.status.success() {
+            return Ok(());
+        }
+
+        let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let git_common_dir_path = if std::path::Path::new(&git_common_dir).is_absolute() {
+            std::path::PathBuf::from(&git_common_dir)
+        } else {
+            worktree_path.join(&git_common_dir)
+        };
+
+        let exclude_path = git_common_dir_path.join("info").join("exclude");
+        let entry = "REVIEW.md";
+
+        if let Some(info_dir) = exclude_path.parent() {
+            std::fs::create_dir_all(info_dir).context("Failed to create .git/info directory")?;
+        }
+
+        let mut content = if exclude_path.exists() {
+            std::fs::read_to_string(&exclude_path)
+                .context("Failed to read .git/info/exclude")?
+        } else {
+            String::new()
+        };
+
+        let is_excluded = content.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == entry || trimmed == format!("/{}", entry)
+        });
+
+        if !is_excluded {
+            if !content.is_empty() && !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push_str(entry);
+            content.push('\n');
+            std::fs::write(&exclude_path, &content)
+                .context("Failed to update .git/info/exclude")?;
         }
 
         Ok(())

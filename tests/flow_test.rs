@@ -116,6 +116,45 @@ fn flow_load_continue() {
 }
 
 #[test]
+fn flow_load_new_multi() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.init_default_files(false).unwrap();
+
+    let flow = Flow::load(&config.flow_path("new-multi")).unwrap();
+    assert_eq!(flow.name, "new-multi");
+    assert_eq!(flow.steps.len(), 4); // repo-inspector, prompt-builder, planner, loop
+
+    // First step is repo-inspector with post_hook
+    match &flow.steps[0] {
+        FlowStep::Agent(s) => {
+            assert_eq!(s.agent, "repo-inspector");
+            assert_eq!(s.post_hook, Some("setup_repos".to_string()));
+        }
+        _ => panic!("expected Agent step"),
+    }
+    // Second step is prompt-builder
+    match &flow.steps[1] {
+        FlowStep::Agent(s) => assert_eq!(s.agent, "prompt-builder"),
+        _ => panic!("expected Agent step"),
+    }
+    // Third step is planner
+    match &flow.steps[2] {
+        FlowStep::Agent(s) => assert_eq!(s.agent, "planner"),
+        _ => panic!("expected Agent step"),
+    }
+    // Fourth step is a loop
+    match &flow.steps[3] {
+        FlowStep::Loop(l) => {
+            assert_eq!(l.steps.len(), 2);
+            assert_eq!(l.steps[0].agent, "coder");
+            assert_eq!(l.steps[1].agent, "checker");
+        }
+        _ => panic!("expected Loop step"),
+    }
+}
+
+#[test]
 fn flow_get_step() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);

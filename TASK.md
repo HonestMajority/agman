@@ -267,35 +267,16 @@ In `AgentRunner::run_agent()` (at `agent.rs:216-229`), the `.pr-link` file is ch
 - [x] **6.6-6.8 Update TUI references** — All `repo_name`→`name`, `worktree_path`→`primary_repo().worktree_path`, `tmux_session`→`primary_repo().tmux_session` across app.rs and ui.rs
 - [x] **7.1-7.2 Update test helpers and existing tests** — `create_test_task()` and all assertions updated for new data model
 - [x] **8.1-8.2 Build and test verification** — cargo build succeeds, all 73 tests pass
+- [x] **2.2 Add `new-multi` flow and `repo-inspector` prompt constants in `src/config.rs`** — Added `NEW_MULTI_FLOW` YAML, `REPO_INSPECTOR_PROMPT`, updated `init_default_files()`
+- [x] **2.3 Add `setup_repos_from_task_md()` use case in `src/use_cases.rs`** — Pure parser + full setup function with worktree/tmux creation
+- [x] **2.4 Implement post-hook execution in `AgentRunner::run_flow_with()` in `src/agent.rs`** — `execute_post_hook()` method dispatching on hook name
+- [x] **3.2 Update `Agent::build_prompt()` for multi-repo awareness** — Added `# Task Directory` and `# Repo Worktrees` sections
+- [x] **4.1 Generalize task creation for multi-repo** — `TaskMeta::new_multi()`, `Task::create_multi()`, `create_multi_repo_task()` use case
+- [x] **7.3-7.6 Multi-repo tests** — 6 new tests (creation, parsing, deletion, flow), all 79 pass
 
 ## Remaining
 
-### Phase 2: Flow System (continued)
-
-- [ ] **2.2 Add `new-multi` flow and `repo-inspector` prompt constants in `src/config.rs`**
-  - Add `const NEW_MULTI_FLOW` with the YAML for new-multi (repo-inspector with post_hook → prompt-builder → planner → coder↔checker loop)
-  - Add `const REPO_INSPECTOR_PROMPT` with the agent prompt for inspecting repos
-  - Update `init_default_files()` to write these files
-
-- [ ] **2.3 Add `setup_repos_from_task_md()` use case in `src/use_cases.rs`**
-  - Extract `parse_repos_from_task_md(content: &str) -> Vec<String>` as a pure function (testable)
-  - Full function: reads TASK.md, parses `# Repos` section, creates worktrees + tmux sessions, populates `task.meta.repos`
-
-- [ ] **2.4 Implement post-hook execution in `AgentRunner::run_flow_with()` in `src/agent.rs`**
-  - After AgentDone detected: check `agent_step.post_hook == Some("setup_repos")`, call `setup_repos_from_task_md()`
-
-### Phase 3: Agent Prompt Changes
-
-- [ ] **3.2 Update `Agent::build_prompt()` for multi-repo awareness in `src/agent.rs`**
-  - Add `# Task Directory` section with `task.dir.display()` so agents know where TASK.md lives
-  - For multi-repo: add `# Repos` section listing each repo with its worktree path
-
-### Phase 4: Use Cases Updates
-
-- [ ] **4.1 Generalize `create_task()` in `src/use_cases.rs`**
-  - Add `parent_dir: Option<PathBuf>` parameter
-  - For multi-repo: skip worktree creation, create task with empty repos, set parent_dir
-  - For single-repo: behavior unchanged
+### Phase 4: Use Cases Updates (continued)
 
 - [ ] **4.3 Generalize `create_setup_only_task()` in `src/use_cases.rs`** (minimal — single-repo only)
 
@@ -317,30 +298,46 @@ In `AgentRunner::run_agent()` (at `agent.rs:216-229`), the `.pr-link` file is ch
 - [ ] **6.5 Update attach logic for multi-repo (initially: attach to first repo's session)**
 - [ ] **6.8 Add visual indicator for multi-repo tasks in ui.rs**
 
-### Phase 7: Tests
-
-- [ ] **7.3 Add multi-repo task creation test**
-- [ ] **7.4 Add `parse_repos_from_task_md()` test**
-- [ ] **7.5 Add multi-repo task deletion test**
-- [ ] **7.6 Add flow post_hook parsing test, update config test for new-multi flow**
-
 ## Status
 
-### Iteration 1 — Data Model Foundation
+### Iteration 2 — Phase 2 (Flow System) + Phase 3.2 + Phase 4.1 + Tests
 
-**What was done:** Completed the entire Phase 1 (data model changes) and Phase 2.1 (flow post_hook field), plus all cascading compilation fixes across the entire codebase. This was the largest and riskiest change — replacing singular `repo_name`/`worktree_path`/`tmux_session` fields with a `Vec<RepoEntry>` and a `name` field, plus moving TASK.md from the worktree to the task directory.
+**What was done:**
 
-**Key changes:**
-- `task.rs`: New `RepoEntry` struct, updated `TaskMeta` with `name`, `repos`, `parent_dir`, convenience methods `primary_repo()` and `is_multi_repo()`
-- `task.rs`: `read_task()`/`write_task()` now use `self.dir.join("TASK.md")` instead of worktree
-- `task.rs`: `ensure_git_excludes_task()` simplified to only REVIEW.md, iterates all repos
-- `task.ts`: `get_git_diff()`/`get_git_log_summary()` handle multi-repo with headers
-- `flow.rs`: `AgentStep.post_hook: Option<String>` added
-- `agent.rs`: Working dir uses `parent_dir` if set; `.pr-link` checks all repos; tmux uses `primary_repo()`
-- `use_cases.rs`: `delete_task()` iterates all repos
-- `main.rs`, `app.rs`, `ui.rs`: All references updated to new accessor pattern
-- All 73 tests pass, build is clean
+1. **Phase 2.2 — `NEW_MULTI_FLOW` + `REPO_INSPECTOR_PROMPT` constants** (`config.rs`):
+   - Added `NEW_MULTI_FLOW` YAML constant for the `new-multi` flow (repo-inspector → prompt-builder → planner → coder↔checker loop)
+   - Added `REPO_INSPECTOR_PROMPT` with instructions for inspecting repos and writing `# Repos` section
+   - Updated `init_default_files()` to write `new-multi.yaml` and `repo-inspector.md`
 
-**No problems encountered.** The Rust compiler made this straightforward — every reference to the old fields was caught as a compile error and fixed systematically.
+2. **Phase 2.3 — `setup_repos_from_task_md()` use case** (`use_cases.rs`):
+   - Added `parse_repos_from_task_md(content: &str) -> Vec<String>` — pure function that parses `# Repos` section lines matching `- <name>: <rationale>`
+   - Added `setup_repos_from_task_md(config, task)` — reads TASK.md, parses repos, creates worktrees + tmux sessions, populates `task.meta.repos`
+   - Added `Task::ensure_git_excludes_for_worktree()` helper in `task.rs` for excluding REVIEW.md in individual worktrees
 
-**Next iteration should focus on:** Phase 2.2-2.4 (new-multi flow, repo-inspector prompt, setup_repos hook, post-hook execution), then Phase 4.1 (generalize create_task for multi-repo). These are the core runtime pieces that actually enable multi-repo task creation.
+3. **Phase 2.4 — Post-hook execution in flow runner** (`agent.rs`):
+   - Added `AgentRunner::execute_post_hook()` method that dispatches on hook name string
+   - Integrated post-hook check into `run_flow_with()` after `AgentDone` detection — runs before advancing flow step
+   - Currently only handles `"setup_repos"` hook; unknown hooks log a warning
+
+4. **Phase 3.2 — `Agent::build_prompt()` multi-repo awareness** (`agent.rs`):
+   - Added `# Task Directory` section with TASK.md path for all tasks
+   - Added `# Repo Worktrees` section listing all repos with paths (only for multi-repo tasks)
+
+5. **Phase 4.1 — Multi-repo task creation** (`task.rs` + `use_cases.rs`):
+   - Added `TaskMeta::new_multi()` constructor (empty repos vec, sets parent_dir)
+   - Added `Task::create_multi()` factory method (creates task dir + TASK.md, no worktrees)
+   - Added `create_multi_repo_task()` use case function
+
+6. **Tests** (6 new tests, 79 total all passing):
+   - `create_multi_repo_task` — verifies task creation with empty repos, parent_dir set, TASK.md in task dir
+   - `parse_repos_from_task_md` — parses standard format with colons
+   - `parse_repos_from_task_md_empty` — handles missing `# Repos` section
+   - `parse_repos_from_task_md_no_colon` — handles repos without rationale text
+   - `delete_multi_repo_task` — verifies deletion removes all worktrees across repos
+   - `flow_load_new_multi` — verifies new-multi flow parses correctly with post_hook
+
+**No problems encountered.** All changes are additive — no existing functionality was modified, only extended.
+
+**Next iteration should focus on:**
+- Phase 5: Main command handler hardening (empty-repos guards)
+- Phase 6: TUI changes (scan_repos for non-git dirs, wizard multi-repo path, create_task_from_wizard, attach logic, visual indicators)

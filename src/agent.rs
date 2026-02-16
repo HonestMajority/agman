@@ -35,7 +35,27 @@ impl Agent {
         prompt.push_str("# Skills\n");
         prompt.push_str("Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them.\n");
 
+        // Add task directory info so agents know where TASK.md lives
         prompt.push_str("\n\n---\n\n");
+        prompt.push_str("# Task Directory\n");
+        prompt.push_str(&format!(
+            "TASK.md is located at: {}/TASK.md\n",
+            task.dir.display()
+        ));
+
+        // For multi-repo tasks, list all repos and their worktree paths
+        if task.meta.repos.len() > 1 {
+            prompt.push_str("\n# Repo Worktrees\n");
+            for repo in &task.meta.repos {
+                prompt.push_str(&format!(
+                    "- {}: {}\n",
+                    repo.repo_name,
+                    repo.worktree_path.display()
+                ));
+            }
+        }
+
+        prompt.push_str("\n---\n\n");
         prompt.push_str("# Current Task\n");
         prompt.push_str(&task_content);
         prompt.push_str("\n\n");
@@ -339,6 +359,11 @@ impl AgentRunner {
                         }
                         Some(StopCondition::AgentDone) => {
                             if agent_step.until == StopCondition::AgentDone {
+                                // Execute post-hook if configured
+                                if let Some(ref hook) = agent_step.post_hook {
+                                    println!("Running post-hook: {}", hook);
+                                    self.execute_post_hook(hook, task)?;
+                                }
                                 println!("Agent done - advancing to next step");
                                 task.advance_flow_step()?;
                             } else {
@@ -405,6 +430,22 @@ impl AgentRunner {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Execute a named post-hook after an agent step completes.
+    fn execute_post_hook(&self, hook: &str, task: &mut Task) -> Result<()> {
+        match hook {
+            "setup_repos" => {
+                tracing::info!(task_id = %task.meta.task_id(), "executing setup_repos post-hook");
+                crate::use_cases::setup_repos_from_task_md(&self.config, task)?;
+                Ok(())
+            }
+            _ => {
+                tracing::warn!(task_id = %task.meta.task_id(), hook = hook, "unknown post-hook, ignoring");
+                println!("Warning: unknown post-hook '{}', ignoring", hook);
+                Ok(())
             }
         }
     }

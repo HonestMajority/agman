@@ -852,6 +852,161 @@ fn set_linked_pr_owned_flag() {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-repo task creation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_multi_repo_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let parent_dir = tmp.path().join("repos");
+    std::fs::create_dir_all(&parent_dir).unwrap();
+
+    let task = use_cases::create_multi_repo_task(
+        &config,
+        "repos",
+        "multi-feat",
+        "Implement cross-repo feature",
+        "new-multi",
+        parent_dir.clone(),
+        false,
+    )
+    .unwrap();
+
+    // Task directory and meta exist
+    assert!(task.dir.join("meta.json").exists());
+    assert_eq!(task.meta.name, "repos");
+    assert_eq!(task.meta.branch_name, "multi-feat");
+    assert_eq!(task.meta.status, TaskStatus::Running);
+    assert_eq!(task.meta.flow_name, "new-multi");
+
+    // Repos starts empty (repo-inspector hasn't run yet)
+    assert!(task.meta.repos.is_empty());
+
+    // parent_dir is set
+    assert_eq!(task.meta.parent_dir, Some(parent_dir));
+
+    // TASK.md written to task dir
+    let task_content = task.read_task().unwrap();
+    assert!(task_content.contains("Implement cross-repo feature"));
+
+    // Init files created
+    assert!(task.dir.join("notes.md").exists());
+    assert!(task.dir.join("agent.log").exists());
+
+    // Default flows/prompts created (including new-multi)
+    assert!(config.flow_path("new-multi").exists());
+    assert!(config.prompt_path("repo-inspector").exists());
+}
+
+// ---------------------------------------------------------------------------
+// Parse repos from TASK.md
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_repos_from_task_md() {
+    let content = r#"# Goal
+Build a cross-repo feature.
+
+# Repos
+- frontend: Contains the UI components
+- backend: Contains the API
+- shared-lib: Common types used by both
+
+# Plan
+(To be created by planner agent)
+"#;
+
+    let repos = use_cases::parse_repos_from_task_md(content);
+    assert_eq!(repos, vec!["frontend", "backend", "shared-lib"]);
+}
+
+#[test]
+fn parse_repos_from_task_md_empty() {
+    let content = r#"# Goal
+Just a goal.
+
+# Plan
+Some plan.
+"#;
+
+    let repos = use_cases::parse_repos_from_task_md(content);
+    assert!(repos.is_empty());
+}
+
+#[test]
+fn parse_repos_from_task_md_no_colon() {
+    let content = r#"# Repos
+- repo-without-rationale
+- repo-with-rationale: some reason
+"#;
+
+    let repos = use_cases::parse_repos_from_task_md(content);
+    assert_eq!(repos, vec!["repo-without-rationale", "repo-with-rationale"]);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-repo task deletion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn delete_multi_repo_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    // Create two repos
+    let _repo1 = init_test_repo(&tmp, "repo-a");
+    let _repo2 = init_test_repo(&tmp, "repo-b");
+
+    let parent_dir = tmp.path().join("repos");
+
+    // Create the multi-repo task
+    let mut task = use_cases::create_multi_repo_task(
+        &config,
+        "repos",
+        "multi-del",
+        "Multi delete test",
+        "new-multi",
+        parent_dir,
+        false,
+    )
+    .unwrap();
+
+    // Manually populate repos (simulating what setup_repos_from_task_md would do)
+    let wt_a = agman::git::Git::create_worktree_quiet(&config, "repo-a", "multi-del").unwrap();
+    let wt_b = agman::git::Git::create_worktree_quiet(&config, "repo-b", "multi-del").unwrap();
+
+    task.meta.repos = vec![
+        agman::task::RepoEntry {
+            repo_name: "repo-a".to_string(),
+            worktree_path: wt_a.clone(),
+            tmux_session: "(repo-a)__multi-del".to_string(),
+        },
+        agman::task::RepoEntry {
+            repo_name: "repo-b".to_string(),
+            worktree_path: wt_b.clone(),
+            tmux_session: "(repo-b)__multi-del".to_string(),
+        },
+    ];
+    task.save_meta().unwrap();
+
+    let task_dir = task.dir.clone();
+    assert!(task_dir.exists());
+    assert!(wt_a.exists());
+    assert!(wt_b.exists());
+
+    use_cases::delete_task(&config, task, DeleteMode::Everything).unwrap();
+
+    // Task dir removed
+    assert!(!task_dir.exists());
+    // Both worktrees removed
+    assert!(!wt_a.exists());
+    assert!(!wt_b.exists());
+}
+
+// ---------------------------------------------------------------------------
 // Config file loading
 // ---------------------------------------------------------------------------
 
