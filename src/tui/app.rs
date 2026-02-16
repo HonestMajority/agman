@@ -58,13 +58,22 @@ pub enum View {
 /// Which wizard requested the directory picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirPickerOrigin {
+    /// Fallback: no repos found, pick a repos_dir.
     NewTask,
+    /// Fallback for review wizard: no repos found, pick a repos_dir.
     Review,
+    /// Repo selection: browse directories to choose a repo or multi-repo parent.
+    RepoSelect,
 }
+
+/// Re-export DirKind for use in the picker UI.
+pub use agman::use_cases::DirKind;
 
 pub struct DirectoryPicker {
     pub current_dir: PathBuf,
     pub entries: Vec<String>,
+    /// Classification of each entry (parallel to `entries`). Only populated for `RepoSelect` origin.
+    pub entry_kinds: Vec<DirKind>,
     pub selected_index: usize,
     pub origin: DirPickerOrigin,
 }
@@ -74,6 +83,7 @@ impl DirectoryPicker {
         let mut picker = Self {
             current_dir: start_dir,
             entries: Vec::new(),
+            entry_kinds: Vec::new(),
             selected_index: 0,
             origin,
         };
@@ -83,8 +93,9 @@ impl DirectoryPicker {
 
     fn refresh_entries(&mut self) {
         self.entries.clear();
+        self.entry_kinds.clear();
         if let Ok(read_dir) = std::fs::read_dir(&self.current_dir) {
-            let mut dirs: Vec<String> = read_dir
+            let mut dirs: Vec<(String, PathBuf)> = read_dir
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().is_dir())
                 .filter(|e| {
@@ -92,10 +103,28 @@ impl DirectoryPicker {
                         .to_string_lossy()
                         .starts_with('.')
                 })
-                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|e| {
+                    // In RepoSelect mode, filter out -wt worktree directories
+                    if self.origin == DirPickerOrigin::RepoSelect {
+                        !e.file_name().to_string_lossy().ends_with("-wt")
+                    } else {
+                        true
+                    }
+                })
+                .map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let path = e.path();
+                    (name, path)
+                })
                 .collect();
-            dirs.sort();
-            self.entries = dirs;
+            dirs.sort_by(|a, b| a.0.cmp(&b.0));
+
+            for (name, path) in dirs {
+                if self.origin == DirPickerOrigin::RepoSelect {
+                    self.entry_kinds.push(use_cases::classify_directory(&path));
+                }
+                self.entries.push(name);
+            }
         }
         self.selected_index = 0;
     }
@@ -113,10 +142,26 @@ impl DirectoryPicker {
             self.refresh_entries();
         }
     }
+
+    /// Get the kind of the currently selected entry (for RepoSelect mode).
+    pub fn selected_entry_kind(&self) -> Option<DirKind> {
+        self.entry_kinds.get(self.selected_index).copied()
+    }
+
+    /// Get the full path to the currently selected entry.
+    pub fn selected_path(&self) -> Option<PathBuf> {
+        self.entries
+            .get(self.selected_index)
+            .map(|name| self.current_dir.join(name))
+    }
 }
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizardStep {
+    /// No longer used as a wizard step — repo selection happens in the DirectoryPicker.
+    /// Kept for match exhaustiveness in rendering code.
+    #[allow(dead_code)]
     SelectRepo,
     SelectBranch,
     EnterDescription,
@@ -131,9 +176,10 @@ pub enum BranchSource {
 
 pub struct NewTaskWizard {
     pub step: WizardStep,
-    pub repos: Vec<String>,
-    pub favorite_repos: Vec<(String, u64)>,
-    pub selected_repo_index: usize,
+    /// The selected repo name (directory basename).
+    pub selected_repo: String,
+    /// The full path to the selected repo/parent directory.
+    pub selected_repo_path: PathBuf,
     pub branch_source: BranchSource,
     pub existing_worktrees: Vec<(String, PathBuf)>,
     pub selected_worktree_index: usize,
@@ -148,34 +194,12 @@ pub struct NewTaskWizard {
     pub review_after: bool,
     /// True when a multi-repo parent directory was selected (not a git repo).
     pub is_multi_repo: bool,
-    /// For multi-repo: tracks which entries in repos list are parent dirs (by index into repos vec).
-    pub multi_repo_indices: std::collections::HashSet<usize>,
 }
 
 impl NewTaskWizard {
-    /// Total number of selectable items (favorites + all repos)
-    pub fn total_repo_count(&self) -> usize {
-        self.favorite_repos.len() + self.repos.len()
-    }
-
-    /// Resolve the current selection to a clean name (strips `[multi] ` prefix if present).
+    /// The selected repo name.
     pub fn selected_repo_name(&self) -> &str {
-        let raw = if self.selected_repo_index < self.favorite_repos.len() {
-            &self.favorite_repos[self.selected_repo_index].0
-        } else {
-            &self.repos[self.selected_repo_index - self.favorite_repos.len()]
-        };
-        raw.strip_prefix("[multi] ").unwrap_or(raw)
-    }
-
-    /// Whether the current selection is a multi-repo parent directory.
-    pub fn is_selected_multi_repo(&self) -> bool {
-        if self.selected_repo_index < self.favorite_repos.len() {
-            false // favorites are always single-repo git repos
-        } else {
-            let repos_idx = self.selected_repo_index - self.favorite_repos.len();
-            self.multi_repo_indices.contains(&repos_idx)
-        }
+        &self.selected_repo
     }
 }
 
@@ -1079,50 +1103,59 @@ impl App {
     // === Wizard Methods ===
 
     fn start_wizard(&mut self) -> Result<()> {
-        let (repos, multi_repo_indices) = self.scan_repos_with_parents()?;
-
-        if repos.is_empty() {
-            // Launch directory picker so the user can choose a repos directory
-            let start = if self.config.repos_dir.exists() {
-                self.config.repos_dir.clone()
-            } else {
-                dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
-            };
+        let start = if self.config.repos_dir.exists() {
+            self.config.repos_dir.clone()
+        } else {
+            // No repos_dir configured — use fallback picker to set repos_dir first
+            let start = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
             self.dir_picker = Some(DirectoryPicker::new(start, DirPickerOrigin::NewTask));
             self.view = View::DirectoryPicker;
             self.set_status(format!("No repos found in {}. Pick a repos directory (s to select, h/l to navigate).", self.config.repos_dir.display()));
             return Ok(());
-        }
+        };
 
-        // Load repo stats and filter favorites to only repos that still exist
-        let stats = RepoStats::load(&self.config.repo_stats_path());
-        let repos_set: std::collections::HashSet<&str> =
-            repos.iter().map(|s| s.as_str()).collect();
-        let favorite_repos: Vec<(String, u64)> = stats
-            .favorites()
-            .into_iter()
-            .filter(|(name, _)| repos_set.contains(name.as_str()))
-            .collect();
+        // Launch the directory picker in RepoSelect mode, rooted at repos_dir
+        self.dir_picker = Some(DirectoryPicker::new(start, DirPickerOrigin::RepoSelect));
+        self.view = View::DirectoryPicker;
+        Ok(())
+    }
 
+    /// Create the wizard from a directory picker selection, starting at `SelectBranch`.
+    fn create_wizard_from_picker(&mut self, repo_name: String, repo_path: PathBuf, is_multi: bool) -> Result<()> {
         let mut new_branch_editor = Self::create_plain_editor();
         new_branch_editor.set_cursor_line_style(ratatui::style::Style::default());
 
         let mut base_branch_editor = Self::create_plain_editor();
         base_branch_editor.set_cursor_line_style(ratatui::style::Style::default());
 
+        // Pre-fill base branch editor
+        if is_multi {
+            base_branch_editor.insert_str("origin/main");
+        } else {
+            let base_ref = Git::find_base_ref(&repo_path);
+            base_branch_editor.insert_str(&base_ref);
+        }
+
         // Description editor uses vim mode, start in insert mode
         let mut description_editor = VimTextArea::new();
         description_editor.set_insert_mode();
 
+        let (branches, worktrees) = if is_multi {
+            (Vec::new(), Vec::new())
+        } else {
+            let branches = self.scan_branches(&repo_name)?;
+            let worktrees = self.scan_existing_worktrees(&repo_name)?;
+            (branches, worktrees)
+        };
+
         self.wizard = Some(NewTaskWizard {
-            step: WizardStep::SelectRepo,
-            repos,
-            favorite_repos,
-            selected_repo_index: 0,
+            step: WizardStep::SelectBranch,
+            selected_repo: repo_name,
+            selected_repo_path: repo_path,
             branch_source: BranchSource::NewBranch,
-            existing_worktrees: Vec::new(),
+            existing_worktrees: worktrees,
             selected_worktree_index: 0,
-            existing_branches: Vec::new(),
+            existing_branches: branches,
             selected_branch_index: 0,
             new_branch_editor,
             base_branch_editor,
@@ -1130,18 +1163,11 @@ impl App {
             description_editor,
             error_message: None,
             review_after: false,
-            is_multi_repo: false,
-            multi_repo_indices,
+            is_multi_repo: is_multi,
         });
 
         self.view = View::NewTaskWizard;
         Ok(())
-    }
-
-    /// Scan the repos directory for git repos and parent directories containing git repos.
-    /// Delegates to `use_cases::scan_repos_with_parents`.
-    fn scan_repos_with_parents(&self) -> Result<(Vec<String>, std::collections::HashSet<usize>)> {
-        use_cases::scan_repos_with_parents(&self.config)
     }
 
     /// Scan for git repos only (used by review wizard which doesn't support multi-repo).
@@ -1515,47 +1541,9 @@ impl App {
 
         match wizard.step {
             WizardStep::SelectRepo => {
-                let is_multi = wizard.is_selected_multi_repo();
-                let repo_name = wizard.selected_repo_name().to_string();
-
-                if is_multi {
-                    // Multi-repo: skip branch step, go straight to description
-                    let wizard = self.wizard.as_mut().unwrap();
-                    wizard.is_multi_repo = true;
-                    wizard.branch_source = BranchSource::NewBranch;
-                    wizard.step = WizardStep::SelectBranch;
-                    // For multi-repo, SelectBranch only shows the new-branch editor
-                    // (no existing branches/worktrees to pick from)
-                    wizard.existing_branches = Vec::new();
-                    wizard.existing_worktrees = Vec::new();
-                    // Pre-fill base branch with default
-                    wizard.base_branch_editor.select_all();
-                    wizard.base_branch_editor.cut();
-                    wizard.base_branch_editor.insert_str("origin/main");
-                    wizard.base_branch_focus = false;
-                } else {
-                    // Single-repo: scan branches and worktrees as before
-                    let branches = self.scan_branches(&repo_name)?;
-                    let existing_wts = self.scan_existing_worktrees(&repo_name)?;
-
-                    // Pre-fill base branch editor with auto-detected base ref
-                    let repo_path = self.config.repo_path(&repo_name);
-                    let base_ref = Git::find_base_ref(&repo_path);
-
-                    let wizard = self.wizard.as_mut().unwrap();
-                    wizard.is_multi_repo = false;
-                    wizard.existing_branches = branches;
-                    wizard.selected_branch_index = 0;
-                    wizard.existing_worktrees = existing_wts;
-                    wizard.selected_worktree_index = 0;
-                    wizard.branch_source = BranchSource::NewBranch;
-                    wizard.step = WizardStep::SelectBranch;
-                    // Set base branch editor content
-                    wizard.base_branch_editor.select_all();
-                    wizard.base_branch_editor.cut();
-                    wizard.base_branch_editor.insert_str(&base_ref);
-                    wizard.base_branch_focus = false;
-                }
+                // SelectRepo is no longer used as a wizard step — repo selection
+                // happens in the DirectoryPicker before the wizard is created.
+                // This branch should be unreachable.
             }
             WizardStep::SelectBranch => {
                 // Validate based on branch source
@@ -1644,12 +1632,18 @@ impl App {
 
         match wizard.step {
             WizardStep::SelectRepo => {
-                // Cancel wizard
+                // No longer reachable, but handle gracefully
                 self.wizard = None;
                 self.view = View::TaskList;
             }
             WizardStep::SelectBranch => {
-                wizard.step = WizardStep::SelectRepo;
+                // Go back to directory picker for repo selection
+                self.wizard = None;
+                // Re-launch the directory picker
+                if let Err(e) = self.start_wizard() {
+                    self.set_status(format!("Error: {}", e));
+                    self.view = View::TaskList;
+                }
             }
             WizardStep::EnterDescription => {
                 wizard.step = WizardStep::SelectBranch;
@@ -1664,6 +1658,7 @@ impl App {
         };
 
         let name = wizard.selected_repo_name().to_string();
+        let repo_path = wizard.selected_repo_path.clone();
         let is_multi = wizard.is_multi_repo;
 
         let (branch_name, worktree_source) = match wizard.branch_source {
@@ -1691,16 +1686,8 @@ impl App {
         self.log_output(format!("Creating task {}--{}...", name, branch_name));
 
         if is_multi {
-            // Multi-repo path: create task with no worktrees, start repo-inspector flow
-            // If the selected name matches repos_dir's basename, use repos_dir directly
-            // (the user selected repos_dir itself as the multi-repo parent).
-            let parent_dir =
-                if Some(name.as_str()) == self.config.repos_dir.file_name().and_then(|n| n.to_str())
-                {
-                    self.config.repos_dir.clone()
-                } else {
-                    self.config.repos_dir.join(&name)
-                };
+            // Multi-repo path: use the path directly from the directory picker
+            let parent_dir = repo_path;
             let task = match use_cases::create_multi_repo_task(
                 &self.config,
                 &name,
@@ -2710,33 +2697,10 @@ impl App {
             wizard.error_message = None;
 
             match wizard.step {
-                WizardStep::SelectRepo => match key.code {
-                    KeyCode::Esc => {
-                        self.wizard = None;
-                        self.view = View::TaskList;
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        let total = wizard.total_repo_count();
-                        if total > 0 {
-                            wizard.selected_repo_index =
-                                (wizard.selected_repo_index + 1) % total;
-                        }
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        let total = wizard.total_repo_count();
-                        if total > 0 {
-                            wizard.selected_repo_index = if wizard.selected_repo_index == 0 {
-                                total - 1
-                            } else {
-                                wizard.selected_repo_index - 1
-                            };
-                        }
-                    }
-                    KeyCode::Enter => {
-                        self.wizard_next_step()?;
-                    }
-                    _ => {}
-                },
+                WizardStep::SelectRepo => {
+                    // SelectRepo is no longer used as a wizard step — repo selection
+                    // happens in the DirectoryPicker. This should be unreachable.
+                }
                 WizardStep::SelectBranch => {
                     match key.code {
                         KeyCode::Esc => {
@@ -3512,16 +3476,9 @@ impl App {
 
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
-                    let origin = self.dir_picker.as_ref().map(|p| p.origin);
                     self.dir_picker = None;
                     self.view = View::TaskList;
-                    // If cancelled, show a helpful message
-                    match origin {
-                        Some(DirPickerOrigin::NewTask) | Some(DirPickerOrigin::Review) => {
-                            self.set_status("Directory selection cancelled".to_string());
-                        }
-                        None => {}
-                    }
+                    self.set_status("Directory selection cancelled".to_string());
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     if let Some(picker) = &mut self.dir_picker {
@@ -3543,8 +3500,15 @@ impl App {
                     }
                 }
                 KeyCode::Char('l') | KeyCode::Enter => {
-                    // Enter selected directory
-                    if let Some(picker) = &mut self.dir_picker {
+                    // In RepoSelect mode: Enter on a git repo selects it directly
+                    let should_select = self.dir_picker.as_ref().map(|p| {
+                        p.origin == DirPickerOrigin::RepoSelect
+                            && p.selected_entry_kind() == Some(DirKind::GitRepo)
+                    }).unwrap_or(false);
+
+                    if should_select {
+                        self.select_repo_from_picker()?;
+                    } else if let Some(picker) = &mut self.dir_picker {
                         picker.enter_selected();
                     }
                 }
@@ -3555,40 +3519,86 @@ impl App {
                     }
                 }
                 KeyCode::Char('s') => {
-                    // Select current directory as repos_dir
-                    if let Some(picker) = self.dir_picker.take() {
-                        let selected_dir = picker.current_dir.clone();
-                        let origin = picker.origin;
-
-                        // Save to config.toml
-                        let config_file = agman::config::ConfigFile {
-                            repos_dir: Some(selected_dir.to_string_lossy().to_string()),
-                        };
-                        if let Err(e) = agman::config::save_config_file(&self.config.base_dir, &config_file) {
-                            self.set_status(format!("Failed to save config: {}", e));
-                            self.view = View::TaskList;
-                            return Ok(false);
+                    let origin = self.dir_picker.as_ref().map(|p| p.origin);
+                    match origin {
+                        Some(DirPickerOrigin::RepoSelect) => {
+                            // Select the highlighted entry as a repo or multi-repo parent
+                            self.select_repo_from_picker()?;
                         }
+                        Some(DirPickerOrigin::NewTask) | Some(DirPickerOrigin::Review) => {
+                            // Select current directory as repos_dir (fallback mode)
+                            if let Some(picker) = self.dir_picker.take() {
+                                let selected_dir = picker.current_dir.clone();
+                                let origin = picker.origin;
 
-                        // Update in-memory config
-                        self.config.repos_dir = selected_dir;
-                        tracing::info!(repos_dir = %self.config.repos_dir.display(), "repos_dir updated via directory picker");
+                                let config_file = agman::config::ConfigFile {
+                                    repos_dir: Some(selected_dir.to_string_lossy().to_string()),
+                                };
+                                if let Err(e) = agman::config::save_config_file(&self.config.base_dir, &config_file) {
+                                    self.set_status(format!("Failed to save config: {}", e));
+                                    self.view = View::TaskList;
+                                    return Ok(false);
+                                }
 
-                        // Resume the original wizard
-                        match origin {
-                            DirPickerOrigin::NewTask => {
-                                self.start_wizard()?;
-                            }
-                            DirPickerOrigin::Review => {
-                                self.start_review_wizard()?;
+                                self.config.repos_dir = selected_dir;
+                                tracing::info!(repos_dir = %self.config.repos_dir.display(), "repos_dir updated via directory picker");
+
+                                match origin {
+                                    DirPickerOrigin::NewTask => {
+                                        self.start_wizard()?;
+                                    }
+                                    DirPickerOrigin::Review => {
+                                        self.start_review_wizard()?;
+                                    }
+                                    DirPickerOrigin::RepoSelect => unreachable!(),
+                                }
                             }
                         }
+                        None => {}
                     }
                 }
                 _ => {}
             }
         }
         Ok(false)
+    }
+
+    /// Handle a repo selection from the directory picker (RepoSelect mode).
+    fn select_repo_from_picker(&mut self) -> Result<()> {
+        let (entry_kind, entry_path, entry_name) = match &self.dir_picker {
+            Some(picker) => {
+                let kind = picker.selected_entry_kind().unwrap_or(DirKind::Plain);
+                let path = match picker.selected_path() {
+                    Some(p) => p,
+                    None => return Ok(()),
+                };
+                let name = picker.entries.get(picker.selected_index)
+                    .cloned()
+                    .unwrap_or_default();
+                (kind, path, name)
+            }
+            None => return Ok(()),
+        };
+
+        match entry_kind {
+            DirKind::GitRepo => {
+                self.dir_picker = None;
+                tracing::info!(repo = %entry_name, path = %entry_path.display(), "selected git repo from picker");
+                self.create_wizard_from_picker(entry_name, entry_path, false)?;
+            }
+            DirKind::MultiRepoParent => {
+                self.dir_picker = None;
+                tracing::info!(parent = %entry_name, path = %entry_path.display(), "selected multi-repo parent from picker");
+                self.create_wizard_from_picker(entry_name, entry_path, true)?;
+            }
+            DirKind::Plain => {
+                // Plain directory: enter it to browse further
+                if let Some(picker) = &mut self.dir_picker {
+                    picker.enter_selected();
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Spawn a background task to poll linked PRs for all eligible tasks.

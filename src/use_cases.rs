@@ -743,74 +743,36 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> 
     Ok(())
 }
 
-/// Scan the repos directory for git repos and parent directories containing git repos.
+/// Classify a directory path as a git repo, multi-repo parent, or plain directory.
 ///
-/// Returns `(repos, multi_repo_indices)` where `multi_repo_indices` tracks
-/// which entries in `repos` are parent directories (not actual git repos).
-/// Parent dirs are prefixed with `[multi] ` for display.
+/// - **GitRepo**: the directory contains `.git`
+/// - **MultiRepoParent**: the directory contains at least one child directory with `.git`
+/// - **Plain**: neither of the above
 ///
-/// If `repos_dir` itself contains 2+ git repos, a synthetic `[multi] <basename>`
-/// entry is included so the user can select `repos_dir` as a multi-repo parent.
-pub fn scan_repos_with_parents(
-    config: &Config,
-) -> Result<(Vec<String>, std::collections::HashSet<usize>)> {
-    let repos_dir = &config.repos_dir;
-    if !repos_dir.exists() {
-        return Ok((Vec::new(), std::collections::HashSet::new()));
+/// If a directory is both a git repo AND contains git-repo children,
+/// it is classified as a git repo (`.git` takes priority).
+pub fn classify_directory(path: &std::path::Path) -> DirKind {
+    if path.join(".git").exists() {
+        return DirKind::GitRepo;
     }
-
-    let mut git_repos = Vec::new();
-    let mut parent_dirs = Vec::new();
-
-    for entry in std::fs::read_dir(repos_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if !path.is_dir() {
-            continue;
-        }
-
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        // Skip worktree directories (ending with -wt)
-        if name.ends_with("-wt") {
-            continue;
-        }
-
-        if path.join(".git").exists() {
-            git_repos.push(name);
-        } else {
-            // Check if this is a parent dir containing git repos
-            let has_git_children = std::fs::read_dir(&path)
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok())
-                        .any(|e| e.path().is_dir() && e.path().join(".git").exists())
-                })
-                .unwrap_or(false);
-            if has_git_children {
-                parent_dirs.push(format!("[multi] {}", name));
-            }
+    if let Ok(read_dir) = std::fs::read_dir(path) {
+        let has_git_children = read_dir
+            .filter_map(|e| e.ok())
+            .any(|e| e.path().is_dir() && e.path().join(".git").exists());
+        if has_git_children {
+            return DirKind::MultiRepoParent;
         }
     }
+    DirKind::Plain
+}
 
-    // If repos_dir itself contains 2+ git repos, add a synthetic multi-repo entry
-    if git_repos.len() >= 2 {
-        if let Some(basename) = repos_dir.file_name().and_then(|n| n.to_str()) {
-            parent_dirs.push(format!("[multi] {}", basename));
-        }
-    }
-
-    git_repos.sort();
-    parent_dirs.sort();
-
-    // Parent dirs go first, then git repos
-    let mut multi_repo_indices = std::collections::HashSet::new();
-    for i in 0..parent_dirs.len() {
-        multi_repo_indices.insert(i);
-    }
-
-    let mut all = parent_dirs;
-    all.extend(git_repos);
-
-    Ok((all, multi_repo_indices))
+/// Classification of a directory for repo selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirKind {
+    /// A git repository (has `.git`).
+    GitRepo,
+    /// A directory containing git-repo children.
+    MultiRepoParent,
+    /// A plain directory.
+    Plain,
 }

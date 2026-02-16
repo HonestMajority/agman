@@ -1355,52 +1355,63 @@ fn create_task_with_slash_in_branch_name() {
 }
 
 // ---------------------------------------------------------------------------
-// Scan repos with parents (repos_dir as multi-repo parent)
+// Directory classification (for repo picker)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn scan_repos_with_parents_includes_repos_dir_as_multi() {
+fn classify_directory_git_repo() {
     let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let _repo1 = init_test_repo(&tmp, "alpha");
-    let _repo2 = init_test_repo(&tmp, "beta");
+    let _repo = init_test_repo(&tmp, "myrepo");
+    let repo_path = tmp.path().join("repos").join("myrepo");
 
-    let (repos, multi_indices) = use_cases::scan_repos_with_parents(&config).unwrap();
-
-    // Should contain the synthetic [multi] repos entry (basename of repos_dir is "repos")
-    assert!(
-        repos.contains(&"[multi] repos".to_string()),
-        "expected [multi] repos in {:?}",
-        repos
+    assert_eq!(
+        use_cases::classify_directory(&repo_path),
+        use_cases::DirKind::GitRepo
     );
-
-    // The [multi] repos entry should be tracked in multi_repo_indices
-    let multi_pos = repos.iter().position(|r| r == "[multi] repos").unwrap();
-    assert!(multi_indices.contains(&multi_pos));
-
-    // Individual repos should still appear
-    assert!(repos.contains(&"alpha".to_string()));
-    assert!(repos.contains(&"beta".to_string()));
-
-    // Individual repos should NOT be in multi_repo_indices
-    let alpha_pos = repos.iter().position(|r| r == "alpha").unwrap();
-    assert!(!multi_indices.contains(&alpha_pos));
 }
 
 #[test]
-fn scan_repos_with_parents_no_synthetic_entry_for_single_repo() {
+fn classify_directory_multi_repo_parent() {
     let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let _repo1 = init_test_repo(&tmp, "only-repo");
+    // Create a parent dir containing git repos
+    let parent = tmp.path().join("repos").join("org");
+    std::fs::create_dir_all(&parent).unwrap();
+    // Create two git repos inside parent
+    let child1 = parent.join("repo-a");
+    std::fs::create_dir_all(child1.join(".git")).unwrap();
+    let child2 = parent.join("repo-b");
+    std::fs::create_dir_all(child2.join(".git")).unwrap();
 
-    let (repos, multi_indices) = use_cases::scan_repos_with_parents(&config).unwrap();
-
-    // Only 1 git repo — should NOT get a synthetic [multi] entry
-    assert!(
-        !repos.contains(&"[multi] repos".to_string()),
-        "unexpected [multi] repos in {:?}",
-        repos
+    assert_eq!(
+        use_cases::classify_directory(&parent),
+        use_cases::DirKind::MultiRepoParent
     );
-    assert!(multi_indices.is_empty());
-    assert_eq!(repos, vec!["only-repo".to_string()]);
+}
+
+#[test]
+fn classify_directory_plain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plain = tmp.path().join("repos").join("empty-dir");
+    std::fs::create_dir_all(&plain).unwrap();
+
+    assert_eq!(
+        use_cases::classify_directory(&plain),
+        use_cases::DirKind::Plain
+    );
+}
+
+#[test]
+fn classify_directory_git_repo_takes_priority_over_children() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A directory that is itself a git repo AND contains git-repo children
+    let dir = tmp.path().join("repos").join("mixed");
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    let child = dir.join("sub-repo");
+    std::fs::create_dir_all(child.join(".git")).unwrap();
+
+    // .git presence should make it classify as GitRepo, not MultiRepoParent
+    assert_eq!(
+        use_cases::classify_directory(&dir),
+        use_cases::DirKind::GitRepo
+    );
 }
