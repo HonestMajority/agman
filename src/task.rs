@@ -159,8 +159,15 @@ impl TaskMeta {
     }
 
     /// Whether this is a multi-repo task.
+    /// Uses `parent_dir` as the indicator, not repos count, because multi-repo
+    /// tasks start with empty repos (before `setup_repos` post-hook runs).
     pub fn is_multi_repo(&self) -> bool {
-        self.repos.len() > 1
+        self.parent_dir.is_some()
+    }
+
+    /// Returns true if repos have been populated (safe to call `primary_repo()`).
+    pub fn has_repos(&self) -> bool {
+        !self.repos.is_empty()
     }
 }
 

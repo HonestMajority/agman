@@ -117,8 +117,10 @@ fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
             println!();
             println!("Running post-flow review...");
 
-            // Wipe REVIEW.md for a clean slate
-            let _ = Tmux::wipe_review_md(&task.meta.primary_repo().worktree_path);
+            // Wipe REVIEW.md for a clean slate in all repos
+            for repo in &task.meta.repos {
+                let _ = Tmux::wipe_review_md(&repo.worktree_path);
+            }
 
             // Reset review_after so it doesn't re-trigger
             task.meta.review_after = false;
@@ -182,8 +184,14 @@ fn cmd_continue(
         }
     };
 
-    // Wipe REVIEW.md to start fresh
-    let _ = Tmux::wipe_review_md(&task.meta.primary_repo().worktree_path);
+    if !task.meta.has_repos() {
+        anyhow::bail!("Task '{}' has no repos configured yet", task.meta.task_id());
+    }
+
+    // Wipe REVIEW.md in all repo worktrees
+    for repo in &task.meta.repos {
+        let _ = Tmux::wipe_review_md(&repo.worktree_path);
+    }
 
     // Log feedback to agent.log for history
     let _ = task.append_feedback_to_log(&feedback_text);
@@ -197,14 +205,16 @@ fn cmd_continue(
     task.reset_flow_step()?;
     task.update_status(TaskStatus::Running)?;
 
-    // Ensure tmux session exists
-    if !Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
-        println!("Recreating tmux session...");
-        Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &task.meta.primary_repo().worktree_path)?;
-        Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &task.meta.primary_repo().worktree_path)?;
+    // Ensure tmux sessions exist for all repos
+    for repo in &task.meta.repos {
+        if !Tmux::session_exists(&repo.tmux_session) {
+            println!("Recreating tmux session for {}...", repo.repo_name);
+            Tmux::create_session_with_windows(&repo.tmux_session, &repo.worktree_path)?;
+            Tmux::add_review_window(&repo.tmux_session, &repo.worktree_path)?;
+        }
     }
 
-    // Start the flow in tmux
+    // Start the flow in the primary repo's tmux session
     let flow_cmd = format!("agman flow-run {}", task.meta.task_id());
     Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &flow_cmd)?;
 
@@ -232,6 +242,10 @@ fn cmd_run_command(
         }
     }
 
+    if !task.meta.has_repos() {
+        anyhow::bail!("Task '{}' has no repos configured yet", task.meta.task_id());
+    }
+
     let mut task = task;
 
     // Load the command (validate it exists)
@@ -254,11 +268,13 @@ fn cmd_run_command(
 
     println!();
 
-    // Ensure tmux session exists
-    if !Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
-        println!("Recreating tmux session...");
-        Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &task.meta.primary_repo().worktree_path)?;
-        Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &task.meta.primary_repo().worktree_path)?;
+    // Ensure tmux sessions exist for all repos
+    for repo in &task.meta.repos {
+        if !Tmux::session_exists(&repo.tmux_session) {
+            println!("Recreating tmux session for {}...", repo.repo_name);
+            Tmux::create_session_with_windows(&repo.tmux_session, &repo.worktree_path)?;
+            Tmux::add_review_window(&repo.tmux_session, &repo.worktree_path)?;
+        }
     }
 
     // Update task to running state
@@ -293,13 +309,19 @@ fn cmd_command_flow_run(
 
     let mut task = Task::load_by_id(config, task_id)?;
 
+    if !task.meta.has_repos() {
+        anyhow::bail!("Task '{}' has no repos configured yet", task.meta.task_id());
+    }
+
     // Load the command
     let cmd = command::StoredCommand::get_by_id(&config.commands_dir, command_id)?
         .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?;
 
     // Wipe REVIEW.md at the start of review-pr (and continue) flows for a clean slate
     if command_id == "review-pr" {
-        let _ = Tmux::wipe_review_md(&task.meta.primary_repo().worktree_path);
+        for repo in &task.meta.repos {
+            let _ = Tmux::wipe_review_md(&repo.worktree_path);
+        }
     }
 
     println!("Running command: {}", cmd.name);
@@ -349,18 +371,19 @@ fn cmd_command_flow_run(
         println!("Post-action: deleting task after successful merge...");
 
         let task_id = task.meta.task_id();
-        let repo_path = config.repo_path(&task.meta.primary_repo().repo_name);
-        let worktree_path = task.meta.primary_repo().worktree_path.clone();
-        let tmux_session = task.meta.primary_repo().tmux_session.clone();
         let branch_name = task.meta.branch_name.clone();
 
-        // Remove worktree
-        println!("  Removing git worktree...");
-        let _ = Git::remove_worktree(&repo_path, &worktree_path);
+        // Collect all tmux sessions to kill last (we may be running in one)
+        let tmux_sessions: Vec<String> = task.meta.repos.iter().map(|r| r.tmux_session.clone()).collect();
 
-        // Delete branch
-        println!("  Deleting git branch...");
-        let _ = Git::delete_branch(&repo_path, &branch_name);
+        // Remove worktrees and branches for all repos
+        for repo in &task.meta.repos {
+            let repo_path = config.repo_path(&repo.repo_name);
+            println!("  Removing git worktree for {}...", repo.repo_name);
+            let _ = Git::remove_worktree(&repo_path, &repo.worktree_path);
+            println!("  Deleting git branch for {}...", repo.repo_name);
+            let _ = Git::delete_branch(&repo_path, &branch_name);
+        }
 
         // Delete task directory
         println!("  Removing task directory...");
@@ -368,10 +391,12 @@ fn cmd_command_flow_run(
 
         println!("Task '{}' deleted after successful merge.", task_id);
 
-        // Kill tmux session LAST — this process runs inside the tmux session,
+        // Kill tmux sessions LAST — this process runs inside a tmux session,
         // so killing it will terminate us. All cleanup must happen before this.
-        println!("  Killing tmux session...");
-        let _ = Tmux::kill_session(&tmux_session);
+        println!("  Killing tmux sessions...");
+        for session in &tmux_sessions {
+            let _ = Tmux::kill_session(session);
+        }
     } else {
         // Restore original flow settings (only if we're NOT deleting the task)
         task.meta.flow_name = original_flow;
