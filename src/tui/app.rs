@@ -298,6 +298,32 @@ fn lookup_pr_for_branch(worktree_path: &std::path::Path, branch_name: &str) -> O
     first.get("number")?.as_u64()
 }
 
+/// Fetch the author login for a PR via `gh pr view`.
+/// Returns `None` on any error so linking gracefully falls back.
+fn fetch_pr_author(worktree_path: &std::path::Path, pr_number: u64) -> Option<String> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "author",
+        ])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    json.get("author")?
+        .get("login")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
 /// Run PR queries for all eligible tasks. This is the blocking work that
 /// runs on a background thread — calls `gh pr view` for each task.
 fn run_pr_queries(eligible: Vec<(String, u64, PathBuf, Option<u64>)>) -> Vec<PrPollResult> {
@@ -2056,7 +2082,8 @@ impl App {
         if let Some(pr_number) = lookup_pr_for_branch(&task.meta.primary_repo().worktree_path, &branch_name) {
             let task_id = task.meta.task_id();
             let wt = task.meta.primary_repo().worktree_path.clone();
-            match use_cases::set_linked_pr(&mut task, pr_number, &wt, false) {
+            let author = fetch_pr_author(&wt, pr_number);
+            match use_cases::set_linked_pr(&mut task, pr_number, &wt, false, author) {
                 Ok(()) => {
                     tracing::info!(task_id = %task_id, pr_number, branch = %branch_name, "linked PR to review task");
                 }
@@ -3462,12 +3489,19 @@ impl App {
                                     .filter(|t| t.meta.has_repos())
                                     .map(|t| t.meta.primary_repo().worktree_path.clone());
                                 if let Some(wt) = worktree_path {
+                                    let author = if !owned {
+                                        fetch_pr_author(&wt, pr_number)
+                                    } else {
+                                        None
+                                    };
                                     if let Some(task) =
                                         self.tasks.get_mut(self.selected_index)
                                     {
-                                        match use_cases::set_linked_pr(task, pr_number, &wt, owned) {
+                                        match use_cases::set_linked_pr(task, pr_number, &wt, owned, author.clone()) {
                                             Ok(()) => {
-                                                let label = if owned { "mine" } else { "ext" };
+                                                let label = if owned { "mine".to_string() } else {
+                                                    author.unwrap_or_else(|| "ext".to_string())
+                                                };
                                                 self.set_status(format!(
                                                     "Linked PR #{} ({})",
                                                     pr_number, label

@@ -88,6 +88,8 @@ pub struct LinkedPr {
     pub url: String,
     #[serde(default = "default_true")]
     pub owned: bool,
+    #[serde(default)]
+    pub author: Option<String>,
 }
 
 impl TaskMeta {
@@ -777,8 +779,8 @@ impl Task {
         Ok(())
     }
 
-    pub fn set_linked_pr(&mut self, number: u64, url: String, owned: bool) -> Result<()> {
-        self.meta.linked_pr = Some(LinkedPr { number, url, owned });
+    pub fn set_linked_pr(&mut self, number: u64, url: String, owned: bool, author: Option<String>) -> Result<()> {
+        self.meta.linked_pr = Some(LinkedPr { number, url, owned, author });
         self.meta.updated_at = Utc::now();
         self.save_meta()
     }
