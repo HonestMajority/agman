@@ -729,7 +729,7 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
         VimMode::Operator(_) => Color::LightMagenta,
     };
 
-    let is_answering = app.answering_questions;
+    let is_answering = app.selected_task().map_or(false, |t| t.meta.status == TaskStatus::InputNeeded);
     let title_text = if is_answering {
         " Answer Questions "
     } else {
