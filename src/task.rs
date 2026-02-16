@@ -476,7 +476,6 @@ impl Task {
                         let is_marker = (trimmed.starts_with("--- Agent:") && trimmed.ends_with("---"))
                             || trimmed.contains("AGENT_DONE")
                             || trimmed.contains("TASK_COMPLETE")
-                            || trimmed.contains("TASK_BLOCKED")
                             || trimmed.contains("TESTS_PASS")
                             || trimmed.contains("TESTS_FAIL")
                             || trimmed.contains("INPUT_NEEDED");
@@ -726,39 +725,4 @@ impl Task {
         self.save_meta()
     }
 
-    /// Check if TASK.md has remaining work items (unchecked `- [ ]` items
-    /// under the `## Remaining` heading).
-    ///
-    /// Returns `true` if there are unchecked items, if TASK.md is unreadable,
-    /// or if the `## Remaining` heading is absent (fail-safe: assume work
-    /// remains). Returns `false` only when the Remaining section exists and
-    /// contains no unchecked items.
-    pub fn has_remaining_work(&self) -> bool {
-        let content = match self.read_task() {
-            Ok(c) => c,
-            Err(_) => return true, // fail-safe
-        };
-
-        let mut found_remaining = false;
-        let mut in_remaining = false;
-        for line in content.lines() {
-            let trimmed = line.trim();
-
-            if in_remaining {
-                // Stop scanning at the next heading (## or #)
-                if trimmed.starts_with("## ") || trimmed.starts_with("# ") {
-                    break;
-                }
-                if trimmed.starts_with("- [ ]") {
-                    return true;
-                }
-            } else if trimmed == "## Remaining" {
-                found_remaining = true;
-                in_remaining = true;
-            }
-        }
-
-        // If heading was never found, fail-safe: assume work remains
-        !found_remaining
-    }
 }

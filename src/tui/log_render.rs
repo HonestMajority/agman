@@ -57,7 +57,7 @@ fn classify_line(line: &str, in_feedback_block: &mut bool) -> LogLineKind {
     {
         return LogLineKind::StopConditionSuccess;
     }
-    if trimmed.contains("TASK_BLOCKED") || trimmed.contains("TESTS_FAIL") {
+    if trimmed.contains("TESTS_FAIL") {
         return LogLineKind::StopConditionFailure;
     }
     if trimmed.contains("INPUT_NEEDED") {

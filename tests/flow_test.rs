@@ -15,7 +15,7 @@ fn stop_condition_from_output() {
     );
     assert_eq!(
         StopCondition::from_output("TASK_BLOCKED"),
-        Some(StopCondition::TaskBlocked)
+        None
     );
     assert_eq!(
         StopCondition::from_output("TESTS_PASS"),

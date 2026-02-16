@@ -20,8 +20,6 @@ pub struct AgentStep {
     pub agent: String,
     pub until: StopCondition,
     #[serde(default)]
-    pub on_blocked: Option<BlockedAction>,
-    #[serde(default)]
     pub on_fail: Option<FailAction>,
 }
 
@@ -37,7 +35,6 @@ pub struct LoopStep {
 pub enum StopCondition {
     AgentDone,
     TaskComplete,
-    TaskBlocked,
     TestsPass,
     TestsFail,
     InputNeeded,
@@ -48,7 +45,6 @@ impl std::fmt::Display for StopCondition {
         match self {
             StopCondition::AgentDone => write!(f, "AGENT_DONE"),
             StopCondition::TaskComplete => write!(f, "TASK_COMPLETE"),
-            StopCondition::TaskBlocked => write!(f, "TASK_BLOCKED"),
             StopCondition::TestsPass => write!(f, "TESTS_PASS"),
             StopCondition::TestsFail => write!(f, "TESTS_FAIL"),
             StopCondition::InputNeeded => write!(f, "INPUT_NEEDED"),
@@ -63,8 +59,6 @@ impl StopCondition {
             Some(StopCondition::AgentDone)
         } else if output.contains("TASK_COMPLETE") {
             Some(StopCondition::TaskComplete)
-        } else if output.contains("TASK_BLOCKED") {
-            Some(StopCondition::TaskBlocked)
         } else if output.contains("TESTS_PASS") {
             Some(StopCondition::TestsPass)
         } else if output.contains("TESTS_FAIL") {
@@ -75,13 +69,6 @@ impl StopCondition {
             None
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BlockedAction {
-    Pause,
-    Continue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
