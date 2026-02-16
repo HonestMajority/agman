@@ -1063,6 +1063,120 @@ fn setup_repos_from_task_md() {
 }
 
 // ---------------------------------------------------------------------------
+// Migrate old tasks — rewrites meta.json
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migrate_old_tasks_rewrites_meta_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    // Create a task directory with old-format meta.json
+    let task_dir = config.tasks_dir.join("myrepo--old-branch");
+    std::fs::create_dir_all(&task_dir).unwrap();
+
+    // Also create a fake worktree with TASK.md to test TASK.md migration
+    let worktree_path = tmp.path().join("repos/myrepo-wt/old-branch");
+    std::fs::create_dir_all(&worktree_path).unwrap();
+    std::fs::write(worktree_path.join("TASK.md"), "# Goal\nOld task goal\n").unwrap();
+
+    let old_meta = serde_json::json!({
+        "repo_name": "myrepo",
+        "branch_name": "old-branch",
+        "status": "stopped",
+        "tmux_session": "(myrepo)__old-branch",
+        "worktree_path": worktree_path.to_str().unwrap(),
+        "flow_name": "new",
+        "current_agent": null,
+        "flow_step": 0,
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "review_after": false,
+        "linked_pr": null,
+        "last_review_count": null,
+        "review_addressed": false
+    });
+    std::fs::write(
+        task_dir.join("meta.json"),
+        serde_json::to_string_pretty(&old_meta).unwrap(),
+    )
+    .unwrap();
+
+    // Create init files that Task::load expects
+    std::fs::write(task_dir.join("notes.md"), "").unwrap();
+    std::fs::write(task_dir.join("agent.log"), "").unwrap();
+
+    // Run migration
+    use_cases::migrate_old_tasks(&config);
+
+    // Verify meta.json was rewritten
+    let migrated_content = std::fs::read_to_string(task_dir.join("meta.json")).unwrap();
+    let migrated: serde_json::Value = serde_json::from_str(&migrated_content).unwrap();
+    let obj = migrated.as_object().unwrap();
+
+    // Has "name", not "repo_name" at top level
+    assert_eq!(obj.get("name").unwrap().as_str().unwrap(), "myrepo");
+    assert!(!obj.contains_key("repo_name"));
+
+    // Has "repos" array with one entry
+    let repos = obj.get("repos").unwrap().as_array().unwrap();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0]["repo_name"].as_str().unwrap(), "myrepo");
+    assert_eq!(
+        repos[0]["worktree_path"].as_str().unwrap(),
+        worktree_path.to_str().unwrap()
+    );
+    assert_eq!(repos[0]["tmux_session"].as_str().unwrap(), "(myrepo)__old-branch");
+
+    // No top-level tmux_session or worktree_path
+    assert!(!obj.contains_key("tmux_session"));
+    assert!(!obj.contains_key("worktree_path"));
+
+    // Has parent_dir: null
+    assert!(obj.get("parent_dir").unwrap().is_null());
+
+    // Task::load() succeeds on migrated data
+    let task = Task::load(&config, "myrepo", "old-branch").unwrap();
+    assert_eq!(task.meta.name, "myrepo");
+    assert_eq!(task.meta.branch_name, "old-branch");
+    assert_eq!(task.meta.status, TaskStatus::Stopped);
+    assert_eq!(task.meta.repos.len(), 1);
+    assert_eq!(task.meta.repos[0].repo_name, "myrepo");
+
+    // TASK.md was copied from worktree to task dir
+    assert!(task_dir.join("TASK.md").exists());
+    let task_content = std::fs::read_to_string(task_dir.join("TASK.md")).unwrap();
+    assert!(task_content.contains("Old task goal"));
+}
+
+// ---------------------------------------------------------------------------
+// Migrate old tasks — skips new format
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migrate_old_tasks_skips_new_format() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "branch");
+
+    // Capture meta.json content before migration
+    let before = std::fs::read_to_string(task.dir.join("meta.json")).unwrap();
+
+    // Run migration — should be a no-op
+    use_cases::migrate_old_tasks(&config);
+
+    // meta.json unchanged
+    let after = std::fs::read_to_string(task.dir.join("meta.json")).unwrap();
+    assert_eq!(before, after);
+
+    // Task::load() still works
+    let loaded = Task::load(&config, "repo", "branch").unwrap();
+    assert_eq!(loaded.meta.name, "repo");
+    assert_eq!(loaded.meta.branch_name, "branch");
+}
+
+// ---------------------------------------------------------------------------
 // Config file loading
 // ---------------------------------------------------------------------------
 
