@@ -2477,12 +2477,12 @@ impl App {
                     } else {
                         // "Later"
                         self.view = View::TaskList;
-                        self.set_status("Restart deferred".to_string());
+                        self.set_status("Restart available — press q to quit and restart".to_string());
                     }
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
-                    self.set_status("Restart deferred".to_string());
+                    self.set_status("Restart available — press q to quit and restart".to_string());
                 }
                 _ => {}
             }
