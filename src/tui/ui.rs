@@ -9,7 +9,7 @@ use ratatui::{
 
 use agman::task::TaskStatus;
 
-use super::app::{App, BranchSource, PreviewPane, RestartWizardStep, ReviewWizardStep, View, WizardStep, DirPickerOrigin};
+use super::app::{App, BranchSource, DirPickerOrigin, DirKind, PreviewPane, RestartWizardStep, ReviewWizardStep, View, WizardStep};
 use super::log_render;
 use super::vim::VimMode;
 
@@ -1336,16 +1336,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         View::NewTaskWizard => {
             if let Some(wizard) = &app.wizard {
                 match wizard.step {
-                    WizardStep::SelectRepo => {
-                        vec![
-                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                            Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
-                            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-                        ]
-                    }
                     WizardStep::SelectBranch => {
                         vec![
                             Span::styled("Tab", Style::default().fg(Color::LightCyan)),
@@ -1516,30 +1506,41 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
     f.render_widget(Clear, area);
 
     // Extract data we need before mutable borrows
-    let (step, step_num, total_steps, step_title, error_message) = {
+    let (step, step_num, total_steps, step_title, repo_name, error_message) = {
         let wizard = match &app.wizard {
             Some(w) => w,
             None => return,
         };
-        let total = 3;
+        let total = 2;
         let (step_num, step_title) = match wizard.step {
-            WizardStep::SelectRepo => (1, "Select Repository"),
-            WizardStep::SelectBranch => (2, "Branch / Worktree"),
-            WizardStep::EnterDescription => (3, "Task Description"),
+            WizardStep::SelectBranch => (1, "Branch / Worktree"),
+            WizardStep::EnterDescription => (2, "Task Description"),
         };
         (
             wizard.step,
             step_num,
             total,
             step_title,
+            wizard.selected_repo.clone(),
             wizard.error_message.clone(),
         )
     };
 
+    // Build title showing the repo and step info
+    let multi_prefix = if app.wizard.as_ref().is_some_and(|w| w.is_multi_repo) {
+        "[multi] "
+    } else {
+        ""
+    };
+    let title_text = format!(
+        " New Task: {}{} [{}/{}] {} ",
+        multi_prefix, repo_name, step_num, total_steps, step_title
+    );
+
     // Main wizard container
     let block = Block::default()
         .title(Span::styled(
-            format!(" New Task [{}/{}] {} ", step_num, total_steps, step_title),
+            title_text,
             Style::default()
                 .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD),
@@ -1558,17 +1559,6 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
 
     // Draw step-specific content
     match step {
-        WizardStep::SelectRepo => {
-            if let Some(wizard) = &app.wizard {
-                draw_wizard_repo_list(
-                    f,
-                    &wizard.favorite_repos,
-                    &wizard.repos,
-                    wizard.selected_repo_index,
-                    chunks[0],
-                );
-            }
-        }
         WizardStep::SelectBranch => draw_wizard_branch(f, app, chunks[0]),
         WizardStep::EnterDescription => draw_wizard_description(f, app, chunks[0]),
     }
@@ -1765,7 +1755,6 @@ fn draw_wizard_footer_direct(
     } else {
         // Show contextual help
         let help = match step {
-            WizardStep::SelectRepo => "j/k: navigate  Enter: select  Esc: cancel",
             WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
             WizardStep::EnterDescription => "Ctrl+S: create task (empty = setup only)  Ctrl+R: toggle review  Esc: back",
         };
@@ -2561,6 +2550,7 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
 
     let title = match picker.origin {
         DirPickerOrigin::NewTask | DirPickerOrigin::Review => " Select Repos Directory ",
+        DirPickerOrigin::RepoSelect => " Select Repository ",
     };
 
     // Split into header and list
@@ -2593,31 +2583,57 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
     f.render_widget(header, chunks[0]);
 
     // List of directories
+    let is_repo_select = picker.origin == DirPickerOrigin::RepoSelect;
     let items: Vec<ListItem> = picker
         .entries
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            let style = if i == picker.selected_index {
+            let is_selected = i == picker.selected_index;
+            let kind = picker.entry_kinds.get(i).copied();
+
+            let base_style = if is_selected {
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
-            let prefix = if i == picker.selected_index {
-                "> "
+            let prefix = if is_selected { "> " } else { "  " };
+
+            if is_repo_select {
+                // Show annotations for git repos and multi-repo parents
+                let (suffix, suffix_style) = match kind {
+                    Some(DirKind::GitRepo) => (
+                        "  [git]",
+                        Style::default().fg(Color::LightGreen),
+                    ),
+                    Some(DirKind::MultiRepoParent) => (
+                        "  [multi]",
+                        Style::default().fg(Color::LightYellow),
+                    ),
+                    _ => ("", Style::default()),
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{}{}/", prefix, name), base_style),
+                    Span::styled(suffix, suffix_style),
+                ]))
             } else {
-                "  "
-            };
-            ListItem::new(Span::styled(format!("{}{}/", prefix, name), style))
+                ListItem::new(Span::styled(format!("{}{}/", prefix, name), base_style))
+            }
         })
         .collect();
+
+    let help_text = if is_repo_select {
+        " j/k: navigate  l/Enter: open/select  h: up  s: select  Esc: cancel "
+    } else {
+        " j/k: navigate  l/Enter: open  h/Backspace: up  s: select  Esc: cancel "
+    };
 
     let list = List::new(items).block(
         Block::default()
             .title(Span::styled(
-                " j/k: navigate  l/Enter: open  h/Backspace: up  s: select  Esc: cancel ",
+                help_text,
                 Style::default().fg(Color::DarkGray),
             ))
             .borders(Borders::ALL)

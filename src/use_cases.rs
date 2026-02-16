@@ -742,3 +742,37 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> 
 
     Ok(())
 }
+
+/// Classify a directory path as a git repo, multi-repo parent, or plain directory.
+///
+/// - **GitRepo**: the directory contains `.git`
+/// - **MultiRepoParent**: the directory contains at least one child directory with `.git`
+/// - **Plain**: neither of the above
+///
+/// If a directory is both a git repo AND contains git-repo children,
+/// it is classified as a git repo (`.git` takes priority).
+pub fn classify_directory(path: &std::path::Path) -> DirKind {
+    if path.join(".git").exists() {
+        return DirKind::GitRepo;
+    }
+    if let Ok(read_dir) = std::fs::read_dir(path) {
+        let has_git_children = read_dir
+            .filter_map(|e| e.ok())
+            .any(|e| e.path().is_dir() && e.path().join(".git").exists());
+        if has_git_children {
+            return DirKind::MultiRepoParent;
+        }
+    }
+    DirKind::Plain
+}
+
+/// Classification of a directory for repo selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirKind {
+    /// A git repository (has `.git`).
+    GitRepo,
+    /// A directory containing git-repo children.
+    MultiRepoParent,
+    /// A plain directory.
+    Plain,
+}

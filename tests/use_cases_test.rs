@@ -1353,3 +1353,65 @@ fn create_task_with_slash_in_branch_name() {
     let loaded = Task::load(&config, "myrepo", "chore/my-feature").unwrap();
     assert_eq!(loaded.meta.branch_name, "chore/my-feature");
 }
+
+// ---------------------------------------------------------------------------
+// Directory classification (for repo picker)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn classify_directory_git_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _repo = init_test_repo(&tmp, "myrepo");
+    let repo_path = tmp.path().join("repos").join("myrepo");
+
+    assert_eq!(
+        use_cases::classify_directory(&repo_path),
+        use_cases::DirKind::GitRepo
+    );
+}
+
+#[test]
+fn classify_directory_multi_repo_parent() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Create a parent dir containing git repos
+    let parent = tmp.path().join("repos").join("org");
+    std::fs::create_dir_all(&parent).unwrap();
+    // Create two git repos inside parent
+    let child1 = parent.join("repo-a");
+    std::fs::create_dir_all(child1.join(".git")).unwrap();
+    let child2 = parent.join("repo-b");
+    std::fs::create_dir_all(child2.join(".git")).unwrap();
+
+    assert_eq!(
+        use_cases::classify_directory(&parent),
+        use_cases::DirKind::MultiRepoParent
+    );
+}
+
+#[test]
+fn classify_directory_plain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plain = tmp.path().join("repos").join("empty-dir");
+    std::fs::create_dir_all(&plain).unwrap();
+
+    assert_eq!(
+        use_cases::classify_directory(&plain),
+        use_cases::DirKind::Plain
+    );
+}
+
+#[test]
+fn classify_directory_git_repo_takes_priority_over_children() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A directory that is itself a git repo AND contains git-repo children
+    let dir = tmp.path().join("repos").join("mixed");
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    let child = dir.join("sub-repo");
+    std::fs::create_dir_all(child.join(".git")).unwrap();
+
+    // .git presence should make it classify as GitRepo, not MultiRepoParent
+    assert_eq!(
+        use_cases::classify_directory(&dir),
+        use_cases::DirKind::GitRepo
+    );
+}
