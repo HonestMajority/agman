@@ -44,7 +44,7 @@ impl Agent {
         ));
 
         // For multi-repo tasks, list all repos and their worktree paths
-        if task.meta.repos.len() > 1 {
+        if task.meta.is_multi_repo() && !task.meta.repos.is_empty() {
             prompt.push_str("\n# Repo Worktrees\n");
             for repo in &task.meta.repos {
                 prompt.push_str(&format!(
@@ -108,6 +108,9 @@ impl Agent {
 
     /// Run agent in tmux's agman window
     pub fn run_in_tmux(&self, task: &Task) -> Result<()> {
+        if !task.meta.has_repos() {
+            anyhow::bail!("No repos configured for task '{}'", task.meta.task_id());
+        }
         let prompt = self.build_prompt(task)?;
 
         // Write prompt to a temp file in the task directory

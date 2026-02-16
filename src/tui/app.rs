@@ -874,17 +874,18 @@ impl App {
                 let _ = use_cases::set_review_addressed(task, false);
             }
 
-            // Side effects: ensure tmux session and dispatch flow
-            if !Tmux::session_exists(&tmux_session) {
-                if let Some(task) = self.selected_task() {
-                    let working_dir = if task.meta.has_repos() {
-                        task.meta.primary_repo().worktree_path.clone()
-                    } else {
-                        task.meta.parent_dir.clone().unwrap_or_default()
-                    };
-                    let _ = Tmux::create_session_with_windows(&tmux_session, &working_dir);
-                    if task.meta.has_repos() {
-                        let _ = Tmux::add_review_window(&tmux_session, &working_dir);
+            // Side effects: ensure tmux sessions exist for all repos and dispatch flow
+            if let Some(task) = self.selected_task() {
+                for repo in &task.meta.repos {
+                    if !Tmux::session_exists(&repo.tmux_session) {
+                        let _ = Tmux::create_session_with_windows(&repo.tmux_session, &repo.worktree_path);
+                        let _ = Tmux::add_review_window(&repo.tmux_session, &repo.worktree_path);
+                    }
+                }
+                // For multi-repo tasks with no repos yet, ensure the primary session exists
+                if !task.meta.has_repos() && !Tmux::session_exists(&tmux_session) {
+                    if let Some(ref parent) = task.meta.parent_dir {
+                        let _ = Tmux::create_session_with_windows(&tmux_session, parent);
                     }
                 }
             }

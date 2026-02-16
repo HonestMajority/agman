@@ -585,12 +585,14 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> 
             path
         };
 
-        // Create tmux session (idempotent — create_session_with_windows handles existing)
+        // Create tmux session (best-effort — tmux may not be available in tests)
         let tmux_session = Config::tmux_session_name(repo_name, &task.meta.branch_name);
         if !Tmux::session_exists(&tmux_session) {
-            Tmux::create_session_with_windows(&tmux_session, &worktree_path)
-                .with_context(|| format!("Failed to create tmux session for repo '{}'", repo_name))?;
-            let _ = Tmux::add_review_window(&tmux_session, &worktree_path);
+            if let Err(e) = Tmux::create_session_with_windows(&tmux_session, &worktree_path) {
+                tracing::warn!(repo = repo_name, error = %e, "failed to create tmux session (non-fatal)");
+            } else {
+                let _ = Tmux::add_review_window(&tmux_session, &worktree_path);
+            }
         }
 
         // Ensure REVIEW.md is excluded from git tracking

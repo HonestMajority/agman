@@ -1007,6 +1007,62 @@ fn delete_multi_repo_task() {
 }
 
 // ---------------------------------------------------------------------------
+// Setup repos from TASK.md (post-hook)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn setup_repos_from_task_md() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    // Create two git repos under the parent dir
+    let _repo1 = init_test_repo(&tmp, "frontend");
+    let _repo2 = init_test_repo(&tmp, "backend");
+
+    let parent_dir = tmp.path().join("repos");
+
+    // Create a multi-repo task (starts with empty repos)
+    let mut task = use_cases::create_multi_repo_task(
+        &config,
+        "repos",
+        "cross-repo",
+        "Build cross-repo feature",
+        "new-multi",
+        parent_dir,
+        false,
+    )
+    .unwrap();
+
+    assert!(task.meta.repos.is_empty());
+
+    // Write TASK.md with a # Repos section (simulating repo-inspector output)
+    task.write_task(
+        "# Goal\nBuild cross-repo feature\n\n# Repos\n- frontend: UI components\n- backend: API server\n\n# Plan\n(To be created)\n",
+    )
+    .unwrap();
+
+    // Run the setup_repos post-hook logic
+    // Note: tmux calls will fail silently (no tmux in test), but worktree
+    // creation and meta persistence should succeed.
+    use_cases::setup_repos_from_task_md(&config, &mut task).unwrap();
+
+    // Repos should be populated
+    assert_eq!(task.meta.repos.len(), 2);
+    assert_eq!(task.meta.repos[0].repo_name, "frontend");
+    assert_eq!(task.meta.repos[1].repo_name, "backend");
+
+    // Worktrees should exist
+    assert!(task.meta.repos[0].worktree_path.exists());
+    assert!(task.meta.repos[1].worktree_path.exists());
+
+    // Meta should be persisted — reload from disk and verify
+    let reloaded = Task::load(&config, "repos", "cross-repo").unwrap();
+    assert_eq!(reloaded.meta.repos.len(), 2);
+    assert_eq!(reloaded.meta.repos[0].repo_name, "frontend");
+    assert_eq!(reloaded.meta.repos[1].repo_name, "backend");
+}
+
+// ---------------------------------------------------------------------------
 // Config file loading
 // ---------------------------------------------------------------------------
 
