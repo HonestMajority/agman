@@ -37,6 +37,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::RestartWizard
             | View::SetLinkedPr
             | View::DirectoryPicker
+            | View::SessionPicker
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -105,6 +106,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::DirectoryPicker => {
             draw_task_list(f, app, chunks[0]);
             draw_directory_picker(f, app);
+        }
+        View::SessionPicker => {
+            draw_preview(f, app, chunks[0]);
+            draw_session_picker(f, app);
         }
     }
 
@@ -1390,7 +1395,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" close", Style::default().fg(Color::DarkGray)),
             ]
         }
-        View::RebaseBranchPicker => {
+        View::RebaseBranchPicker | View::SessionPicker => {
             vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
@@ -2059,6 +2064,80 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &App) {
         Block::default()
             .title(Span::styled(
                 list_title,
+                Style::default().fg(Color::LightGreen),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightGreen)),
+    );
+
+    f.render_widget(list, chunks[1]);
+}
+
+fn draw_session_picker(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 50, f.area());
+    f.render_widget(Clear, area);
+
+    let task_id = app
+        .selected_task()
+        .map(|t| t.meta.task_id())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
+
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            task_id,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .title(Span::styled(
+                " Attach to Session ",
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightCyan)),
+    );
+    f.render_widget(header, chunks[0]);
+
+    let items: Vec<ListItem> = app
+        .session_picker_sessions
+        .iter()
+        .enumerate()
+        .map(|(i, (repo_name, _session))| {
+            let style = if i == app.selected_session_index {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(40, 40, 60))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let prefix = if i == app.selected_session_index {
+                "▸ "
+            } else {
+                "  "
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(repo_name, style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(Span::styled(
+                " Select repo session (Enter to attach, Esc to cancel) ",
                 Style::default().fg(Color::LightGreen),
             ))
             .borders(Borders::ALL)

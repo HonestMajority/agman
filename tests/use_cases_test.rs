@@ -34,7 +34,7 @@ fn create_task_with_new_branch() {
     assert_eq!(task.meta.status, TaskStatus::Running);
     assert_eq!(task.meta.flow_name, "new");
 
-    // TASK.md written to worktree
+    // TASK.md written to task directory
     let task_content = task.read_task().unwrap();
     assert!(task_content.contains("Build the widget"));
 
@@ -163,7 +163,7 @@ fn create_setup_only_task() {
     // Flow name is "none"
     assert_eq!(task.meta.flow_name, "none");
 
-    // TASK.md exists in worktree with empty goal
+    // TASK.md exists in task directory with empty goal
     let task_content = task.read_task().unwrap();
     assert_eq!(task_content, "# Goal\n\n# Plan\n");
 

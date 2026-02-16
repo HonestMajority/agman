@@ -52,6 +52,7 @@ pub enum View {
     RestartWizard,
     SetLinkedPr,
     DirectoryPicker,
+    SessionPicker,
 }
 
 /// Which wizard requested the directory picker.
@@ -375,6 +376,10 @@ pub struct App {
     pub pr_owned_toggle: bool,
     // Directory picker for repos_dir
     pub dir_picker: Option<DirectoryPicker>,
+    // Session picker for multi-repo attach
+    pub session_picker_sessions: Vec<(String, String)>, // (repo_name, tmux_session)
+    pub selected_session_index: usize,
+    pub attach_session_name: Option<String>,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -433,6 +438,9 @@ impl App {
             pr_number_editor: Self::create_plain_editor(),
             pr_owned_toggle: true,
             dir_picker: None,
+            session_picker_sessions: Vec::new(),
+            selected_session_index: 0,
+            attach_session_name: None,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -1613,7 +1621,16 @@ impl App {
             WizardStep::EnterDescription => {
                 let description = wizard.description_editor.lines_joined();
                 let description = description.trim();
+                let is_multi = wizard.is_multi_repo;
                 if description.is_empty() {
+                    if is_multi {
+                        // Multi-repo tasks require a description (the repo-inspector
+                        // agent needs it to decide which repos are involved)
+                        let wizard = self.wizard.as_mut().unwrap();
+                        wizard.error_message =
+                            Some("Multi-repo tasks require a description".to_string());
+                        return Ok(());
+                    }
                     // Empty description = setup-only mode
                     return self.create_setup_only_task_from_wizard();
                 }
@@ -2096,6 +2113,7 @@ impl App {
             View::RestartWizard => self.handle_restart_wizard_event(event),
             View::SetLinkedPr => self.handle_set_linked_pr_event(event),
             View::DirectoryPicker => self.handle_directory_picker_event(event),
+            View::SessionPicker => self.handle_session_picker_event(event),
         }
     }
 
@@ -2305,7 +2323,21 @@ impl App {
                     match self.preview_pane {
                         PreviewPane::Logs => {
                             if let Some(task) = self.selected_task() {
-                                if task.meta.has_repos() {
+                                if task.meta.is_multi_repo() && task.meta.repos.len() > 1 {
+                                    // Multi-repo with multiple repos — show session picker
+                                    let sessions: Vec<(String, String)> = task
+                                        .meta
+                                        .repos
+                                        .iter()
+                                        .filter(|r| Tmux::session_exists(&r.tmux_session))
+                                        .map(|r| (r.repo_name.clone(), r.tmux_session.clone()))
+                                        .collect();
+                                    if !sessions.is_empty() {
+                                        self.session_picker_sessions = sessions;
+                                        self.selected_session_index = 0;
+                                        self.view = View::SessionPicker;
+                                    }
+                                } else if task.meta.has_repos() {
                                     if Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
                                         return Ok(true);
                                     }
@@ -2973,6 +3005,47 @@ impl App {
                 KeyCode::Enter => {
                     if let Some(branch) = self.rebase_branches.get(self.selected_rebase_branch_index).cloned() {
                         self.run_branch_command(&branch)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_session_picker_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = View::Preview;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if !self.session_picker_sessions.is_empty() {
+                        self.selected_session_index =
+                            (self.selected_session_index + 1) % self.session_picker_sessions.len();
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if !self.session_picker_sessions.is_empty() {
+                        self.selected_session_index = if self.selected_session_index == 0 {
+                            self.session_picker_sessions.len() - 1
+                        } else {
+                            self.selected_session_index - 1
+                        };
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some((_, session)) =
+                        self.session_picker_sessions.get(self.selected_session_index)
+                    {
+                        self.attach_session_name = Some(session.clone());
+                        self.view = View::Preview;
+                        return Ok(true);
                     }
                 }
                 _ => {}
@@ -3777,7 +3850,10 @@ pub fn run_tui(config: Config) -> Result<()> {
                 let should_attach = app.handle_event(event)?;
 
                 if should_attach {
-                    if let Some(task) = app.selected_task() {
+                    // Session picker sets attach_session_name directly
+                    if let Some(session) = app.attach_session_name.take() {
+                        attach_session = Some(session);
+                    } else if let Some(task) = app.selected_task() {
                         if task.meta.has_repos() {
                             attach_session = Some(task.meta.primary_repo().tmux_session.clone());
                         } else if task.meta.is_multi_repo() {

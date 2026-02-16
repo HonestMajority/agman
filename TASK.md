@@ -272,23 +272,27 @@ In `AgentRunner::run_agent()` (at `agent.rs:216-229`), the `.pr-link` file is ch
 - [x] Test helpers and existing tests updated for new data model
 - [x] 7 new multi-repo tests (creation, parsing, deletion, flow, setup_repos) — all 80 pass
 - [x] Made tmux calls in `setup_repos_from_task_md()` non-fatal (warn + skip instead of propagating errors)
+- [x] Guard setup-only task creation against multi-repo selection — shows error "Multi-repo tasks require a description"
+- [x] Multi-repo attach session selection — `View::SessionPicker` overlay lists repo tmux sessions, user picks which to attach to
+- [x] Fixed stale comments referencing "worktree" for TASK.md location (now writes to task dir)
 
 ## Remaining
 
-(No remaining items — all planned work is complete.)
+(No remaining items — all planned features are implemented.)
 
 ## Status
 
-### Iteration 7 — fix critical bugs
+### Iteration 9
 
 **Build:** Compiles. **Tests:** All 80 pass.
 
-**Fixed `run_direct()` eager-evaluation panic** (`agent.rs`). Replaced `.current_dir(task.meta.parent_dir.as_deref().unwrap_or(&task.meta.primary_repo().worktree_path))` with a `match` expression that only calls `primary_repo()` in the `None` branch. Added an explicit bail if `parent_dir` is `None` and `repos` is empty, preventing index-out-of-bounds panic for multi-repo tasks before `setup_repos` runs.
+**What was done:**
 
-**Fixed tmux session routing for multi-repo tasks.** All four dispatch sites now correctly use the parent-dir session (`Config::tmux_session_name(&name, &branch)`) for multi-repo tasks:
-- `run_in_tmux()` (agent.rs) — sends claude command to parent-dir session
-- `cmd_continue()` (main.rs) — dispatches flow-run to parent-dir session, ensures it exists
-- `cmd_run_command()` (main.rs) — dispatches command-flow-run to parent-dir session, ensures it exists
-- `cmd_command_flow_run()` (main.rs) — includes parent-dir session in cleanup during delete post-action
+1. **Setup-only + multi-repo guard:** Added `is_multi_repo` check before the empty-description branch in `wizard_next_step()`. Multi-repo parent dirs now show error "Multi-repo tasks require a description" instead of attempting a single-repo setup-only task that would fail.
 
-Also ensured `cmd_continue` and `cmd_run_command` recreate the parent-dir tmux session if it doesn't exist (matching how they already recreate per-repo sessions).
+2. **Multi-repo attach session picker:** Added a new `View::SessionPicker` with full TUI overlay:
+   - `app.rs`: New state fields (`session_picker_sessions`, `selected_session_index`, `attach_session_name`), event handler (`handle_session_picker_event`), updated preview attach logic to open picker for multi-repo tasks with >1 repo.
+   - `ui.rs`: New `draw_session_picker()` function rendering a centered popup with repo name list, keybinding hints shared with `RebaseBranchPicker`.
+   - `run_tui` loop: Checks `attach_session_name` first (set by picker) before falling back to primary_repo logic.
+
+3. **Stale comments:** Fixed 3 comments in `task.rs` and `tests/use_cases_test.rs` that said "worktree" where TASK.md now lives in the task dir.

@@ -201,7 +201,7 @@ impl Task {
         task.save_meta()?;
         task.init_files()?;
 
-        // Write TASK.md directly to the worktree
+        // Write TASK.md to the task directory
         task.write_task(&format!(
             "# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n",
             description
