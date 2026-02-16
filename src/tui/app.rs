@@ -328,8 +328,6 @@ pub struct App {
     // Task file (TASK.md) viewing/editing (used by modal)
     pub task_file_content: String,
     pub task_file_editor: VimTextArea<'static>,
-    /// When true, saving the task editor will auto-resume the flow (used for answering questions)
-    pub answering_questions: bool,
     // Stored commands
     pub commands: Vec<StoredCommand>,
     pub selected_command_index: usize,
@@ -397,7 +395,6 @@ impl App {
             last_output_time: None,
             task_file_content: String::new(),
             task_file_editor,
-            answering_questions: false,
             commands,
             selected_command_index: 0,
             command_list_state: ListState::default(),
@@ -2009,7 +2006,7 @@ impl App {
                     if let Some(task) = self.selected_task() {
                         if task.meta.status == TaskStatus::InputNeeded {
                             self.load_preview();
-                            self.open_task_editor_for_answering();
+                            self.open_task_editor();
                         }
                     }
                 }
@@ -2171,7 +2168,7 @@ impl App {
                     // Answer questions (only for InputNeeded tasks)
                     if let Some(task) = self.selected_task() {
                         if task.meta.status == TaskStatus::InputNeeded {
-                            self.open_task_editor_for_answering();
+                            self.open_task_editor();
                         }
                     }
                 }
@@ -2320,16 +2317,6 @@ impl App {
     }
 
     fn open_task_editor(&mut self) {
-        self.answering_questions = false;
-        self.open_task_editor_inner();
-    }
-
-    fn open_task_editor_for_answering(&mut self) {
-        self.answering_questions = true;
-        self.open_task_editor_inner();
-    }
-
-    fn open_task_editor_inner(&mut self) {
         // Re-read the task file content from disk to ensure fresh content
         if let Some(task) = self.selected_task() {
             let content = task
@@ -2360,9 +2347,8 @@ impl App {
                 self.save_task_file()?;
                 self.task_file_editor.set_normal_mode();
 
-                // If we were answering questions, resume the flow
-                if self.answering_questions {
-                    self.answering_questions = false;
+                // If the task is in InputNeeded state, resume the flow after saving
+                if self.selected_task().map_or(false, |t| t.meta.status == TaskStatus::InputNeeded) {
                     self.resume_after_answering()?;
                 }
 
