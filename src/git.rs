@@ -96,9 +96,9 @@ impl Git {
         Ok(true)
     }
 
-    /// Find the best base ref for creating a new branch
-    /// Tries in order: origin/main, origin/master, main, master, HEAD
-    fn find_base_ref(repo_path: &PathBuf) -> String {
+    /// Find the best base ref for creating a new branch.
+    /// Tries in order: origin/main, origin/master, main, master, HEAD.
+    pub fn find_base_ref(repo_path: &PathBuf) -> String {
         let candidates = [
             "origin/main",
             "origin/master",
@@ -119,8 +119,8 @@ impl Git {
 
     /// Create a new worktree with a new branch
     /// Tries to base on origin/main if available, falls back to local main or HEAD
-    pub fn create_worktree(config: &Config, repo_name: &str, branch_name: &str) -> Result<PathBuf> {
-        Self::create_worktree_impl(config, repo_name, branch_name, false)
+    pub fn create_worktree(config: &Config, repo_name: &str, branch_name: &str, base_branch: Option<&str>) -> Result<PathBuf> {
+        Self::create_worktree_impl(config, repo_name, branch_name, false, base_branch)
     }
 
     /// Create a new worktree with a new branch (quiet mode for TUI)
@@ -128,8 +128,9 @@ impl Git {
         config: &Config,
         repo_name: &str,
         branch_name: &str,
+        base_branch: Option<&str>,
     ) -> Result<PathBuf> {
-        Self::create_worktree_impl(config, repo_name, branch_name, true)
+        Self::create_worktree_impl(config, repo_name, branch_name, true, base_branch)
     }
 
     fn create_worktree_impl(
@@ -137,6 +138,7 @@ impl Git {
         repo_name: &str,
         branch_name: &str,
         quiet: bool,
+        base_branch: Option<&str>,
     ) -> Result<PathBuf> {
         tracing::info!(repo = repo_name, branch = branch_name, "creating worktree");
         let repo_path = config.repo_path(repo_name);
@@ -180,8 +182,11 @@ impl Git {
             println!("skipped (no remote)");
         }
 
-        // Find the best base ref
-        let base_ref = Self::find_base_ref(&repo_path);
+        // Find the best base ref (use explicit base_branch if provided)
+        let base_ref = match base_branch {
+            Some(b) => b.to_string(),
+            None => Self::find_base_ref(&repo_path),
+        };
         if !quiet {
             println!(
                 "  Creating worktree with new branch '{}' based on {}...",
