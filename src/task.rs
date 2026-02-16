@@ -476,8 +476,6 @@ impl Task {
                         let is_marker = (trimmed.starts_with("--- Agent:") && trimmed.ends_with("---"))
                             || trimmed.contains("AGENT_DONE")
                             || trimmed.contains("TASK_COMPLETE")
-                            || trimmed.contains("TESTS_PASS")
-                            || trimmed.contains("TESTS_FAIL")
                             || trimmed.contains("INPUT_NEEDED");
 
                         if is_marker && !in_body {
