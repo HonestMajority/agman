@@ -1353,3 +1353,54 @@ fn create_task_with_slash_in_branch_name() {
     let loaded = Task::load(&config, "myrepo", "chore/my-feature").unwrap();
     assert_eq!(loaded.meta.branch_name, "chore/my-feature");
 }
+
+// ---------------------------------------------------------------------------
+// Scan repos with parents (repos_dir as multi-repo parent)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scan_repos_with_parents_includes_repos_dir_as_multi() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo1 = init_test_repo(&tmp, "alpha");
+    let _repo2 = init_test_repo(&tmp, "beta");
+
+    let (repos, multi_indices) = use_cases::scan_repos_with_parents(&config).unwrap();
+
+    // Should contain the synthetic [multi] repos entry (basename of repos_dir is "repos")
+    assert!(
+        repos.contains(&"[multi] repos".to_string()),
+        "expected [multi] repos in {:?}",
+        repos
+    );
+
+    // The [multi] repos entry should be tracked in multi_repo_indices
+    let multi_pos = repos.iter().position(|r| r == "[multi] repos").unwrap();
+    assert!(multi_indices.contains(&multi_pos));
+
+    // Individual repos should still appear
+    assert!(repos.contains(&"alpha".to_string()));
+    assert!(repos.contains(&"beta".to_string()));
+
+    // Individual repos should NOT be in multi_repo_indices
+    let alpha_pos = repos.iter().position(|r| r == "alpha").unwrap();
+    assert!(!multi_indices.contains(&alpha_pos));
+}
+
+#[test]
+fn scan_repos_with_parents_no_synthetic_entry_for_single_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo1 = init_test_repo(&tmp, "only-repo");
+
+    let (repos, multi_indices) = use_cases::scan_repos_with_parents(&config).unwrap();
+
+    // Only 1 git repo — should NOT get a synthetic [multi] entry
+    assert!(
+        !repos.contains(&"[multi] repos".to_string()),
+        "unexpected [multi] repos in {:?}",
+        repos
+    );
+    assert!(multi_indices.is_empty());
+    assert_eq!(repos, vec!["only-repo".to_string()]);
+}
