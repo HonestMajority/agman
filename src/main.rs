@@ -118,7 +118,7 @@ fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
             println!("Running post-flow review...");
 
             // Wipe REVIEW.md for a clean slate
-            let _ = Tmux::wipe_review_md(&task.meta.worktree_path);
+            let _ = Tmux::wipe_review_md(&task.meta.primary_repo().worktree_path);
 
             // Reset review_after so it doesn't re-trigger
             task.meta.review_after = false;
@@ -183,7 +183,7 @@ fn cmd_continue(
     };
 
     // Wipe REVIEW.md to start fresh
-    let _ = Tmux::wipe_review_md(&task.meta.worktree_path);
+    let _ = Tmux::wipe_review_md(&task.meta.primary_repo().worktree_path);
 
     // Log feedback to agent.log for history
     let _ = task.append_feedback_to_log(&feedback_text);
@@ -198,15 +198,15 @@ fn cmd_continue(
     task.update_status(TaskStatus::Running)?;
 
     // Ensure tmux session exists
-    if !Tmux::session_exists(&task.meta.tmux_session) {
+    if !Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
         println!("Recreating tmux session...");
-        Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
-        Tmux::add_review_window(&task.meta.tmux_session, &task.meta.worktree_path)?;
+        Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &task.meta.primary_repo().worktree_path)?;
+        Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &task.meta.primary_repo().worktree_path)?;
     }
 
     // Start the flow in tmux
     let flow_cmd = format!("agman flow-run {}", task.meta.task_id());
-    Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd)?;
+    Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &flow_cmd)?;
 
     println!("Flow started in tmux.");
     println!("To watch: agman attach {}", task.meta.task_id());
@@ -255,10 +255,10 @@ fn cmd_run_command(
     println!();
 
     // Ensure tmux session exists
-    if !Tmux::session_exists(&task.meta.tmux_session) {
+    if !Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
         println!("Recreating tmux session...");
-        Tmux::create_session_with_windows(&task.meta.tmux_session, &task.meta.worktree_path)?;
-        Tmux::add_review_window(&task.meta.tmux_session, &task.meta.worktree_path)?;
+        Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &task.meta.primary_repo().worktree_path)?;
+        Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &task.meta.primary_repo().worktree_path)?;
     }
 
     // Update task to running state
@@ -273,7 +273,7 @@ fn cmd_run_command(
     if let Some(b) = branch {
         flow_cmd.push_str(&format!(" --branch {}", b));
     }
-    Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd)?;
+    Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &flow_cmd)?;
 
     println!("Command flow started in tmux.");
     println!("To watch: agman attach {}", task.meta.task_id());
@@ -299,7 +299,7 @@ fn cmd_command_flow_run(
 
     // Wipe REVIEW.md at the start of review-pr (and continue) flows for a clean slate
     if command_id == "review-pr" {
-        let _ = Tmux::wipe_review_md(&task.meta.worktree_path);
+        let _ = Tmux::wipe_review_md(&task.meta.primary_repo().worktree_path);
     }
 
     println!("Running command: {}", cmd.name);
@@ -349,9 +349,9 @@ fn cmd_command_flow_run(
         println!("Post-action: deleting task after successful merge...");
 
         let task_id = task.meta.task_id();
-        let repo_path = config.repo_path(&task.meta.repo_name);
-        let worktree_path = task.meta.worktree_path.clone();
-        let tmux_session = task.meta.tmux_session.clone();
+        let repo_path = config.repo_path(&task.meta.primary_repo().repo_name);
+        let worktree_path = task.meta.primary_repo().worktree_path.clone();
+        let tmux_session = task.meta.primary_repo().tmux_session.clone();
         let branch_name = task.meta.branch_name.clone();
 
         // Remove worktree

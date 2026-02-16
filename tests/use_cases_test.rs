@@ -29,7 +29,7 @@ fn create_task_with_new_branch() {
 
     // Task directory and meta exist
     assert!(task.dir.join("meta.json").exists());
-    assert_eq!(task.meta.repo_name, "myrepo");
+    assert_eq!(task.meta.name, "myrepo");
     assert_eq!(task.meta.branch_name, "feat-branch");
     assert_eq!(task.meta.status, TaskStatus::Running);
     assert_eq!(task.meta.flow_name, "new");
@@ -39,7 +39,7 @@ fn create_task_with_new_branch() {
     assert!(task_content.contains("Build the widget"));
 
     // Worktree exists
-    assert!(task.meta.worktree_path.exists());
+    assert!(task.meta.primary_repo().worktree_path.exists());
 
     // Repo stats incremented
     let stats = RepoStats::load(&config.repo_stats_path());
@@ -78,7 +78,7 @@ fn create_task_with_existing_worktree() {
     )
     .unwrap();
 
-    assert_eq!(task.meta.worktree_path, wt_path);
+    assert_eq!(task.meta.primary_repo().worktree_path, wt_path);
     assert!(task.dir.join("meta.json").exists());
 }
 
@@ -105,7 +105,7 @@ fn create_task_reuses_existing_worktree() {
     )
     .unwrap();
 
-    assert_eq!(task.meta.worktree_path, wt_path);
+    assert_eq!(task.meta.primary_repo().worktree_path, wt_path);
     assert!(task.dir.join("meta.json").exists());
     assert_eq!(task.meta.branch_name, "reuse-branch");
 
@@ -154,7 +154,7 @@ fn create_setup_only_task() {
 
     // Task directory and meta exist
     assert!(task.dir.join("meta.json").exists());
-    assert_eq!(task.meta.repo_name, "myrepo");
+    assert_eq!(task.meta.name, "myrepo");
     assert_eq!(task.meta.branch_name, "empty-branch");
 
     // Status is Stopped (not Running)
@@ -168,7 +168,7 @@ fn create_setup_only_task() {
     assert_eq!(task_content, "# Goal\n\n# Plan\n");
 
     // Worktree exists
-    assert!(task.meta.worktree_path.exists());
+    assert!(task.meta.primary_repo().worktree_path.exists());
 
     // Repo stats incremented
     let stats = RepoStats::load(&config.repo_stats_path());
@@ -201,7 +201,7 @@ fn delete_task_everything() {
     .unwrap();
 
     let task_dir = task.dir.clone();
-    let worktree_path = task.meta.worktree_path.clone();
+    let worktree_path = task.meta.primary_repo().worktree_path.clone();
     assert!(task_dir.exists());
     assert!(worktree_path.exists());
 
@@ -235,15 +235,14 @@ fn delete_task_only() {
     .unwrap();
 
     let task_dir = task.dir.clone();
-    let worktree_path = task.meta.worktree_path.clone();
-    let task_md = worktree_path.join("TASK.md");
+    let worktree_path = task.meta.primary_repo().worktree_path.clone();
+    let task_md = task_dir.join("TASK.md");
     assert!(task_md.exists());
 
     use_cases::delete_task(&config, task, DeleteMode::TaskOnly).unwrap();
 
-    // Task dir removed
+    // Task dir removed (including TASK.md which now lives in task dir)
     assert!(!task_dir.exists());
-    // TASK.md removed from worktree
     assert!(!task_md.exists());
     // Worktree directory itself still exists (branch preserved)
     assert!(worktree_path.exists());
@@ -603,7 +602,7 @@ fn create_review_task() {
     // Task created with review description
     let task_content = task.read_task().unwrap();
     assert!(task_content.contains("Review branch review-branch"));
-    assert_eq!(task.meta.repo_name, "myrepo");
+    assert_eq!(task.meta.name, "myrepo");
     assert_eq!(task.meta.branch_name, "review-branch");
 
     // Repo stats incremented
@@ -633,7 +632,7 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
     )
     .unwrap();
 
-    let worktree_path = task.meta.worktree_path.clone();
+    let worktree_path = task.meta.primary_repo().worktree_path.clone();
     assert!(worktree_path.exists());
 
     // Delete the task with TaskOnly mode (keeps worktree + branch)
@@ -656,7 +655,7 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
     )
     .unwrap();
 
-    assert_eq!(task2.meta.worktree_path, worktree_path);
+    assert_eq!(task2.meta.primary_repo().worktree_path, worktree_path);
     assert!(task2.dir.join("meta.json").exists());
     let content = task2.read_task().unwrap();
     assert!(content.contains("Recreated task"));
@@ -759,7 +758,7 @@ fn set_linked_pr() {
     .unwrap();
 
     // Add an origin remote pointing to a GitHub URL
-    let wt = task.meta.worktree_path.clone();
+    let wt = task.meta.primary_repo().worktree_path.clone();
     std::process::Command::new("git")
         .args(["remote", "add", "origin", "https://github.com/testowner/testrepo.git"])
         .current_dir(&wt)
@@ -826,7 +825,7 @@ fn set_linked_pr_owned_flag() {
     )
     .unwrap();
 
-    let wt = task.meta.worktree_path.clone();
+    let wt = task.meta.primary_repo().worktree_path.clone();
     std::process::Command::new("git")
         .args(["remote", "add", "origin", "https://github.com/testowner/testrepo.git"])
         .current_dir(&wt)

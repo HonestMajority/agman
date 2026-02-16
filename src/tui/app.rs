@@ -744,7 +744,7 @@ impl App {
         let task_info = self.selected_task().map(|t| {
             (
                 t.meta.task_id(),
-                t.meta.tmux_session.clone(),
+                t.meta.primary_repo().tmux_session.clone(),
                 t.meta.status,
             )
         });
@@ -835,7 +835,7 @@ impl App {
         let task_info = self.selected_task().map(|t| {
             (
                 t.meta.task_id(),
-                t.meta.tmux_session.clone(),
+                t.meta.primary_repo().tmux_session.clone(),
                 t.meta.status,
             )
         });
@@ -857,9 +857,9 @@ impl App {
                 if let Some(task) = self.selected_task() {
                     let _ = Tmux::create_session_with_windows(
                         &tmux_session,
-                        &task.meta.worktree_path,
+                        &task.meta.primary_repo().worktree_path,
                     );
-                    let _ = Tmux::add_review_window(&tmux_session, &task.meta.worktree_path);
+                    let _ = Tmux::add_review_window(&tmux_session, &task.meta.primary_repo().worktree_path);
                 }
             }
 
@@ -881,7 +881,7 @@ impl App {
 
         let task = self.tasks.remove(self.selected_index);
         let task_id = task.meta.task_id();
-        let tmux_session = task.meta.tmux_session.clone();
+        let tmux_session = task.meta.primary_repo().tmux_session.clone();
 
         let uc_mode = match mode {
             DeleteMode::Everything => use_cases::DeleteMode::Everything,
@@ -1155,7 +1155,7 @@ impl App {
 
     fn open_branch_picker(&mut self) {
         let repo_name = match self.selected_task() {
-            Some(t) => t.meta.repo_name.clone(),
+            Some(t) => t.meta.name.clone(),
             None => {
                 self.set_status("No task selected".to_string());
                 return;
@@ -1374,7 +1374,7 @@ impl App {
         let existing_tasks: std::collections::HashSet<String> = self
             .tasks
             .iter()
-            .filter(|t| t.meta.repo_name == repo_name)
+            .filter(|t| t.meta.name == repo_name)
             .map(|t| t.meta.branch_name.clone())
             .collect();
 
@@ -1392,7 +1392,7 @@ impl App {
         let existing_tasks: std::collections::HashSet<String> = self
             .tasks
             .iter()
-            .filter(|t| t.meta.repo_name == repo_name)
+            .filter(|t| t.meta.name == repo_name)
             .map(|t| t.meta.branch_name.clone())
             .collect();
 
@@ -1579,9 +1579,9 @@ impl App {
         };
 
         // Side effects: create tmux session and start flow
-        let worktree_path = task.meta.worktree_path.clone();
+        let worktree_path = task.meta.primary_repo().worktree_path.clone();
         self.log_output("  Creating tmux session...".to_string());
-        if let Err(e) = Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path) {
+        if let Err(e) = Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path) {
             self.log_output(format!("  Error: {}", e));
             if let Some(w) = &mut self.wizard {
                 w.error_message = Some(format!("Failed to create tmux session: {}", e));
@@ -1589,11 +1589,11 @@ impl App {
             return Ok(());
         }
 
-        let _ = Tmux::add_review_window(&task.meta.tmux_session, &worktree_path);
+        let _ = Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path);
 
         let task_id = task.meta.task_id();
         let flow_cmd = format!("agman flow-run {}", task_id);
-        let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &flow_cmd);
+        let _ = Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &flow_cmd);
 
         // Success - close wizard and refresh
         self.wizard = None;
@@ -1649,9 +1649,9 @@ impl App {
         };
 
         // Side effects: create tmux session (but do NOT start any flow)
-        let worktree_path = task.meta.worktree_path.clone();
+        let worktree_path = task.meta.primary_repo().worktree_path.clone();
         self.log_output("  Creating tmux session...".to_string());
-        if let Err(e) = Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path) {
+        if let Err(e) = Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path) {
             self.log_output(format!("  Error: {}", e));
             if let Some(w) = &mut self.wizard {
                 w.error_message = Some(format!("Failed to create tmux session: {}", e));
@@ -1659,7 +1659,7 @@ impl App {
             return Ok(());
         }
 
-        let _ = Tmux::add_review_window(&task.meta.tmux_session, &worktree_path);
+        let _ = Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path);
 
         // No flow-run command sent — this is the key difference from create_task_from_wizard
 
@@ -1869,9 +1869,9 @@ impl App {
         };
 
         // Best-effort: look up the PR for this branch and link it
-        if let Some(pr_number) = lookup_pr_for_branch(&task.meta.worktree_path, &branch_name) {
+        if let Some(pr_number) = lookup_pr_for_branch(&task.meta.primary_repo().worktree_path, &branch_name) {
             let task_id = task.meta.task_id();
-            let wt = task.meta.worktree_path.clone();
+            let wt = task.meta.primary_repo().worktree_path.clone();
             match use_cases::set_linked_pr(&mut task, pr_number, &wt, false) {
                 Ok(()) => {
                     tracing::info!(task_id = %task_id, pr_number, branch = %branch_name, "linked PR to review task");
@@ -1885,10 +1885,10 @@ impl App {
         }
 
         // Side effects: create tmux session and run review command
-        let worktree_path = task.meta.worktree_path.clone();
+        let worktree_path = task.meta.primary_repo().worktree_path.clone();
         self.log_output("  Creating tmux session...".to_string());
         if let Err(e) =
-            Tmux::create_session_with_windows(&task.meta.tmux_session, &worktree_path)
+            Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path)
         {
             self.log_output(format!("  Error: {}", e));
             if let Some(w) = &mut self.review_wizard {
@@ -1897,11 +1897,11 @@ impl App {
             return Ok(());
         }
 
-        Tmux::add_review_window(&task.meta.tmux_session, &worktree_path)?;
+        Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path)?;
 
         let task_id = task.meta.task_id();
         let review_cmd = format!("agman run-command {} review-pr", task_id);
-        let _ = Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &review_cmd);
+        let _ = Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &review_cmd);
 
         // Success - close wizard and refresh
         self.review_wizard = None;
@@ -2139,7 +2139,7 @@ impl App {
                     match self.preview_pane {
                         PreviewPane::Logs => {
                             if let Some(task) = self.selected_task() {
-                                if Tmux::session_exists(&task.meta.tmux_session) {
+                                if Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
                                     return Ok(true);
                                 }
                             }
@@ -2974,7 +2974,7 @@ impl App {
                     t.meta.task_id(),
                     t.meta.status,
                     t.meta.flow_name.clone(),
-                    t.meta.tmux_session.clone(),
+                    t.meta.primary_repo().tmux_session.clone(),
                     t.read_task().unwrap_or_else(|_| "No TASK.md available".to_string()),
                 ),
                 None => return Ok(()),
@@ -3202,7 +3202,7 @@ impl App {
                                 tracing::info!(task_id = ?task_id_for_log, pr_number, owned, "TUI: set linked PR");
                                 let worktree_path = self
                                     .selected_task()
-                                    .map(|t| t.meta.worktree_path.clone());
+                                    .map(|t| t.meta.primary_repo().worktree_path.clone());
                                 if let Some(wt) = worktree_path {
                                     if let Some(task) =
                                         self.tasks.get_mut(self.selected_index)
@@ -3342,7 +3342,7 @@ impl App {
                 (
                     t.meta.task_id(),
                     pr.number,
-                    t.meta.worktree_path.clone(),
+                    t.meta.primary_repo().worktree_path.clone(),
                     t.meta.last_review_count,
                 )
             })
@@ -3443,7 +3443,7 @@ impl App {
         for (task_id, pr_number) in to_delete {
             if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
                 let task = self.tasks.remove(idx);
-                let tmux_session = task.meta.tmux_session.clone();
+                let tmux_session = task.meta.primary_repo().tmux_session.clone();
 
                 let _ = Tmux::kill_session(&tmux_session);
                 let _ = use_cases::delete_task(
@@ -3482,8 +3482,8 @@ impl App {
             }
         };
 
-        let tmux_session = self.tasks[task_idx].meta.tmux_session.clone();
-        let worktree_path = self.tasks[task_idx].meta.worktree_path.clone();
+        let tmux_session = self.tasks[task_idx].meta.primary_repo().tmux_session.clone();
+        let worktree_path = self.tasks[task_idx].meta.primary_repo().worktree_path.clone();
 
         // Set flow_step and status
         use_cases::restart_task(&mut self.tasks[task_idx], selected_step_index)?;
@@ -3561,7 +3561,7 @@ pub fn run_tui(config: Config) -> Result<()> {
 
                 if should_attach {
                     if let Some(task) = app.selected_task() {
-                        attach_session = Some(task.meta.tmux_session.clone());
+                        attach_session = Some(task.meta.primary_repo().tmux_session.clone());
                     }
                     break;
                 }

@@ -152,25 +152,22 @@ pub enum DeleteMode {
 /// It does NOT kill tmux sessions — that's a side effect handled by the caller.
 pub fn delete_task(config: &Config, task: Task, mode: DeleteMode) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), mode = ?mode, "deleting task");
-    let repo_name = &task.meta.repo_name;
-    let branch_name = &task.meta.branch_name;
-    let worktree_path = &task.meta.worktree_path;
 
     match mode {
         DeleteMode::Everything => {
-            let repo_path = config.repo_path(repo_name);
-            let _ = Git::remove_worktree(&repo_path, worktree_path);
-            let _ = Git::delete_branch(&repo_path, branch_name);
+            // Remove worktrees and branches for all repos
+            for repo in &task.meta.repos {
+                let repo_path = config.repo_path(&repo.repo_name);
+                let _ = Git::remove_worktree(&repo_path, &repo.worktree_path);
+                let _ = Git::delete_branch(&repo_path, &task.meta.branch_name);
+            }
         }
         DeleteMode::TaskOnly => {
-            let task_md_path = worktree_path.join("TASK.md");
-            if task_md_path.exists() {
-                let _ = std::fs::remove_file(&task_md_path);
-            }
+            // TASK.md is in the task dir now, no worktree cleanup needed
         }
     }
 
-    // Delete task directory
+    // Delete task directory (includes TASK.md)
     task.delete(config)?;
     Ok(())
 }

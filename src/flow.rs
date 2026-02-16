@@ -23,6 +23,8 @@ pub struct AgentStep {
     pub on_blocked: Option<BlockedAction>,
     #[serde(default)]
     pub on_fail: Option<FailAction>,
+    #[serde(default)]
+    pub post_hook: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

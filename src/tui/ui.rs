@@ -177,7 +177,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     let max_repo_len = app
         .tasks
         .iter()
-        .map(|t| t.meta.repo_name.len())
+        .map(|t| t.meta.name.len())
         .max()
         .unwrap_or(MIN_REPO_WIDTH);
 
@@ -382,10 +382,10 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         let status_str = format!("{}", task.meta.status);
 
         // Build display repo name (truncate if needed)
-        let display_repo = if task.meta.repo_name.len() > repo_width {
-            format!("{}…", &task.meta.repo_name[..repo_width.saturating_sub(1)])
+        let display_repo = if task.meta.name.len() > repo_width {
+            format!("{}…", &task.meta.name[..repo_width.saturating_sub(1)])
         } else {
-            task.meta.repo_name.clone()
+            task.meta.name.clone()
         };
 
         // Build display branch name with optional queue indicator

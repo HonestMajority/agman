@@ -104,7 +104,7 @@ impl Agent {
         );
 
         // Send to the agman window in tmux
-        Tmux::send_keys_to_window(&task.meta.tmux_session, "agman", &cmd)?;
+        Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &cmd)?;
 
         Ok(())
     }
@@ -126,7 +126,7 @@ impl Agent {
         let mut child = Command::new("claude")
             .arg("-p") // print mode
             .arg("--dangerously-skip-permissions") // allow file operations without confirmation
-            .current_dir(&task.meta.worktree_path)
+            .current_dir(task.meta.parent_dir.as_deref().unwrap_or(&task.meta.primary_repo().worktree_path))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -213,20 +213,32 @@ impl AgentRunner {
         }
 
         // Check for .pr-link sidecar file (written by pr-creator or any agent)
-        let pr_link_path = task.meta.worktree_path.join(".pr-link");
-        if pr_link_path.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&pr_link_path) {
-                let lines: Vec<&str> = contents.lines().collect();
-                if lines.len() >= 2 {
-                    if let Ok(number) = lines[0].trim().parse::<u64>() {
-                        let url = lines[1].trim().to_string();
-                        tracing::info!(task_id = %task.meta.task_id(), pr_number = number, pr_url = %url, "detected .pr-link, storing linked PR");
-                        task.set_linked_pr(number, url, true)?;
+        // Check all repo worktree paths, then parent_dir
+        let mut pr_link_candidates: Vec<std::path::PathBuf> = task
+            .meta
+            .repos
+            .iter()
+            .map(|r| r.worktree_path.join(".pr-link"))
+            .collect();
+        if let Some(ref parent) = task.meta.parent_dir {
+            pr_link_candidates.push(parent.join(".pr-link"));
+        }
+        for pr_link_path in &pr_link_candidates {
+            if pr_link_path.exists() {
+                if let Ok(contents) = std::fs::read_to_string(pr_link_path) {
+                    let lines: Vec<&str> = contents.lines().collect();
+                    if lines.len() >= 2 {
+                        if let Ok(number) = lines[0].trim().parse::<u64>() {
+                            let url = lines[1].trim().to_string();
+                            tracing::info!(task_id = %task.meta.task_id(), pr_number = number, pr_url = %url, "detected .pr-link, storing linked PR");
+                            task.set_linked_pr(number, url, true)?;
+                        }
                     }
                 }
+                // Clean up the sidecar file
+                let _ = std::fs::remove_file(pr_link_path);
+                break;
             }
-            // Clean up the sidecar file
-            let _ = std::fs::remove_file(&pr_link_path);
         }
 
         Ok(result)
