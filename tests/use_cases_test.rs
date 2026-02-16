@@ -981,6 +981,20 @@ fn has_remaining_work_empty_remaining() {
     assert!(!task.has_remaining_work());
 }
 
+#[test]
+fn has_remaining_work_missing_heading() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "noheading");
+
+    // Write TASK.md without a ## Remaining heading at all
+    task.write_task("# Goal\nDo stuff\n\n# Plan\n## Completed\n- [x] Done thing\n")
+        .unwrap();
+
+    // Fail-safe: assume work remains when heading is absent
+    assert!(task.has_remaining_work());
+}
+
 // ---------------------------------------------------------------------------
 // Task with slash in branch name
 // ---------------------------------------------------------------------------

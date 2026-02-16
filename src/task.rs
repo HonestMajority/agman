@@ -729,15 +729,17 @@ impl Task {
     /// Check if TASK.md has remaining work items (unchecked `- [ ]` items
     /// under the `## Remaining` heading).
     ///
-    /// Returns `true` if there are unchecked items or if TASK.md is unreadable
-    /// (fail-safe: assume work remains). Returns `false` only when the
-    /// Remaining section exists and contains no unchecked items.
+    /// Returns `true` if there are unchecked items, if TASK.md is unreadable,
+    /// or if the `## Remaining` heading is absent (fail-safe: assume work
+    /// remains). Returns `false` only when the Remaining section exists and
+    /// contains no unchecked items.
     pub fn has_remaining_work(&self) -> bool {
         let content = match self.read_task() {
             Ok(c) => c,
             Err(_) => return true, // fail-safe
         };
 
+        let mut found_remaining = false;
         let mut in_remaining = false;
         for line in content.lines() {
             let trimmed = line.trim();
@@ -751,10 +753,12 @@ impl Task {
                     return true;
                 }
             } else if trimmed == "## Remaining" {
+                found_remaining = true;
                 in_remaining = true;
             }
         }
 
-        false
+        // If heading was never found, fail-safe: assume work remains
+        !found_remaining
     }
 }
