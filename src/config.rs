@@ -193,6 +193,8 @@ impl Config {
             ("pr-check-monitor", PR_CHECK_MONITOR_PROMPT),
             ("pr-reviewer", PR_REVIEWER_PROMPT),
             ("local-merge-executor", LOCAL_MERGE_EXECUTOR_PROMPT),
+            ("push-executor", PUSH_EXECUTOR_PROMPT),
+            ("pr-merge-monitor", PR_MERGE_MONITOR_PROMPT),
         ];
 
         for (name, content) in prompts {
@@ -210,6 +212,7 @@ impl Config {
             ("monitor-pr", MONITOR_PR_COMMAND),
             ("review-pr", REVIEW_PR_COMMAND),
             ("local-merge", LOCAL_MERGE_COMMAND),
+            ("push-and-merge", PUSH_AND_MERGE_COMMAND),
         ];
 
         for (name, content) in commands {
@@ -663,10 +666,16 @@ Instructions:
    - Do NOT include boilerplate sections like "Test Plan", "Test Steps", "How to Test", "Checklist", or similar
    - The description should read as a short paragraph or a few bullet points — not a structured form
    - Note breaking changes only if they actually exist
-5. Create the draft PR using the gh CLI:
-   ```
-   gh pr create --draft --title "Your title" --body "Your description"
-   ```
+5. Before creating the PR, check if a `.pr-ready` file exists in the repo root:
+   - If `.pr-ready` exists: create a **non-draft** PR (ready for review):
+     ```
+     gh pr create --title "Your title" --body "Your description"
+     ```
+     Then delete the `.pr-ready` file: `rm .pr-ready`
+   - If `.pr-ready` does NOT exist: create a **draft** PR:
+     ```
+     gh pr create --draft --title "Your title" --body "Your description"
+     ```
 6. After creating the PR (or finding an existing one), write a `.pr-link` file in the current working directory with the PR number on the first line and the PR URL on the second line:
    ```
    gh pr view --json number,url -q '.number' > .pr-link
@@ -854,6 +863,123 @@ When all CI checks pass, output exactly: AGENT_DONE
 If you cannot fix the CI after 3 attempts, output exactly: INPUT_NEEDED
 "#;
 
+const PUSH_EXECUTOR_PROMPT: &str = r#"You are a push executor agent. Your job is to push the current branch to the remote origin.
+
+Instructions:
+1. Identify the current branch:
+   ```
+   git rev-parse --abbrev-ref HEAD
+   ```
+2. Push the branch to origin:
+   ```
+   git push -u origin HEAD
+   ```
+3. If the push succeeds (including "Everything up-to-date"), proceed to step 4.
+   If the push is rejected (non-fast-forward), output INPUT_NEEDED — do NOT force push.
+4. Write a `.pr-ready` file in the repository root (current working directory) containing the word `ready`:
+   ```
+   echo "ready" > .pr-ready
+   ```
+   This signals the next agent to create a non-draft PR.
+
+IMPORTANT:
+- Do NOT ask questions or wait for input
+- Do NOT use `git push --force` or `git push --force-with-lease`
+- If the push is rejected, output INPUT_NEEDED so a human can resolve it
+- Always write the `.pr-ready` file after a successful push
+
+When the push succeeds and `.pr-ready` is written, output exactly: AGENT_DONE
+If the push is rejected or fails, output exactly: INPUT_NEEDED
+"#;
+
+const PR_MERGE_MONITOR_PROMPT: &str = r#"You are a PR merge monitor agent. Your job is to monitor CI checks, wait for PR mergeability, merge the PR, and update the local main branch.
+
+Instructions:
+
+## Phase 1: Monitor CI
+
+1. Read the PR number from the `.pr-link` file in the repo root (first line).
+2. Poll CI status:
+   ```
+   gh pr checks <number>
+   ```
+3. If all checks pass, proceed to Phase 2.
+4. If checks are still running, `sleep 30` and re-check. Keep polling until they finish.
+5. If any checks fail:
+   a. Get the failed run details:
+      ```
+      gh run view <run-id> --log-failed
+      ```
+   b. Determine if it's a flake or real failure:
+      - FLAKE indicators: network timeouts, rate limits, transient infrastructure errors, non-deterministic failures unrelated to PR changes
+      - REAL FAILURE indicators: compilation errors, test assertions related to PR changes, lint/type errors in changed files
+   c. For flakes: retry the failed jobs:
+      ```
+      gh run rerun <run-id> --failed
+      ```
+      Then go back to step 2.
+   d. For real failures:
+      - Analyze the error logs
+      - Implement a fix in the code
+      - Commit the fix in a NEW, SEPARATE commit with a clear message
+      - Push the commit: `git push`
+      - Increment your fix attempt counter
+      - Go back to step 2
+6. If you have attempted 3 fixes for real failures and checks still fail, output INPUT_NEEDED.
+
+## Phase 2: Wait for Mergeability
+
+7. Check PR mergeability:
+   ```
+   gh pr view <number> --json mergeable,mergeStateStatus,reviews,reviewDecision
+   ```
+8. If `mergeStateStatus` is `CLEAN` or `UNSTABLE` (and mergeable is true), proceed to Phase 3.
+9. If the PR requires review approval (`reviewDecision` is `REVIEW_REQUIRED` or similar) and has not been approved yet:
+   - Print a message: "Waiting for review approval..."
+   - `sleep 60` and re-check
+   - After 30 minutes of waiting (approximately 30 polls), output INPUT_NEEDED with a message that review approval is needed
+10. If `mergeStateStatus` is `BLOCKED` for reasons other than review, output INPUT_NEEDED with details.
+11. If `mergeStateStatus` is `BEHIND`, attempt to update the branch:
+    ```
+    gh pr merge <number> --merge --auto 2>/dev/null || true
+    ```
+    Or:
+    ```
+    git fetch origin main && git rebase origin/main && git push
+    ```
+    Then re-check mergeability.
+
+## Phase 3: Merge and Update Local Main
+
+12. Merge the PR:
+    ```
+    gh pr merge <number> --merge --delete-branch
+    ```
+    If merge fails, output INPUT_NEEDED with the error details.
+13. Update the local main branch. Use `git worktree list` to find where main (or master) is checked out:
+    - Parse the output to find a line containing `[main]` or `[master]`
+    - If found, `cd` to that worktree path and run:
+      ```
+      git pull --ff-only
+      ```
+    - If main is NOT checked out in any worktree, find the main repo directory:
+      - Use `git rev-parse --git-common-dir` to find the shared git dir
+      - The main repo is typically the parent of the `.git` dir (or for worktrees, discoverable from the common dir)
+      - Run: `git fetch origin main:main` (or `master:master`) to fast-forward the local ref
+14. Print a summary: "PR #<number> merged successfully. Local main updated."
+
+IMPORTANT:
+- Do NOT ask questions or wait for input
+- Each CI fix must be a separate commit — do not amend previous commits
+- Make minimal, focused fixes — do not refactor unrelated code
+- Always push after committing a fix so CI picks up the changes
+- Be patient with running checks — poll every 30 seconds for CI, every 60 seconds for mergeability
+- Do NOT force push at any point
+
+When the PR is merged and local main is updated, output exactly: AGENT_DONE
+If you cannot fix CI after 3 attempts, or merge fails, or review approval times out, output exactly: INPUT_NEEDED
+"#;
+
 const REVIEW_PR_COMMAND: &str = r#"name: Review PR
 id: review-pr
 description: Reviews the current PR or full branch diff if no PR exists, writes findings to REVIEW.md
@@ -871,6 +997,20 @@ post_action: delete_task
 
 steps:
   - agent: local-merge-executor
+    until: AGENT_DONE
+"#;
+
+const PUSH_AND_MERGE_COMMAND: &str = r#"name: Push & Merge
+id: push-and-merge
+description: Pushes branch, creates PR, monitors CI, waits for approval, merges, and updates local main
+post_action: delete_task
+
+steps:
+  - agent: push-executor
+    until: AGENT_DONE
+  - agent: pr-creator
+    until: AGENT_DONE
+  - agent: pr-merge-monitor
     until: AGENT_DONE
 "#;
 
