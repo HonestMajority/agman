@@ -1233,20 +1233,17 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 }
             }
             let unread_count = app.notifications.iter().filter(|n| n.unread).count();
-            if unread_count == 0 {
-                spans.extend([
-                    Span::styled("N", Style::default().fg(Color::LightYellow)),
-                    Span::styled(" notif  ", Style::default().fg(Color::DarkGray)),
-                ]);
+            let notif_label = if unread_count > 0 {
+                format!(" notif({})  ", unread_count)
+            } else if !app.gh_notif_first_poll_done {
+                " notif(...)  ".to_string()
             } else {
-                spans.extend([
-                    Span::styled("N", Style::default().fg(Color::LightYellow)),
-                    Span::styled(
-                        format!(" notif({})  ", unread_count),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]);
-            }
+                " notif  ".to_string()
+            };
+            spans.extend([
+                Span::styled("N", Style::default().fg(Color::LightYellow)),
+                Span::styled(notif_label, Style::default().fg(Color::DarkGray)),
+            ]);
             spans.extend([
                 Span::styled("P", Style::default().fg(Color::LightYellow)),
                 Span::styled(" PR  ", Style::default().fg(Color::DarkGray)),
@@ -2680,7 +2677,12 @@ fn draw_notifications(f: &mut Frame, app: &App, area: Rect) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
             .title_bottom(clock_title());
-        let content = Paragraph::new("No notifications")
+        let empty_text = if app.gh_notif_first_poll_done {
+            "No notifications"
+        } else {
+            "Fetching notifications..."
+        };
+        let content = Paragraph::new(empty_text)
             .alignment(Alignment::Center)
             .block(block);
         f.render_widget(content, area);

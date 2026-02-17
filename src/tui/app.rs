@@ -436,6 +436,7 @@ pub struct App {
     gh_notif_rx: tokio_mpsc::UnboundedReceiver<use_cases::NotifPollResult>,
     gh_notif_poll_active: bool,
     gh_notif_last_modified: Option<String>,
+    pub gh_notif_first_poll_done: bool,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -505,6 +506,7 @@ impl App {
             gh_notif_rx,
             gh_notif_poll_active: false,
             gh_notif_last_modified: None,
+            gh_notif_first_poll_done: false,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -3875,6 +3877,11 @@ impl App {
             Err(_) => return,
         };
         self.gh_notif_poll_active = false;
+
+        if !self.gh_notif_first_poll_done {
+            self.gh_notif_first_poll_done = true;
+            tracing::debug!("first github notification poll completed");
+        }
 
         if result.not_modified {
             tracing::debug!("github notifications unchanged (304)");
