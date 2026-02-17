@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -775,4 +776,198 @@ pub enum DirKind {
     MultiRepoParent,
     /// A plain directory.
     Plain,
+}
+
+
+// ---------------------------------------------------------------------------
+// GitHub Notifications
+// ---------------------------------------------------------------------------
+
+/// A single GitHub notification, parsed from the `GET /notifications` API response.
+#[derive(Debug, Clone)]
+pub struct GithubNotification {
+    pub id: String,
+    pub repo_full_name: String,
+    pub title: String,
+    pub reason: String,
+    pub subject_type: String,
+    pub updated_at: String,
+    pub unread: bool,
+    pub browser_url: String,
+}
+
+/// Raw JSON shape returned by `GET /notifications` (subset of fields we care about).
+#[derive(Deserialize)]
+struct RawNotification {
+    id: String,
+    repository: RawRepo,
+    subject: RawSubject,
+    reason: String,
+    updated_at: String,
+    unread: bool,
+}
+
+#[derive(Deserialize)]
+struct RawRepo {
+    full_name: String,
+}
+
+#[derive(Deserialize)]
+struct RawSubject {
+    title: String,
+    url: Option<String>,
+    #[serde(rename = "type")]
+    subject_type: String,
+}
+
+/// Convert a GitHub API URL to a browser-openable URL.
+///
+/// Transforms:
+/// - `https://api.github.com/repos/owner/repo/pulls/42` → `https://github.com/owner/repo/pull/42`
+/// - `https://api.github.com/repos/owner/repo/issues/7` → `https://github.com/owner/repo/issues/7`
+/// - `https://api.github.com/repos/owner/repo/commits/abc` → `https://github.com/owner/repo/commit/abc`
+///
+/// Falls back to `fallback` if `api_url` is empty.
+pub fn api_url_to_browser_url(api_url: &str, fallback: &str) -> String {
+    if api_url.is_empty() {
+        return fallback.to_string();
+    }
+    let url = api_url
+        .replace("https://api.github.com/repos/", "https://github.com/")
+        .replace("/pulls/", "/pull/")
+        .replace("/commits/", "/commit/");
+    url
+}
+
+/// Parse the JSON response from `gh api /notifications` into a vec of notifications.
+pub fn parse_notifications_json(json_str: &str) -> Vec<GithubNotification> {
+    let raw: Vec<RawNotification> = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to parse notifications JSON");
+            return Vec::new();
+        }
+    };
+
+    raw.into_iter()
+        .map(|n| {
+            let fallback = format!("https://github.com/{}", n.repository.full_name);
+            let browser_url = api_url_to_browser_url(
+                n.subject.url.as_deref().unwrap_or(""),
+                &fallback,
+            );
+            GithubNotification {
+                id: n.id,
+                repo_full_name: n.repository.full_name,
+                title: n.subject.title,
+                reason: n.reason,
+                subject_type: n.subject.subject_type,
+                updated_at: n.updated_at,
+                unread: n.unread,
+                browser_url,
+            }
+        })
+        .collect()
+}
+
+/// Result of a GitHub notifications poll.
+pub struct NotifPollResult {
+    pub notifications: Vec<GithubNotification>,
+    pub last_modified: Option<String>,
+    pub not_modified: bool,
+}
+
+/// Fetch GitHub notifications via `gh api /notifications`.
+///
+/// Sends `If-Modified-Since` when `last_modified` is provided. Returns parsed
+/// notifications, the new `Last-Modified` header value, and whether the response
+/// was 304 Not Modified.
+pub fn fetch_github_notifications(last_modified: Option<&str>) -> NotifPollResult {
+    let mut cmd = Command::new("gh");
+    cmd.args(["api", "/notifications", "--include"]);
+
+    if let Some(lm) = last_modified {
+        cmd.args(["--header", &format!("If-Modified-Since: {}", lm)]);
+    }
+
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to run gh api /notifications");
+            return NotifPollResult {
+                notifications: Vec::new(),
+                last_modified: None,
+                not_modified: false,
+            };
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // `gh api --include` prepends HTTP headers before the JSON body.
+    // Check for 304 in the status line.
+    if stdout.contains("HTTP/") && stdout.contains("304") {
+        tracing::debug!("github notifications: 304 not modified");
+        return NotifPollResult {
+            notifications: Vec::new(),
+            last_modified: last_modified.map(|s| s.to_string()),
+            not_modified: true,
+        };
+    }
+
+    // Extract Last-Modified header from the response headers
+    let new_last_modified = stdout
+        .lines()
+        .find(|line| line.to_lowercase().starts_with("last-modified:"))
+        .map(|line| line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string());
+
+    // Find JSON body: first line starting with '[' (the headers end with a blank line)
+    let json_start = stdout.find("\n[").or_else(|| {
+        // Sometimes the body starts right at `[` on a line
+        if stdout.starts_with('[') {
+            Some(0)
+        } else {
+            stdout.find("\r\n[")
+        }
+    });
+
+    let notifications = match json_start {
+        Some(pos) => {
+            let json_str = &stdout[pos..].trim();
+            parse_notifications_json(json_str)
+        }
+        None => {
+            // Could be an empty response or error
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::warn!(stderr = %stderr, "gh api /notifications returned error");
+            }
+            Vec::new()
+        }
+    };
+
+    NotifPollResult {
+        notifications,
+        last_modified: new_last_modified,
+        not_modified: false,
+    }
+}
+
+/// Mark a GitHub notification thread as done (removes it from inbox).
+pub fn dismiss_github_notification(thread_id: &str) -> Result<()> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            &format!("/notifications/threads/{}", thread_id),
+            "--method",
+            "DELETE",
+        ])
+        .output()
+        .context("failed to run gh api DELETE notification")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("failed to dismiss notification {}: {}", thread_id, stderr);
+    }
+    Ok(())
 }

@@ -111,6 +111,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_preview(f, app, chunks[0]);
             draw_session_picker(f, app);
         }
+        View::Notifications => draw_notifications(f, app, chunks[0]),
     }
 
     if output_height > 0 {
@@ -1231,6 +1232,20 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     spans.push(Span::styled(" clear ✓  ", Style::default().fg(Color::DarkGray)));
                 }
             }
+            if app.notifications.is_empty() {
+                spans.extend([
+                    Span::styled("N", Style::default().fg(Color::LightYellow)),
+                    Span::styled(" notif  ", Style::default().fg(Color::DarkGray)),
+                ]);
+            } else {
+                spans.extend([
+                    Span::styled("N", Style::default().fg(Color::LightYellow)),
+                    Span::styled(
+                        format!(" notif({})  ", app.notifications.len()),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]);
+            }
             spans.extend([
                 Span::styled("P", Style::default().fg(Color::LightYellow)),
                 Span::styled(" PR  ", Style::default().fg(Color::DarkGray)),
@@ -1481,6 +1496,18 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc", Style::default().fg(Color::LightRed)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
+        }
+        View::Notifications => {
+            vec![
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("d", Style::default().fg(Color::LightRed)),
+                Span::styled(" done  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("o", Style::default().fg(Color::LightGreen)),
+                Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("q", Style::default().fg(Color::LightCyan)),
+                Span::styled(" back", Style::default().fg(Color::DarkGray)),
             ]
         }
     };
@@ -2640,6 +2667,61 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
             .border_style(Style::default().fg(Color::LightCyan)),
     );
     f.render_widget(list, chunks[1]);
+}
+
+fn draw_notifications(f: &mut Frame, app: &App, area: Rect) {
+    let count = app.notifications.len();
+    let title = format!(" Notifications ({}) ", count);
+
+    if app.notifications.is_empty() {
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title_bottom(clock_title());
+        let content = Paragraph::new("No notifications")
+            .alignment(Alignment::Center)
+            .block(block);
+        f.render_widget(content, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .notifications
+        .iter()
+        .enumerate()
+        .map(|(i, notif)| {
+            let style = if i == app.selected_notif_index {
+                Style::default().bg(Color::Rgb(40, 40, 50))
+            } else {
+                Style::default()
+            };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("[{}] ", notif.repo_full_name),
+                    Style::default().fg(Color::LightCyan),
+                ),
+                Span::styled(&notif.title, Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("  ({}, {})", notif.reason, notif.subject_type),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+
+            ListItem::new(line).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title_bottom(clock_title()),
+    );
+
+    f.render_widget(list, area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

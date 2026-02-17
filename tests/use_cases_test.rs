@@ -1415,3 +1415,93 @@ fn classify_directory_git_repo_takes_priority_over_children() {
         use_cases::DirKind::GitRepo
     );
 }
+
+// ---------------------------------------------------------------------------
+// GitHub Notifications
+// ---------------------------------------------------------------------------
+
+#[test]
+fn api_url_to_browser_url_transforms() {
+    // PR URL: /pulls/ → /pull/
+    assert_eq!(
+        use_cases::api_url_to_browser_url(
+            "https://api.github.com/repos/owner/repo/pulls/42",
+            "https://github.com/owner/repo",
+        ),
+        "https://github.com/owner/repo/pull/42"
+    );
+
+    // Issue URL: /issues/ stays the same
+    assert_eq!(
+        use_cases::api_url_to_browser_url(
+            "https://api.github.com/repos/owner/repo/issues/7",
+            "https://github.com/owner/repo",
+        ),
+        "https://github.com/owner/repo/issues/7"
+    );
+
+    // Commit URL: /commits/ → /commit/
+    assert_eq!(
+        use_cases::api_url_to_browser_url(
+            "https://api.github.com/repos/owner/repo/commits/abc123",
+            "https://github.com/owner/repo",
+        ),
+        "https://github.com/owner/repo/commit/abc123"
+    );
+
+    // Empty URL falls back
+    assert_eq!(
+        use_cases::api_url_to_browser_url("", "https://github.com/owner/repo"),
+        "https://github.com/owner/repo"
+    );
+}
+
+#[test]
+fn parse_notifications_json_extracts_fields() {
+    let json = r#"[
+        {
+            "id": "123",
+            "repository": { "full_name": "owner/repo" },
+            "subject": {
+                "title": "Fix the bug",
+                "url": "https://api.github.com/repos/owner/repo/pulls/42",
+                "type": "PullRequest"
+            },
+            "reason": "review_requested",
+            "updated_at": "2025-01-01T00:00:00Z",
+            "unread": true
+        },
+        {
+            "id": "456",
+            "repository": { "full_name": "other/project" },
+            "subject": {
+                "title": "Add feature",
+                "url": null,
+                "type": "Issue"
+            },
+            "reason": "mention",
+            "updated_at": "2025-01-02T00:00:00Z",
+            "unread": false
+        }
+    ]"#;
+
+    let notifs = use_cases::parse_notifications_json(json);
+    assert_eq!(notifs.len(), 2);
+
+    assert_eq!(notifs[0].id, "123");
+    assert_eq!(notifs[0].repo_full_name, "owner/repo");
+    assert_eq!(notifs[0].title, "Fix the bug");
+    assert_eq!(notifs[0].reason, "review_requested");
+    assert_eq!(notifs[0].subject_type, "PullRequest");
+    assert_eq!(notifs[0].unread, true);
+    assert_eq!(notifs[0].browser_url, "https://github.com/owner/repo/pull/42");
+
+    assert_eq!(notifs[1].id, "456");
+    assert_eq!(notifs[1].repo_full_name, "other/project");
+    assert_eq!(notifs[1].title, "Add feature");
+    assert_eq!(notifs[1].reason, "mention");
+    assert_eq!(notifs[1].subject_type, "Issue");
+    assert_eq!(notifs[1].unread, false);
+    // null subject.url falls back to repo URL
+    assert_eq!(notifs[1].browser_url, "https://github.com/other/project");
+}
