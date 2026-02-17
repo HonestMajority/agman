@@ -53,6 +53,7 @@ pub enum View {
     SetLinkedPr,
     DirectoryPicker,
     SessionPicker,
+    Notifications,
 }
 
 /// Which wizard requested the directory picker.
@@ -427,6 +428,14 @@ pub struct App {
     pub session_picker_sessions: Vec<(String, String)>, // (repo_name, tmux_session)
     pub selected_session_index: usize,
     pub attach_session_name: Option<String>,
+    // GitHub notifications polling
+    pub notifications: Vec<use_cases::GithubNotification>,
+    pub selected_notif_index: usize,
+    pub last_gh_notif_poll: Instant,
+    gh_notif_tx: tokio_mpsc::UnboundedSender<use_cases::NotifPollResult>,
+    gh_notif_rx: tokio_mpsc::UnboundedReceiver<use_cases::NotifPollResult>,
+    gh_notif_poll_active: bool,
+    gh_notif_last_modified: Option<String>,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -441,6 +450,7 @@ impl App {
         let feedback_editor = VimTextArea::new();
         let task_file_editor = VimTextArea::new();
         let (pr_poll_tx, pr_poll_rx) = tokio_mpsc::unbounded_channel();
+        let (gh_notif_tx, gh_notif_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
 
         Ok(Self {
@@ -488,6 +498,13 @@ impl App {
             session_picker_sessions: Vec::new(),
             selected_session_index: 0,
             attach_session_name: None,
+            notifications: Vec::new(),
+            selected_notif_index: 0,
+            last_gh_notif_poll: Instant::now(),
+            gh_notif_tx,
+            gh_notif_rx,
+            gh_notif_poll_active: false,
+            gh_notif_last_modified: None,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -2096,6 +2113,7 @@ impl App {
             View::SetLinkedPr => self.handle_set_linked_pr_event(event),
             View::DirectoryPicker => self.handle_directory_picker_event(event),
             View::SessionPicker => self.handle_session_picker_event(event),
+            View::Notifications => self.handle_notifications_event(event),
         }
     }
 
@@ -2219,6 +2237,10 @@ impl App {
                 }
                 KeyCode::Char('P') => {
                     self.open_set_linked_pr();
+                }
+                KeyCode::Char('N') => {
+                    self.selected_notif_index = 0;
+                    self.view = View::Notifications;
                 }
                 _ => {}
             }
@@ -3002,6 +3024,89 @@ impl App {
         Ok(false)
     }
 
+    fn handle_notifications_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = View::TaskList;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if !self.notifications.is_empty()
+                        && self.selected_notif_index < self.notifications.len() - 1
+                    {
+                        self.selected_notif_index += 1;
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if self.selected_notif_index > 0 {
+                        self.selected_notif_index -= 1;
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if let Some(notif) = self.notifications.get(self.selected_notif_index) {
+                        let thread_id = notif.id.clone();
+                        tracing::info!(thread_id = %thread_id, "dismissing github notification");
+
+                        // Optimistic removal
+                        self.notifications.remove(self.selected_notif_index);
+                        if self.selected_notif_index >= self.notifications.len()
+                            && !self.notifications.is_empty()
+                        {
+                            self.selected_notif_index = self.notifications.len() - 1;
+                        }
+
+                        // Fire-and-forget background dismiss
+                        self.rt.spawn(async move {
+                            let _ = tokio::task::spawn_blocking(move || {
+                                if let Err(e) = use_cases::dismiss_github_notification(&thread_id) {
+                                    tracing::warn!(thread_id = %thread_id, error = %e, "failed to dismiss notification");
+                                }
+                            })
+                            .await;
+                        });
+
+                        self.set_status("Notification dismissed".to_string());
+                    }
+                }
+                KeyCode::Char('o') | KeyCode::Enter => {
+                    if let Some(notif) = self.notifications.get_mut(self.selected_notif_index) {
+                        let url = notif.browser_url.clone();
+                        let thread_id = notif.id.clone();
+                        tracing::info!(url = %url, thread_id = %thread_id, "opening notification in browser");
+                        open_url(&url);
+
+                        // Optimistic mark-as-read
+                        if notif.unread {
+                            notif.unread = false;
+                            tracing::info!(thread_id = %thread_id, "marking notification as read");
+
+                            // Fire-and-forget background PATCH
+                            self.rt.spawn(async move {
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    if let Err(e) =
+                                        use_cases::mark_notification_read(&thread_id)
+                                    {
+                                        tracing::warn!(thread_id = %thread_id, error = %e, "failed to mark notification as read");
+                                    }
+                                })
+                                .await;
+                            });
+                        }
+
+                        self.set_status("Opening notification...".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
     fn handle_review_wizard_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             // Check for Ctrl+C to quit
@@ -3738,6 +3843,59 @@ impl App {
         }
     }
 
+    /// Spawn a background task to poll GitHub notifications.
+    fn start_gh_notif_poll(&mut self) {
+        if self.gh_notif_poll_active {
+            return;
+        }
+
+        self.gh_notif_poll_active = true;
+        let tx = self.gh_notif_tx.clone();
+        let last_modified = self.gh_notif_last_modified.clone();
+
+        tracing::debug!("starting github notification poll");
+        self.rt.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                use_cases::fetch_github_notifications(last_modified.as_deref())
+            })
+            .await
+            .unwrap_or_else(|_| use_cases::NotifPollResult {
+                notifications: Vec::new(),
+                last_modified: None,
+                not_modified: false,
+            });
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Check for completed notification poll results (non-blocking) and apply.
+    fn apply_gh_notif_results(&mut self) {
+        let result = match self.gh_notif_rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        self.gh_notif_poll_active = false;
+
+        if result.not_modified {
+            tracing::debug!("github notifications unchanged (304)");
+            return;
+        }
+
+        if let Some(lm) = result.last_modified {
+            self.gh_notif_last_modified = Some(lm);
+        }
+
+        let count = result.notifications.len();
+        self.notifications = result.notifications;
+
+        // Clamp selection index
+        if self.selected_notif_index >= self.notifications.len() && !self.notifications.is_empty() {
+            self.selected_notif_index = self.notifications.len() - 1;
+        }
+
+        tracing::debug!(notification_count = count, "applied github notification poll results");
+    }
+
     fn execute_restart_wizard(&mut self) -> Result<()> {
         let (task_id, selected_step_index) = match &self.restart_wizard {
             Some(w) => (w.task_id.clone(), w.selected_step_index),
@@ -3888,6 +4046,15 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed background PR poll results (non-blocking)
             app.apply_pr_poll_results();
+
+            // Poll GitHub notifications every 60 seconds (regardless of view)
+            if app.last_gh_notif_poll.elapsed() >= Duration::from_secs(60) {
+                app.start_gh_notif_poll();
+                app.last_gh_notif_poll = Instant::now();
+            }
+
+            // Check for completed notification poll results (non-blocking)
+            app.apply_gh_notif_results();
 
             // Check for restart signal (written by release.sh when agman is rebuilt)
             #[cfg(unix)]
