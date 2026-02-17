@@ -971,3 +971,25 @@ pub fn dismiss_github_notification(thread_id: &str) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn mark_notification_read(thread_id: &str) -> Result<()> {
+    let output = Command::new("gh")
+        .args([
+            "api",
+            &format!("/notifications/threads/{}", thread_id),
+            "--method",
+            "PATCH",
+        ])
+        .output()
+        .context("failed to run gh api PATCH notification")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "failed to mark notification {} as read: {}",
+            thread_id,
+            stderr
+        );
+    }
+    Ok(())
+}

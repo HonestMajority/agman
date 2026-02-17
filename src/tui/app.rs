@@ -3074,10 +3074,30 @@ impl App {
                     }
                 }
                 KeyCode::Char('o') | KeyCode::Enter => {
-                    if let Some(notif) = self.notifications.get(self.selected_notif_index) {
+                    if let Some(notif) = self.notifications.get_mut(self.selected_notif_index) {
                         let url = notif.browser_url.clone();
-                        tracing::info!(url = %url, "opening notification in browser");
+                        let thread_id = notif.id.clone();
+                        tracing::info!(url = %url, thread_id = %thread_id, "opening notification in browser");
                         open_url(&url);
+
+                        // Optimistic mark-as-read
+                        if notif.unread {
+                            notif.unread = false;
+                            tracing::info!(thread_id = %thread_id, "marking notification as read");
+
+                            // Fire-and-forget background PATCH
+                            self.rt.spawn(async move {
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    if let Err(e) =
+                                        use_cases::mark_notification_read(&thread_id)
+                                    {
+                                        tracing::warn!(thread_id = %thread_id, error = %e, "failed to mark notification as read");
+                                    }
+                                })
+                                .await;
+                            });
+                        }
+
                         self.set_status("Opening notification...".to_string());
                     }
                 }

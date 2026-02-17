@@ -1232,7 +1232,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     spans.push(Span::styled(" clear ✓  ", Style::default().fg(Color::DarkGray)));
                 }
             }
-            if app.notifications.is_empty() {
+            let unread_count = app.notifications.iter().filter(|n| n.unread).count();
+            if unread_count == 0 {
                 spans.extend([
                     Span::styled("N", Style::default().fg(Color::LightYellow)),
                     Span::styled(" notif  ", Style::default().fg(Color::DarkGray)),
@@ -1241,7 +1242,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 spans.extend([
                     Span::styled("N", Style::default().fg(Color::LightYellow)),
                     Span::styled(
-                        format!(" notif({})  ", app.notifications.len()),
+                        format!(" notif({})  ", unread_count),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]);
@@ -2697,12 +2698,18 @@ fn draw_notifications(f: &mut Frame, app: &App, area: Rect) {
                 Style::default()
             };
 
+            let (repo_color, title_color) = if notif.unread {
+                (Color::LightCyan, Color::White)
+            } else {
+                (Color::DarkGray, Color::DarkGray)
+            };
+
             let line = Line::from(vec![
                 Span::styled(
                     format!("[{}] ", notif.repo_full_name),
-                    Style::default().fg(Color::LightCyan),
+                    Style::default().fg(repo_color),
                 ),
-                Span::styled(&notif.title, Style::default().fg(Color::White)),
+                Span::styled(&notif.title, Style::default().fg(title_color)),
                 Span::styled(
                     format!("  ({}, {})", notif.reason, notif.subject_type),
                     Style::default().fg(Color::DarkGray),
