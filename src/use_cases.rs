@@ -877,14 +877,14 @@ pub struct NotifPollResult {
     pub not_modified: bool,
 }
 
-/// Fetch GitHub notifications via `gh api /notifications`.
+/// Fetch GitHub notifications via `gh api /notifications?all=true&per_page=100`.
 ///
 /// Sends `If-Modified-Since` when `last_modified` is provided. Returns parsed
 /// notifications, the new `Last-Modified` header value, and whether the response
 /// was 304 Not Modified.
 pub fn fetch_github_notifications(last_modified: Option<&str>) -> NotifPollResult {
     let mut cmd = Command::new("gh");
-    cmd.args(["api", "/notifications", "--include"]);
+    cmd.args(["api", "/notifications?all=true&per_page=100", "--include"]);
 
     if let Some(lm) = last_modified {
         cmd.args(["--header", &format!("If-Modified-Since: {}", lm)]);
@@ -893,7 +893,7 @@ pub fn fetch_github_notifications(last_modified: Option<&str>) -> NotifPollResul
     let output = match cmd.output() {
         Ok(o) => o,
         Err(e) => {
-            tracing::warn!(error = %e, "failed to run gh api /notifications");
+            tracing::warn!(error = %e, "failed to run gh api /notifications?all=true&per_page=100");
             return NotifPollResult {
                 notifications: Vec::new(),
                 last_modified: None,
@@ -940,7 +940,7 @@ pub fn fetch_github_notifications(last_modified: Option<&str>) -> NotifPollResul
             // Could be an empty response or error
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!(stderr = %stderr, "gh api /notifications returned error");
+                tracing::warn!(stderr = %stderr, "gh api /notifications?all=true&per_page=100 returned error");
             }
             Vec::new()
         }
