@@ -119,8 +119,13 @@ impl Git {
 
     /// Create a new worktree with a new branch
     /// Tries to base on origin/main if available, falls back to local main or HEAD
-    pub fn create_worktree(config: &Config, repo_name: &str, branch_name: &str, base_branch: Option<&str>) -> Result<PathBuf> {
-        Self::create_worktree_impl(config, repo_name, branch_name, false, base_branch)
+    pub fn create_worktree(
+        config: &Config,
+        repo_name: &str,
+        branch_name: &str,
+        base_ref: Option<&str>,
+    ) -> Result<PathBuf> {
+        Self::create_worktree_impl(config, repo_name, branch_name, base_ref, false)
     }
 
     /// Create a new worktree with a new branch (quiet mode for TUI)
@@ -128,17 +133,17 @@ impl Git {
         config: &Config,
         repo_name: &str,
         branch_name: &str,
-        base_branch: Option<&str>,
+        base_ref: Option<&str>,
     ) -> Result<PathBuf> {
-        Self::create_worktree_impl(config, repo_name, branch_name, true, base_branch)
+        Self::create_worktree_impl(config, repo_name, branch_name, base_ref, true)
     }
 
     fn create_worktree_impl(
         config: &Config,
         repo_name: &str,
         branch_name: &str,
+        base_ref: Option<&str>,
         quiet: bool,
-        base_branch: Option<&str>,
     ) -> Result<PathBuf> {
         tracing::info!(repo = repo_name, branch = branch_name, "creating worktree");
         let repo_path = config.repo_path(repo_name);
@@ -182,9 +187,9 @@ impl Git {
             println!("skipped (no remote)");
         }
 
-        // Find the best base ref (use explicit base_branch if provided)
-        let base_ref = match base_branch {
-            Some(b) => b.to_string(),
+        // Use provided base_ref or auto-detect
+        let base_ref = match base_ref {
+            Some(r) => r.to_string(),
             None => Self::find_base_ref(&repo_path),
         };
         if !quiet {
@@ -199,7 +204,7 @@ impl Git {
             .args([
                 "worktree",
                 "add",
-                "-b",
+                "-B",
                 branch_name,
                 worktree_path.to_str().unwrap(),
                 &base_ref,
