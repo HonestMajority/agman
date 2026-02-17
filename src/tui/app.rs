@@ -435,7 +435,6 @@ pub struct App {
     gh_notif_tx: tokio_mpsc::UnboundedSender<use_cases::NotifPollResult>,
     gh_notif_rx: tokio_mpsc::UnboundedReceiver<use_cases::NotifPollResult>,
     gh_notif_poll_active: bool,
-    gh_notif_last_modified: Option<String>,
     pub gh_notif_first_poll_done: bool,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
@@ -505,7 +504,6 @@ impl App {
             gh_notif_tx,
             gh_notif_rx,
             gh_notif_poll_active: false,
-            gh_notif_last_modified: None,
             gh_notif_first_poll_done: false,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
@@ -3072,6 +3070,9 @@ impl App {
                             .await;
                         });
 
+                        // Trigger immediate re-poll to sync with API state
+                        self.last_gh_notif_poll = Instant::now() - Duration::from_secs(60);
+
                         self.set_status("Notification dismissed".to_string());
                     }
                 }
@@ -3098,6 +3099,9 @@ impl App {
                                 })
                                 .await;
                             });
+
+                            // Trigger immediate re-poll to sync with API state
+                            self.last_gh_notif_poll = Instant::now() - Duration::from_secs(60);
                         }
 
                         self.set_status("Opening notification...".to_string());
@@ -3853,19 +3857,14 @@ impl App {
 
         self.gh_notif_poll_active = true;
         let tx = self.gh_notif_tx.clone();
-        let last_modified = self.gh_notif_last_modified.clone();
 
         tracing::debug!("starting github notification poll");
         self.rt.spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                use_cases::fetch_github_notifications(last_modified.as_deref())
-            })
-            .await
-            .unwrap_or_else(|_| use_cases::NotifPollResult {
-                notifications: Vec::new(),
-                last_modified: None,
-                not_modified: false,
-            });
+            let result = tokio::task::spawn_blocking(use_cases::fetch_github_notifications)
+                .await
+                .unwrap_or_else(|_| use_cases::NotifPollResult {
+                    notifications: Vec::new(),
+                });
             let _ = tx.send(result);
         });
     }
@@ -3881,15 +3880,6 @@ impl App {
         if !self.gh_notif_first_poll_done {
             self.gh_notif_first_poll_done = true;
             tracing::debug!("first github notification poll completed");
-        }
-
-        if result.not_modified {
-            tracing::debug!("github notifications unchanged (304)");
-            return;
-        }
-
-        if let Some(lm) = result.last_modified {
-            self.gh_notif_last_modified = Some(lm);
         }
 
         let count = result.notifications.len();
