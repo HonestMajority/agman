@@ -23,6 +23,11 @@ pub struct AgentStep {
     pub on_fail: Option<FailAction>,
     #[serde(default)]
     pub post_hook: Option<String>,
+    /// Optional shell command to run before the agent. If it exits 0, the step
+    /// is treated as `AGENT_DONE` and the agent is skipped. If it fails, the
+    /// agent runs as normal.
+    #[serde(default)]
+    pub pre_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

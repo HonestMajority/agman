@@ -193,6 +193,8 @@ impl Config {
             ("pr-check-monitor", PR_CHECK_MONITOR_PROMPT),
             ("pr-reviewer", PR_REVIEWER_PROMPT),
             ("local-merge-executor", LOCAL_MERGE_EXECUTOR_PROMPT),
+            ("push-rebaser", PUSH_REBASER_PROMPT),
+            ("pr-merge-agent", PR_MERGE_AGENT_PROMPT),
         ];
 
         for (name, content) in prompts {
@@ -210,6 +212,7 @@ impl Config {
             ("monitor-pr", MONITOR_PR_COMMAND),
             ("review-pr", REVIEW_PR_COMMAND),
             ("local-merge", LOCAL_MERGE_COMMAND),
+            ("push-and-merge", PUSH_AND_MERGE_COMMAND),
         ];
 
         for (name, content) in commands {
@@ -663,10 +666,16 @@ Instructions:
    - Do NOT include boilerplate sections like "Test Plan", "Test Steps", "How to Test", "Checklist", or similar
    - The description should read as a short paragraph or a few bullet points — not a structured form
    - Note breaking changes only if they actually exist
-5. Create the draft PR using the gh CLI:
-   ```
-   gh pr create --draft --title "Your title" --body "Your description"
-   ```
+5. Before creating the PR, check if a `.pr-ready` file exists in the repo root:
+   - If `.pr-ready` exists: create a **non-draft** PR (ready for review):
+     ```
+     gh pr create --title "Your title" --body "Your description"
+     ```
+     Then delete the `.pr-ready` file: `rm .pr-ready`
+   - If `.pr-ready` does NOT exist: create a **draft** PR:
+     ```
+     gh pr create --draft --title "Your title" --body "Your description"
+     ```
 6. After creating the PR (or finding an existing one), write a `.pr-link` file in the current working directory with the PR number on the first line and the PR URL on the second line:
    ```
    gh pr view --json number,url -q '.number' > .pr-link
@@ -854,6 +863,125 @@ When all CI checks pass, output exactly: AGENT_DONE
 If you cannot fix the CI after 3 attempts, output exactly: INPUT_NEEDED
 "#;
 
+const PUSH_REBASER_PROMPT: &str = r#"You are a push-rebaser agent. You are invoked when a programmatic `git push` has failed — most likely because the branch has diverged from upstream and needs a rebase.
+
+Your job is to rebase the current branch onto upstream, resolve any conflicts, push the result, and signal readiness for PR creation.
+
+Instructions:
+1. Identify the current branch and upstream:
+   ```
+   git rev-parse --abbrev-ref HEAD
+   git rev-parse --abbrev-ref @{upstream} 2>/dev/null || echo "origin/main"
+   ```
+2. Fetch the latest upstream:
+   ```
+   git fetch origin
+   ```
+3. Rebase onto upstream:
+   ```
+   git rebase origin/main
+   ```
+   (Use the actual upstream branch if different from main.)
+4. If there are rebase conflicts:
+   a. For each conflicted file, examine the conflict markers
+   b. Resolve the conflict using your best judgment:
+      - Prefer keeping the current branch's changes when they implement task-specific features
+      - Accept upstream changes for infrastructure, dependencies, or unrelated code
+      - When both sides have meaningful changes, merge them intelligently
+   c. After resolving each file: `git add <file>`
+   d. Continue the rebase: `git rebase --continue`
+   e. Repeat until the rebase is complete
+5. Verify the code still compiles by running the project's build command (e.g., `cargo build`, `npm run build`).
+6. Push the rebased branch:
+   ```
+   git push --force-with-lease -u origin HEAD
+   ```
+   After a rebase the branch history is rewritten, so `--force-with-lease` is required — a regular push will be rejected as non-fast-forward.
+7. Write a `.pr-ready` file in the repository root:
+   ```
+   echo "ready" > .pr-ready
+   ```
+   This signals the next agent to create a non-draft PR.
+
+IMPORTANT:
+- Do NOT ask questions or wait for input
+- After a rebase, use `git push --force-with-lease` — a regular push will fail because the history was rewritten. NEVER use `git push --force` (without `--with-lease`).
+- If rebase conflicts are too complex to resolve confidently, output INPUT_NEEDED
+- Always write `.pr-ready` after a successful push
+
+When the push succeeds and `.pr-ready` is written, output exactly: AGENT_DONE
+If conflicts are too complex or push still fails after rebase, output exactly: INPUT_NEEDED
+"#;
+
+const PR_MERGE_AGENT_PROMPT: &str = r#"You are a PR merge agent. Your job is to check mergeability, merge the PR, and update the local main branch.
+
+You do NOT handle CI monitoring — that is done by a separate `pr-check-monitor` agent in the same loop. Your role is ONLY to check mergeability and perform the merge.
+
+**Key signal behavior:** If you discover CI checks are failing, output `AGENT_DONE` — this tells the loop to go back to the CI monitor agent. Only output `TASK_COMPLETE` when the PR is actually merged and local main is updated.
+
+Instructions:
+
+## Step 1: Read PR Info
+
+1. Read the PR number from the `.pr-link` file in the repo root (first line).
+
+## Step 2: Check Mergeability
+
+2. Check PR mergeability:
+   ```
+   gh pr view <number> --json mergeable,mergeStateStatus,reviews,reviewDecision,statusCheckRollup
+   ```
+3. If CI checks are still running or failing (`mergeStateStatus` is `BLOCKED` due to failing checks, or `statusCheckRollup` contains failing/pending items):
+   - Print: "CI checks not passing — handing back to CI monitor."
+   - Output `AGENT_DONE` (loop restarts from `pr-check-monitor`)
+4. If `mergeStateStatus` is `CLEAN` or `UNSTABLE` (and `mergeable` is true), proceed to Step 3.
+5. If the PR requires review approval (`reviewDecision` is `REVIEW_REQUIRED`) and has not been approved:
+   - Print a message: "Waiting for review approval..."
+   - `sleep 60` and re-check
+   - After 30 minutes of waiting (approximately 30 polls), output `INPUT_NEEDED` — review approval is needed
+6. If `mergeStateStatus` is `BLOCKED` for reasons other than CI or review, output `INPUT_NEEDED` with details.
+7. If `mergeStateStatus` is `BEHIND`, rebase the branch locally and force push:
+   ```
+   git fetch origin main && git rebase origin/main
+   ```
+   If the rebase succeeds:
+   ```
+   git push --force-with-lease
+   ```
+   Then print: "Branch was behind — rebased and force pushed. Handing back to CI monitor."
+   Output `AGENT_DONE` (loop restarts from `pr-check-monitor` since CI needs to re-run after rebase).
+   If the rebase fails (conflicts), attempt to resolve them. If unresolvable, output `INPUT_NEEDED`.
+
+## Step 3: Merge and Update Local Main
+
+8. Merge the PR:
+   ```
+   gh pr merge <number> --squash --delete-branch
+   ```
+   If merge fails, output `INPUT_NEEDED` with the error details.
+9. Update the local main branch. Use `git worktree list` to find where main (or master) is checked out:
+   - Parse the output to find a line containing `[main]` or `[master]`
+   - If found, `cd` to that worktree path and run:
+     ```
+     git pull --ff-only
+     ```
+   - If main is NOT checked out in any worktree, find the main repo directory:
+     - Use `git rev-parse --git-common-dir` to find the shared git dir
+     - The main repo is typically the parent of the `.git` dir (or for worktrees, discoverable from the common dir)
+     - Run: `git fetch origin main:main` (or `master:master`) to fast-forward the local ref
+10. Print a summary: "PR #<number> merged successfully. Local main updated."
+
+IMPORTANT:
+- Do NOT monitor or fix CI — that is `pr-check-monitor`'s job. If CI is not passing, output AGENT_DONE to hand back.
+- Do NOT ask questions or wait for input
+- Do NOT force push UNLESS the branch is behind the base branch and you just rebased (step 7) — `git push --force-with-lease` is allowed ONLY in that case
+- Be patient with review approval — poll every 60 seconds
+
+When the PR is merged and local main is updated, output exactly: TASK_COMPLETE
+If CI is not passing and you need to hand back to CI monitor, output exactly: AGENT_DONE
+If merge fails, review times out, or there are unrecoverable issues, output exactly: INPUT_NEEDED
+"#;
+
 const REVIEW_PR_COMMAND: &str = r#"name: Review PR
 id: review-pr
 description: Reviews the current PR or full branch diff if no PR exists, writes findings to REVIEW.md
@@ -872,6 +1000,25 @@ post_action: delete_task
 steps:
   - agent: local-merge-executor
     until: AGENT_DONE
+"#;
+
+const PUSH_AND_MERGE_COMMAND: &str = r#"name: Push & Merge
+id: push-and-merge
+description: Pushes branch, creates PR, monitors CI, waits for approval, merges, and updates local main
+post_action: delete_task
+
+steps:
+  - agent: push-rebaser
+    pre_command: "git push -u origin HEAD && echo ready > .pr-ready"
+    until: AGENT_DONE
+  - agent: pr-creator
+    until: AGENT_DONE
+  - loop:
+      - agent: pr-check-monitor
+        until: AGENT_DONE
+      - agent: pr-merge-agent
+        until: AGENT_DONE
+    until: TASK_COMPLETE
 "#;
 
 const LOCAL_MERGE_EXECUTOR_PROMPT: &str = r#"You are a local merge executor agent. Your job is to merge the current feature branch into a target branch locally, resolving any conflicts along the way.

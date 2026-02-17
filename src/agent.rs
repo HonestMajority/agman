@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 use crate::config::Config;
-use crate::flow::{Flow, FlowStep, StopCondition};
+use crate::flow::{AgentStep, Flow, FlowStep, StopCondition};
 use crate::task::{Task, TaskStatus};
 use crate::tmux::Tmux;
 
@@ -287,6 +287,71 @@ impl AgentRunner {
         Ok(result)
     }
 
+    /// Run an agent step, trying `pre_command` first if configured.
+    /// If the pre_command succeeds (exit 0), returns `Some(AgentDone)` without
+    /// running the agent. If it fails, runs the agent as normal.
+    fn run_agent_step(
+        &self,
+        task: &mut Task,
+        agent_step: &AgentStep,
+    ) -> Result<Option<StopCondition>> {
+        if let Some(ref cmd) = agent_step.pre_command {
+            let working_dir = match task.meta.parent_dir.as_deref() {
+                Some(parent) => parent.to_path_buf(),
+                None => {
+                    if !task.meta.has_repos() {
+                        anyhow::bail!(
+                            "No repos configured and no parent_dir for task '{}'",
+                            task.meta.task_id()
+                        );
+                    }
+                    task.meta.primary_repo().worktree_path.clone()
+                }
+            };
+
+            tracing::debug!(
+                task_id = %task.meta.task_id(),
+                agent = %agent_step.agent,
+                pre_command = %cmd,
+                "running pre_command"
+            );
+            println!("Running pre_command: {}", cmd);
+
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .current_dir(&working_dir)
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status()
+                .with_context(|| format!("Failed to execute pre_command: {}", cmd))?;
+
+            if status.success() {
+                tracing::info!(
+                    task_id = %task.meta.task_id(),
+                    agent = %agent_step.agent,
+                    "pre_command succeeded, skipping agent"
+                );
+                println!("pre_command succeeded — skipping agent '{}'", agent_step.agent);
+                return Ok(Some(StopCondition::AgentDone));
+            }
+
+            tracing::info!(
+                task_id = %task.meta.task_id(),
+                agent = %agent_step.agent,
+                exit_code = status.code().unwrap_or(-1),
+                "pre_command failed, falling back to agent"
+            );
+            println!(
+                "pre_command failed (exit {}) — running agent '{}'",
+                status.code().unwrap_or(-1),
+                agent_step.agent
+            );
+        }
+
+        self.run_agent(task, &agent_step.agent)
+    }
+
     /// Run a single agent in a loop until it returns a stop condition
     pub fn run_agent_loop(&self, task: &mut Task, agent_name: &str) -> Result<StopCondition> {
         loop {
@@ -340,7 +405,7 @@ impl AgentRunner {
                         step_index, agent_step.agent, agent_step.until
                     );
 
-                    let result = self.run_agent(task, &agent_step.agent)?;
+                    let result = self.run_agent_step(task, agent_step)?;
 
                     match result {
                         Some(StopCondition::TaskComplete) => {
@@ -492,7 +557,7 @@ impl AgentRunner {
             for (i, agent_step) in steps.iter().enumerate() {
                 println!("  Step {}: Running agent '{}'", i, agent_step.agent);
 
-                let result = self.run_agent(task, &agent_step.agent)?;
+                let result = self.run_agent_step(task, agent_step)?;
 
                 match result {
                     Some(StopCondition::TaskComplete) => {
