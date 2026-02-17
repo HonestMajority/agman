@@ -1124,7 +1124,7 @@ impl App {
         let mut base_branch_editor = Self::create_plain_editor();
         base_branch_editor.set_cursor_line_style(ratatui::style::Style::default());
 
-        // Pre-fill base branch editor
+        // Pre-fill base branch editor with auto-detected ref
         if is_multi {
             base_branch_editor.insert_str("origin/main");
         } else {
@@ -2719,16 +2719,17 @@ impl App {
                         _ => {
                             match wizard.branch_source {
                                 BranchSource::NewBranch => {
-                                    // Up/Down toggle focus between branch name and base branch fields
-                                    if key.code == KeyCode::Up || key.code == KeyCode::Down {
+                                    // Ctrl+B toggles focus between branch name and base branch
+                                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                                        && key.code == KeyCode::Char('b')
+                                    {
                                         wizard.base_branch_focus = !wizard.base_branch_focus;
+                                    } else if wizard.base_branch_focus {
+                                        let input = Input::from(event.clone());
+                                        wizard.base_branch_editor.input(input);
                                     } else {
                                         let input = Input::from(event.clone());
-                                        if wizard.base_branch_focus {
-                                            wizard.base_branch_editor.input(input);
-                                        } else {
-                                            wizard.new_branch_editor.input(input);
-                                        }
+                                        wizard.new_branch_editor.input(input);
                                     }
                                 }
                                 BranchSource::ExistingBranch => {

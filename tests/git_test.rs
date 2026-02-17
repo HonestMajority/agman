@@ -78,7 +78,7 @@ fn git_create_worktree_with_dangling_branch() {
     let repo_path = init_test_repo(&tmp, "myrepo");
 
     // Create a worktree (this also creates the local branch)
-    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "dangling-branch").unwrap();
+    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "dangling-branch", None).unwrap();
     assert!(worktree_path.exists());
 
     // Simulate a dangling branch: remove the worktree directory but keep the branch.
@@ -99,7 +99,7 @@ fn git_create_worktree_with_dangling_branch() {
 
     // Now retry creating the worktree with the same branch name — this should succeed
     // thanks to -B (would fail with -b because the branch already exists)
-    let worktree_path2 = Git::create_worktree_quiet(&config, "myrepo", "dangling-branch").unwrap();
+    let worktree_path2 = Git::create_worktree_quiet(&config, "myrepo", "dangling-branch", None).unwrap();
     assert!(worktree_path2.exists());
     assert!(worktree_path2.join("README.md").exists());
 }
@@ -120,4 +120,67 @@ fn git_create_worktree_for_existing_branch_idempotent() {
         Git::create_worktree_for_existing_branch_quiet(&config, "myrepo", "exist-branch").unwrap();
     assert_eq!(path1, path2);
     assert!(path2.exists());
+}
+
+#[test]
+fn git_create_worktree_with_custom_base_ref() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let repo_path = init_test_repo(&tmp, "myrepo");
+
+    // Create a side branch with a unique commit
+    std::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["checkout", "-b", "side-branch"])
+        .output()
+        .unwrap();
+    std::fs::write(repo_path.join("side.txt"), "side content").unwrap();
+    std::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["add", "side.txt"])
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["commit", "-m", "side commit"])
+        .output()
+        .unwrap();
+
+    // Get the commit SHA for the side branch
+    let side_sha = std::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["rev-parse", "side-branch"])
+        .output()
+        .unwrap();
+    let side_sha = String::from_utf8_lossy(&side_sha.stdout).trim().to_string();
+
+    // Go back to main
+    std::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["checkout", "main"])
+        .output()
+        .unwrap();
+
+    // Create a worktree with a custom base ref pointing at the side branch
+    let worktree_path = Git::create_worktree_quiet(
+        &config,
+        "myrepo",
+        "new-from-side",
+        Some("side-branch"),
+    )
+    .unwrap();
+
+    assert!(worktree_path.exists());
+
+    // The new branch should be at the same commit as the side branch
+    let wt_sha = std::process::Command::new("git")
+        .current_dir(&worktree_path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let wt_sha = String::from_utf8_lossy(&wt_sha.stdout).trim().to_string();
+    assert_eq!(wt_sha, side_sha);
+
+    // side.txt should be present (inherited from the side branch)
+    assert!(worktree_path.join("side.txt").exists());
 }
