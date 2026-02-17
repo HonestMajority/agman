@@ -894,9 +894,9 @@ Instructions:
 5. Verify the code still compiles by running the project's build command (e.g., `cargo build`, `npm run build`).
 6. Push the rebased branch:
    ```
-   git push -u origin HEAD
+   git push --force-with-lease -u origin HEAD
    ```
-   Use a regular push — NEVER force push (`--force` or `--force-with-lease`).
+   After a rebase the branch history is rewritten, so `--force-with-lease` is required — a regular push will be rejected as non-fast-forward.
 7. Write a `.pr-ready` file in the repository root:
    ```
    echo "ready" > .pr-ready
@@ -905,7 +905,7 @@ Instructions:
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
-- NEVER use `git push --force` or `git push --force-with-lease`
+- After a rebase, use `git push --force-with-lease` — a regular push will fail because the history was rewritten. NEVER use `git push --force` (without `--with-lease`).
 - If rebase conflicts are too complex to resolve confidently, output INPUT_NEEDED
 - Always write `.pr-ready` after a successful push
 
