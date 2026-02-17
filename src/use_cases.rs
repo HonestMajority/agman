@@ -873,83 +873,45 @@ pub fn parse_notifications_json(json_str: &str) -> Vec<GithubNotification> {
 /// Result of a GitHub notifications poll.
 pub struct NotifPollResult {
     pub notifications: Vec<GithubNotification>,
-    pub last_modified: Option<String>,
-    pub not_modified: bool,
 }
 
-/// Fetch GitHub notifications via `gh api /notifications?all=true&per_page=100`.
+/// Fetch all GitHub notifications via paginated `gh api /notifications?all=true` calls.
 ///
-/// Sends `If-Modified-Since` when `last_modified` is provided. Returns parsed
-/// notifications, the new `Last-Modified` header value, and whether the response
-/// was 304 Not Modified.
-pub fn fetch_github_notifications(last_modified: Option<&str>) -> NotifPollResult {
-    let mut cmd = Command::new("gh");
-    cmd.args(["api", "/notifications?all=true&per_page=100", "--include"]);
+/// Always performs a fresh fetch (no conditional requests). Paginates with
+/// `per_page=50` (the API maximum) up to 10 pages (500 notifications max).
+pub fn fetch_github_notifications() -> NotifPollResult {
+    let mut all_notifications = Vec::new();
 
-    if let Some(lm) = last_modified {
-        cmd.args(["--header", &format!("If-Modified-Since: {}", lm)]);
-    }
-
-    let output = match cmd.output() {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to run gh api /notifications?all=true&per_page=100");
-            return NotifPollResult {
-                notifications: Vec::new(),
-                last_modified: None,
-                not_modified: false,
-            };
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // `gh api --include` prepends HTTP headers before the JSON body.
-    // Check for 304 in the status line.
-    if stdout.contains("HTTP/") && stdout.contains("304") {
-        tracing::debug!("github notifications: 304 not modified");
-        return NotifPollResult {
-            notifications: Vec::new(),
-            last_modified: last_modified.map(|s| s.to_string()),
-            not_modified: true,
-        };
-    }
-
-    // Extract Last-Modified header from the response headers
-    let new_last_modified = stdout
-        .lines()
-        .find(|line| line.to_lowercase().starts_with("last-modified:"))
-        .map(|line| line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string());
-
-    // Find JSON body: first line starting with '[' (the headers end with a blank line)
-    let json_start = stdout.find("\n[").or_else(|| {
-        // Sometimes the body starts right at `[` on a line
-        if stdout.starts_with('[') {
-            Some(0)
-        } else {
-            stdout.find("\r\n[")
-        }
-    });
-
-    let notifications = match json_start {
-        Some(pos) => {
-            let json_str = &stdout[pos..].trim();
-            parse_notifications_json(json_str)
-        }
-        None => {
-            // Could be an empty response or error
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!(stderr = %stderr, "gh api /notifications?all=true&per_page=100 returned error");
+    for page in 1..=10 {
+        let url = format!("/notifications?all=true&per_page=50&page={page}");
+        let output = match Command::new("gh").args(["api", &url]).output() {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!(error = %e, page, "failed to run gh api for notifications");
+                break;
             }
-            Vec::new()
-        }
-    };
+        };
 
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(stderr = %stderr, page, "gh api /notifications returned error");
+            break;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let page_notifs = parse_notifications_json(&stdout);
+        let count = page_notifs.len();
+        all_notifications.extend(page_notifs);
+
+        // Last page: fewer than per_page items means no more pages
+        if count < 50 {
+            break;
+        }
+    }
+
+    tracing::debug!(total = all_notifications.len(), "fetched github notifications");
     NotifPollResult {
-        notifications,
-        last_modified: new_last_modified,
-        not_modified: false,
+        notifications: all_notifications,
     }
 }
 
