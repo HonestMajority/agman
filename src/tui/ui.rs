@@ -1,4 +1,4 @@
-use chrono::Local;
+use chrono::{Local, Utc};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
@@ -2667,6 +2667,52 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
     f.render_widget(list, chunks[1]);
 }
 
+fn humanize_reason(reason: &str) -> &str {
+    match reason {
+        "assign" => "Assigned",
+        "author" => "You authored",
+        "comment" => "Comment",
+        "ci_activity" => "CI",
+        "invitation" => "Invitation",
+        "manual" => "Manual",
+        "mention" => "Mentioned",
+        "review_requested" => "Review requested",
+        "security_alert" => "Security alert",
+        "state_change" => "State changed",
+        "subscribed" => "Subscribed",
+        "team_mention" => "Team mention",
+        _ => reason,
+    }
+}
+
+fn short_subject_type(subject_type: &str) -> &str {
+    match subject_type {
+        "PullRequest" => "PR",
+        "Issue" => "Issue",
+        "Release" => "Release",
+        "Discussion" => "Disc",
+        "Commit" => "Commit",
+        _ => subject_type,
+    }
+}
+
+fn relative_time(iso_str: &str) -> String {
+    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(iso_str) else {
+        return String::new();
+    };
+    let duration = Utc::now().signed_duration_since(parsed);
+
+    if duration.num_days() > 0 {
+        format!("{}d ago", duration.num_days())
+    } else if duration.num_hours() > 0 {
+        format!("{}h ago", duration.num_hours())
+    } else if duration.num_minutes() > 0 {
+        format!("{}m ago", duration.num_minutes())
+    } else {
+        "just now".to_string()
+    }
+}
+
 fn draw_notifications(f: &mut Frame, app: &App, area: Rect) {
     let count = app.notifications.len();
     let title = format!(" Notifications ({}) ", count);
@@ -2700,25 +2746,43 @@ fn draw_notifications(f: &mut Frame, app: &App, area: Rect) {
                 Style::default()
             };
 
-            let (repo_color, title_color) = if notif.unread {
-                (Color::LightCyan, Color::White)
+            let meta_color = if notif.unread {
+                Color::Rgb(100, 100, 120)
             } else {
-                (Color::DarkGray, Color::DarkGray)
+                Color::DarkGray
             };
 
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("[{}] ", notif.repo_full_name),
-                    Style::default().fg(repo_color),
-                ),
-                Span::styled(&notif.title, Style::default().fg(title_color)),
-                Span::styled(
-                    format!("  ({}, {})", notif.reason, notif.subject_type),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
+            let title_line = if notif.unread {
+                Line::from(vec![
+                    Span::styled(" ● ", Style::default().fg(Color::LightCyan)),
+                    Span::styled(
+                        &notif.title,
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(&notif.title, Style::default().fg(Color::DarkGray)),
+                ])
+            };
 
-            ListItem::new(line).style(style)
+            let time_str = relative_time(&notif.updated_at);
+            let mut meta_parts = vec![
+                notif.repo_full_name.as_str().to_string(),
+                short_subject_type(&notif.subject_type).to_string(),
+                humanize_reason(&notif.reason).to_string(),
+            ];
+            if !time_str.is_empty() {
+                meta_parts.push(time_str);
+            }
+            let meta_text = format!("   {}", meta_parts.join(" · "));
+            let meta_line =
+                Line::from(Span::styled(meta_text, Style::default().fg(meta_color)));
+
+            ListItem::new(vec![title_line, meta_line, Line::from("")]).style(style)
         })
         .collect();
 
