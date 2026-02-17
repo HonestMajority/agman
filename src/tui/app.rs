@@ -500,7 +500,7 @@ impl App {
             attach_session_name: None,
             notifications: Vec::new(),
             selected_notif_index: 0,
-            last_gh_notif_poll: Instant::now(),
+            last_gh_notif_poll: Instant::now() - Duration::from_secs(60),
             gh_notif_tx,
             gh_notif_rx,
             gh_notif_poll_active: false,
