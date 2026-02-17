@@ -940,21 +940,23 @@ Instructions:
    - `sleep 60` and re-check
    - After 30 minutes of waiting (approximately 30 polls), output `INPUT_NEEDED` — review approval is needed
 6. If `mergeStateStatus` is `BLOCKED` for reasons other than CI or review, output `INPUT_NEEDED` with details.
-7. If `mergeStateStatus` is `BEHIND`, attempt to update the branch:
+7. If `mergeStateStatus` is `BEHIND`, rebase the branch locally and force push:
    ```
-   gh pr merge <number> --merge --auto 2>/dev/null || true
+   git fetch origin main && git rebase origin/main
    ```
-   Or:
+   If the rebase succeeds:
    ```
-   git fetch origin main && git rebase origin/main && git push
+   git push --force-with-lease
    ```
-   Then re-check mergeability from step 2.
+   Then print: "Branch was behind — rebased and force pushed. Handing back to CI monitor."
+   Output `AGENT_DONE` (loop restarts from `pr-check-monitor` since CI needs to re-run after rebase).
+   If the rebase fails (conflicts), attempt to resolve them. If unresolvable, output `INPUT_NEEDED`.
 
 ## Step 3: Merge and Update Local Main
 
 8. Merge the PR:
    ```
-   gh pr merge <number> --merge --delete-branch
+   gh pr merge <number> --squash --delete-branch
    ```
    If merge fails, output `INPUT_NEEDED` with the error details.
 9. Update the local main branch. Use `git worktree list` to find where main (or master) is checked out:
@@ -972,7 +974,7 @@ Instructions:
 IMPORTANT:
 - Do NOT monitor or fix CI — that is `pr-check-monitor`'s job. If CI is not passing, output AGENT_DONE to hand back.
 - Do NOT ask questions or wait for input
-- Do NOT force push at any point
+- Do NOT force push UNLESS the branch is behind the base branch and you just rebased (step 7) — `git push --force-with-lease` is allowed ONLY in that case
 - Be patient with review approval — poll every 60 seconds
 
 When the PR is merged and local main is updated, output exactly: TASK_COMPLETE
