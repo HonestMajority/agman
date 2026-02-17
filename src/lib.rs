@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod command;
 pub mod config;
+pub mod dismissed_notifications;
 pub mod flow;
 pub mod git;
 pub mod repo_stats;
