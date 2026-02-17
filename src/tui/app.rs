@@ -5,6 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
+use std::collections::HashSet;
 use std::io;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
@@ -436,6 +437,8 @@ pub struct App {
     gh_notif_rx: tokio_mpsc::UnboundedReceiver<use_cases::NotifPollResult>,
     gh_notif_poll_active: bool,
     pub gh_notif_first_poll_done: bool,
+    /// Thread IDs dismissed by the user but not yet confirmed removed by a poll.
+    dismissed_notif_ids: HashSet<String>,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -505,6 +508,7 @@ impl App {
             gh_notif_rx,
             gh_notif_poll_active: false,
             gh_notif_first_poll_done: false,
+            dismissed_notif_ids: HashSet::new(),
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -3052,6 +3056,10 @@ impl App {
                         let thread_id = notif.id.clone();
                         tracing::info!(thread_id = %thread_id, "dismissing github notification");
 
+                        // Track dismissed ID so polls don't reintroduce it
+                        self.dismissed_notif_ids.insert(thread_id.clone());
+                        tracing::debug!(thread_id = %thread_id, "added to dismissed_notif_ids");
+
                         // Optimistic removal
                         self.notifications.remove(self.selected_notif_index);
                         if self.selected_notif_index >= self.notifications.len()
@@ -3069,9 +3077,6 @@ impl App {
                             })
                             .await;
                         });
-
-                        // Trigger immediate re-poll to sync with API state
-                        self.last_gh_notif_poll = Instant::now() - Duration::from_secs(60);
 
                         self.set_status("Notification dismissed".to_string());
                     }
@@ -3100,8 +3105,6 @@ impl App {
                                 .await;
                             });
 
-                            // Trigger immediate re-poll to sync with API state
-                            self.last_gh_notif_poll = Instant::now() - Duration::from_secs(60);
                         }
 
                         self.set_status("Opening notification...".to_string());
@@ -3882,15 +3885,31 @@ impl App {
             tracing::debug!("first github notification poll completed");
         }
 
-        let count = result.notifications.len();
         self.notifications = result.notifications;
+
+        // Filter out notifications that were dismissed but may not yet be reflected by the API.
+        // Remove IDs from the dismissed set only when they no longer appear in poll results
+        // (confirming the server processed the DELETE). Keep IDs that are still present
+        // (the DELETE may still be in-flight).
+        if !self.dismissed_notif_ids.is_empty() {
+            let fetched_ids: HashSet<&str> = self.notifications.iter().map(|n| n.id.as_str()).collect();
+            // IDs not in the fetched results are confirmed deleted — remove from tracking set
+            self.dismissed_notif_ids.retain(|id| fetched_ids.contains(id.as_str()));
+            // Filter out still-dismissed notifications from the displayed list
+            let before = self.notifications.len();
+            self.notifications.retain(|n| !self.dismissed_notif_ids.contains(&n.id));
+            let filtered = before - self.notifications.len();
+            if filtered > 0 {
+                tracing::debug!(filtered_count = filtered, dismissed_ids = ?self.dismissed_notif_ids, "filtered dismissed notifications from poll results");
+            }
+        }
 
         // Clamp selection index
         if self.selected_notif_index >= self.notifications.len() && !self.notifications.is_empty() {
             self.selected_notif_index = self.notifications.len() - 1;
         }
 
-        tracing::debug!(notification_count = count, "applied github notification poll results");
+        tracing::debug!(notification_count = self.notifications.len(), "applied github notification poll results");
     }
 
     fn execute_restart_wizard(&mut self) -> Result<()> {
