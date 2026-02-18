@@ -28,6 +28,9 @@ use agman::use_cases;
 use super::ui;
 use super::vim::{VimMode, VimTextArea};
 
+pub const BREAK_INTERVAL: Duration = Duration::from_secs(40 * 60);
+pub const BREAK_WARNING_SECS: u64 = 5 * 60;
+
 /// Open a URL in the default browser, cross-platform (macOS / Linux).
 fn open_url(url: &str) {
     let cmd = if cfg!(target_os = "macos") {
@@ -597,6 +600,8 @@ pub struct App {
     show_prs_poll_rx: tokio_mpsc::UnboundedReceiver<use_cases::ShowPrsData>,
     show_prs_poll_active: bool,
     pub last_show_prs_poll: Instant,
+    // Break reminder
+    pub last_break_reset: Instant,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -682,6 +687,7 @@ impl App {
             show_prs_poll_rx,
             show_prs_poll_active: false,
             last_show_prs_poll: Instant::now() - Duration::from_secs(60),
+            last_break_reset: Instant::now(),
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -2388,6 +2394,10 @@ impl App {
                         }
                     }
                 }
+                KeyCode::Char('B') => {
+                    self.last_break_reset = Instant::now();
+                    tracing::info!("break timer reset");
+                }
                 _ => {}
             }
         }
@@ -2624,6 +2634,10 @@ impl App {
                 }
                 KeyCode::Char('P') => {
                     self.open_set_linked_pr();
+                }
+                KeyCode::Char('B') => {
+                    self.last_break_reset = Instant::now();
+                    tracing::info!("break timer reset");
                 }
                 _ => {}
             }
@@ -3258,6 +3272,10 @@ impl App {
                         self.set_status("Opening notification...".to_string());
                     }
                 }
+                KeyCode::Char('B') => {
+                    self.last_break_reset = Instant::now();
+                    tracing::info!("break timer reset");
+                }
                 _ => {}
             }
         }
@@ -3299,6 +3317,10 @@ impl App {
                     self.start_show_prs_poll();
                     self.last_show_prs_poll = Instant::now();
                     self.set_status("Refreshing...".to_string());
+                }
+                KeyCode::Char('B') => {
+                    self.last_break_reset = Instant::now();
+                    tracing::info!("break timer reset");
                 }
                 _ => {}
             }
@@ -3552,6 +3574,10 @@ impl App {
                             let _ = nv.save_current();
                             self.notes_view = None;
                             self.view = View::TaskList;
+                        }
+                        KeyCode::Char('B') => {
+                            self.last_break_reset = Instant::now();
+                            tracing::info!("break timer reset");
                         }
                         _ => {}
                     }

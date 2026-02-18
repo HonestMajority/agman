@@ -9,11 +9,32 @@ use ratatui::{
 
 use agman::task::TaskStatus;
 
-use super::app::{App, BranchSource, DirPickerOrigin, DirKind, NotesFocus, PreviewPane, RestartWizardStep, View, WizardStep};
+use std::time::Duration;
+
+use super::app::{App, BranchSource, DirPickerOrigin, DirKind, NotesFocus, PreviewPane, RestartWizardStep, View, WizardStep, BREAK_INTERVAL, BREAK_WARNING_SECS};
 use super::log_render;
 use super::vim::VimMode;
 
 fn clock_title(app: &App) -> Line<'static> {
+    let elapsed = app.last_break_reset.elapsed();
+    let break_spans = if elapsed >= BREAK_INTERVAL {
+        vec![Span::styled(
+            " \u{2615} BREAK ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Rgb(255, 140, 40))
+                .add_modifier(Modifier::BOLD),
+        )]
+    } else if elapsed >= BREAK_INTERVAL - Duration::from_secs(BREAK_WARNING_SECS) {
+        let remaining_mins = (BREAK_INTERVAL - elapsed).as_secs() / 60;
+        vec![Span::styled(
+            format!(" \u{2615} {}m ", remaining_mins),
+            Style::default().fg(Color::Rgb(180, 140, 60)),
+        )]
+    } else {
+        vec![]
+    };
+
     let unread_count = app.notifications.iter().filter(|n| n.unread).count();
 
     let notif_spans = if !app.gh_notif_first_poll_done {
@@ -42,7 +63,8 @@ fn clock_title(app: &App) -> Line<'static> {
         Style::default().fg(Color::DarkGray),
     );
 
-    let mut spans = notif_spans;
+    let mut spans = break_spans;
+    spans.extend(notif_spans);
     spans.push(clock_span);
 
     Line::from(spans).alignment(Alignment::Right)
@@ -1237,6 +1259,26 @@ fn draw_output_pane(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(output, area);
 }
 
+fn break_hint_spans(app: &App) -> Vec<Span<'static>> {
+    let break_due = app.last_break_reset.elapsed() >= BREAK_INTERVAL;
+    if break_due {
+        vec![
+            Span::styled(
+                "B",
+                Style::default()
+                    .fg(Color::Rgb(255, 140, 40))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" break  ", Style::default().fg(Color::DarkGray)),
+        ]
+    } else {
+        vec![
+            Span::styled("B", Style::default().fg(Color::Rgb(180, 140, 60))),
+            Span::styled(" break  ", Style::default().fg(Color::DarkGray)),
+        ]
+    }
+}
+
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.view {
         View::TaskList => {
@@ -1304,6 +1346,9 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" prs  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("m", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
+            ]);
+            spans.extend(break_hint_spans(app));
+            spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" quit", Style::default().fg(Color::DarkGray)),
             ]);
@@ -1364,6 +1409,9 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" edit  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Enter", Style::default().fg(Color::LightCyan)),
                     Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
+                ]);
+                spans.extend(break_hint_spans(app));
+                spans.extend([
                     Span::styled("q", Style::default().fg(Color::LightCyan)),
                     Span::styled(" back", Style::default().fg(Color::DarkGray)),
                 ]);
@@ -1533,28 +1581,36 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             ]
         }
         View::Notifications => {
-            vec![
+            let mut spans = vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightRed)),
                 Span::styled(" done  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("o", Style::default().fg(Color::LightGreen)),
                 Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
+            ];
+            spans.extend(break_hint_spans(app));
+            spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
-            ]
+            ]);
+            spans
         }
         View::ShowPrs => {
-            vec![
+            let mut spans = vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("o", Style::default().fg(Color::LightGreen)),
                 Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("R", Style::default().fg(Color::LightYellow)),
                 Span::styled(" refresh  ", Style::default().fg(Color::DarkGray)),
+            ];
+            spans.extend(break_hint_spans(app));
+            spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
-            ]
+            ]);
+            spans
         }
         View::Notes => {
             let is_editor = app.notes_view.as_ref()
@@ -1570,7 +1626,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" back", Style::default().fg(Color::DarkGray)),
                 ]
             } else {
-                vec![
+                let mut spans = vec![
                     Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                     Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("J/K", Style::default().fg(Color::LightCyan)),
@@ -1593,9 +1649,13 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" rename  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Tab", Style::default().fg(Color::LightCyan)),
                     Span::styled(" editor  ", Style::default().fg(Color::DarkGray)),
+                ];
+                spans.extend(break_hint_spans(app));
+                spans.extend([
                     Span::styled("q", Style::default().fg(Color::LightCyan)),
                     Span::styled(" back", Style::default().fg(Color::DarkGray)),
-                ]
+                ]);
+                spans
             }
         }
     };
