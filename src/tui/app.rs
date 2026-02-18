@@ -2745,9 +2745,13 @@ impl App {
                         _ => {
                             match wizard.branch_source {
                                 BranchSource::NewBranch => {
-                                    // Ctrl+B toggles focus between branch name and base branch
+                                    // Ctrl+B or Up/Down toggles focus between branch name and base branch
                                     if key.modifiers.contains(KeyModifiers::CONTROL)
                                         && key.code == KeyCode::Char('b')
+                                    {
+                                        wizard.base_branch_focus = !wizard.base_branch_focus;
+                                    } else if key.code == KeyCode::Up
+                                        || key.code == KeyCode::Down
                                     {
                                         wizard.base_branch_focus = !wizard.base_branch_focus;
                                     } else if wizard.base_branch_focus {
