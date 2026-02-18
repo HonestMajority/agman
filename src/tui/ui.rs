@@ -23,23 +23,18 @@ fn clock_title(app: &App) -> Line<'static> {
             Style::default().fg(Color::DarkGray),
         )]
     } else if unread_count > 0 {
-        // Unread notifications — bright amber, bold count
+        // Unread notifications — prominent badge with amber background
         let amber = Color::Rgb(255, 180, 40);
-        vec![
-            Span::styled(" ✉ ", Style::default().fg(amber)),
-            Span::styled(
-                format!("{} ", unread_count),
-                Style::default()
-                    .fg(amber)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]
-    } else {
-        // Zero unread — subtle
         vec![Span::styled(
-            " ✉ ",
-            Style::default().fg(Color::DarkGray),
+            format!(" \u{2709} {} ", unread_count),
+            Style::default()
+                .fg(Color::Black)
+                .bg(amber)
+                .add_modifier(Modifier::BOLD),
         )]
+    } else {
+        // Zero unread — hide notification indicator entirely
+        vec![]
     };
 
     let clock_span = Span::styled(
