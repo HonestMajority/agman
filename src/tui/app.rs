@@ -3401,6 +3401,36 @@ impl App {
                                 nv.focus = NotesFocus::Editor;
                             }
                         }
+                        KeyCode::Char('J') => {
+                            if !nv.entries.is_empty() && nv.selected_index < nv.entries.len() - 1 {
+                                let entry_name = nv.entries[nv.selected_index].file_name.clone();
+                                let dir = nv.current_dir.clone();
+                                match use_cases::move_note(&dir, &entry_name, use_cases::MoveDirection::Down) {
+                                    Ok(new_idx) => {
+                                        let _ = nv.refresh();
+                                        nv.selected_index = new_idx;
+                                    }
+                                    Err(e) => {
+                                        self.set_status(format!("Move failed: {e}"));
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char('K') => {
+                            if nv.selected_index > 0 {
+                                let entry_name = nv.entries[nv.selected_index].file_name.clone();
+                                let dir = nv.current_dir.clone();
+                                match use_cases::move_note(&dir, &entry_name, use_cases::MoveDirection::Up) {
+                                    Ok(new_idx) => {
+                                        let _ = nv.refresh();
+                                        nv.selected_index = new_idx;
+                                    }
+                                    Err(e) => {
+                                        self.set_status(format!("Move failed: {e}"));
+                                    }
+                                }
+                            }
+                        }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             let _ = nv.save_current();
                             self.notes_view = None;

@@ -1627,3 +1627,80 @@ fn read_and_save_note() {
     let content = use_cases::read_note(&path).unwrap();
     assert_eq!(content, "Hello, world!");
 }
+
+// ---------------------------------------------------------------------------
+// Notes: move_note
+// ---------------------------------------------------------------------------
+
+#[test]
+fn move_note_down() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("alpha.md"), "").unwrap();
+    std::fs::write(notes_dir.join("beta.md"), "").unwrap();
+    std::fs::write(notes_dir.join("gamma.md"), "").unwrap();
+
+    // Move first file (alpha) down
+    let new_idx = use_cases::move_note(&notes_dir, "alpha.md", use_cases::MoveDirection::Down).unwrap();
+    assert_eq!(new_idx, 1);
+
+    // Verify .order was written
+    let order_content = std::fs::read_to_string(notes_dir.join(".order")).unwrap();
+    let order_lines: Vec<&str> = order_content.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(order_lines, vec!["beta.md", "alpha.md", "gamma.md"]);
+
+    // Verify list_notes respects the new order
+    let entries = use_cases::list_notes(&notes_dir).unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].file_name, "beta.md");
+    assert_eq!(entries[1].file_name, "alpha.md");
+    assert_eq!(entries[2].file_name, "gamma.md");
+}
+
+#[test]
+fn move_note_up() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("alpha.md"), "").unwrap();
+    std::fs::write(notes_dir.join("beta.md"), "").unwrap();
+    std::fs::write(notes_dir.join("gamma.md"), "").unwrap();
+
+    // Move last file (gamma) up
+    let new_idx = use_cases::move_note(&notes_dir, "gamma.md", use_cases::MoveDirection::Up).unwrap();
+    assert_eq!(new_idx, 1);
+
+    let entries = use_cases::list_notes(&notes_dir).unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].file_name, "alpha.md");
+    assert_eq!(entries[1].file_name, "gamma.md");
+    assert_eq!(entries[2].file_name, "beta.md");
+}
+
+#[test]
+fn list_notes_respects_order_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("alpha.md"), "").unwrap();
+    std::fs::write(notes_dir.join("beta.md"), "").unwrap();
+    std::fs::write(notes_dir.join("gamma.md"), "").unwrap();
+    std::fs::create_dir(notes_dir.join("projects")).unwrap();
+
+    // Hand-written .order that only mentions some entries
+    std::fs::write(notes_dir.join(".order"), "gamma.md\nalpha.md\n").unwrap();
+
+    let entries = use_cases::list_notes(&notes_dir).unwrap();
+    assert_eq!(entries.len(), 4);
+    // Ordered entries come first
+    assert_eq!(entries[0].file_name, "gamma.md");
+    assert_eq!(entries[1].file_name, "alpha.md");
+    // Remaining entries: dirs first, then files, alphabetically
+    assert_eq!(entries[2].file_name, "projects");
+    assert!(entries[2].is_dir);
+    assert_eq!(entries[3].file_name, "beta.md");
+}

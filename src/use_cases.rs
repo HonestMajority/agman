@@ -961,6 +961,8 @@ pub struct NoteEntry {
 ///
 /// Returns directories first, then `.md` files, each group sorted alphabetically.
 /// Non-`.md` files are excluded. The `.md` extension is stripped from display names.
+/// If a `.order` file exists in the directory, entries are returned in that order
+/// with any unmentioned entries appended alphabetically (dirs first).
 pub fn list_notes(dir: &Path) -> Result<Vec<NoteEntry>> {
     let read_dir = std::fs::read_dir(dir)
         .with_context(|| format!("failed to read notes directory: {}", dir.display()))?;
@@ -989,6 +991,47 @@ pub fn list_notes(dir: &Path) -> Result<Vec<NoteEntry>> {
         }
     }
 
+    // Check for .order file
+    let order_path = dir.join(".order");
+    if order_path.exists() {
+        let content = std::fs::read_to_string(&order_path)
+            .with_context(|| format!("failed to read .order file: {}", order_path.display()))?;
+        let order_lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+
+        // Collect all entries into a lookup map by file_name
+        let mut all_entries: std::collections::HashMap<String, NoteEntry> = std::collections::HashMap::new();
+        for e in dirs.into_iter().chain(files.into_iter()) {
+            all_entries.insert(e.file_name.clone(), e);
+        }
+
+        // Build result: ordered entries first
+        let mut result = Vec::new();
+        for name in &order_lines {
+            if let Some(entry) = all_entries.remove(*name) {
+                result.push(entry);
+            }
+            // Silently skip .order entries that no longer exist on disk
+        }
+
+        // Append remaining entries not in .order (dirs first, then files, alphabetically)
+        let mut remaining_dirs: Vec<NoteEntry> = Vec::new();
+        let mut remaining_files: Vec<NoteEntry> = Vec::new();
+        for entry in all_entries.into_values() {
+            if entry.is_dir {
+                remaining_dirs.push(entry);
+            } else {
+                remaining_files.push(entry);
+            }
+        }
+        remaining_dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        remaining_files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        result.extend(remaining_dirs);
+        result.extend(remaining_files);
+
+        return Ok(result);
+    }
+
+    // Default: dirs first, then files, each group sorted alphabetically
     dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
@@ -1062,6 +1105,54 @@ pub fn read_note(path: &Path) -> Result<String> {
 pub fn save_note(path: &Path, content: &str) -> Result<()> {
     std::fs::write(path, content)
         .with_context(|| format!("failed to save note: {}", path.display()))
+}
+
+/// Direction for moving a note entry in the explorer.
+#[derive(Debug, Clone, Copy)]
+pub enum MoveDirection {
+    Up,
+    Down,
+}
+
+/// Move a note entry up or down within its directory.
+///
+/// Reads or initialises a `.order` file in the given directory to persist custom
+/// ordering. Returns the new index of the moved entry so the caller can update
+/// the selection cursor.
+pub fn move_note(dir: &Path, file_name: &str, direction: MoveDirection) -> Result<usize> {
+    let order_path = dir.join(".order");
+
+    // Build current order: from .order file if it exists, otherwise from list_notes.
+    let mut order: Vec<String> = if order_path.exists() {
+        let content = std::fs::read_to_string(&order_path)?;
+        content.lines().filter(|l| !l.is_empty()).map(String::from).collect()
+    } else {
+        list_notes(dir)?.iter().map(|e| e.file_name.clone()).collect()
+    };
+
+    let idx = order.iter().position(|n| n == file_name)
+        .with_context(|| format!("entry '{}' not found in order list", file_name))?;
+
+    let new_idx = match direction {
+        MoveDirection::Up => {
+            if idx == 0 { return Ok(idx); }
+            order.swap(idx, idx - 1);
+            idx - 1
+        }
+        MoveDirection::Down => {
+            if idx + 1 >= order.len() { return Ok(idx); }
+            order.swap(idx, idx + 1);
+            idx + 1
+        }
+    };
+
+    // Write back
+    let content = order.join("\n") + "\n";
+    std::fs::write(&order_path, content)
+        .with_context(|| format!("failed to write .order file: {}", order_path.display()))?;
+
+    tracing::info!(dir = %dir.display(), file_name, direction = ?direction, "moved note");
+    Ok(new_idx)
 }
 
 pub fn mark_notification_read(thread_id: &str) -> Result<()> {
