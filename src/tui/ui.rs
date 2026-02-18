@@ -2799,7 +2799,7 @@ fn draw_notifications(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
-fn draw_show_prs(f: &mut Frame, app: &App, area: Rect) {
+fn draw_show_prs(f: &mut Frame, app: &mut App, area: Rect) {
     let total_count = app.show_prs_data.issues.len()
         + app.show_prs_data.my_prs.len()
         + app.show_prs_data.review_requests.len();
@@ -2825,6 +2825,7 @@ fn draw_show_prs(f: &mut Frame, app: &App, area: Rect) {
 
     let mut items: Vec<ListItem> = Vec::new();
     let mut selectable_index: usize = 0;
+    let mut visual_index: Option<usize> = None;
 
     // Helper closure-like sections
     let sections: &[(&str, Color, &[agman::use_cases::GithubItem])] = &[
@@ -2847,11 +2848,9 @@ fn draw_show_prs(f: &mut Frame, app: &App, area: Rect) {
         // Items
         for item in section_items {
             let is_selected = selectable_index == app.show_prs_selected;
-            let style = if is_selected {
-                Style::default().bg(Color::Rgb(40, 40, 50))
-            } else {
-                Style::default()
-            };
+            if is_selected {
+                visual_index = Some(items.len());
+            }
 
             let mut title_spans = vec![
                 Span::styled(
@@ -2885,22 +2884,23 @@ fn draw_show_prs(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Rgb(100, 100, 120)),
             ));
 
-            items.push(
-                ListItem::new(vec![title_line, meta_line, Line::from("")]).style(style),
-            );
+            items.push(ListItem::new(vec![title_line, meta_line, Line::from("")]));
             selectable_index += 1;
         }
     }
 
-    let list = List::new(items).block(
-        Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title_bottom(clock_title(app)),
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title_bottom(clock_title(app)),
+        )
+        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 50)));
 
-    f.render_widget(list, area);
+    app.show_prs_list_state.select(visual_index);
+    f.render_stateful_widget(list, area, &mut app.show_prs_list_state);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
