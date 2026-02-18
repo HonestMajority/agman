@@ -57,7 +57,6 @@ pub enum View {
     ReviewWizard,
     RestartConfirm,
     RestartWizard,
-    SetLinkedPr,
     DirectoryPicker,
     SessionPicker,
     Notifications,
@@ -572,9 +571,6 @@ pub struct App {
     pr_poll_active: bool,
     // Tokio runtime for background async work
     rt: tokio::runtime::Runtime,
-    // Set linked PR modal
-    pub pr_number_editor: TextArea<'static>,
-    pub pr_owned_toggle: bool,
     // Directory picker for repos_dir
     pub dir_picker: Option<DirectoryPicker>,
     // Session picker for multi-repo attach
@@ -681,8 +677,6 @@ impl App {
             pr_poll_rx,
             pr_poll_active: false,
             rt,
-            pr_number_editor: Self::create_plain_editor(),
-            pr_owned_toggle: true,
             dir_picker: None,
             session_picker_sessions: Vec::new(),
             selected_session_index: 0,
@@ -1121,21 +1115,6 @@ impl App {
             }
         }
         Ok(())
-    }
-
-    fn open_set_linked_pr(&mut self) {
-        let mut editor = Self::create_plain_editor();
-        let mut owned = true;
-        if let Some(task) = self.selected_task() {
-            if let Some(pr) = &task.meta.linked_pr {
-                editor = TextArea::new(vec![pr.number.to_string()]);
-                editor.set_cursor_line_style(ratatui::style::Style::default());
-                owned = pr.owned;
-            }
-        }
-        self.pr_number_editor = editor;
-        self.pr_owned_toggle = owned;
-        self.view = View::SetLinkedPr;
     }
 
     fn resume_after_answering(&mut self) -> Result<()> {
@@ -2269,7 +2248,6 @@ impl App {
             View::ReviewWizard => self.handle_review_wizard_event(event),
             View::RestartConfirm => self.handle_restart_confirm_event(event),
             View::RestartWizard => self.handle_restart_wizard_event(event),
-            View::SetLinkedPr => self.handle_set_linked_pr_event(event),
             View::DirectoryPicker => self.handle_directory_picker_event(event),
             View::SessionPicker => self.handle_session_picker_event(event),
             View::Notifications => self.handle_notifications_event(event),
@@ -2392,9 +2370,6 @@ impl App {
                     } else {
                         self.set_status("Review tracking only for owned PRs".to_string());
                     }
-                }
-                KeyCode::Char('P') => {
-                    self.open_set_linked_pr();
                 }
                 KeyCode::Char('N') => {
                     self.selected_notif_index = 0;
@@ -2656,9 +2631,6 @@ impl App {
                 }
                 KeyCode::Char('H') => {
                     self.toggle_hold()?;
-                }
-                KeyCode::Char('P') => {
-                    self.open_set_linked_pr();
                 }
                 KeyCode::Char('B') => {
                     self.last_break_reset = Instant::now();
@@ -3979,86 +3951,6 @@ impl App {
                     }
                     _ => {}
                 },
-            }
-        }
-        Ok(false)
-    }
-
-    fn handle_set_linked_pr_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                self.should_quit = true;
-                return Ok(false);
-            }
-
-            match key.code {
-                KeyCode::Esc => {
-                    self.view = View::TaskList;
-                }
-                KeyCode::Tab => {
-                    self.pr_owned_toggle = !self.pr_owned_toggle;
-                }
-                KeyCode::Enter => {
-                    let text: String = self.pr_number_editor.lines().join("");
-                    let text = text.trim().to_string();
-
-                    if text.is_empty() {
-                        // Clear linked PR
-                        let task_id_for_log = self.selected_task().map(|t| t.meta.task_id());
-                        tracing::info!(task_id = ?task_id_for_log, "TUI: clear linked PR");
-                        if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                            match use_cases::clear_linked_pr(task) {
-                                Ok(()) => self.set_status("PR link cleared".to_string()),
-                                Err(e) => self.set_status(format!("Error: {}", e)),
-                            }
-                        }
-                    } else {
-                        // Parse as number and set
-                        match text.parse::<u64>() {
-                            Ok(pr_number) => {
-                                let task_id_for_log = self.selected_task().map(|t| t.meta.task_id());
-                                let owned = self.pr_owned_toggle;
-                                tracing::info!(task_id = ?task_id_for_log, pr_number, owned, "TUI: set linked PR");
-                                let worktree_path = self
-                                    .selected_task()
-                                    .filter(|t| t.meta.has_repos())
-                                    .map(|t| t.meta.primary_repo().worktree_path.clone());
-                                if let Some(wt) = worktree_path {
-                                    let author = if !owned {
-                                        fetch_pr_author(&wt, pr_number)
-                                    } else {
-                                        None
-                                    };
-                                    if let Some(task) =
-                                        self.tasks.get_mut(self.selected_index)
-                                    {
-                                        match use_cases::set_linked_pr(task, pr_number, &wt, owned, author.clone()) {
-                                            Ok(()) => {
-                                                let label = if owned { "mine".to_string() } else {
-                                                    author.unwrap_or_else(|| "ext".to_string())
-                                                };
-                                                self.set_status(format!(
-                                                    "Linked PR #{} ({})",
-                                                    pr_number, label
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                self.set_status(format!("Error: {}", e))
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                self.set_status("Invalid PR number".to_string());
-                            }
-                        }
-                    }
-                    self.view = View::TaskList;
-                }
-                _ => {
-                    self.pr_number_editor.input(Input::from(event));
-                }
             }
         }
         Ok(false)

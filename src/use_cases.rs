@@ -420,16 +420,6 @@ pub fn set_linked_pr(task: &mut Task, pr_number: u64, worktree_path: &PathBuf, o
     task.set_linked_pr(pr_number, url, owned, author)
 }
 
-/// Clear the linked PR and reset stale polling state.
-pub fn clear_linked_pr(task: &mut Task) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), "clearing linked PR");
-    task.meta.linked_pr = None;
-    task.meta.last_review_count = None;
-    task.meta.review_addressed = false;
-    task.meta.updated_at = chrono::Utc::now();
-    task.save_meta()
-}
-
 /// Create a setup-only task: set up worktree, create task files, but do NOT start any flow.
 /// The task will have `Stopped` status so the user can attach to the tmux session and explore.
 ///
