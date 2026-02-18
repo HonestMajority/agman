@@ -461,11 +461,11 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 format!("{:<width$}", task.meta.linked_pr.as_ref().map(|pr| {
                     if !pr.owned {
-                        format!("#{} ({})", pr.number, pr.author.as_deref().unwrap_or("ext"))
+                        format!("#{:>5} ({})", pr.number, pr.author.as_deref().unwrap_or("ext"))
                     } else if task.meta.review_addressed {
-                        format!("#{} ✓", pr.number)
+                        format!("#{:>5} ✓", pr.number)
                     } else {
-                        format!("#{} mine", pr.number)
+                        format!("#{:>5} mine", pr.number)
                     }
                 }).unwrap_or_default(), width = PR_WIDTH),
                 if let Some(pr) = &task.meta.linked_pr {
