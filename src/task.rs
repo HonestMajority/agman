@@ -76,6 +76,10 @@ pub struct TaskMeta {
     /// Whether the address-review flow has been run since the last review
     #[serde(default)]
     pub review_addressed: bool,
+    /// Whether the user has seen this task since it last stopped.
+    /// Reset to false on every transition to Stopped; set to true when the user opens preview.
+    #[serde(default)]
+    pub seen: bool,
 }
 
 fn default_true() -> bool {
@@ -121,6 +125,7 @@ impl TaskMeta {
             linked_pr: None,
             last_review_count: None,
             review_addressed: false,
+            seen: false,
         }
     }
 
@@ -147,6 +152,7 @@ impl TaskMeta {
             linked_pr: None,
             last_review_count: None,
             review_addressed: false,
+            seen: false,
         }
     }
 
@@ -367,6 +373,9 @@ impl Task {
     pub fn update_status(&mut self, status: TaskStatus) -> Result<()> {
         tracing::debug!(task_id = %self.meta.task_id(), status = %status, "updating task status");
         self.meta.status = status;
+        if status == TaskStatus::Stopped {
+            self.meta.seen = false;
+        }
         self.meta.updated_at = Utc::now();
         self.save_meta()
     }

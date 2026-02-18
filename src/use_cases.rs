@@ -229,6 +229,19 @@ pub fn stop_task(task: &mut Task) -> Result<()> {
     Ok(())
 }
 
+/// Mark a stopped task as seen (user has viewed it in the preview).
+///
+/// This is the pure business logic behind "mark as read" when the user
+/// navigates into the Preview view for a stopped task.
+pub fn mark_task_seen(task: &mut Task) -> Result<()> {
+    if task.meta.seen {
+        return Ok(());
+    }
+    tracing::info!(task_id = %task.meta.task_id(), "marking task as seen");
+    task.meta.seen = true;
+    task.save_meta()
+}
+
 /// Put a stopped task on hold.
 ///
 /// This is the pure business logic behind `App::toggle_hold()`.

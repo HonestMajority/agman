@@ -499,6 +499,32 @@ fn pop_and_apply_feedback_empty_queue_returns_none() {
 }
 
 // ---------------------------------------------------------------------------
+// Mark task seen
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mark_task_seen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "myrepo", "feat-seen");
+
+    // New tasks start unseen
+    assert!(!task.meta.seen);
+
+    // Mark as seen
+    use_cases::mark_task_seen(&mut task).unwrap();
+    assert!(task.meta.seen);
+
+    // Persisted to disk
+    let reloaded = Task::load(&config, "myrepo", "feat-seen").unwrap();
+    assert!(reloaded.meta.seen);
+
+    // Transitioning to Stopped resets seen
+    task.update_status(TaskStatus::Stopped).unwrap();
+    assert!(!task.meta.seen);
+}
+
+// ---------------------------------------------------------------------------
 // Put on hold
 // ---------------------------------------------------------------------------
 
