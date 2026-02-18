@@ -3359,6 +3359,7 @@ impl App {
                                     let _ = nv.refresh();
                                 } else {
                                     let path = nv.current_dir.join(&entry.file_name);
+                                    let _ = nv.save_current();
                                     if let Err(e) = nv.open_file(&path) {
                                         self.set_status(format!("Open failed: {e}"));
                                     } else {

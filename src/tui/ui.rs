@@ -13,12 +13,44 @@ use super::app::{App, BranchSource, DirPickerOrigin, DirKind, NotesFocus, Previe
 use super::log_render;
 use super::vim::VimMode;
 
-fn clock_title() -> Line<'static> {
-    Line::from(Span::styled(
+fn clock_title(app: &App) -> Line<'static> {
+    let unread_count = app.notifications.iter().filter(|n| n.unread).count();
+
+    let notif_spans = if !app.gh_notif_first_poll_done {
+        // Loading state
+        vec![Span::styled(
+            " ✉ ... ",
+            Style::default().fg(Color::DarkGray),
+        )]
+    } else if unread_count > 0 {
+        // Unread notifications — bright amber, bold count
+        let amber = Color::Rgb(255, 180, 40);
+        vec![
+            Span::styled(" ✉ ", Style::default().fg(amber)),
+            Span::styled(
+                format!("{} ", unread_count),
+                Style::default()
+                    .fg(amber)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else {
+        // Zero unread — subtle
+        vec![Span::styled(
+            " ✉ ",
+            Style::default().fg(Color::DarkGray),
+        )]
+    };
+
+    let clock_span = Span::styled(
         format!(" {} ", Local::now().format("%H:%M")),
         Style::default().fg(Color::DarkGray),
-    ))
-    .alignment(Alignment::Right)
+    );
+
+    let mut spans = notif_spans;
+    spans.push(clock_span);
+
+    Line::from(spans).alignment(Alignment::Right)
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -155,7 +187,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ),
         ]))
-        .title(clock_title())
+        .title(clock_title(app))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::LightCyan));
 
@@ -592,7 +624,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
                         .fg(Color::LightCyan)
                         .add_modifier(Modifier::BOLD),
                 ))
-                .title(clock_title())
+                .title(clock_title(app))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::LightCyan)),
         );
@@ -2673,7 +2705,7 @@ fn draw_notifications(f: &mut Frame, app: &App, area: Rect) {
             .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
-            .title_bottom(clock_title());
+            .title_bottom(clock_title(app));
         let empty_text = if app.gh_notif_first_poll_done {
             "No notifications"
         } else {
@@ -2742,7 +2774,7 @@ fn draw_notifications(f: &mut Frame, app: &App, area: Rect) {
             .title(title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
-            .title_bottom(clock_title()),
+            .title_bottom(clock_title(app)),
     );
 
     f.render_widget(list, area);
@@ -2773,17 +2805,16 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 // ---------------------------------------------------------------------------
 
 fn draw_notes(f: &mut Frame, app: &mut App, area: Rect) {
-    let nv = match &app.notes_view {
-        Some(nv) => nv,
-        None => return,
-    };
+    if app.notes_view.is_none() {
+        return;
+    }
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(area);
 
-    draw_notes_explorer(f, nv, chunks[0]);
+    draw_notes_explorer(f, app.notes_view.as_ref().unwrap(), chunks[0]);
     draw_notes_editor(f, app, chunks[1]);
 }
 
@@ -2932,8 +2963,8 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
     f.render_widget(list, area);
 }
 
-fn draw_notes_editor(f: &mut Frame, app: &App, area: Rect) {
-    let nv = match &app.notes_view {
+fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
+    let nv = match &mut app.notes_view {
         Some(nv) => nv,
         None => return,
     };
@@ -2957,6 +2988,7 @@ fn draw_notes_editor(f: &mut Frame, app: &App, area: Rect) {
 
         let editor_area = block.inner(area);
         f.render_widget(block, area);
+        nv.editor.textarea.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
         f.render_widget(&nv.editor.textarea, editor_area);
     } else {
         let block = Block::default()
