@@ -413,6 +413,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         let (status_icon, status_color) = match task.meta.status {
             TaskStatus::Running => ("●", Color::LightGreen),
             TaskStatus::InputNeeded => ("?", Color::LightYellow),
+            TaskStatus::Stopped if !task.meta.seen => ("●", Color::Rgb(100, 200, 220)),
             TaskStatus::Stopped => ("○", Color::Rgb(140, 140, 140)),
             TaskStatus::OnHold => ("⏸", Color::Rgb(180, 140, 60)),
         };
@@ -454,13 +455,15 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             full_branch.clone()
         };
 
-        // Dim stopped tasks, highlight input-needed
+        // Dim stopped tasks, brighten unread stopped, highlight active
         let text_color = if is_active {
             if task_index == app.selected_index {
                 Color::White
             } else {
                 Color::Gray
             }
+        } else if task.meta.status == TaskStatus::Stopped && !task.meta.seen {
+            Color::Rgb(200, 200, 200)
         } else {
             Color::Rgb(140, 140, 140)
         };

@@ -963,6 +963,15 @@ impl App {
 
         // Setup task file content for modal (editor gets set up when modal opens)
         self.task_file_content = task_file_content;
+
+        // Mark stopped tasks as seen when the user opens preview
+        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+            if task.meta.status == TaskStatus::Stopped && !task.meta.seen {
+                if let Err(e) = use_cases::mark_task_seen(task) {
+                    tracing::warn!(error = %e, "failed to mark task as seen");
+                }
+            }
+        }
     }
 
     fn save_notes(&mut self) -> Result<()> {
