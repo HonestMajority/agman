@@ -18,8 +18,9 @@ use super::vim::VimMode;
 fn clock_title(app: &App) -> Line<'static> {
     let elapsed = app.last_break_reset.elapsed();
     let break_spans = if elapsed >= BREAK_INTERVAL {
+        let overdue_mins = (elapsed - BREAK_INTERVAL).as_secs() / 60;
         vec![Span::styled(
-            " \u{2615} BREAK ",
+            format!(" \u{2615} +{}m ", overdue_mins),
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Rgb(255, 140, 40))
@@ -32,7 +33,11 @@ fn clock_title(app: &App) -> Line<'static> {
             Style::default().fg(Color::Rgb(180, 140, 60)),
         )]
     } else {
-        vec![]
+        let remaining_mins = (BREAK_INTERVAL - elapsed).as_secs() / 60;
+        vec![Span::styled(
+            format!(" \u{2615} {}m ", remaining_mins),
+            Style::default().fg(Color::DarkGray),
+        )]
     };
 
     let unread_count = app.notifications.iter().filter(|n| n.unread).count();
