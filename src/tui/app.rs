@@ -15,6 +15,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use std::time::{Duration, Instant};
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
+use agman::break_persist;
 use agman::command::StoredCommand;
 use agman::config::Config;
 use agman::dismissed_notifications::DismissedNotifications;
@@ -30,6 +31,7 @@ use super::vim::{VimMode, VimTextArea};
 
 pub const BREAK_INTERVAL: Duration = Duration::from_secs(40 * 60);
 pub const BREAK_WARNING_SECS: u64 = 5 * 60;
+pub const BREAK_PERSIST_MAX_AGE: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Open a URL in the default browser, cross-platform (macOS / Linux).
 fn open_url(url: &str) {
@@ -634,6 +636,12 @@ impl App {
             dismissed_notifs.save(&config.dismissed_notifications_path());
         }
 
+        let last_break_reset = break_persist::load_break_reset(
+            &config.break_state_path(),
+            BREAK_PERSIST_MAX_AGE,
+        )
+        .unwrap_or_else(Instant::now);
+
         Ok(Self {
             config,
             tasks,
@@ -703,7 +711,7 @@ impl App {
             show_prs_poll_rx,
             show_prs_poll_active: false,
             last_show_prs_poll: Instant::now() - Duration::from_secs(60),
-            last_break_reset: Instant::now(),
+            last_break_reset,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -2412,6 +2420,7 @@ impl App {
                 }
                 KeyCode::Char('B') => {
                     self.last_break_reset = Instant::now();
+                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
                     tracing::info!("break timer reset");
                 }
                 _ => {}
@@ -2653,6 +2662,7 @@ impl App {
                 }
                 KeyCode::Char('B') => {
                     self.last_break_reset = Instant::now();
+                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
                     tracing::info!("break timer reset");
                 }
                 _ => {}
@@ -3290,6 +3300,7 @@ impl App {
                 }
                 KeyCode::Char('B') => {
                     self.last_break_reset = Instant::now();
+                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
                     tracing::info!("break timer reset");
                 }
                 _ => {}
@@ -3336,6 +3347,7 @@ impl App {
                 }
                 KeyCode::Char('B') => {
                     self.last_break_reset = Instant::now();
+                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
                     tracing::info!("break timer reset");
                 }
                 _ => {}
@@ -3593,6 +3605,7 @@ impl App {
                         }
                         KeyCode::Char('B') => {
                             self.last_break_reset = Instant::now();
+                            break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
                             tracing::info!("break timer reset");
                         }
                         _ => {}
@@ -4640,6 +4653,7 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
         self.stop_caffeinate();
     }
 }
@@ -4792,6 +4806,7 @@ pub fn run_tui(config: Config) -> Result<()> {
         // If user confirmed restart, exec the new binary
         #[cfg(unix)]
         if app.should_restart {
+            break_persist::save_break_reset(&app.config.break_state_path(), &app.last_break_reset);
             app.stop_caffeinate();
             eprintln!("agman updated — restarting...");
             let err = Command::new("agman").exec();

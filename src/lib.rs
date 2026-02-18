@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod break_persist;
 pub mod command;
 pub mod config;
 pub mod dismissed_notifications;
