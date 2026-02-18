@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::Config;
@@ -940,6 +940,128 @@ pub fn dismiss_github_notification(thread_id: &str) -> Result<()> {
         anyhow::bail!("failed to dismiss notification {}: {}", thread_id, stderr);
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Notes (standalone markdown files in ~/.agman/notes/)
+// ---------------------------------------------------------------------------
+
+/// A single entry in the notes file explorer.
+#[derive(Debug, Clone)]
+pub struct NoteEntry {
+    /// Display name (no `.md` extension for files).
+    pub name: String,
+    /// Actual filename on disk.
+    pub file_name: String,
+    /// Whether this entry is a directory.
+    pub is_dir: bool,
+}
+
+/// List directory contents for the notes explorer.
+///
+/// Returns directories first, then `.md` files, each group sorted alphabetically.
+/// Non-`.md` files are excluded. The `.md` extension is stripped from display names.
+pub fn list_notes(dir: &Path) -> Result<Vec<NoteEntry>> {
+    let read_dir = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read notes directory: {}", dir.display()))?;
+
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+
+    for entry in read_dir {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let file_name = entry.file_name().to_string_lossy().to_string();
+
+        if file_type.is_dir() {
+            dirs.push(NoteEntry {
+                name: file_name.clone(),
+                file_name,
+                is_dir: true,
+            });
+        } else if file_type.is_file() && file_name.ends_with(".md") {
+            let display_name = file_name.strip_suffix(".md").unwrap_or(&file_name).to_string();
+            files.push(NoteEntry {
+                name: display_name,
+                file_name,
+                is_dir: false,
+            });
+        }
+    }
+
+    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    dirs.extend(files);
+    Ok(dirs)
+}
+
+/// Create a new `.md` note file in the given directory.
+pub fn create_note(dir: &Path, name: &str) -> Result<PathBuf> {
+    let file_name = if name.ends_with(".md") {
+        name.to_string()
+    } else {
+        format!("{}.md", name)
+    };
+    let path = dir.join(&file_name);
+    std::fs::write(&path, "")
+        .with_context(|| format!("failed to create note: {}", path.display()))?;
+    tracing::info!(note_path = %path.display(), "created note");
+    Ok(path)
+}
+
+/// Create a new directory inside the notes tree.
+pub fn create_note_dir(dir: &Path, name: &str) -> Result<PathBuf> {
+    let path = dir.join(name);
+    std::fs::create_dir_all(&path)
+        .with_context(|| format!("failed to create note directory: {}", path.display()))?;
+    tracing::info!(note_path = %path.display(), "created note directory");
+    Ok(path)
+}
+
+/// Delete a note file or directory (recursive for directories).
+pub fn delete_note(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+            .with_context(|| format!("failed to delete note directory: {}", path.display()))?;
+    } else {
+        std::fs::remove_file(path)
+            .with_context(|| format!("failed to delete note: {}", path.display()))?;
+    }
+    tracing::info!(note_path = %path.display(), "deleted note");
+    Ok(())
+}
+
+/// Rename a note file or directory in-place (same parent directory).
+///
+/// For files, if `new_name` doesn't end in `.md`, the extension is appended automatically.
+pub fn rename_note(old: &Path, new_name: &str) -> Result<PathBuf> {
+    let parent = old.parent().context("note has no parent directory")?;
+    let is_dir = old.is_dir();
+
+    let actual_name = if !is_dir && !new_name.ends_with(".md") {
+        format!("{}.md", new_name)
+    } else {
+        new_name.to_string()
+    };
+
+    let new_path = parent.join(&actual_name);
+    std::fs::rename(old, &new_path)
+        .with_context(|| format!("failed to rename {} to {}", old.display(), new_path.display()))?;
+    tracing::info!(note_path = %new_path.display(), old_path = %old.display(), "renamed note");
+    Ok(new_path)
+}
+
+/// Read the contents of a note file.
+pub fn read_note(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read note: {}", path.display()))
+}
+
+/// Save content to a note file.
+pub fn save_note(path: &Path, content: &str) -> Result<()> {
+    std::fs::write(path, content)
+        .with_context(|| format!("failed to save note: {}", path.display()))
 }
 
 pub fn mark_notification_read(thread_id: &str) -> Result<()> {
