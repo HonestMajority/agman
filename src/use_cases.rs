@@ -1166,6 +1166,58 @@ pub fn move_note(dir: &Path, file_name: &str, direction: MoveDirection) -> Resul
     Ok(new_idx)
 }
 
+/// Move a note file or directory from one directory to another (cut-paste).
+///
+/// Performs a filesystem rename from `source_dir/file_name` to `dest_dir/file_name`.
+/// Updates `.order` files in both source and destination directories if they exist.
+/// Returns an error if the destination already contains an entry with the same name.
+pub fn paste_note(source_dir: &Path, dest_dir: &Path, file_name: &str) -> Result<()> {
+    let src_path = source_dir.join(file_name);
+    let dest_path = dest_dir.join(file_name);
+
+    if dest_path.exists() {
+        anyhow::bail!("'{}' already exists in destination", file_name);
+    }
+
+    std::fs::rename(&src_path, &dest_path).with_context(|| {
+        format!(
+            "failed to move {} to {}",
+            src_path.display(),
+            dest_path.display()
+        )
+    })?;
+
+    // Remove from source .order if it exists
+    let src_order = source_dir.join(".order");
+    if src_order.exists() {
+        let content = std::fs::read_to_string(&src_order)?;
+        let lines: Vec<&str> = content
+            .lines()
+            .filter(|l| !l.is_empty() && *l != file_name)
+            .collect();
+        std::fs::write(&src_order, lines.join("\n") + "\n")?;
+    }
+
+    // Append to destination .order if it exists
+    let dest_order = dest_dir.join(".order");
+    if dest_order.exists() {
+        let mut content = std::fs::read_to_string(&dest_order)?;
+        if !content.ends_with('\n') && !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(file_name);
+        content.push('\n');
+        std::fs::write(&dest_order, content)?;
+    }
+
+    tracing::info!(
+        src = %src_path.display(),
+        dest = %dest_path.display(),
+        "pasted note"
+    );
+    Ok(())
+}
+
 pub fn mark_notification_read(thread_id: &str) -> Result<()> {
     let output = Command::new("gh")
         .args([

@@ -2945,6 +2945,9 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
     }
 
     let items: Vec<ListItem> = nv.entries.iter().enumerate().map(|(i, entry)| {
+        let is_cut = nv.cut_entry.as_ref().is_some_and(|(dir, name)| {
+            dir == &nv.current_dir && name == &entry.file_name
+        });
         let display = if entry.is_dir {
             format!("  {}/", entry.name)
         } else {
@@ -2955,8 +2958,19 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
         } else {
             Style::default()
         };
-        let color = if entry.is_dir { Color::LightCyan } else { Color::White };
-        ListItem::new(display).style(style.fg(color))
+        let color = if is_cut {
+            Color::DarkGray
+        } else if entry.is_dir {
+            Color::LightCyan
+        } else {
+            Color::White
+        };
+        let style = if is_cut {
+            style.fg(color).add_modifier(Modifier::ITALIC)
+        } else {
+            style.fg(color)
+        };
+        ListItem::new(display).style(style)
     }).collect();
 
     let list = List::new(items).block(block);

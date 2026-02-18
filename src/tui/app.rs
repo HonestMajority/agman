@@ -466,6 +466,8 @@ pub struct NotesView {
     /// (TextArea, is_dir) — inline input for creating a new note or directory.
     pub create_input: Option<(TextArea<'static>, bool)>,
     pub confirm_delete: bool,
+    /// Cut state: `(source_dir, file_name)` of the entry being moved.
+    pub cut_entry: Option<(PathBuf, String)>,
 }
 
 impl NotesView {
@@ -484,6 +486,7 @@ impl NotesView {
             rename_input: None,
             create_input: None,
             confirm_delete: false,
+            cut_entry: None,
         })
     }
 
@@ -3431,7 +3434,42 @@ impl App {
                                 }
                             }
                         }
-                        KeyCode::Char('q') | KeyCode::Esc => {
+                        KeyCode::Char('x') => {
+                            if let Some(entry) = nv.entries.get(nv.selected_index) {
+                                let cut = (nv.current_dir.clone(), entry.file_name.clone());
+                                let status_msg = format!("Cut: {}", entry.name);
+                                tracing::info!(dir = %cut.0.display(), file = %cut.1, "cut note");
+                                nv.cut_entry = Some(cut);
+                                self.set_status(status_msg);
+                            }
+                        }
+                        KeyCode::Char('p') => {
+                            if let Some((ref src_dir, ref file_name)) = nv.cut_entry.clone() {
+                                let dest_dir = nv.current_dir.clone();
+                                match use_cases::paste_note(src_dir, &dest_dir, file_name) {
+                                    Ok(()) => {
+                                        let nv = self.notes_view.as_mut().unwrap();
+                                        nv.cut_entry = None;
+                                        let _ = nv.refresh();
+                                        self.set_status(format!("Pasted: {}", file_name));
+                                    }
+                                    Err(e) => {
+                                        self.set_status(format!("Paste failed: {e}"));
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Esc => {
+                            if nv.cut_entry.is_some() {
+                                nv.cut_entry = None;
+                                self.set_status("Cut cancelled".to_string());
+                            } else {
+                                let _ = nv.save_current();
+                                self.notes_view = None;
+                                self.view = View::TaskList;
+                            }
+                        }
+                        KeyCode::Char('q') => {
                             let _ = nv.save_current();
                             self.notes_view = None;
                             self.view = View::TaskList;
