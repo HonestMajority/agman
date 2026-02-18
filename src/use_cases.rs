@@ -956,6 +956,99 @@ pub fn dismiss_github_notification(thread_id: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Keybase Unread Messages
+// ---------------------------------------------------------------------------
+
+/// Result of a Keybase unread-conversations poll.
+pub struct KeybasePollResult {
+    /// Number of conversations with unread messages.
+    pub unread_count: usize,
+    /// Whether the `keybase` binary was found. When `false`, the TUI should
+    /// disable future polls.
+    pub keybase_available: bool,
+}
+
+#[derive(Deserialize)]
+struct RawKeybaseResponse {
+    result: RawKeybaseResult,
+}
+
+#[derive(Deserialize)]
+struct RawKeybaseResult {
+    conversations: Option<Vec<RawKeybaseConversation>>,
+}
+
+#[derive(Deserialize)]
+struct RawKeybaseConversation {
+    unread: bool,
+}
+
+/// Poll Keybase for conversations with unread messages.
+///
+/// Shells out to `keybase chat api` with `unread_only: true`. Returns the
+/// count of conversations that have unreads. Degrades gracefully: returns
+/// zero with `keybase_available: false` if the binary is not found, or zero
+/// with `keybase_available: true` if the daemon is temporarily unavailable.
+pub fn fetch_keybase_unreads() -> KeybasePollResult {
+    let payload = r#"{"method": "list", "params": {"options": {"unread_only": true}}}"#;
+
+    let output = match Command::new("keybase")
+        .args(["chat", "api", "-m", payload])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!("keybase binary not found, disabling poll");
+            return KeybasePollResult {
+                unread_count: 0,
+                keybase_available: false,
+            };
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to run keybase chat api");
+            return KeybasePollResult {
+                unread_count: 0,
+                keybase_available: true,
+            };
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(stderr = %stderr, "keybase chat api returned error");
+        return KeybasePollResult {
+            unread_count: 0,
+            keybase_available: true,
+        };
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: RawKeybaseResponse = match serde_json::from_str(&stdout) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to parse keybase chat api response");
+            return KeybasePollResult {
+                unread_count: 0,
+                keybase_available: true,
+            };
+        }
+    };
+
+    let unread_count = parsed
+        .result
+        .conversations
+        .as_ref()
+        .map(|convos| convos.iter().filter(|c| c.unread).count())
+        .unwrap_or(0);
+
+    tracing::debug!(unread_count, "keybase unread poll complete");
+    KeybasePollResult {
+        unread_count,
+        keybase_available: true,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Notes (standalone markdown files in ~/.agman/notes/)
 // ---------------------------------------------------------------------------
 

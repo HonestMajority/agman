@@ -58,6 +58,24 @@ fn clock_title(app: &App) -> Line<'static> {
         vec![]
     };
 
+    let keybase_spans = if !app.keybase_first_poll_done && app.keybase_available {
+        vec![Span::styled(
+            " KB ... ",
+            Style::default().fg(Color::DarkGray),
+        )]
+    } else if app.keybase_unread_count > 0 {
+        let cyan = Color::Rgb(0, 180, 216);
+        vec![Span::styled(
+            format!(" KB {} ", app.keybase_unread_count),
+            Style::default()
+                .fg(Color::Black)
+                .bg(cyan)
+                .add_modifier(Modifier::BOLD),
+        )]
+    } else {
+        vec![]
+    };
+
     let clock_span = Span::styled(
         format!(" {} ", Local::now().format("%H:%M")),
         Style::default().fg(Color::DarkGray),
@@ -65,6 +83,7 @@ fn clock_title(app: &App) -> Line<'static> {
 
     let mut spans = break_spans;
     spans.extend(notif_spans);
+    spans.extend(keybase_spans);
     spans.push(clock_span);
 
     Line::from(spans).alignment(Alignment::Right)
