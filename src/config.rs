@@ -17,6 +17,7 @@ pub struct Config {
     pub prompts_dir: PathBuf,
     pub commands_dir: PathBuf,
     pub repos_dir: PathBuf,
+    pub notes_dir: PathBuf,
 }
 
 /// On-disk config file (~/.agman/config.toml).
@@ -56,6 +57,7 @@ impl Config {
         let flows_dir = base_dir.join("flows");
         let prompts_dir = base_dir.join("prompts");
         let commands_dir = base_dir.join("commands");
+        let notes_dir = base_dir.join("notes");
 
         Self {
             base_dir,
@@ -64,6 +66,7 @@ impl Config {
             prompts_dir,
             commands_dir,
             repos_dir,
+            notes_dir,
         }
     }
 
@@ -88,6 +91,7 @@ impl Config {
         std::fs::create_dir_all(&self.prompts_dir).context("Failed to create prompts directory")?;
         std::fs::create_dir_all(&self.commands_dir)
             .context("Failed to create commands directory")?;
+        std::fs::create_dir_all(&self.notes_dir).context("Failed to create notes directory")?;
         Ok(())
     }
 

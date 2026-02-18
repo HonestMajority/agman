@@ -1505,3 +1505,125 @@ fn parse_notifications_json_extracts_fields() {
     // null subject.url falls back to repo URL
     assert_eq!(notifs[1].browser_url, "https://github.com/other/project");
 }
+
+// ---------------------------------------------------------------------------
+// Notes: list_notes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn list_notes_ordering_and_filtering() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    // Create .md files
+    std::fs::write(notes_dir.join("banana.md"), "").unwrap();
+    std::fs::write(notes_dir.join("apple.md"), "").unwrap();
+    // Create a non-.md file (should be excluded)
+    std::fs::write(notes_dir.join("readme.txt"), "").unwrap();
+    // Create a subdirectory
+    std::fs::create_dir(notes_dir.join("projects")).unwrap();
+
+    let entries = use_cases::list_notes(&notes_dir).unwrap();
+
+    // Dirs come first, then files sorted alphabetically
+    assert_eq!(entries.len(), 3);
+    assert!(entries[0].is_dir);
+    assert_eq!(entries[0].name, "projects");
+    assert!(!entries[1].is_dir);
+    assert_eq!(entries[1].name, "apple");
+    assert_eq!(entries[1].file_name, "apple.md");
+    assert!(!entries[2].is_dir);
+    assert_eq!(entries[2].name, "banana");
+    assert_eq!(entries[2].file_name, "banana.md");
+}
+
+// ---------------------------------------------------------------------------
+// Notes: create_note
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_note_adds_md_extension() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    let path = use_cases::create_note(&notes_dir, "my-note").unwrap();
+    assert!(path.exists());
+    assert_eq!(path.file_name().unwrap().to_str().unwrap(), "my-note.md");
+}
+
+// ---------------------------------------------------------------------------
+// Notes: create_note_dir
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_note_dir_creates_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    let path = use_cases::create_note_dir(&notes_dir, "projects").unwrap();
+    assert!(path.exists());
+    assert!(path.is_dir());
+}
+
+// ---------------------------------------------------------------------------
+// Notes: delete_note
+// ---------------------------------------------------------------------------
+
+#[test]
+fn delete_note_file_and_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    // Delete a file
+    let file_path = notes_dir.join("to-delete.md");
+    std::fs::write(&file_path, "content").unwrap();
+    use_cases::delete_note(&file_path).unwrap();
+    assert!(!file_path.exists());
+
+    // Delete a directory with contents
+    let dir_path = notes_dir.join("subdir");
+    std::fs::create_dir(&dir_path).unwrap();
+    std::fs::write(dir_path.join("child.md"), "").unwrap();
+    use_cases::delete_note(&dir_path).unwrap();
+    assert!(!dir_path.exists());
+}
+
+// ---------------------------------------------------------------------------
+// Notes: rename_note
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rename_note_appends_md() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    let old_path = notes_dir.join("old-name.md");
+    std::fs::write(&old_path, "content").unwrap();
+
+    let new_path = use_cases::rename_note(&old_path, "new-name").unwrap();
+    assert!(!old_path.exists());
+    assert!(new_path.exists());
+    assert_eq!(new_path.file_name().unwrap().to_str().unwrap(), "new-name.md");
+}
+
+// ---------------------------------------------------------------------------
+// Notes: read_note / save_note
+// ---------------------------------------------------------------------------
+
+#[test]
+fn read_and_save_note() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    let path = notes_dir.join("test.md");
+    use_cases::save_note(&path, "Hello, world!").unwrap();
+
+    let content = use_cases::read_note(&path).unwrap();
+    assert_eq!(content, "Hello, world!");
+}

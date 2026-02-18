@@ -56,6 +56,7 @@ pub enum View {
     DirectoryPicker,
     SessionPicker,
     Notifications,
+    Notes,
 }
 
 /// Which wizard requested the directory picker.
@@ -442,6 +443,78 @@ fn run_pr_queries(eligible: Vec<(String, u64, PathBuf, Option<u64>)>) -> Vec<PrP
     results
 }
 
+// ---------------------------------------------------------------------------
+// Notes view state
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotesFocus {
+    Explorer,
+    Editor,
+}
+
+pub struct NotesView {
+    pub root_dir: PathBuf,
+    pub current_dir: PathBuf,
+    pub entries: Vec<use_cases::NoteEntry>,
+    pub selected_index: usize,
+    pub focus: NotesFocus,
+    pub editor: VimTextArea<'static>,
+    pub open_file: Option<PathBuf>,
+    pub modified: bool,
+    pub rename_input: Option<TextArea<'static>>,
+    /// (TextArea, is_dir) — inline input for creating a new note or directory.
+    pub create_input: Option<(TextArea<'static>, bool)>,
+    pub confirm_delete: bool,
+}
+
+impl NotesView {
+    pub fn new(root_dir: PathBuf) -> Result<Self> {
+        std::fs::create_dir_all(&root_dir)?;
+        let entries = use_cases::list_notes(&root_dir)?;
+        Ok(Self {
+            current_dir: root_dir.clone(),
+            root_dir,
+            entries,
+            selected_index: 0,
+            focus: NotesFocus::Explorer,
+            editor: VimTextArea::new(),
+            open_file: None,
+            modified: false,
+            rename_input: None,
+            create_input: None,
+            confirm_delete: false,
+        })
+    }
+
+    pub fn refresh(&mut self) -> Result<()> {
+        self.entries = use_cases::list_notes(&self.current_dir)?;
+        if self.selected_index >= self.entries.len() && !self.entries.is_empty() {
+            self.selected_index = self.entries.len() - 1;
+        }
+        Ok(())
+    }
+
+    pub fn open_file(&mut self, path: &std::path::Path) -> Result<()> {
+        let content = use_cases::read_note(path)?;
+        self.editor = VimTextArea::from_lines(content.lines());
+        self.open_file = Some(path.to_path_buf());
+        self.modified = false;
+        Ok(())
+    }
+
+    pub fn save_current(&mut self) -> Result<()> {
+        if self.modified {
+            if let Some(ref path) = self.open_file {
+                let content = self.editor.lines_joined();
+                use_cases::save_note(path, &content)?;
+                self.modified = false;
+            }
+        }
+        Ok(())
+    }
+}
+
 pub struct App {
     pub config: Config,
     pub tasks: Vec<Task>,
@@ -509,6 +582,8 @@ pub struct App {
     pub gh_notif_first_poll_done: bool,
     /// Thread IDs dismissed by the user, persisted across restarts.
     dismissed_notifs: DismissedNotifications,
+    // Notes view
+    pub notes_view: Option<NotesView>,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -584,6 +659,7 @@ impl App {
             gh_notif_poll_active: false,
             gh_notif_first_poll_done: false,
             dismissed_notifs,
+            notes_view: None,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -2136,6 +2212,7 @@ impl App {
             View::DirectoryPicker => self.handle_directory_picker_event(event),
             View::SessionPicker => self.handle_session_picker_event(event),
             View::Notifications => self.handle_notifications_event(event),
+            View::Notes => self.handle_notes_event(event),
         }
     }
 
@@ -2263,6 +2340,17 @@ impl App {
                 KeyCode::Char('N') => {
                     self.selected_notif_index = 0;
                     self.view = View::Notifications;
+                }
+                KeyCode::Char('m') => {
+                    match NotesView::new(self.config.notes_dir.clone()) {
+                        Ok(nv) => {
+                            self.notes_view = Some(nv);
+                            self.view = View::Notes;
+                        }
+                        Err(e) => {
+                            self.set_status(format!("Failed to open notes: {e}"));
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -3135,6 +3223,215 @@ impl App {
                     }
                 }
                 _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_notes_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            let nv = match &mut self.notes_view {
+                Some(nv) => nv,
+                None => return Ok(false),
+            };
+
+            // Handle confirm_delete modal
+            if nv.confirm_delete {
+                match key.code {
+                    KeyCode::Char('y') => {
+                        if let Some(entry) = nv.entries.get(nv.selected_index) {
+                            let path = if entry.is_dir {
+                                nv.current_dir.join(&entry.file_name)
+                            } else {
+                                nv.current_dir.join(&entry.file_name)
+                            };
+                            if let Err(e) = use_cases::delete_note(&path) {
+                                self.set_status(format!("Delete failed: {e}"));
+                            }
+                        }
+                        let nv = self.notes_view.as_mut().unwrap();
+                        nv.confirm_delete = false;
+                        let _ = nv.refresh();
+                    }
+                    _ => {
+                        nv.confirm_delete = false;
+                    }
+                }
+                return Ok(false);
+            }
+
+            // Handle create_input modal
+            if nv.create_input.is_some() {
+                match key.code {
+                    KeyCode::Enter => {
+                        let (ref input, is_dir) = nv.create_input.as_ref().unwrap();
+                        let name = input.lines()[0].trim().to_string();
+                        if !name.is_empty() {
+                            let current_dir = nv.current_dir.clone();
+                            if *is_dir {
+                                if let Err(e) = use_cases::create_note_dir(&current_dir, &name) {
+                                    self.set_status(format!("Create dir failed: {e}"));
+                                }
+                            } else {
+                                match use_cases::create_note(&current_dir, &name) {
+                                    Ok(path) => {
+                                        let nv = self.notes_view.as_mut().unwrap();
+                                        nv.create_input = None;
+                                        let _ = nv.refresh();
+                                        let _ = nv.open_file(&path);
+                                        nv.focus = NotesFocus::Editor;
+                                        return Ok(false);
+                                    }
+                                    Err(e) => {
+                                        self.set_status(format!("Create note failed: {e}"));
+                                    }
+                                }
+                            }
+                        }
+                        let nv = self.notes_view.as_mut().unwrap();
+                        nv.create_input = None;
+                        let _ = nv.refresh();
+                    }
+                    KeyCode::Esc => {
+                        nv.create_input = None;
+                    }
+                    _ => {
+                        let input_event: Input = key.into();
+                        nv.create_input.as_mut().unwrap().0.input(input_event);
+                    }
+                }
+                return Ok(false);
+            }
+
+            // Handle rename_input modal
+            if nv.rename_input.is_some() {
+                match key.code {
+                    KeyCode::Enter => {
+                        let new_name = nv.rename_input.as_ref().unwrap().lines()[0].trim().to_string();
+                        if !new_name.is_empty() {
+                            if let Some(entry) = nv.entries.get(nv.selected_index) {
+                                let old_path = nv.current_dir.join(&entry.file_name);
+                                if let Err(e) = use_cases::rename_note(&old_path, &new_name) {
+                                    self.set_status(format!("Rename failed: {e}"));
+                                }
+                            }
+                        }
+                        let nv = self.notes_view.as_mut().unwrap();
+                        nv.rename_input = None;
+                        let _ = nv.refresh();
+                    }
+                    KeyCode::Esc => {
+                        nv.rename_input = None;
+                    }
+                    _ => {
+                        let input_event: Input = key.into();
+                        nv.rename_input.as_mut().unwrap().input(input_event);
+                    }
+                }
+                return Ok(false);
+            }
+
+            // Main key handling based on focus
+            match nv.focus {
+                NotesFocus::Explorer => {
+                    match key.code {
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            if !nv.entries.is_empty() && nv.selected_index < nv.entries.len() - 1 {
+                                nv.selected_index += 1;
+                            }
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            if nv.selected_index > 0 {
+                                nv.selected_index -= 1;
+                            }
+                        }
+                        KeyCode::Char('l') | KeyCode::Enter => {
+                            if let Some(entry) = nv.entries.get(nv.selected_index).cloned() {
+                                if entry.is_dir {
+                                    let new_dir = nv.current_dir.join(&entry.file_name);
+                                    nv.current_dir = new_dir;
+                                    nv.selected_index = 0;
+                                    let _ = nv.refresh();
+                                } else {
+                                    let path = nv.current_dir.join(&entry.file_name);
+                                    let _ = nv.save_current();
+                                    if let Err(e) = nv.open_file(&path) {
+                                        self.set_status(format!("Open failed: {e}"));
+                                    } else {
+                                        let nv = self.notes_view.as_mut().unwrap();
+                                        nv.focus = NotesFocus::Editor;
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char('h') | KeyCode::Backspace => {
+                            if nv.current_dir != nv.root_dir {
+                                if let Some(parent) = nv.current_dir.parent() {
+                                    nv.current_dir = parent.to_path_buf();
+                                    nv.selected_index = 0;
+                                    let _ = nv.refresh();
+                                }
+                            }
+                        }
+                        KeyCode::Char('a') => {
+                            nv.create_input = Some((TextArea::default(), false));
+                        }
+                        KeyCode::Char('A') => {
+                            nv.create_input = Some((TextArea::default(), true));
+                        }
+                        KeyCode::Char('d') => {
+                            if !nv.entries.is_empty() {
+                                nv.confirm_delete = true;
+                            }
+                        }
+                        KeyCode::Char('r') => {
+                            if let Some(entry) = nv.entries.get(nv.selected_index) {
+                                let mut ta = TextArea::default();
+                                ta.insert_str(&entry.name);
+                                nv.rename_input = Some(ta);
+                            }
+                        }
+                        KeyCode::Tab => {
+                            if nv.open_file.is_some() {
+                                nv.focus = NotesFocus::Editor;
+                            }
+                        }
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            let _ = nv.save_current();
+                            self.notes_view = None;
+                            self.view = View::TaskList;
+                        }
+                        _ => {}
+                    }
+                }
+                NotesFocus::Editor => {
+                    let vim_mode = nv.editor.mode();
+                    let is_normal = vim_mode == VimMode::Normal;
+
+                    if key.code == KeyCode::Tab && is_normal {
+                        let _ = nv.save_current();
+                        nv.focus = NotesFocus::Explorer;
+                    } else if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                        let _ = nv.save_current();
+                        self.set_status("Saved".to_string());
+                    } else if key.code == KeyCode::Char('q') && is_normal {
+                        let _ = nv.save_current();
+                        self.notes_view = None;
+                        self.view = View::TaskList;
+                    } else {
+                        let before = nv.editor.lines_joined();
+                        nv.editor.input(key.into());
+                        let after = nv.editor.lines_joined();
+                        if before != after {
+                            nv.modified = true;
+                        }
+                    }
+                }
             }
         }
         Ok(false)
