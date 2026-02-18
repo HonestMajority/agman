@@ -9,7 +9,7 @@ use ratatui::{
 
 use agman::task::TaskStatus;
 
-use super::app::{App, BranchSource, DirPickerOrigin, DirKind, PreviewPane, RestartWizardStep, View, WizardStep};
+use super::app::{App, BranchSource, DirPickerOrigin, DirKind, NotesFocus, PreviewPane, RestartWizardStep, View, WizardStep};
 use super::log_render;
 use super::vim::VimMode;
 
@@ -112,6 +112,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_session_picker(f, app);
         }
         View::Notifications => draw_notifications(f, app, chunks[0]),
+        View::Notes => draw_notes(f, app, chunks[0]),
     }
 
     if output_height > 0 {
@@ -1251,6 +1252,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             spans.extend([
                 Span::styled("N", Style::default().fg(Color::LightYellow)),
                 Span::styled(notif_label, Style::default().fg(Color::DarkGray)),
+                Span::styled("m", Style::default().fg(Color::LightYellow)),
+                Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
             ]);
             spans.extend([
                 Span::styled("P", Style::default().fg(Color::LightYellow)),
@@ -1501,6 +1504,42 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
             ]
+        }
+        View::Notes => {
+            let is_editor = app.notes_view.as_ref()
+                .map(|nv| nv.focus == NotesFocus::Editor)
+                .unwrap_or(false);
+            if is_editor {
+                vec![
+                    Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" explorer  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Ctrl+s", Style::default().fg(Color::LightGreen)),
+                    Span::styled(" save  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("q", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                ]
+            } else {
+                vec![
+                    Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("l", Style::default().fg(Color::LightGreen)),
+                    Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("h", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" back  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("a", Style::default().fg(Color::LightGreen)),
+                    Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("A", Style::default().fg(Color::LightGreen)),
+                    Span::styled(" dir  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("d", Style::default().fg(Color::LightRed)),
+                    Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("r", Style::default().fg(Color::LightYellow)),
+                    Span::styled(" rename  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" editor  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("q", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                ]
+            }
         }
     };
 
@@ -2727,4 +2766,208 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+// ---------------------------------------------------------------------------
+// Notes view
+// ---------------------------------------------------------------------------
+
+fn draw_notes(f: &mut Frame, app: &mut App, area: Rect) {
+    let nv = match &app.notes_view {
+        Some(nv) => nv,
+        None => return,
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+        .split(area);
+
+    draw_notes_explorer(f, nv, chunks[0]);
+    draw_notes_editor(f, app, chunks[1]);
+}
+
+fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
+    let is_focused = nv.focus == NotesFocus::Explorer;
+    let border_color = if is_focused { Color::LightCyan } else { Color::DarkGray };
+
+    // Build title from relative path
+    let title = if nv.current_dir == nv.root_dir {
+        " Notes ".to_string()
+    } else {
+        let rel = nv.current_dir.strip_prefix(&nv.root_dir).unwrap_or(&nv.current_dir);
+        format!(" Notes/{} ", rel.display())
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    // Reserve space for inline inputs at the bottom
+    let inner = block.inner(area);
+
+    // If confirm_delete, show confirmation
+    if nv.confirm_delete {
+        let entry_name = nv.entries.get(nv.selected_index)
+            .map(|e| e.name.as_str())
+            .unwrap_or("?");
+        let items: Vec<ListItem> = nv.entries.iter().enumerate().map(|(i, entry)| {
+            let display = if entry.is_dir {
+                format!("  {}/", entry.name)
+            } else {
+                format!("  {}", entry.name)
+            };
+            let style = if i == nv.selected_index {
+                Style::default().bg(Color::Rgb(40, 40, 50))
+            } else {
+                Style::default()
+            };
+            ListItem::new(display).style(style)
+        }).collect();
+
+        let list = List::new(items).block(block);
+        f.render_widget(list, area);
+
+        // Overlay confirmation at the bottom
+        if inner.height > 1 {
+            let confirm_area = Rect {
+                x: inner.x,
+                y: inner.y + inner.height - 1,
+                width: inner.width,
+                height: 1,
+            };
+            let msg = format!(" Delete {}? y/n ", entry_name);
+            let confirm = Paragraph::new(msg)
+                .style(Style::default().fg(Color::LightRed).bg(Color::Rgb(40, 20, 20)));
+            f.render_widget(confirm, confirm_area);
+        }
+        return;
+    }
+
+    // If create_input is active, show it at the bottom
+    if let Some((ref input, is_dir)) = nv.create_input {
+        let label = if is_dir { "New dir: " } else { "New note: " };
+
+        let items: Vec<ListItem> = nv.entries.iter().enumerate().map(|(i, entry)| {
+            let display = if entry.is_dir {
+                format!("  {}/", entry.name)
+            } else {
+                format!("  {}", entry.name)
+            };
+            let style = if i == nv.selected_index {
+                Style::default().bg(Color::Rgb(40, 40, 50))
+            } else {
+                Style::default()
+            };
+            ListItem::new(display).style(style)
+        }).collect();
+
+        let list = List::new(items).block(block);
+        f.render_widget(list, area);
+
+        // Show input at the bottom
+        if inner.height > 1 {
+            let input_area = Rect {
+                x: inner.x,
+                y: inner.y + inner.height - 1,
+                width: inner.width,
+                height: 1,
+            };
+            let text = format!("{}{}", label, input.lines()[0]);
+            let input_para = Paragraph::new(text)
+                .style(Style::default().fg(Color::LightGreen));
+            f.render_widget(input_para, input_area);
+        }
+        return;
+    }
+
+    // If rename_input is active, show it inline at the selected position
+    if let Some(ref _rename) = nv.rename_input {
+        let items: Vec<ListItem> = nv.entries.iter().enumerate().map(|(i, entry)| {
+            if i == nv.selected_index {
+                let rename_text = nv.rename_input.as_ref().unwrap().lines()[0].clone();
+                let display = format!("  {}", rename_text);
+                ListItem::new(display).style(Style::default().fg(Color::LightYellow).bg(Color::Rgb(40, 40, 50)))
+            } else {
+                let display = if entry.is_dir {
+                    format!("  {}/", entry.name)
+                } else {
+                    format!("  {}", entry.name)
+                };
+                ListItem::new(display).style(Style::default())
+            }
+        }).collect();
+
+        let list = List::new(items).block(block);
+        f.render_widget(list, area);
+        return;
+    }
+
+    // Normal list rendering
+    if nv.entries.is_empty() {
+        let empty = Paragraph::new("  (empty)")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = nv.entries.iter().enumerate().map(|(i, entry)| {
+        let display = if entry.is_dir {
+            format!("  {}/", entry.name)
+        } else {
+            format!("  {}", entry.name)
+        };
+        let style = if i == nv.selected_index {
+            Style::default().bg(Color::Rgb(40, 40, 50))
+        } else {
+            Style::default()
+        };
+        let color = if entry.is_dir { Color::LightCyan } else { Color::White };
+        ListItem::new(display).style(style.fg(color))
+    }).collect();
+
+    let list = List::new(items).block(block);
+    f.render_widget(list, area);
+}
+
+fn draw_notes_editor(f: &mut Frame, app: &App, area: Rect) {
+    let nv = match &app.notes_view {
+        Some(nv) => nv,
+        None => return,
+    };
+
+    let is_focused = nv.focus == NotesFocus::Editor;
+    let border_color = if is_focused { Color::LightCyan } else { Color::DarkGray };
+
+    if let Some(ref path) = nv.open_file {
+        let file_name = path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let modified_indicator = if nv.modified { " [+]" } else { "" };
+        let title = format!(" {}{} ", file_name, modified_indicator);
+
+        let mode_indicator = format!(" [{}] ", nv.editor.mode().indicator());
+        let block = Block::default()
+            .title(title)
+            .title_bottom(Line::from(mode_indicator).alignment(Alignment::Left))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+
+        let editor_area = block.inner(area);
+        f.render_widget(block, area);
+        f.render_widget(&nv.editor.textarea, editor_area);
+    } else {
+        let block = Block::default()
+            .title(" No file open ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+
+        let text = Paragraph::new("Press l or Enter to open a note")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        f.render_widget(text, area);
+    }
 }
