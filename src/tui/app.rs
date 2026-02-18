@@ -589,6 +589,14 @@ pub struct App {
     pub gh_notif_first_poll_done: bool,
     /// Thread IDs dismissed by the user, persisted across restarts.
     dismissed_notifs: DismissedNotifications,
+    // Keybase unread polling
+    pub keybase_unread_count: usize,
+    pub last_keybase_poll: Instant,
+    keybase_tx: tokio_mpsc::UnboundedSender<use_cases::KeybasePollResult>,
+    keybase_rx: tokio_mpsc::UnboundedReceiver<use_cases::KeybasePollResult>,
+    keybase_poll_active: bool,
+    pub keybase_first_poll_done: bool,
+    pub keybase_available: bool,
     // Notes view
     pub notes_view: Option<NotesView>,
     // Show PRs (GitHub Issues & PRs for current user)
@@ -618,6 +626,7 @@ impl App {
         let (pr_poll_tx, pr_poll_rx) = tokio_mpsc::unbounded_channel();
         let (gh_notif_tx, gh_notif_rx) = tokio_mpsc::unbounded_channel();
         let (show_prs_poll_tx, show_prs_poll_rx) = tokio_mpsc::unbounded_channel();
+        let (keybase_tx, keybase_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
         let mut dismissed_notifs = DismissedNotifications::load(&config.dismissed_notifications_path());
         let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
@@ -678,6 +687,13 @@ impl App {
             gh_notif_poll_active: false,
             gh_notif_first_poll_done: false,
             dismissed_notifs,
+            keybase_unread_count: 0,
+            last_keybase_poll: Instant::now() - Duration::from_secs(2),
+            keybase_tx,
+            keybase_rx,
+            keybase_poll_active: false,
+            keybase_first_poll_done: false,
+            keybase_available: true,
             notes_view: None,
             show_prs_data: Default::default(),
             show_prs_selected: 0,
@@ -4516,6 +4532,49 @@ impl App {
         }
     }
 
+    /// Spawn a background task to poll Keybase unread conversations.
+    fn start_keybase_poll(&mut self) {
+        if self.keybase_poll_active || !self.keybase_available {
+            return;
+        }
+
+        self.keybase_poll_active = true;
+        let tx = self.keybase_tx.clone();
+
+        tracing::debug!("starting keybase unread poll");
+        self.rt.spawn(async move {
+            let result = tokio::task::spawn_blocking(use_cases::fetch_keybase_unreads)
+                .await
+                .unwrap_or_else(|_| use_cases::KeybasePollResult {
+                    unread_count: 0,
+                    keybase_available: true,
+                });
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Check for completed Keybase poll results (non-blocking) and apply.
+    fn apply_keybase_poll_results(&mut self) {
+        let result = match self.keybase_rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        self.keybase_poll_active = false;
+
+        if !self.keybase_first_poll_done {
+            self.keybase_first_poll_done = true;
+            tracing::debug!("first keybase unread poll completed");
+        }
+
+        if !result.keybase_available {
+            self.keybase_available = false;
+            tracing::warn!("keybase not available, disabling poll");
+        }
+
+        self.keybase_unread_count = result.unread_count;
+        tracing::debug!(unread_count = result.unread_count, "applied keybase poll results");
+    }
+
     fn execute_restart_wizard(&mut self) -> Result<()> {
         let (task_id, selected_step_index) = match &self.restart_wizard {
             Some(w) => (w.task_id.clone(), w.selected_step_index),
@@ -4684,6 +4743,15 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed Show PRs poll results (non-blocking)
             app.apply_show_prs_results();
+
+            // Poll Keybase unreads every 2 seconds (local Unix socket, ~49ms per call)
+            if app.last_keybase_poll.elapsed() >= Duration::from_secs(2) {
+                app.start_keybase_poll();
+                app.last_keybase_poll = Instant::now();
+            }
+
+            // Check for completed Keybase poll results (non-blocking)
+            app.apply_keybase_poll_results();
 
             // Check for restart signal (written by release.sh when agman is rebuilt)
             #[cfg(unix)]
