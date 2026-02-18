@@ -2970,7 +2970,16 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let is_focused = nv.focus == NotesFocus::Editor;
-    let border_color = if is_focused { Color::LightCyan } else { Color::DarkGray };
+    let border_color = if is_focused {
+        match nv.editor.mode() {
+            VimMode::Normal => Color::LightCyan,
+            VimMode::Insert => Color::LightGreen,
+            VimMode::Visual => Color::LightYellow,
+            VimMode::Operator(_) => Color::LightMagenta,
+        }
+    } else {
+        Color::DarkGray
+    };
 
     if let Some(ref path) = nv.open_file {
         let file_name = path.file_stem()
