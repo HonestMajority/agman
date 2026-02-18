@@ -844,36 +844,6 @@ fn set_linked_pr() {
 }
 
 // ---------------------------------------------------------------------------
-// Clear linked PR
-// ---------------------------------------------------------------------------
-
-#[test]
-fn clear_linked_pr_resets_review_state() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let mut task = create_test_task(&config, "repo", "branch");
-
-    // Set up a linked PR and review state
-    task.set_linked_pr(10, "https://github.com/o/r/pull/10".to_string(), true, None)
-        .unwrap();
-    task.meta.review_addressed = true;
-    task.meta.last_review_count = Some(3);
-    task.save_meta().unwrap();
-
-    use_cases::clear_linked_pr(&mut task).unwrap();
-
-    assert!(task.meta.linked_pr.is_none());
-    assert!(!task.meta.review_addressed);
-    assert!(task.meta.last_review_count.is_none());
-
-    // Verify persistence
-    let loaded = Task::load(&config, "repo", "branch").unwrap();
-    assert!(loaded.meta.linked_pr.is_none());
-    assert!(!loaded.meta.review_addressed);
-    assert!(loaded.meta.last_review_count.is_none());
-}
-
-// ---------------------------------------------------------------------------
 // Set linked PR owned flag
 // ---------------------------------------------------------------------------
 

@@ -108,7 +108,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::ReviewWizard
             | View::RestartConfirm
             | View::RestartWizard
-            | View::SetLinkedPr
             | View::DirectoryPicker
             | View::SessionPicker
     );
@@ -171,10 +170,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::RestartWizard => {
             draw_preview(f, app, chunks[0]);
             draw_restart_wizard(f, app);
-        }
-        View::SetLinkedPr => {
-            draw_task_list(f, app, chunks[0]);
-            draw_set_linked_pr(f, app);
         }
         View::DirectoryPicker => {
             draw_task_list(f, app, chunks[0]);
@@ -1343,8 +1338,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 spans.extend([
                     Span::styled("R", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("P", Style::default().fg(Color::LightYellow)),
-                    Span::styled(" PR  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("t", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("x", Style::default().fg(Color::LightMagenta)),
@@ -1416,8 +1409,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     spans.extend([
                         Span::styled("R", Style::default().fg(Color::LightMagenta)),
                         Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("P", Style::default().fg(Color::LightYellow)),
-                        Span::styled(" PR  ", Style::default().fg(Color::DarkGray)),
                         Span::styled("t", Style::default().fg(Color::LightMagenta)),
                         Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
                         Span::styled("f", Style::default().fg(Color::LightMagenta)),
@@ -1581,14 +1572,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 vec![]
             }
-        }
-        View::SetLinkedPr => {
-            vec![
-                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Esc", Style::default().fg(Color::LightRed)),
-                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-            ]
         }
         View::DirectoryPicker => {
             vec![
@@ -2564,61 +2547,6 @@ fn draw_review_wizard(f: &mut Frame, app: &mut App) {
     };
 
     f.render_widget(Paragraph::new(content), chunks[1]);
-}
-
-fn draw_set_linked_pr(f: &mut Frame, app: &App) {
-    let area = centered_rect(40, 20, f.area());
-    f.render_widget(Clear, area);
-
-    let inner = area.inner(Margin {
-        vertical: 1,
-        horizontal: 1,
-    });
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    let block = Block::default()
-        .title(Span::styled(
-            " Set Linked PR ",
-            Style::default()
-                .fg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightCyan));
-    f.render_widget(block, area);
-
-    let prompt = Paragraph::new(Span::styled(
-        "Enter PR number (empty to clear):",
-        Style::default().fg(Color::White),
-    ));
-    f.render_widget(prompt, chunks[0]);
-
-    f.render_widget(&app.pr_number_editor, chunks[2]);
-
-    let (type_label, type_color) = if app.pr_owned_toggle {
-        ("Type: mine (owned)", Color::LightMagenta)
-    } else {
-        ("Type: ext (not owned)", Color::Gray)
-    };
-    let type_line = Paragraph::new(Span::styled(type_label, Style::default().fg(type_color)));
-    f.render_widget(type_line, chunks[3]);
-
-    let hint = Paragraph::new(Span::styled(
-        "Enter confirm · Tab toggle type · Esc cancel",
-        Style::default().fg(Color::DarkGray),
-    ));
-    f.render_widget(hint, chunks[5]);
 }
 
 fn draw_directory_picker(f: &mut Frame, app: &App) {

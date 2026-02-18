@@ -794,12 +794,6 @@ impl Task {
         self.save_meta()
     }
 
-    pub fn clear_linked_pr(&mut self) -> Result<()> {
-        self.meta.linked_pr = None;
-        self.meta.updated_at = Utc::now();
-        self.save_meta()
-    }
-
     /// Get the git diff for the worktree(s).
     /// For multi-repo tasks, concatenates diffs from all repos with headers.
     pub fn get_git_diff(&self) -> Result<String> {

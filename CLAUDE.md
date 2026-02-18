@@ -131,7 +131,7 @@ Internal commands are hidden subcommands invoked by the TUI via subprocess or tm
 - `a` - Answer (InputNeeded tasks only)
 - `o` - Open linked PR in browser
 - `H` - Hold/unhold task
-- `P` - Set linked PR, `c` - Clear review-addressed
+- `c` - Clear review-addressed
 - `d` - Delete task
 - `N` - Notifications, `m` - Notes
 - `q/Esc` - Quit
@@ -145,7 +145,7 @@ Internal commands are hidden subcommands invoked by the TUI via subprocess or tm
 - `f` - Give feedback, `t` - Edit TASK.md, `x` - Run command
 - `a` - Answer (InputNeeded tasks only)
 - `o` - Open linked PR in browser
-- `H` - Hold/unhold task, `P` - Set linked PR
+- `H` - Hold/unhold task
 - `Q` - Queue feedback
 - `Enter` - Attach to tmux
 - `q/Esc` - Back
