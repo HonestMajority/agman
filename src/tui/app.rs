@@ -57,6 +57,7 @@ pub enum View {
     SessionPicker,
     Notifications,
     Notes,
+    ShowPrs,
 }
 
 /// Which wizard requested the directory picker.
@@ -587,6 +588,15 @@ pub struct App {
     dismissed_notifs: DismissedNotifications,
     // Notes view
     pub notes_view: Option<NotesView>,
+    // Show PRs (GitHub Issues & PRs for current user)
+    pub show_prs_data: use_cases::ShowPrsData,
+    pub show_prs_selected: usize,
+    pub show_prs_first_poll_done: bool,
+    pub show_prs_list_state: ListState,
+    show_prs_poll_tx: tokio_mpsc::UnboundedSender<use_cases::ShowPrsData>,
+    show_prs_poll_rx: tokio_mpsc::UnboundedReceiver<use_cases::ShowPrsData>,
+    show_prs_poll_active: bool,
+    pub last_show_prs_poll: Instant,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -602,6 +612,7 @@ impl App {
         let task_file_editor = VimTextArea::new();
         let (pr_poll_tx, pr_poll_rx) = tokio_mpsc::unbounded_channel();
         let (gh_notif_tx, gh_notif_rx) = tokio_mpsc::unbounded_channel();
+        let (show_prs_poll_tx, show_prs_poll_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
         let mut dismissed_notifs = DismissedNotifications::load(&config.dismissed_notifications_path());
         let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
@@ -663,6 +674,14 @@ impl App {
             gh_notif_first_poll_done: false,
             dismissed_notifs,
             notes_view: None,
+            show_prs_data: Default::default(),
+            show_prs_selected: 0,
+            show_prs_first_poll_done: false,
+            show_prs_list_state: ListState::default(),
+            show_prs_poll_tx,
+            show_prs_poll_rx,
+            show_prs_poll_active: false,
+            last_show_prs_poll: Instant::now() - Duration::from_secs(60),
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -2225,6 +2244,7 @@ impl App {
             View::SessionPicker => self.handle_session_picker_event(event),
             View::Notifications => self.handle_notifications_event(event),
             View::Notes => self.handle_notes_event(event),
+            View::ShowPrs => self.handle_show_prs_event(event),
         }
     }
 
@@ -2349,6 +2369,13 @@ impl App {
                 KeyCode::Char('N') => {
                     self.selected_notif_index = 0;
                     self.view = View::Notifications;
+                }
+                KeyCode::Char('I') => {
+                    self.show_prs_selected = 0;
+                    self.view = View::ShowPrs;
+                    if !self.show_prs_first_poll_done && !self.show_prs_poll_active {
+                        self.start_show_prs_poll();
+                    }
                 }
                 KeyCode::Char('m') => {
                     match NotesView::new(self.config.notes_dir.clone()) {
@@ -3230,6 +3257,48 @@ impl App {
 
                         self.set_status("Opening notification...".to_string());
                     }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_show_prs_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = View::TaskList;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let total = self.show_prs_total_items();
+                    if total > 0 && self.show_prs_selected < total - 1 {
+                        self.show_prs_selected += 1;
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if self.show_prs_selected > 0 {
+                        self.show_prs_selected -= 1;
+                    }
+                }
+                KeyCode::Char('o') | KeyCode::Enter => {
+                    if let Some(item) = self.show_prs_selected_item() {
+                        let url = item.url.clone();
+                        tracing::info!(url = %url, "opening GitHub item from show-prs");
+                        open_url(&url);
+                        self.set_status("Opening in browser...".to_string());
+                    }
+                }
+                KeyCode::Char('R') => {
+                    self.show_prs_poll_active = false; // force allow re-poll
+                    self.start_show_prs_poll();
+                    self.last_show_prs_poll = Instant::now();
+                    self.set_status("Refreshing...".to_string());
                 }
                 _ => {}
             }
@@ -4354,6 +4423,73 @@ impl App {
         tracing::debug!(notification_count = self.notifications.len(), "applied github notification poll results");
     }
 
+    /// Spawn a background task to poll GitHub issues & PRs for the Show PRs view.
+    fn start_show_prs_poll(&mut self) {
+        if self.show_prs_poll_active {
+            return;
+        }
+
+        self.show_prs_poll_active = true;
+        let tx = self.show_prs_poll_tx.clone();
+
+        tracing::debug!("starting show-prs poll");
+        self.rt.spawn(async move {
+            let result = tokio::task::spawn_blocking(use_cases::fetch_show_prs_data)
+                .await
+                .unwrap_or_else(|_| use_cases::ShowPrsData::default());
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Check for completed Show PRs poll results (non-blocking) and apply.
+    fn apply_show_prs_results(&mut self) {
+        let result = match self.show_prs_poll_rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        self.show_prs_poll_active = false;
+
+        if !self.show_prs_first_poll_done {
+            self.show_prs_first_poll_done = true;
+            tracing::debug!("first show-prs poll completed");
+        }
+
+        self.show_prs_data = result;
+
+        // Clamp selection index
+        let total = self.show_prs_total_items();
+        if self.show_prs_selected >= total && total > 0 {
+            self.show_prs_selected = total - 1;
+        }
+
+        tracing::debug!(
+            issues = self.show_prs_data.issues.len(),
+            my_prs = self.show_prs_data.my_prs.len(),
+            review_requests = self.show_prs_data.review_requests.len(),
+            "applied show-prs poll results"
+        );
+    }
+
+    fn show_prs_total_items(&self) -> usize {
+        self.show_prs_data.issues.len()
+            + self.show_prs_data.my_prs.len()
+            + self.show_prs_data.review_requests.len()
+    }
+
+    fn show_prs_selected_item(&self) -> Option<&use_cases::GithubItem> {
+        let idx = self.show_prs_selected;
+        let issues_len = self.show_prs_data.issues.len();
+        let my_prs_len = self.show_prs_data.my_prs.len();
+
+        if idx < issues_len {
+            self.show_prs_data.issues.get(idx)
+        } else if idx < issues_len + my_prs_len {
+            self.show_prs_data.my_prs.get(idx - issues_len)
+        } else {
+            self.show_prs_data.review_requests.get(idx - issues_len - my_prs_len)
+        }
+    }
+
     fn execute_restart_wizard(&mut self) -> Result<()> {
         let (task_id, selected_step_index) = match &self.restart_wizard {
             Some(w) => (w.task_id.clone(), w.selected_step_index),
@@ -4513,6 +4649,15 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed notification poll results (non-blocking)
             app.apply_gh_notif_results();
+
+            // Poll Show PRs data every 60 seconds (regardless of view)
+            if app.last_show_prs_poll.elapsed() >= Duration::from_secs(60) {
+                app.start_show_prs_poll();
+                app.last_show_prs_poll = Instant::now();
+            }
+
+            // Check for completed Show PRs poll results (non-blocking)
+            app.apply_show_prs_results();
 
             // Check for restart signal (written by release.sh when agman is rebuilt)
             #[cfg(unix)]

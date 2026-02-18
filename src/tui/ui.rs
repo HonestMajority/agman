@@ -140,6 +140,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         View::Notifications => draw_notifications(f, app, chunks[0]),
         View::Notes => draw_notes(f, app, chunks[0]),
+        View::ShowPrs => draw_show_prs(f, app, chunks[0]),
     }
 
     if output_height > 0 {
@@ -1299,6 +1300,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             spans.extend([
                 Span::styled("N", Style::default().fg(Color::LightYellow)),
                 Span::styled(notif_label, Style::default().fg(Color::DarkGray)),
+                Span::styled("I", Style::default().fg(Color::LightYellow)),
+                Span::styled(" prs  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("m", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
@@ -1537,6 +1540,18 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" done  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("o", Style::default().fg(Color::LightGreen)),
                 Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("q", Style::default().fg(Color::LightCyan)),
+                Span::styled(" back", Style::default().fg(Color::DarkGray)),
+            ]
+        }
+        View::ShowPrs => {
+            vec![
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("o", Style::default().fg(Color::LightGreen)),
+                Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("R", Style::default().fg(Color::LightYellow)),
+                Span::styled(" refresh  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
             ]
@@ -2788,6 +2803,110 @@ fn draw_notifications(f: &mut Frame, app: &App, area: Rect) {
     );
 
     f.render_widget(list, area);
+}
+
+fn draw_show_prs(f: &mut Frame, app: &mut App, area: Rect) {
+    let total_count = app.show_prs_data.issues.len()
+        + app.show_prs_data.my_prs.len()
+        + app.show_prs_data.review_requests.len();
+    let title = format!(" Issues & PRs ({}) ", total_count);
+
+    if total_count == 0 {
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title_bottom(clock_title(app));
+        let empty_text = if app.show_prs_first_poll_done {
+            "No items"
+        } else {
+            "Fetching..."
+        };
+        let content = Paragraph::new(empty_text)
+            .alignment(Alignment::Center)
+            .block(block);
+        f.render_widget(content, area);
+        return;
+    }
+
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selectable_index: usize = 0;
+    let mut visual_index: Option<usize> = None;
+
+    // Helper closure-like sections
+    let sections: &[(&str, Color, &[agman::use_cases::GithubItem])] = &[
+        ("My Issues", Color::LightYellow, &app.show_prs_data.issues),
+        ("My PRs", Color::LightGreen, &app.show_prs_data.my_prs),
+        ("Review Requests", Color::LightCyan, &app.show_prs_data.review_requests),
+    ];
+
+    for &(section_name, header_color, section_items) in sections {
+        // Section header
+        let header_text = format!("── {} ({}) ", section_name, section_items.len());
+        let remaining = area.width.saturating_sub(header_text.len() as u16 + 2) as usize;
+        let fill = "─".repeat(remaining);
+        let header_line = Line::from(vec![
+            Span::styled(header_text, Style::default().fg(header_color)),
+            Span::styled(fill, Style::default().fg(Color::Rgb(60, 60, 60))),
+        ]);
+        items.push(ListItem::new(vec![header_line]));
+
+        // Items
+        for item in section_items {
+            let is_selected = selectable_index == app.show_prs_selected;
+            if is_selected {
+                visual_index = Some(items.len());
+            }
+
+            let mut title_spans = vec![
+                Span::styled(
+                    format!("  #{}", item.number),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("  {}", item.title),
+                    Style::default().fg(Color::White),
+                ),
+            ];
+            if item.is_draft {
+                title_spans.push(Span::styled(
+                    " [draft]",
+                    Style::default().fg(Color::Rgb(100, 100, 120)),
+                ));
+            }
+            let title_line = Line::from(title_spans);
+
+            let time_str = relative_time(&item.updated_at);
+            let mut meta_parts = vec![
+                item.repo_full_name.clone(),
+                item.author.clone(),
+            ];
+            if !time_str.is_empty() {
+                meta_parts.push(time_str);
+            }
+            let meta_text = format!("   {}", meta_parts.join(" · "));
+            let meta_line = Line::from(Span::styled(
+                meta_text,
+                Style::default().fg(Color::Rgb(100, 100, 120)),
+            ));
+
+            items.push(ListItem::new(vec![title_line, meta_line, Line::from("")]));
+            selectable_index += 1;
+        }
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title_bottom(clock_title(app)),
+        )
+        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 50)));
+
+    app.show_prs_list_state.select(visual_index);
+    f.render_stateful_widget(list, area, &mut app.show_prs_list_state);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

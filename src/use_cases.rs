@@ -1252,3 +1252,172 @@ pub fn mark_notification_read(thread_id: &str) -> Result<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Show PRs (GitHub Issues & PRs for current user)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GithubItemKind {
+    Issue,
+    PullRequest,
+}
+
+#[derive(Debug, Clone)]
+pub struct GithubItem {
+    pub number: u64,
+    pub title: String,
+    pub repo_full_name: String,
+    pub state: String,
+    pub url: String,
+    pub updated_at: String,
+    pub author: String,
+    pub is_draft: bool,
+    pub kind: GithubItemKind,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ShowPrsData {
+    pub issues: Vec<GithubItem>,
+    pub my_prs: Vec<GithubItem>,
+    pub review_requests: Vec<GithubItem>,
+}
+
+/// Raw JSON shape from `gh search issues/prs --json ...`.
+#[derive(Deserialize)]
+struct RawSearchItem {
+    number: u64,
+    title: String,
+    repository: RawSearchRepo,
+    state: String,
+    url: String,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    author: RawSearchAuthor,
+    #[serde(rename = "isDraft", default)]
+    is_draft: bool,
+}
+
+#[derive(Deserialize)]
+struct RawSearchRepo {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
+}
+
+#[derive(Deserialize)]
+struct RawSearchAuthor {
+    login: String,
+}
+
+/// Parse JSON output from `gh search issues` or `gh search prs`.
+pub fn parse_search_items_json(json_str: &str, kind: GithubItemKind) -> Vec<GithubItem> {
+    let raw: Vec<RawSearchItem> = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to parse search items JSON");
+            return Vec::new();
+        }
+    };
+
+    raw.into_iter()
+        .map(|item| GithubItem {
+            number: item.number,
+            title: item.title,
+            repo_full_name: item.repository.name_with_owner,
+            state: item.state,
+            url: item.url,
+            updated_at: item.updated_at,
+            author: item.author.login,
+            is_draft: if kind == GithubItemKind::Issue { false } else { item.is_draft },
+            kind: kind.clone(),
+        })
+        .collect()
+}
+
+/// Run a `gh search` command and return stdout on success, or None on failure.
+fn run_gh_search(args: &[&str]) -> Option<String> {
+    let output = match Command::new("gh").args(args).output() {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(error = %e, cmd = ?args, "failed to run gh search");
+            return None;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(stderr = %stderr, cmd = ?args, "gh search returned error");
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Deduplicate items by (number, repo_full_name), keeping first occurrence.
+fn dedup_github_items(items: &mut Vec<GithubItem>) {
+    let mut seen = std::collections::HashSet::new();
+    items.retain(|item| seen.insert((item.number, item.repo_full_name.clone())));
+}
+
+const PR_JSON_FIELDS: &str = "number,title,repository,state,url,updatedAt,author,isDraft";
+const ISSUE_JSON_FIELDS: &str = "number,title,repository,state,url,updatedAt,author";
+
+/// Fetch all GitHub issues and PRs relevant to the current user.
+pub fn fetch_show_prs_data() -> ShowPrsData {
+    tracing::info!("fetching show-prs data");
+
+    // 1. My Issues (assigned to me)
+    let issues = run_gh_search(&[
+        "search", "issues", "--assignee=@me", "--state=open",
+        &format!("--json={}", ISSUE_JSON_FIELDS), "--limit=50",
+    ])
+    .map(|json| parse_search_items_json(&json, GithubItemKind::Issue))
+    .unwrap_or_default();
+
+    // 2. My PRs (authored by me)
+    let mut my_prs = run_gh_search(&[
+        "search", "prs", "--author=@me", "--state=open",
+        &format!("--json={}", PR_JSON_FIELDS), "--limit=50",
+    ])
+    .map(|json| parse_search_items_json(&json, GithubItemKind::PullRequest))
+    .unwrap_or_default();
+
+    // 3. PRs assigned to me (merge into my_prs)
+    if let Some(json) = run_gh_search(&[
+        "search", "prs", "--assignee=@me", "--state=open",
+        &format!("--json={}", PR_JSON_FIELDS), "--limit=50",
+    ]) {
+        my_prs.extend(parse_search_items_json(&json, GithubItemKind::PullRequest));
+        dedup_github_items(&mut my_prs);
+    }
+
+    // 4. Review requests
+    let mut review_requests = run_gh_search(&[
+        "search", "prs", "--review-requested=@me", "--state=open",
+        &format!("--json={}", PR_JSON_FIELDS), "--limit=50",
+    ])
+    .map(|json| parse_search_items_json(&json, GithubItemKind::PullRequest))
+    .unwrap_or_default();
+
+    // 5. PRs mentioning me (merge into review_requests)
+    if let Some(json) = run_gh_search(&[
+        "search", "prs", "--mentions=@me", "--state=open",
+        &format!("--json={}", PR_JSON_FIELDS), "--limit=50",
+    ]) {
+        review_requests.extend(parse_search_items_json(&json, GithubItemKind::PullRequest));
+        dedup_github_items(&mut review_requests);
+    }
+
+    tracing::debug!(
+        issues = issues.len(),
+        my_prs = my_prs.len(),
+        review_requests = review_requests.len(),
+        "fetched show-prs data"
+    );
+
+    ShowPrsData {
+        issues,
+        my_prs,
+        review_requests,
+    }
+}

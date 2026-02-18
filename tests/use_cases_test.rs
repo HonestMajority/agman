@@ -3,7 +3,7 @@ mod helpers;
 use agman::git::parse_github_owner_repo;
 use agman::repo_stats::RepoStats;
 use agman::task::{Task, TaskStatus};
-use agman::use_cases::{self, DeleteMode, PrPollAction, WorktreeSource};
+use agman::use_cases::{self, DeleteMode, GithubItemKind, PrPollAction, WorktreeSource};
 use helpers::{create_test_task, init_test_repo, test_config};
 
 // ---------------------------------------------------------------------------
@@ -1807,4 +1807,87 @@ fn paste_note_rejects_duplicate_name() {
     // Original files unchanged
     assert_eq!(std::fs::read_to_string(src_dir.join("readme.md")).unwrap(), "src");
     assert_eq!(std::fs::read_to_string(dest_dir.join("readme.md")).unwrap(), "dest");
+}
+
+// ---------------------------------------------------------------------------
+// Show PRs (parse_search_items_json)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_search_items_json_issues() {
+    let json = r#"[
+        {
+            "number": 42,
+            "title": "Fix login bug",
+            "repository": {"nameWithOwner": "acme/webapp"},
+            "state": "open",
+            "url": "https://github.com/acme/webapp/issues/42",
+            "updatedAt": "2025-12-01T10:30:00Z",
+            "author": {"login": "alice"}
+        },
+        {
+            "number": 7,
+            "title": "Add dark mode",
+            "repository": {"nameWithOwner": "acme/ui"},
+            "state": "open",
+            "url": "https://github.com/acme/ui/issues/7",
+            "updatedAt": "2025-11-20T08:00:00Z",
+            "author": {"login": "bob"}
+        }
+    ]"#;
+
+    let items = use_cases::parse_search_items_json(json, GithubItemKind::Issue);
+    assert_eq!(items.len(), 2);
+
+    assert_eq!(items[0].number, 42);
+    assert_eq!(items[0].title, "Fix login bug");
+    assert_eq!(items[0].repo_full_name, "acme/webapp");
+    assert_eq!(items[0].state, "open");
+    assert_eq!(items[0].url, "https://github.com/acme/webapp/issues/42");
+    assert_eq!(items[0].updated_at, "2025-12-01T10:30:00Z");
+    assert_eq!(items[0].author, "alice");
+    assert!(!items[0].is_draft);
+    assert_eq!(items[0].kind, GithubItemKind::Issue);
+
+    assert_eq!(items[1].number, 7);
+    assert_eq!(items[1].author, "bob");
+    assert_eq!(items[1].kind, GithubItemKind::Issue);
+}
+
+#[test]
+fn parse_search_items_json_prs() {
+    let json = r#"[
+        {
+            "number": 101,
+            "title": "Refactor auth module",
+            "repository": {"nameWithOwner": "acme/backend"},
+            "state": "open",
+            "url": "https://github.com/acme/backend/pull/101",
+            "updatedAt": "2025-12-05T14:00:00Z",
+            "author": {"login": "carol"},
+            "isDraft": true
+        },
+        {
+            "number": 55,
+            "title": "Update README",
+            "repository": {"nameWithOwner": "acme/docs"},
+            "state": "open",
+            "url": "https://github.com/acme/docs/pull/55",
+            "updatedAt": "2025-12-04T09:15:00Z",
+            "author": {"login": "dave"},
+            "isDraft": false
+        }
+    ]"#;
+
+    let items = use_cases::parse_search_items_json(json, GithubItemKind::PullRequest);
+    assert_eq!(items.len(), 2);
+
+    assert_eq!(items[0].number, 101);
+    assert_eq!(items[0].title, "Refactor auth module");
+    assert!(items[0].is_draft);
+    assert_eq!(items[0].kind, GithubItemKind::PullRequest);
+
+    assert_eq!(items[1].number, 55);
+    assert!(!items[1].is_draft);
+    assert_eq!(items[1].kind, GithubItemKind::PullRequest);
 }
