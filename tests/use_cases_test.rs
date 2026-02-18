@@ -1627,3 +1627,158 @@ fn read_and_save_note() {
     let content = use_cases::read_note(&path).unwrap();
     assert_eq!(content, "Hello, world!");
 }
+
+// ---------------------------------------------------------------------------
+// Notes: move_note
+// ---------------------------------------------------------------------------
+
+#[test]
+fn move_note_down() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("alpha.md"), "").unwrap();
+    std::fs::write(notes_dir.join("beta.md"), "").unwrap();
+    std::fs::write(notes_dir.join("gamma.md"), "").unwrap();
+
+    // Move first file (alpha) down
+    let new_idx = use_cases::move_note(&notes_dir, "alpha.md", use_cases::MoveDirection::Down).unwrap();
+    assert_eq!(new_idx, 1);
+
+    // Verify .order was written
+    let order_content = std::fs::read_to_string(notes_dir.join(".order")).unwrap();
+    let order_lines: Vec<&str> = order_content.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(order_lines, vec!["beta.md", "alpha.md", "gamma.md"]);
+
+    // Verify list_notes respects the new order
+    let entries = use_cases::list_notes(&notes_dir).unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].file_name, "beta.md");
+    assert_eq!(entries[1].file_name, "alpha.md");
+    assert_eq!(entries[2].file_name, "gamma.md");
+}
+
+#[test]
+fn move_note_up() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("alpha.md"), "").unwrap();
+    std::fs::write(notes_dir.join("beta.md"), "").unwrap();
+    std::fs::write(notes_dir.join("gamma.md"), "").unwrap();
+
+    // Move last file (gamma) up
+    let new_idx = use_cases::move_note(&notes_dir, "gamma.md", use_cases::MoveDirection::Up).unwrap();
+    assert_eq!(new_idx, 1);
+
+    let entries = use_cases::list_notes(&notes_dir).unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].file_name, "alpha.md");
+    assert_eq!(entries[1].file_name, "gamma.md");
+    assert_eq!(entries[2].file_name, "beta.md");
+}
+
+#[test]
+fn list_notes_respects_order_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("alpha.md"), "").unwrap();
+    std::fs::write(notes_dir.join("beta.md"), "").unwrap();
+    std::fs::write(notes_dir.join("gamma.md"), "").unwrap();
+    std::fs::create_dir(notes_dir.join("projects")).unwrap();
+
+    // Hand-written .order that only mentions some entries
+    std::fs::write(notes_dir.join(".order"), "gamma.md\nalpha.md\n").unwrap();
+
+    let entries = use_cases::list_notes(&notes_dir).unwrap();
+    assert_eq!(entries.len(), 4);
+    // Ordered entries come first
+    assert_eq!(entries[0].file_name, "gamma.md");
+    assert_eq!(entries[1].file_name, "alpha.md");
+    // Remaining entries: dirs first, then files, alphabetically
+    assert_eq!(entries[2].file_name, "projects");
+    assert!(entries[2].is_dir);
+    assert_eq!(entries[3].file_name, "beta.md");
+}
+
+#[test]
+fn move_note_entry_not_in_order_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("alpha.md"), "").unwrap();
+    std::fs::write(notes_dir.join("beta.md"), "").unwrap();
+    std::fs::write(notes_dir.join("gamma.md"), "").unwrap();
+
+    // Write a partial .order that only mentions alpha and beta
+    std::fs::write(notes_dir.join(".order"), "alpha.md\nbeta.md\n").unwrap();
+
+    // Move gamma (not in .order) up — should succeed, not error
+    let new_idx =
+        use_cases::move_note(&notes_dir, "gamma.md", use_cases::MoveDirection::Up).unwrap();
+    assert_eq!(new_idx, 1);
+
+    // Verify .order now contains all three entries with gamma moved up
+    let order_content = std::fs::read_to_string(notes_dir.join(".order")).unwrap();
+    let order_lines: Vec<&str> = order_content.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(order_lines, vec!["alpha.md", "gamma.md", "beta.md"]);
+}
+
+#[test]
+fn paste_note_moves_file_between_dirs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src_dir = tmp.path().join("src_dir");
+    let dest_dir = tmp.path().join("dest_dir");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&dest_dir).unwrap();
+
+    std::fs::write(src_dir.join("todo.md"), "buy milk").unwrap();
+    std::fs::write(src_dir.join("other.md"), "").unwrap();
+
+    // Set up .order in source with both entries
+    std::fs::write(src_dir.join(".order"), "todo.md\nother.md\n").unwrap();
+    // Set up .order in destination
+    std::fs::write(dest_dir.join(".order"), "existing.md\n").unwrap();
+    std::fs::write(dest_dir.join("existing.md"), "").unwrap();
+
+    // Paste todo.md from src to dest
+    use_cases::paste_note(&src_dir, &dest_dir, "todo.md").unwrap();
+
+    // File moved
+    assert!(!src_dir.join("todo.md").exists());
+    assert!(dest_dir.join("todo.md").exists());
+    assert_eq!(std::fs::read_to_string(dest_dir.join("todo.md")).unwrap(), "buy milk");
+
+    // Source .order no longer contains todo.md
+    let src_order = std::fs::read_to_string(src_dir.join(".order")).unwrap();
+    let src_lines: Vec<&str> = src_order.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(src_lines, vec!["other.md"]);
+
+    // Dest .order has todo.md appended
+    let dest_order = std::fs::read_to_string(dest_dir.join(".order")).unwrap();
+    let dest_lines: Vec<&str> = dest_order.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(dest_lines, vec!["existing.md", "todo.md"]);
+}
+
+#[test]
+fn paste_note_rejects_duplicate_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src_dir = tmp.path().join("src");
+    let dest_dir = tmp.path().join("dest");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&dest_dir).unwrap();
+
+    std::fs::write(src_dir.join("readme.md"), "src").unwrap();
+    std::fs::write(dest_dir.join("readme.md"), "dest").unwrap();
+
+    let result = use_cases::paste_note(&src_dir, &dest_dir, "readme.md");
+    assert!(result.is_err());
+    // Original files unchanged
+    assert_eq!(std::fs::read_to_string(src_dir.join("readme.md")).unwrap(), "src");
+    assert_eq!(std::fs::read_to_string(dest_dir.join("readme.md")).unwrap(), "dest");
+}

@@ -2945,6 +2945,9 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
     }
 
     let items: Vec<ListItem> = nv.entries.iter().enumerate().map(|(i, entry)| {
+        let is_cut = nv.cut_entry.as_ref().is_some_and(|(dir, name)| {
+            dir == &nv.current_dir && name == &entry.file_name
+        });
         let display = if entry.is_dir {
             format!("  {}/", entry.name)
         } else {
@@ -2955,8 +2958,19 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
         } else {
             Style::default()
         };
-        let color = if entry.is_dir { Color::LightCyan } else { Color::White };
-        ListItem::new(display).style(style.fg(color))
+        let color = if is_cut {
+            Color::DarkGray
+        } else if entry.is_dir {
+            Color::LightCyan
+        } else {
+            Color::White
+        };
+        let style = if is_cut {
+            style.fg(color).add_modifier(Modifier::ITALIC)
+        } else {
+            style.fg(color)
+        };
+        ListItem::new(display).style(style)
     }).collect();
 
     let list = List::new(items).block(block);
@@ -2970,7 +2984,16 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let is_focused = nv.focus == NotesFocus::Editor;
-    let border_color = if is_focused { Color::LightCyan } else { Color::DarkGray };
+    let border_color = if is_focused {
+        match nv.editor.mode() {
+            VimMode::Normal => Color::LightCyan,
+            VimMode::Insert => Color::LightGreen,
+            VimMode::Visual => Color::LightYellow,
+            VimMode::Operator(_) => Color::LightMagenta,
+        }
+    } else {
+        Color::DarkGray
+    };
 
     if let Some(ref path) = nv.open_file {
         let file_name = path.file_stem()
