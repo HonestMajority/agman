@@ -3375,9 +3375,13 @@ impl App {
                         KeyCode::Char('h') | KeyCode::Backspace => {
                             if nv.current_dir != nv.root_dir {
                                 if let Some(parent) = nv.current_dir.parent() {
+                                    let child_name = nv.current_dir.file_name()
+                                        .map(|n| n.to_string_lossy().to_string());
                                     nv.current_dir = parent.to_path_buf();
-                                    nv.selected_index = 0;
                                     let _ = nv.refresh();
+                                    nv.selected_index = child_name
+                                        .and_then(|name| nv.entries.iter().position(|e| e.file_name == name))
+                                        .unwrap_or(0);
                                 }
                             }
                         }
