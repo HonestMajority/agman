@@ -159,6 +159,10 @@ impl Config {
         self.base_dir.join("dismissed_notifications.json")
     }
 
+    pub fn break_state_path(&self) -> PathBuf {
+        self.base_dir.join("last_break_reset")
+    }
+
     pub fn init_default_files(&self, force: bool) -> Result<()> {
         self.ensure_dirs()?;
 
