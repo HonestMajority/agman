@@ -45,14 +45,14 @@ fn clock_title(app: &App) -> Line<'static> {
     let notif_spans = if !app.gh_notif_first_poll_done {
         // Loading state
         vec![Span::styled(
-            " ✉ ... ",
+            " GITHUB ... ",
             Style::default().fg(Color::DarkGray),
         )]
     } else if unread_count > 0 {
         // Unread notifications — prominent badge with amber background
         let amber = Color::Rgb(255, 180, 40);
         vec![Span::styled(
-            format!(" \u{2709} {} ", unread_count),
+            format!(" GITHUB {} ", unread_count),
             Style::default()
                 .fg(Color::Black)
                 .bg(amber)
@@ -65,13 +65,13 @@ fn clock_title(app: &App) -> Line<'static> {
 
     let keybase_spans = if !app.keybase_first_poll_done && app.keybase_available {
         vec![Span::styled(
-            " KB ... ",
+            " KEYBASE ... ",
             Style::default().fg(Color::DarkGray),
         )]
     } else if app.keybase_unread_count > 0 {
         let cyan = Color::Rgb(0, 180, 216);
         vec![Span::styled(
-            format!(" KB {} ", app.keybase_unread_count),
+            format!(" KEYBASE {} ", app.keybase_unread_count),
             Style::default()
                 .fg(Color::Black)
                 .bg(cyan)
