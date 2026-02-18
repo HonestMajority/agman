@@ -456,7 +456,11 @@ impl App {
         let (pr_poll_tx, pr_poll_rx) = tokio_mpsc::unbounded_channel();
         let (gh_notif_tx, gh_notif_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
-        let dismissed_notifs = DismissedNotifications::load(&config.dismissed_notifications_path());
+        let mut dismissed_notifs = DismissedNotifications::load(&config.dismissed_notifications_path());
+        let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
+        if dismissed_notifs.prune_older_than(retention) > 0 {
+            dismissed_notifs.save(&config.dismissed_notifications_path());
+        }
 
         Ok(Self {
             config,
@@ -3898,7 +3902,10 @@ impl App {
             let fetched_ids: HashSet<&str> = self.notifications.iter().map(|n| n.id.as_str()).collect();
             // IDs not in the fetched results are confirmed deleted — remove from tracking set
             let before_cleanup = self.dismissed_notifs.ids.len();
-            self.dismissed_notifs.ids.retain(|id| fetched_ids.contains(id.as_str()));
+            self.dismissed_notifs.ids.retain(|id, _dismissed_at| fetched_ids.contains(id.as_str()));
+            // Prune entries older than the retention window
+            let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
+            self.dismissed_notifs.prune_older_than(retention);
             if self.dismissed_notifs.ids.len() < before_cleanup {
                 self.dismissed_notifs.save(&self.config.dismissed_notifications_path());
                 tracing::debug!(removed = before_cleanup - self.dismissed_notifs.ids.len(), "cleaned up dismissed notification IDs no longer in poll results");

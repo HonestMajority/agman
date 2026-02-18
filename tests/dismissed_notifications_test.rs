@@ -1,4 +1,5 @@
 use agman::dismissed_notifications::DismissedNotifications;
+use chrono::{Duration, Utc};
 
 #[test]
 fn load_missing_file_returns_empty() {
@@ -43,4 +44,57 @@ fn remove_and_contains() {
     let loaded = DismissedNotifications::load(&path);
     assert!(!loaded.contains("thread-1"));
     assert!(loaded.contains("thread-2"));
+}
+
+#[test]
+fn backwards_compatible_load_from_legacy_format() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("dismissed.json");
+
+    // Write the old HashSet format: { "ids": ["id1", "id2"] }
+    let legacy_json = r#"{"ids":["thread-old-1","thread-old-2"]}"#;
+    std::fs::write(&path, legacy_json).unwrap();
+
+    let loaded = DismissedNotifications::load(&path);
+    assert_eq!(loaded.ids.len(), 2);
+    assert!(loaded.contains("thread-old-1"));
+    assert!(loaded.contains("thread-old-2"));
+}
+
+#[test]
+fn prune_older_than_removes_old_entries() {
+    let mut dn = DismissedNotifications {
+        ids: std::collections::HashMap::new(),
+    };
+
+    // Insert an entry with a timestamp from 4 weeks ago
+    let four_weeks_ago = (Utc::now() - Duration::weeks(4)).to_rfc3339();
+    dn.ids.insert("old-thread".to_string(), four_weeks_ago);
+
+    // Insert a recent entry
+    dn.insert("recent-thread".to_string());
+
+    assert_eq!(dn.ids.len(), 2);
+
+    let pruned = dn.prune_older_than(Duration::weeks(3));
+
+    assert_eq!(pruned, 1);
+    assert_eq!(dn.ids.len(), 1);
+    assert!(!dn.contains("old-thread"));
+    assert!(dn.contains("recent-thread"));
+}
+
+#[test]
+fn prune_older_than_keeps_all_when_none_expired() {
+    let mut dn = DismissedNotifications {
+        ids: std::collections::HashMap::new(),
+    };
+
+    dn.insert("thread-1".to_string());
+    dn.insert("thread-2".to_string());
+
+    let pruned = dn.prune_older_than(Duration::weeks(3));
+
+    assert_eq!(pruned, 0);
+    assert_eq!(dn.ids.len(), 2);
 }

@@ -879,11 +879,19 @@ pub struct NotifPollResult {
 ///
 /// Always performs a fresh fetch (no conditional requests). Paginates with
 /// `per_page=50` (the API maximum) up to 10 pages (500 notifications max).
+/// Limits results to notifications from the past N weeks (see `NOTIFICATION_RETENTION_WEEKS`).
 pub fn fetch_github_notifications() -> NotifPollResult {
+    use crate::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS;
+
+    let since = (chrono::Utc::now()
+        - chrono::Duration::weeks(NOTIFICATION_RETENTION_WEEKS))
+    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    tracing::info!(since = %since, "fetching github notifications with time bound");
+
     let mut all_notifications = Vec::new();
 
     for page in 1..=10 {
-        let url = format!("/notifications?all=true&per_page=50&page={page}");
+        let url = format!("/notifications?all=true&per_page=50&page={page}&since={since}");
         let output = match Command::new("gh").args(["api", &url]).output() {
             Ok(o) => o,
             Err(e) => {
