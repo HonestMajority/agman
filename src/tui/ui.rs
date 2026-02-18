@@ -1123,7 +1123,7 @@ fn draw_restart_wizard(f: &mut Frame, app: &mut App) {
             .block(
                 Block::default()
                     .title(Span::styled(
-                        " Restart: Edit TASK.md ",
+                        " Rerun: Edit TASK.md ",
                         Style::default()
                             .fg(Color::LightYellow)
                             .add_modifier(Modifier::BOLD),
@@ -1151,13 +1151,13 @@ fn draw_restart_wizard(f: &mut Frame, app: &mut App) {
             let mut lines = vec![
                 Line::from(""),
                 Line::from(Span::styled(
-                    format!("  Restarting: {}", task_id),
+                    format!("  Rerunning: {}", task_id),
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
-                    "  Select which flow step to restart from:",
+                    "  Select which flow step to rerun from:",
                     Style::default().fg(Color::DarkGray),
                 )),
                 Line::from(""),
@@ -1183,7 +1183,7 @@ fn draw_restart_wizard(f: &mut Frame, app: &mut App) {
             let popup = Paragraph::new(lines).block(
                 Block::default()
                     .title(Span::styled(
-                        " Restart: Pick Starting Step ",
+                        " Rerun: Pick Starting Step ",
                         Style::default()
                             .fg(Color::LightYellow)
                             .add_modifier(Modifier::BOLD),
@@ -1244,10 +1244,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("r", Style::default().fg(Color::LightGreen)),
                 Span::styled(" review  ", Style::default().fg(Color::DarkGray)),
             ];
-            // Show "a: answer" when an InputNeeded task is selected
-            // Show "o: PR" when the selected task has a linked PR
-            // Show "H hold/unhold" for Stopped/OnHold tasks
             if let Some(task) = app.selected_task() {
+                // State-conditional hints
                 if task.meta.status == TaskStatus::InputNeeded {
                     spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
                     spans.push(Span::styled(" answer  ", Style::default().fg(Color::DarkGray)));
@@ -1267,6 +1265,25 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     spans.push(Span::styled("c", Style::default().fg(Color::LightGreen)));
                     spans.push(Span::styled(" clear ✓  ", Style::default().fg(Color::DarkGray)));
                 }
+                if task.meta.status == TaskStatus::Running {
+                    spans.push(Span::styled("S", Style::default().fg(Color::LightRed)));
+                    spans.push(Span::styled(" stop  ", Style::default().fg(Color::DarkGray)));
+                }
+                // Task-selected hints (always shown when a task is selected)
+                spans.extend([
+                    Span::styled("R", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("P", Style::default().fg(Color::LightYellow)),
+                    Span::styled(" PR  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("t", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("x", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("f", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("d", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
+                ]);
             }
             let unread_count = app.notifications.iter().filter(|n| n.unread).count();
             let notif_label = if unread_count > 0 {
@@ -1281,22 +1298,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(notif_label, Style::default().fg(Color::DarkGray)),
                 Span::styled("m", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
-            ]);
-            spans.extend([
-                Span::styled("P", Style::default().fg(Color::LightYellow)),
-                Span::styled(" PR  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("t", Style::default().fg(Color::LightMagenta)),
-                Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("x", Style::default().fg(Color::LightMagenta)),
-                Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("f", Style::default().fg(Color::LightMagenta)),
-                Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("S", Style::default().fg(Color::LightRed)),
-                Span::styled(" stop  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("d", Style::default().fg(Color::LightCyan)),
-                Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("W", Style::default().fg(Color::LightMagenta)),
-                Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" quit", Style::default().fg(Color::DarkGray)),
             ]);
@@ -1315,10 +1316,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                     Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
                 ];
-                // Show "a: answer" when an InputNeeded task is selected
-                // Show "o: PR" when the selected task has a linked PR
-                // Show "H hold/unhold" for Stopped/OnHold tasks
                 if let Some(task) = app.selected_task() {
+                    // State-conditional hints
                     if task.meta.status == TaskStatus::InputNeeded {
                         spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
                         spans.push(Span::styled(" answer  ", Style::default().fg(Color::DarkGray)));
@@ -1334,20 +1333,27 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                         spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
                         spans.push(Span::styled(" unhold  ", Style::default().fg(Color::DarkGray)));
                     }
+                    if task.meta.status == TaskStatus::Running {
+                        spans.push(Span::styled("S", Style::default().fg(Color::LightRed)));
+                        spans.push(Span::styled(" stop  ", Style::default().fg(Color::DarkGray)));
+                    }
+                    // Task-selected hints (always shown when a task is selected)
+                    spans.extend([
+                        Span::styled("R", Style::default().fg(Color::LightMagenta)),
+                        Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("P", Style::default().fg(Color::LightYellow)),
+                        Span::styled(" PR  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("t", Style::default().fg(Color::LightMagenta)),
+                        Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("f", Style::default().fg(Color::LightMagenta)),
+                        Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("x", Style::default().fg(Color::LightMagenta)),
+                        Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
+                    ]);
                 }
                 spans.extend([
-                    Span::styled("P", Style::default().fg(Color::LightYellow)),
-                    Span::styled(" PR  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("t", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("f", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Q", Style::default().fg(Color::LightYellow)),
                     Span::styled(" queue  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("x", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("W", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("i", Style::default().fg(Color::LightCyan)),
                     Span::styled(" edit  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Enter", Style::default().fg(Color::LightCyan)),
@@ -1472,7 +1478,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                             Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                             Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                             Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                            Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
+                            Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
                             Span::styled("Esc", Style::default().fg(Color::LightRed)),
                             Span::styled(" back", Style::default().fg(Color::DarkGray)),
                         ]

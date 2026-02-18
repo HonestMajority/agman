@@ -122,20 +122,34 @@ Internal commands are hidden subcommands invoked by the TUI via subprocess or tm
 ## TUI Key Bindings
 
 ### Task List
-- `j/k` - Navigate
+- `j/k` - Navigate, `g/G` - Jump to first/last
 - `l/Enter` - Preview
-- `f` - Give feedback
-- `p/r` - Pause/Resume
-- `d` - Delete
-- `q` - Quit
+- `n` - New task, `r` - Review wizard
+- `R` - Rerun task (edit TASK.md + pick flow step)
+- `S` - Stop running task
+- `f` - Give feedback, `t` - Edit TASK.md, `x` - Run command
+- `a` - Answer (InputNeeded tasks only)
+- `o` - Open linked PR in browser
+- `H` - Hold/unhold task
+- `P` - Set linked PR, `c` - Clear review-addressed
+- `d` - Delete task
+- `N` - Notifications, `m` - Notes
+- `Ctrl+R` - Refresh task list
+- `q/Esc` - Quit
 
 ### Preview
 - `Tab` - Switch pane (logs/notes)
-- `j/k` - Scroll
+- `j/k` - Scroll, `g/G` - Jump to top/bottom, `Ctrl+D/U` - Half-page scroll
 - `i` - Edit notes
-- `f` - Give feedback
+- `R` - Rerun task
+- `S` - Stop running task
+- `f` - Give feedback, `t` - Edit TASK.md, `x` - Run command
+- `a` - Answer (InputNeeded tasks only)
+- `o` - Open linked PR in browser
+- `H` - Hold/unhold task, `P` - Set linked PR
+- `Q` - Queue feedback
 - `Enter` - Attach to tmux
-- `q` - Back
+- `q/Esc` - Back
 
 ## Build Commands
 
@@ -256,3 +270,5 @@ let task = create_test_task(&config, "repo", "branch");  // Minimal task
 4. **Flow progression**: Agents output magic strings, flow runner detects them and advances steps
 
 5. **Feedback loop**: `continue` flow uses refiner to synthesize feedback into fresh TASK.md, avoiding context accumulation
+
+6. **Status bar hints rule**: Every user-facing key binding in a view must have a corresponding hint in `draw_status_bar()` in `ui.rs`. Hints must only be shown when the action is applicable — e.g., "stop" only appears for running tasks, "answer" only for input-needed tasks. When adding a new key binding, always add the hint. When removing a binding, remove the hint.
