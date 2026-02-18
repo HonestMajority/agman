@@ -688,7 +688,7 @@ impl App {
             gh_notif_first_poll_done: false,
             dismissed_notifs,
             keybase_unread_count: 0,
-            last_keybase_poll: Instant::now() - Duration::from_secs(60),
+            last_keybase_poll: Instant::now() - Duration::from_secs(2),
             keybase_tx,
             keybase_rx,
             keybase_poll_active: false,
@@ -4744,8 +4744,8 @@ pub fn run_tui(config: Config) -> Result<()> {
             // Check for completed Show PRs poll results (non-blocking)
             app.apply_show_prs_results();
 
-            // Poll Keybase unreads every 60 seconds (regardless of view)
-            if app.last_keybase_poll.elapsed() >= Duration::from_secs(60) {
+            // Poll Keybase unreads every 2 seconds (local Unix socket, ~49ms per call)
+            if app.last_keybase_poll.elapsed() >= Duration::from_secs(2) {
                 app.start_keybase_poll();
                 app.last_keybase_poll = Instant::now();
             }
