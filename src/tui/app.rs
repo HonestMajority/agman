@@ -17,6 +17,7 @@ use tui_textarea::{CursorMove, Input, Key, TextArea};
 
 use agman::command::StoredCommand;
 use agman::config::Config;
+use agman::dismissed_notifications::DismissedNotifications;
 use agman::flow::Flow;
 use agman::git::Git;
 use agman::repo_stats::RepoStats;
@@ -437,8 +438,8 @@ pub struct App {
     gh_notif_rx: tokio_mpsc::UnboundedReceiver<use_cases::NotifPollResult>,
     gh_notif_poll_active: bool,
     pub gh_notif_first_poll_done: bool,
-    /// Thread IDs dismissed by the user but not yet confirmed removed by a poll.
-    dismissed_notif_ids: HashSet<String>,
+    /// Thread IDs dismissed by the user, persisted across restarts.
+    dismissed_notifs: DismissedNotifications,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -455,6 +456,11 @@ impl App {
         let (pr_poll_tx, pr_poll_rx) = tokio_mpsc::unbounded_channel();
         let (gh_notif_tx, gh_notif_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
+        let mut dismissed_notifs = DismissedNotifications::load(&config.dismissed_notifications_path());
+        let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
+        if dismissed_notifs.prune_older_than(retention) > 0 {
+            dismissed_notifs.save(&config.dismissed_notifications_path());
+        }
 
         Ok(Self {
             config,
@@ -508,7 +514,7 @@ impl App {
             gh_notif_rx,
             gh_notif_poll_active: false,
             gh_notif_first_poll_done: false,
-            dismissed_notif_ids: HashSet::new(),
+            dismissed_notifs,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -3058,11 +3064,13 @@ impl App {
                 KeyCode::Char('d') => {
                     if let Some(notif) = self.notifications.get(self.selected_notif_index) {
                         let thread_id = notif.id.clone();
+                        let updated_at = notif.updated_at.clone();
                         tracing::info!(thread_id = %thread_id, "dismissing github notification");
 
-                        // Track dismissed ID so polls don't reintroduce it
-                        self.dismissed_notif_ids.insert(thread_id.clone());
-                        tracing::debug!(thread_id = %thread_id, "added to dismissed_notif_ids");
+                        // Track dismissed ID so polls don't reintroduce it (persisted to disk)
+                        self.dismissed_notifs.insert(thread_id.clone(), updated_at);
+                        self.dismissed_notifs.save(&self.config.dismissed_notifications_path());
+                        tracing::info!(thread_id = %thread_id, "persisted dismissed notification");
 
                         // Optimistic removal
                         self.notifications.remove(self.selected_notif_index);
@@ -3895,16 +3903,50 @@ impl App {
         // Remove IDs from the dismissed set only when they no longer appear in poll results
         // (confirming the server processed the DELETE). Keep IDs that are still present
         // (the DELETE may still be in-flight).
-        if !self.dismissed_notif_ids.is_empty() {
+        if !self.dismissed_notifs.ids.is_empty() {
             let fetched_ids: HashSet<&str> = self.notifications.iter().map(|n| n.id.as_str()).collect();
             // IDs not in the fetched results are confirmed deleted — remove from tracking set
-            self.dismissed_notif_ids.retain(|id| fetched_ids.contains(id.as_str()));
+            let before_cleanup = self.dismissed_notifs.ids.len();
+            self.dismissed_notifs.ids.retain(|id, _entry| fetched_ids.contains(id.as_str()));
+            // Prune entries older than the retention window
+            let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
+            self.dismissed_notifs.prune_older_than(retention);
+
+            // Un-dismiss threads that have new activity since they were dismissed
+            let mut undismissed: Vec<(String, String, String)> = Vec::new();
+            for notif in &self.notifications {
+                if self.dismissed_notifs.should_undismiss(&notif.id, &notif.updated_at) {
+                    let old_updated_at = self.dismissed_notifs.ids.get(&notif.id)
+                        .map(|e| e.updated_at.clone())
+                        .unwrap_or_default();
+                    undismissed.push((notif.id.clone(), old_updated_at, notif.updated_at.clone()));
+                }
+            }
+            for (thread_id, old_updated_at, new_updated_at) in &undismissed {
+                tracing::info!(
+                    thread_id = %thread_id,
+                    old_updated_at = %old_updated_at,
+                    new_updated_at = %new_updated_at,
+                    "un-dismissing notification due to new activity"
+                );
+                self.dismissed_notifs.remove(thread_id);
+            }
+
+            let changed = self.dismissed_notifs.ids.len() < before_cleanup || !undismissed.is_empty();
+            if changed {
+                self.dismissed_notifs.save(&self.config.dismissed_notifications_path());
+                tracing::debug!(
+                    removed = before_cleanup.saturating_sub(self.dismissed_notifs.ids.len()),
+                    undismissed = undismissed.len(),
+                    "cleaned up dismissed notification entries"
+                );
+            }
             // Filter out still-dismissed notifications from the displayed list
             let before = self.notifications.len();
-            self.notifications.retain(|n| !self.dismissed_notif_ids.contains(&n.id));
+            self.notifications.retain(|n| !self.dismissed_notifs.contains(&n.id));
             let filtered = before - self.notifications.len();
             if filtered > 0 {
-                tracing::debug!(filtered_count = filtered, dismissed_ids = ?self.dismissed_notif_ids, "filtered dismissed notifications from poll results");
+                tracing::debug!(filtered_count = filtered, "filtered dismissed notifications from poll results");
             }
         }
 

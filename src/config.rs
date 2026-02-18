@@ -151,6 +151,10 @@ impl Config {
         self.base_dir.join("repo_stats.json")
     }
 
+    pub fn dismissed_notifications_path(&self) -> PathBuf {
+        self.base_dir.join("dismissed_notifications.json")
+    }
+
     pub fn init_default_files(&self, force: bool) -> Result<()> {
         self.ensure_dirs()?;
 
