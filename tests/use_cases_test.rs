@@ -1704,3 +1704,27 @@ fn list_notes_respects_order_file() {
     assert!(entries[2].is_dir);
     assert_eq!(entries[3].file_name, "beta.md");
 }
+
+#[test]
+fn move_note_entry_not_in_order_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notes_dir = tmp.path().join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("alpha.md"), "").unwrap();
+    std::fs::write(notes_dir.join("beta.md"), "").unwrap();
+    std::fs::write(notes_dir.join("gamma.md"), "").unwrap();
+
+    // Write a partial .order that only mentions alpha and beta
+    std::fs::write(notes_dir.join(".order"), "alpha.md\nbeta.md\n").unwrap();
+
+    // Move gamma (not in .order) up — should succeed, not error
+    let new_idx =
+        use_cases::move_note(&notes_dir, "gamma.md", use_cases::MoveDirection::Up).unwrap();
+    assert_eq!(new_idx, 1);
+
+    // Verify .order now contains all three entries with gamma moved up
+    let order_content = std::fs::read_to_string(notes_dir.join(".order")).unwrap();
+    let order_lines: Vec<&str> = order_content.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(order_lines, vec!["alpha.md", "gamma.md", "beta.md"]);
+}

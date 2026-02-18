@@ -1122,10 +1122,21 @@ pub enum MoveDirection {
 pub fn move_note(dir: &Path, file_name: &str, direction: MoveDirection) -> Result<usize> {
     let order_path = dir.join(".order");
 
-    // Build current order: from .order file if it exists, otherwise from list_notes.
+    // Build current order: from .order file (reconciled with disk) or from list_notes.
     let mut order: Vec<String> = if order_path.exists() {
         let content = std::fs::read_to_string(&order_path)?;
-        content.lines().filter(|l| !l.is_empty()).map(String::from).collect()
+        let mut from_file: Vec<String> = content.lines().filter(|l| !l.is_empty()).map(String::from).collect();
+        // Reconcile: append any disk entries not already in .order
+        let disk_entries = list_notes(dir)?;
+        for entry in &disk_entries {
+            if !from_file.contains(&entry.file_name) {
+                from_file.push(entry.file_name.clone());
+            }
+        }
+        // Remove .order entries that no longer exist on disk
+        let disk_names: std::collections::HashSet<String> = disk_entries.into_iter().map(|e| e.file_name).collect();
+        from_file.retain(|name| disk_names.contains(name));
+        from_file
     } else {
         list_notes(dir)?.iter().map(|e| e.file_name.clone()).collect()
     };
