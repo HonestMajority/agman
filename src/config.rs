@@ -221,6 +221,7 @@ impl Config {
             ("review-pr", REVIEW_PR_COMMAND),
             ("local-merge", LOCAL_MERGE_COMMAND),
             ("push-and-merge", PUSH_AND_MERGE_COMMAND),
+            ("push-and-monitor", PUSH_AND_MONITOR_COMMAND),
         ];
 
         for (name, content) in commands {
@@ -1027,6 +1028,18 @@ steps:
       - agent: pr-merge-agent
         until: AGENT_DONE
     until: TASK_COMPLETE
+"#;
+
+const PUSH_AND_MONITOR_COMMAND: &str = r#"name: Push & Monitor
+id: push-and-monitor
+description: Pushes local commits and monitors CI checks for an existing PR
+
+steps:
+  - agent: push-rebaser
+    pre_command: "git push -u origin HEAD"
+    until: AGENT_DONE
+  - agent: pr-check-monitor
+    until: AGENT_DONE
 "#;
 
 const LOCAL_MERGE_EXECUTOR_PROMPT: &str = r#"You are a local merge executor agent. Your job is to merge the current feature branch into a target branch locally, resolving any conflicts along the way.
