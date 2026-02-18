@@ -3060,10 +3060,11 @@ impl App {
                 KeyCode::Char('d') => {
                     if let Some(notif) = self.notifications.get(self.selected_notif_index) {
                         let thread_id = notif.id.clone();
+                        let updated_at = notif.updated_at.clone();
                         tracing::info!(thread_id = %thread_id, "dismissing github notification");
 
                         // Track dismissed ID so polls don't reintroduce it (persisted to disk)
-                        self.dismissed_notifs.insert(thread_id.clone());
+                        self.dismissed_notifs.insert(thread_id.clone(), updated_at);
                         self.dismissed_notifs.save(&self.config.dismissed_notifications_path());
                         tracing::info!(thread_id = %thread_id, "persisted dismissed notification");
 
@@ -3902,13 +3903,34 @@ impl App {
             let fetched_ids: HashSet<&str> = self.notifications.iter().map(|n| n.id.as_str()).collect();
             // IDs not in the fetched results are confirmed deleted — remove from tracking set
             let before_cleanup = self.dismissed_notifs.ids.len();
-            self.dismissed_notifs.ids.retain(|id, _dismissed_at| fetched_ids.contains(id.as_str()));
+            self.dismissed_notifs.ids.retain(|id, _entry| fetched_ids.contains(id.as_str()));
             // Prune entries older than the retention window
             let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
             self.dismissed_notifs.prune_older_than(retention);
-            if self.dismissed_notifs.ids.len() < before_cleanup {
+
+            // Un-dismiss threads that have new activity since they were dismissed
+            let mut undismissed = Vec::new();
+            for notif in &self.notifications {
+                if self.dismissed_notifs.should_undismiss(&notif.id, &notif.updated_at) {
+                    undismissed.push(notif.id.clone());
+                }
+            }
+            for thread_id in &undismissed {
+                tracing::info!(
+                    thread_id = %thread_id,
+                    "un-dismissing notification due to new activity"
+                );
+                self.dismissed_notifs.remove(thread_id);
+            }
+
+            let changed = self.dismissed_notifs.ids.len() < before_cleanup || !undismissed.is_empty();
+            if changed {
                 self.dismissed_notifs.save(&self.config.dismissed_notifications_path());
-                tracing::debug!(removed = before_cleanup - self.dismissed_notifs.ids.len(), "cleaned up dismissed notification IDs no longer in poll results");
+                tracing::debug!(
+                    removed = before_cleanup.saturating_sub(self.dismissed_notifs.ids.len()),
+                    undismissed = undismissed.len(),
+                    "cleaned up dismissed notification entries"
+                );
             }
             // Filter out still-dismissed notifications from the displayed list
             let before = self.notifications.len();
