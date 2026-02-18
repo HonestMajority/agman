@@ -3909,15 +3909,20 @@ impl App {
             self.dismissed_notifs.prune_older_than(retention);
 
             // Un-dismiss threads that have new activity since they were dismissed
-            let mut undismissed = Vec::new();
+            let mut undismissed: Vec<(String, String, String)> = Vec::new();
             for notif in &self.notifications {
                 if self.dismissed_notifs.should_undismiss(&notif.id, &notif.updated_at) {
-                    undismissed.push(notif.id.clone());
+                    let old_updated_at = self.dismissed_notifs.ids.get(&notif.id)
+                        .map(|e| e.updated_at.clone())
+                        .unwrap_or_default();
+                    undismissed.push((notif.id.clone(), old_updated_at, notif.updated_at.clone()));
                 }
             }
-            for thread_id in &undismissed {
+            for (thread_id, old_updated_at, new_updated_at) in &undismissed {
                 tracing::info!(
                     thread_id = %thread_id,
+                    old_updated_at = %old_updated_at,
+                    new_updated_at = %new_updated_at,
                     "un-dismissing notification due to new activity"
                 );
                 self.dismissed_notifs.remove(thread_id);
