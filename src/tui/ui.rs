@@ -172,7 +172,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     const MAX_REPO_WIDTH: usize = 20;
     const MIN_BRANCH_WIDTH: usize = 6; // "BRANCH" header length
 
-    const PR_WIDTH: usize = 20; // fits "#99999 (author_name)" plus padding
+    const PR_WIDTH: usize = 25; // fits "#99999 (long_author_name)" plus padding
     const STATUS_WIDTH: usize = 10;
     const MIN_AGENT_WIDTH: usize = 6; // width of "AGENT" header + 1
     const MAX_AGENT_WIDTH: usize = 25;
