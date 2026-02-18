@@ -592,7 +592,8 @@ pub struct App {
     /// Thread IDs dismissed by the user, persisted across restarts.
     dismissed_notifs: DismissedNotifications,
     // Keybase unread polling
-    pub keybase_unread_count: usize,
+    pub keybase_dm_unread_count: usize,
+    pub keybase_channel_unread_count: usize,
     pub last_keybase_poll: Instant,
     keybase_tx: tokio_mpsc::UnboundedSender<use_cases::KeybasePollResult>,
     keybase_rx: tokio_mpsc::UnboundedReceiver<use_cases::KeybasePollResult>,
@@ -695,7 +696,8 @@ impl App {
             gh_notif_poll_active: false,
             gh_notif_first_poll_done: false,
             dismissed_notifs,
-            keybase_unread_count: 0,
+            keybase_dm_unread_count: 0,
+            keybase_channel_unread_count: 0,
             last_keybase_poll: Instant::now() - Duration::from_secs(2),
             keybase_tx,
             keybase_rx,
@@ -4559,7 +4561,8 @@ impl App {
             let result = tokio::task::spawn_blocking(use_cases::fetch_keybase_unreads)
                 .await
                 .unwrap_or_else(|_| use_cases::KeybasePollResult {
-                    unread_count: 0,
+                    dm_unread_count: 0,
+                    channel_unread_count: 0,
                     keybase_available: true,
                 });
             let _ = tx.send(result);
@@ -4584,8 +4587,9 @@ impl App {
             tracing::warn!("keybase not available, disabling poll");
         }
 
-        self.keybase_unread_count = result.unread_count;
-        tracing::debug!(unread_count = result.unread_count, "applied keybase poll results");
+        self.keybase_dm_unread_count = result.dm_unread_count;
+        self.keybase_channel_unread_count = result.channel_unread_count;
+        tracing::debug!(unread_dm = result.dm_unread_count, unread_channel = result.channel_unread_count, "applied keybase poll results");
     }
 
     fn execute_restart_wizard(&mut self) -> Result<()> {

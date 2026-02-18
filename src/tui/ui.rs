@@ -68,10 +68,19 @@ fn clock_title(app: &App) -> Line<'static> {
             " KEYBASE ... ",
             Style::default().fg(Color::DarkGray),
         )]
-    } else if app.keybase_unread_count > 0 {
+    } else if app.keybase_dm_unread_count > 0 {
+        let orange = Color::Rgb(255, 140, 40);
+        vec![Span::styled(
+            format!(" KEYBASE DM {} ", app.keybase_dm_unread_count),
+            Style::default()
+                .fg(Color::Black)
+                .bg(orange)
+                .add_modifier(Modifier::BOLD),
+        )]
+    } else if app.keybase_channel_unread_count > 0 {
         let cyan = Color::Rgb(0, 180, 216);
         vec![Span::styled(
-            format!(" KEYBASE {} ", app.keybase_unread_count),
+            format!(" KEYBASE {} ", app.keybase_channel_unread_count),
             Style::default()
                 .fg(Color::Black)
                 .bg(cyan)
