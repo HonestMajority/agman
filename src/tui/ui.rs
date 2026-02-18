@@ -432,6 +432,22 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             Color::Rgb(140, 140, 140)
         };
 
+        // Build PR display string and truncate if needed
+        let pr_display = task.meta.linked_pr.as_ref().map(|pr| {
+            if !pr.owned {
+                format!("#{:>5} ({})", pr.number, pr.author.as_deref().unwrap_or("ext"))
+            } else if task.meta.review_addressed {
+                format!("#{:>5} ✓", pr.number)
+            } else {
+                format!("#{:>5} mine", pr.number)
+            }
+        }).unwrap_or_default();
+        let pr_display = if pr_display.len() > PR_WIDTH {
+            format!("{}…", &pr_display[..PR_WIDTH.saturating_sub(1)])
+        } else {
+            pr_display
+        };
+
         let line = Line::from(vec![
             Span::raw(" "),
             Span::styled(status_icon, Style::default().fg(status_color)),
@@ -459,15 +475,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw(COL_GAP),
             Span::styled(
-                format!("{:<width$}", task.meta.linked_pr.as_ref().map(|pr| {
-                    if !pr.owned {
-                        format!("#{:>5} ({})", pr.number, pr.author.as_deref().unwrap_or("ext"))
-                    } else if task.meta.review_addressed {
-                        format!("#{:>5} ✓", pr.number)
-                    } else {
-                        format!("#{:>5} mine", pr.number)
-                    }
-                }).unwrap_or_default(), width = PR_WIDTH),
+                format!("{:<width$}", pr_display, width = PR_WIDTH),
                 if let Some(pr) = &task.meta.linked_pr {
                     if !pr.owned {
                         Style::default().fg(Color::Gray)
