@@ -134,7 +134,6 @@ Internal commands are hidden subcommands invoked by the TUI via subprocess or tm
 - `P` - Set linked PR, `c` - Clear review-addressed
 - `d` - Delete task
 - `N` - Notifications, `m` - Notes
-- `Ctrl+R` - Refresh task list
 - `q/Esc` - Quit
 
 ### Preview

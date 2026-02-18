@@ -2248,10 +2248,7 @@ impl App {
                         self.view = View::DeleteConfirm;
                     }
                 }
-                KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.refresh_tasks();
-                    self.set_status("Refreshed task list".to_string());
-                }
+
                 KeyCode::Char('f') => {
                     if !self.tasks.is_empty() {
                         self.load_preview();
