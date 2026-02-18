@@ -9,7 +9,7 @@ use ratatui::{
 
 use agman::task::TaskStatus;
 
-use super::app::{App, BranchSource, DirPickerOrigin, DirKind, PreviewPane, RestartWizardStep, ReviewWizardStep, View, WizardStep};
+use super::app::{App, BranchSource, DirPickerOrigin, DirKind, PreviewPane, RestartWizardStep, View, WizardStep};
 use super::log_render;
 use super::vim::VimMode;
 
@@ -1445,31 +1445,17 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             }
         }
         View::ReviewWizard => {
-            if let Some(wizard) = &app.review_wizard {
-                match wizard.step {
-                    ReviewWizardStep::SelectRepo => {
-                        vec![
-                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                            Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
-                            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-                        ]
-                    }
-                    ReviewWizardStep::EnterBranch => {
-                        vec![
-                            Span::styled("Tab", Style::default().fg(Color::LightCyan)),
-                            Span::styled(" mode  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                            Span::styled(" start review  ", Style::default().fg(Color::DarkGray)),
-                            Span::styled("Esc", Style::default().fg(Color::LightRed)),
-                            Span::styled(" back", Style::default().fg(Color::DarkGray)),
-                        ]
-                    }
-                }
+            if app.review_wizard.is_some() {
+                vec![
+                    Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" mode  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                    Span::styled(" start review  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                ]
             } else {
                 vec![]
             }
@@ -1590,96 +1576,6 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
 
     // Draw error message or help text
     draw_wizard_footer_direct(f, step, error_message, chunks[1]);
-}
-
-fn draw_wizard_repo_list(
-    f: &mut Frame,
-    favorite_repos: &[(String, u64)],
-    repos: &[String],
-    selected_repo_index: usize,
-    area: Rect,
-) {
-    let mut items: Vec<ListItem> = Vec::new();
-    let mut flat_index: usize = 0;
-
-    // Favorites section
-    if !favorite_repos.is_empty() {
-        let header_line = Line::from(vec![
-            Span::styled(
-                format!("── Favorites ({}) ", favorite_repos.len()),
-                Style::default()
-                    .fg(Color::LightYellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("─".repeat(40), Style::default().fg(Color::Rgb(60, 60, 60))),
-        ]);
-        items.push(ListItem::new(header_line));
-
-        for (repo, count) in favorite_repos {
-            let is_selected = flat_index == selected_repo_index;
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::Rgb(40, 40, 60))
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-            let prefix = if is_selected { "▸ " } else { "  " };
-            let count_str = format!("  ({} tasks)", count);
-            items.push(ListItem::new(Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(repo.as_str(), style),
-                Span::styled(count_str, Style::default().fg(Color::DarkGray)),
-            ])));
-            flat_index += 1;
-        }
-
-        // Spacing before All Repositories section
-        items.push(ListItem::new(Line::from("")));
-    }
-
-    // All Repositories section header
-    let header_line = Line::from(vec![
-        Span::styled(
-            format!("── All Repositories ({}) ", repos.len()),
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("─".repeat(34), Style::default().fg(Color::Rgb(40, 40, 40))),
-    ]);
-    items.push(ListItem::new(header_line));
-
-    for repo in repos {
-        let is_selected = flat_index == selected_repo_index;
-        let style = if is_selected {
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(40, 40, 60))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        let prefix = if is_selected { "▸ " } else { "  " };
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(prefix, style),
-            Span::styled(repo.as_str(), style),
-        ])));
-        flat_index += 1;
-    }
-
-    let list = List::new(items).block(
-        Block::default()
-            .title(Span::styled(
-                " Repositories ",
-                Style::default().fg(Color::DarkGray),
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
-
-    f.render_widget(list, area);
 }
 
 fn draw_wizard_branch(f: &mut Frame, app: &mut App, area: Rect) {
@@ -2423,26 +2319,17 @@ fn draw_review_wizard(f: &mut Frame, app: &mut App) {
     let area = centered_rect(80, 70, f.area());
     f.render_widget(Clear, area);
 
-    let (step, step_num, step_title, error_message) = {
+    let error_message = {
         let wizard = match &app.review_wizard {
             Some(w) => w,
             None => return,
         };
-        let (step_num, step_title) = match wizard.step {
-            ReviewWizardStep::SelectRepo => (1, "Select Repository"),
-            ReviewWizardStep::EnterBranch => (2, "Branch / Worktree"),
-        };
-        (
-            wizard.step,
-            step_num,
-            step_title,
-            wizard.error_message.clone(),
-        )
+        wizard.error_message.clone()
     };
 
     let block = Block::default()
         .title(Span::styled(
-            format!(" Review Branch [{}/2] {} ", step_num, step_title),
+            " Review Branch — Branch / Worktree ",
             Style::default()
                 .fg(Color::LightMagenta)
                 .add_modifier(Modifier::BOLD),
@@ -2458,36 +2345,21 @@ fn draw_review_wizard(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(5), Constraint::Length(2)])
         .split(inner);
 
-    match step {
-        ReviewWizardStep::SelectRepo => {
-            if let Some(wizard) = &app.review_wizard {
-                draw_wizard_repo_list(
-                    f,
-                    &wizard.favorite_repos,
-                    &wizard.repos,
-                    wizard.selected_repo_index,
-                    chunks[0],
-                );
-            }
-        }
-        ReviewWizardStep::EnterBranch => {
-            if let Some(wizard) = &mut app.review_wizard {
-                draw_branch_tabs(
-                    f,
-                    wizard.branch_source,
-                    &mut wizard.branch_editor,
-                    None,
-                    false,
-                    &wizard.existing_branches,
-                    wizard.selected_branch_index,
-                    &wizard.existing_worktrees,
-                    wizard.selected_worktree_index,
-                    " Enter Branch ",
-                    " Enter branch name (will look up upstream if not local) ",
-                    chunks[0],
-                );
-            }
-        }
+    if let Some(wizard) = &mut app.review_wizard {
+        draw_branch_tabs(
+            f,
+            wizard.branch_source,
+            &mut wizard.branch_editor,
+            None,
+            false,
+            &wizard.existing_branches,
+            wizard.selected_branch_index,
+            &wizard.existing_worktrees,
+            wizard.selected_worktree_index,
+            " Enter Branch ",
+            " Enter branch name (will look up upstream if not local) ",
+            chunks[0],
+        );
     }
 
     // Draw error or help text
@@ -2497,13 +2369,10 @@ fn draw_review_wizard(f: &mut Frame, app: &mut App) {
             Span::styled(err, Style::default().fg(Color::LightRed)),
         ])
     } else {
-        let help = match step {
-            ReviewWizardStep::SelectRepo => "j/k: navigate  Enter: select  Esc: cancel",
-            ReviewWizardStep::EnterBranch => {
-                "Tab: switch source  Enter: start review  Esc: back"
-            }
-        };
-        Line::from(Span::styled(help, Style::default().fg(Color::DarkGray)))
+        Line::from(Span::styled(
+            "Tab: switch source  Enter: start review  Esc: back",
+            Style::default().fg(Color::DarkGray),
+        ))
     };
 
     f.render_widget(Paragraph::new(content), chunks[1]);
@@ -2575,7 +2444,7 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
 
     let title = match picker.origin {
         DirPickerOrigin::NewTask | DirPickerOrigin::Review => " Select Repos Directory ",
-        DirPickerOrigin::RepoSelect => " Select Repository ",
+        DirPickerOrigin::RepoSelect | DirPickerOrigin::ReviewRepoSelect => " Select Repository ",
     };
 
     // Split into header and list
@@ -2607,17 +2476,28 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
     );
     f.render_widget(header, chunks[0]);
 
-    // List of directories
-    let is_repo_select = picker.origin == DirPickerOrigin::RepoSelect;
-    let items: Vec<ListItem> = picker
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let is_selected = i == picker.selected_index;
-            let kind = picker.entry_kinds.get(i).copied();
+    // Build list items
+    let is_repo_select = picker.is_repo_select_mode();
+    let fav_len = picker.favorites_len();
+    let mut items: Vec<ListItem> = Vec::new();
 
-            let base_style = if is_selected {
+    // Favourites section (only when at repos_dir level)
+    if fav_len > 0 {
+        // Header line (non-selectable)
+        let header_line = Line::from(vec![
+            Span::styled(
+                format!("── Favourites ({}) ", fav_len),
+                Style::default()
+                    .fg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("─".repeat(40), Style::default().fg(Color::Rgb(60, 60, 60))),
+        ]);
+        items.push(ListItem::new(header_line));
+
+        for (idx, (repo, count)) in picker.favorite_repos.iter().enumerate() {
+            let is_selected = idx == picker.selected_index;
+            let style = if is_selected {
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD)
@@ -2625,29 +2505,53 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
                 Style::default().fg(Color::White)
             };
             let prefix = if is_selected { "> " } else { "  " };
+            let count_str = format!("  ({} tasks)", count);
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("{}{}  ", prefix, repo), style),
+                Span::styled("[git]", Style::default().fg(Color::LightGreen)),
+                Span::styled(count_str, Style::default().fg(Color::DarkGray)),
+            ])));
+        }
 
-            if is_repo_select {
-                // Show annotations for git repos and multi-repo parents
-                let (suffix, suffix_style) = match kind {
-                    Some(DirKind::GitRepo) => (
-                        "  [git]",
-                        Style::default().fg(Color::LightGreen),
-                    ),
-                    Some(DirKind::MultiRepoParent) => (
-                        "  [multi]",
-                        Style::default().fg(Color::LightYellow),
-                    ),
-                    _ => ("", Style::default()),
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{}{}/", prefix, name), base_style),
-                    Span::styled(suffix, suffix_style),
-                ]))
-            } else {
-                ListItem::new(Span::styled(format!("{}{}/", prefix, name), base_style))
-            }
-        })
-        .collect();
+        // Blank separator
+        items.push(ListItem::new(Line::from("")));
+    }
+
+    // Directory entries
+    for (i, name) in picker.entries.iter().enumerate() {
+        let flat_index = fav_len + i;
+        let is_selected = flat_index == picker.selected_index;
+        let kind = picker.entry_kinds.get(i).copied();
+
+        let base_style = if is_selected {
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let prefix = if is_selected { "> " } else { "  " };
+
+        if is_repo_select {
+            let (suffix, suffix_style) = match kind {
+                Some(DirKind::GitRepo) => (
+                    "  [git]",
+                    Style::default().fg(Color::LightGreen),
+                ),
+                Some(DirKind::MultiRepoParent) => (
+                    "  [multi]",
+                    Style::default().fg(Color::LightYellow),
+                ),
+                _ => ("", Style::default()),
+            };
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("{}{}/", prefix, name), base_style),
+                Span::styled(suffix, suffix_style),
+            ])));
+        } else {
+            items.push(ListItem::new(Span::styled(format!("{}{}/", prefix, name), base_style)));
+        }
+    }
 
     let help_text = if is_repo_select {
         " j/k: navigate  l/Enter: open/select  h: up  s: select  Esc: cancel "
