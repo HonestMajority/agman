@@ -2257,10 +2257,7 @@ impl App {
                         self.view = View::DeleteConfirm;
                     }
                 }
-                KeyCode::Char('R') => {
-                    self.refresh_tasks();
-                    self.set_status("Refreshed task list".to_string());
-                }
+
                 KeyCode::Char('f') => {
                     if !self.tasks.is_empty() {
                         self.load_preview();
@@ -2320,8 +2317,8 @@ impl App {
                         self.set_status("No linked PR".to_string());
                     }
                 }
-                KeyCode::Char('W') => {
-                    // Restart task wizard
+                KeyCode::Char('R') => {
+                    // Rerun task wizard
                     self.start_restart_wizard()?;
                 }
                 KeyCode::Char('H') => {
@@ -2592,7 +2589,7 @@ impl App {
                         self.set_status("No linked PR".to_string());
                     }
                 }
-                KeyCode::Char('W') => {
+                KeyCode::Char('R') => {
                     self.start_restart_wizard()?;
                 }
                 KeyCode::Char('H') => {
@@ -3689,8 +3686,8 @@ impl App {
                 task.meta.current_agent = None;
                 let _ = task.save_meta();
             }
-            tracing::info!(task_id = %task_id, old_status = "running", new_status = "stopped", "stopped task before restart");
-            self.log_output(format!("Stopped {} before restart", task_id));
+            tracing::info!(task_id = %task_id, old_status = "running", new_status = "stopped", "stopped task before rerun");
+            self.log_output(format!("Stopped {} before rerun", task_id));
         }
 
         // Load flow to enumerate steps
@@ -4363,7 +4360,7 @@ impl App {
             None => return Ok(()),
         };
 
-        tracing::info!(task_id = %task_id, step = selected_step_index, "TUI: restart task from wizard");
+        tracing::info!(task_id = %task_id, step = selected_step_index, "TUI: rerun task from wizard");
         // Find the task and update it
         let task_idx = match self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
             Some(i) => i,
@@ -4414,7 +4411,7 @@ impl App {
         self.restart_wizard = None;
         self.view = View::TaskList;
         self.refresh_tasks_and_select(&task_id);
-        self.set_status(format!("Restarted: {} from step {}", task_id, selected_step_index));
+        self.set_status(format!("Rerun: {} from step {}", task_id, selected_step_index));
 
         Ok(())
     }
