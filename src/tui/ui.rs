@@ -2481,7 +2481,7 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
     let fav_len = picker.favorites_len();
     let mut items: Vec<ListItem> = Vec::new();
 
-    // Favourites section (only when at repos_dir level)
+    // Favourites section
     if fav_len > 0 {
         // Header line (non-selectable)
         let header_line = Line::from(vec![

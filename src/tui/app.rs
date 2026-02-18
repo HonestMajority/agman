@@ -80,9 +80,9 @@ pub struct DirectoryPicker {
     pub entry_kinds: Vec<DirKind>,
     pub selected_index: usize,
     pub origin: DirPickerOrigin,
-    /// Favourite repos with task counts (loaded once at construction). Only shown when at `repos_dir`.
+    /// Favourite repos with task counts (loaded once at construction). Always shown in repo select modes.
     pub favorite_repos: Vec<(String, u64)>,
-    /// The configured repos_dir, stored at construction to compare against `current_dir`.
+    /// The configured repos_dir, used to resolve favourite repo paths.
     pub repos_dir: PathBuf,
 }
 
@@ -170,18 +170,9 @@ impl DirectoryPicker {
         self.selected_index = 0;
     }
 
-    /// Whether we're currently at the configured repos_dir level.
-    pub fn is_at_repos_dir(&self) -> bool {
-        self.current_dir == self.repos_dir
-    }
-
-    /// Number of favourite entries visible at the current directory level.
+    /// Number of favourite entries visible (always shown when favourites are loaded).
     pub fn favorites_len(&self) -> usize {
-        if self.is_at_repos_dir() {
-            self.favorite_repos.len()
-        } else {
-            0
-        }
+        self.favorite_repos.len()
     }
 
     /// Total number of selectable items (favourites + directory entries).
