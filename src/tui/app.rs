@@ -3352,7 +3352,7 @@ impl App {
                         KeyCode::Char('a') => {
                             nv.create_input = Some((TextArea::default(), false));
                         }
-                        KeyCode::Char('n') => {
+                        KeyCode::Char('A') => {
                             nv.create_input = Some((TextArea::default(), true));
                         }
                         KeyCode::Char('d') => {
@@ -3372,7 +3372,7 @@ impl App {
                                 nv.focus = NotesFocus::Editor;
                             }
                         }
-                        KeyCode::Char(']') => {
+                        KeyCode::Char('J') => {
                             if !nv.entries.is_empty() && nv.selected_index < nv.entries.len() - 1 {
                                 let entry_name = nv.entries[nv.selected_index].file_name.clone();
                                 let dir = nv.current_dir.clone();
@@ -3387,7 +3387,7 @@ impl App {
                                 }
                             }
                         }
-                        KeyCode::Char('[') => {
+                        KeyCode::Char('K') => {
                             if nv.selected_index > 0 {
                                 let entry_name = nv.entries[nv.selected_index].file_name.clone();
                                 let dir = nv.current_dir.clone();
