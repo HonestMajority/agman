@@ -10,8 +10,7 @@ authors = ["agman"]
 clap = { version = "4.4", features = ["derive"] }
 
 # TUI
-ratatui = { version = "0.28", features = ["unstable-rendered-line-info"] }
-crossterm = "0.28"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
@@ -43,10 +42,10 @@ uuid = { version = "1.6", features = ["v4"] }
 better-panic = "0.3"
 
 # Unicode width for TUI
-unicode-width = "0.1"
+unicode-width = "0.2"
 
-# Tui-textarea for notes editor
-tui-textarea = "0.6"
+# Tui-textarea with word-wrap support (fork of rhysd/tui-textarea)
+tui-textarea-2 = "0.9"
 
 # System clipboard
 arboard = "3"
