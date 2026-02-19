@@ -48,8 +48,8 @@ unicode-width = "0.1"
 # Tui-textarea for notes editor
 tui-textarea = "0.6"
 
-# Markdown parsing for log rendering
-pulldown-cmark = "0.10"
+# System clipboard
+arboard = "3"
 
 [dev-dependencies]
 tempfile = "3"

@@ -529,9 +529,8 @@ pub struct App {
     pub selected_index: usize,
     pub view: View,
     pub preview_content: String,
-    pub preview_scroll: u16,
+    pub logs_editor: VimTextArea<'static>,
     pub notes_content: String,
-    pub notes_scroll: u16,
     pub notes_editor: VimTextArea<'static>,
     pub notes_editing: bool,
     pub preview_pane: PreviewPane,
@@ -620,6 +619,8 @@ impl App {
         let tasks = Task::list_all(&config);
         let commands = StoredCommand::list_all(&config.commands_dir).unwrap_or_default();
         let notes_editor = VimTextArea::new();
+        let mut logs_editor = VimTextArea::new();
+        logs_editor.set_read_only(true);
         let feedback_editor = VimTextArea::new();
         let task_file_editor = VimTextArea::new();
         let (pr_poll_tx, pr_poll_rx) = tokio_mpsc::unbounded_channel();
@@ -645,9 +646,8 @@ impl App {
             selected_index: 0,
             view: View::TaskList,
             preview_content: String::new(),
-            preview_scroll: 0,
+            logs_editor,
             notes_content: String::new(),
-            notes_scroll: 0,
             notes_editor,
             notes_editing: false,
             preview_pane: PreviewPane::Logs,
@@ -963,7 +963,6 @@ impl App {
     fn next_task(&mut self) {
         if !self.tasks.is_empty() {
             self.selected_index = (self.selected_index + 1) % self.tasks.len();
-            self.preview_scroll = 0;
         }
     }
 
@@ -974,7 +973,6 @@ impl App {
             } else {
                 self.selected_index - 1
             };
-            self.preview_scroll = 0;
         }
     }
 
@@ -993,15 +991,19 @@ impl App {
                 return;
             };
 
-        self.preview_content = preview_content;
-        // Request scroll to bottom — will be clamped to the actual max on next render
-        self.preview_scroll = u16::MAX;
-        self.notes_content = notes_content.clone();
-        self.notes_scroll = 0;
+        self.preview_content = preview_content.clone();
 
-        // Setup notes editor with vim mode
+        // Setup logs editor (read-only VimTextArea)
+        self.logs_editor = VimTextArea::from_lines(preview_content.lines());
+        self.logs_editor.set_read_only(true);
+        self.logs_editor.set_normal_mode();
+        self.logs_editor.move_cursor(CursorMove::Bottom);
+
+        // Setup notes editor with vim mode (read-only until user starts editing)
+        self.notes_content = notes_content.clone();
         self.notes_editor = VimTextArea::from_lines(notes_content.lines());
-        // Move cursor to end of text
+        self.notes_editor.set_read_only(true);
+        self.notes_editor.set_normal_mode();
         self.notes_editor.move_cursor(CursorMove::Bottom);
         self.notes_editor.move_cursor(CursorMove::End);
         self.notes_editing = false;
@@ -2407,22 +2409,20 @@ impl App {
     }
 
     fn handle_preview_event(&mut self, event: Event) -> Result<bool> {
-        // If editing notes, handle vim-style input
-        if self.notes_editing {
+        // If editing notes, handle vim-style input with auto-wrap and save logic
+        if self.notes_editing && self.preview_pane == PreviewPane::Notes {
             return self.handle_notes_editing(event);
         }
 
         if let Event::Key(key) = event {
             // Ctrl+C to quit
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                if key.code == KeyCode::Char('c') {
-                    self.should_quit = true;
-                    return Ok(false);
-                }
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
             }
 
-            // Tab to switch panes (Logs -> Notes -> Logs)
-            if key.code == KeyCode::Tab {
+            // Tab/BackTab to switch panes
+            if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
                 self.preview_pane = match self.preview_pane {
                     PreviewPane::Logs => PreviewPane::Notes,
                     PreviewPane::Notes => PreviewPane::Logs,
@@ -2430,194 +2430,110 @@ impl App {
                 return Ok(false);
             }
 
-            // BackTab (Shift+Tab) to switch panes in reverse
-            if key.code == KeyCode::BackTab {
-                self.preview_pane = match self.preview_pane {
-                    PreviewPane::Logs => PreviewPane::Notes,
-                    PreviewPane::Notes => PreviewPane::Logs,
+            // Esc: forward to VimTextArea first (cancels Visual/Operator), then exit if already Normal
+            if key.code == KeyCode::Esc {
+                let editor = match self.preview_pane {
+                    PreviewPane::Logs => &self.logs_editor,
+                    PreviewPane::Notes => &self.notes_editor,
                 };
-                return Ok(false);
-            }
+                let was_normal = editor.mode() == VimMode::Normal;
 
-            // Shift+J/K for scrolling
-            if key.modifiers.contains(KeyModifiers::SHIFT) {
-                match key.code {
-                    KeyCode::Char('J') => {
-                        match self.preview_pane {
-                            PreviewPane::Logs => {
-                                self.preview_scroll = self.preview_scroll.saturating_add(3);
-                            }
-                            PreviewPane::Notes => {
-                                self.notes_scroll = self.notes_scroll.saturating_add(3);
-                            }
-                        }
-                        return Ok(false);
-                    }
-                    KeyCode::Char('K') => {
-                        match self.preview_pane {
-                            PreviewPane::Logs => {
-                                self.preview_scroll = self.preview_scroll.saturating_sub(3);
-                            }
-                            PreviewPane::Notes => {
-                                self.notes_scroll = self.notes_scroll.saturating_sub(3);
-                            }
-                        }
-                        return Ok(false);
-                    }
-                    _ => {}
+                let input = Input::from(event.clone());
+                match self.preview_pane {
+                    PreviewPane::Logs => self.logs_editor.input(input),
+                    PreviewPane::Notes => self.notes_editor.input(input),
                 }
-            }
 
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
+                if was_normal {
                     self.view = View::TaskList;
                 }
-                KeyCode::Char('h') => {
-                    self.preview_pane = PreviewPane::Logs;
+                return Ok(false);
+            }
+
+            // q: exit preview if in Normal mode, otherwise forward to editor
+            if key.code == KeyCode::Char('q') && !key.modifiers.contains(KeyModifiers::CONTROL) {
+                let editor = match self.preview_pane {
+                    PreviewPane::Logs => &self.logs_editor,
+                    PreviewPane::Notes => &self.notes_editor,
+                };
+                if editor.mode() == VimMode::Normal {
+                    self.view = View::TaskList;
+                    return Ok(false);
                 }
-                KeyCode::Enter => {
-                    // In Notes pane, Enter starts editing; in Logs, attaches tmux
-                    match self.preview_pane {
-                        PreviewPane::Logs => {
-                            if let Some(task) = self.selected_task() {
-                                if task.meta.is_multi_repo() && task.meta.repos.len() > 1 {
-                                    // Multi-repo with multiple repos — show session picker
-                                    let sessions: Vec<(String, String)> = task
-                                        .meta
-                                        .repos
-                                        .iter()
-                                        .filter(|r| Tmux::session_exists(&r.tmux_session))
-                                        .map(|r| (r.repo_name.clone(), r.tmux_session.clone()))
-                                        .collect();
-                                    if !sessions.is_empty() {
-                                        self.session_picker_sessions = sessions;
-                                        self.selected_session_index = 0;
-                                        self.view = View::SessionPicker;
-                                    }
-                                } else if task.meta.has_repos() {
-                                    if Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
-                                        return Ok(true);
-                                    }
-                                } else if task.meta.is_multi_repo() {
-                                    // Multi-repo task with no repos yet — try the parent session
-                                    let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
-                                    if Tmux::session_exists(&parent_session) {
-                                        return Ok(true);
-                                    }
+                // Otherwise fall through to forward to editor
+            }
+
+            // Enter: Logs → attach tmux; Notes → start editing
+            if key.code == KeyCode::Enter {
+                match self.preview_pane {
+                    PreviewPane::Logs => {
+                        if let Some(task) = self.selected_task() {
+                            if task.meta.is_multi_repo() && task.meta.repos.len() > 1 {
+                                let sessions: Vec<(String, String)> = task
+                                    .meta
+                                    .repos
+                                    .iter()
+                                    .filter(|r| Tmux::session_exists(&r.tmux_session))
+                                    .map(|r| (r.repo_name.clone(), r.tmux_session.clone()))
+                                    .collect();
+                                if !sessions.is_empty() {
+                                    self.session_picker_sessions = sessions;
+                                    self.selected_session_index = 0;
+                                    self.view = View::SessionPicker;
+                                }
+                            } else if task.meta.has_repos() {
+                                if Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
+                                    return Ok(true);
+                                }
+                            } else if task.meta.is_multi_repo() {
+                                let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+                                if Tmux::session_exists(&parent_session) {
+                                    return Ok(true);
                                 }
                             }
                         }
-                        PreviewPane::Notes => {
-                            self.notes_editing = true;
-                            self.notes_editor.set_insert_mode();
-                            self.set_status(
-                                "Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string(),
-                            );
-                        }
+                        return Ok(false);
+                    }
+                    PreviewPane::Notes => {
+                        self.start_notes_editing();
+                        return Ok(false);
                     }
                 }
-                KeyCode::Char('i') => {
-                    // Enter edit mode for notes
-                    if self.preview_pane == PreviewPane::Notes {
-                        self.notes_editing = true;
-                        self.notes_editor.set_insert_mode();
-                        self.set_status(
-                            "Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string(),
-                        );
-                    }
-                }
+            }
+
+            // Action keys — handled before forwarding to VimTextArea
+            match key.code {
                 KeyCode::Char('t') => {
-                    // Open TaskEditor modal
                     self.open_task_editor();
+                    return Ok(false);
                 }
                 KeyCode::Char('a') => {
-                    // Answer questions (only for InputNeeded tasks)
+                    // 'a' is "answer" when task is InputNeeded; otherwise forward to editor
                     if let Some(task) = self.selected_task() {
                         if task.meta.status == TaskStatus::InputNeeded {
                             self.open_task_editor();
+                            return Ok(false);
                         }
                     }
+                    // Fall through: for notes pane, 'a' triggers edit mode; for logs, blocked by read-only
                 }
                 KeyCode::Char('f') => {
-                    // Give feedback
                     self.start_feedback();
+                    return Ok(false);
                 }
                 KeyCode::Char('x') => {
-                    // Open command list
                     self.open_command_list();
+                    return Ok(false);
                 }
                 KeyCode::Char('Q') => {
-                    // Open feedback queue view
                     self.open_feedback_queue();
-                }
-                KeyCode::Char('j') => match self.preview_pane {
-                    PreviewPane::Logs => {
-                        self.preview_scroll = self.preview_scroll.saturating_add(1);
-                    }
-                    PreviewPane::Notes => {
-                        self.notes_scroll = self.notes_scroll.saturating_add(1);
-                    }
-                },
-                KeyCode::Char('k') => match self.preview_pane {
-                    PreviewPane::Logs => {
-                        self.preview_scroll = self.preview_scroll.saturating_sub(1);
-                    }
-                    PreviewPane::Notes => {
-                        self.notes_scroll = self.notes_scroll.saturating_sub(1);
-                    }
-                },
-                KeyCode::Char('l') => {
-                    self.preview_pane = PreviewPane::Notes;
-                }
-                KeyCode::Char('G') => {
-                    // Jump to bottom (clamped to actual max on next render)
-                    match self.preview_pane {
-                        PreviewPane::Logs => {
-                            self.preview_scroll = u16::MAX;
-                        }
-                        PreviewPane::Notes => {
-                            self.notes_scroll = u16::MAX / 2;
-                        }
-                    }
-                }
-                KeyCode::Char('g') => {
-                    // Jump to top
-                    match self.preview_pane {
-                        PreviewPane::Logs => {
-                            self.preview_scroll = 0;
-                        }
-                        PreviewPane::Notes => {
-                            self.notes_scroll = 0;
-                        }
-                    }
-                }
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Half page down
-                    match self.preview_pane {
-                        PreviewPane::Logs => {
-                            self.preview_scroll = self.preview_scroll.saturating_add(15);
-                        }
-                        PreviewPane::Notes => {
-                            self.notes_scroll = self.notes_scroll.saturating_add(15);
-                        }
-                    }
-                }
-                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Half page up
-                    match self.preview_pane {
-                        PreviewPane::Logs => {
-                            self.preview_scroll = self.preview_scroll.saturating_sub(15);
-                        }
-                        PreviewPane::Notes => {
-                            self.notes_scroll = self.notes_scroll.saturating_sub(15);
-                        }
-                    }
+                    return Ok(false);
                 }
                 KeyCode::Char('S') => {
                     self.stop_task()?;
+                    return Ok(false);
                 }
                 KeyCode::Char('o') => {
-                    // Open linked PR in browser
                     let pr_info = self.selected_task().and_then(|t| {
                         t.meta.linked_pr.as_ref().map(|pr| (pr.number, pr.url.clone()))
                     });
@@ -2627,22 +2543,61 @@ impl App {
                     } else {
                         self.set_status("No linked PR".to_string());
                     }
+                    return Ok(false);
                 }
                 KeyCode::Char('R') => {
                     self.start_restart_wizard()?;
+                    return Ok(false);
                 }
                 KeyCode::Char('H') => {
                     self.toggle_hold()?;
+                    return Ok(false);
                 }
                 KeyCode::Char('B') => {
                     self.last_break_reset = Instant::now();
                     break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
                     tracing::info!("break timer reset");
+                    return Ok(false);
                 }
                 _ => {}
             }
+
+            // Insert-mode-entry keys in Notes pane start editing
+            if self.preview_pane == PreviewPane::Notes {
+                match key.code {
+                    KeyCode::Char('i') | KeyCode::Char('I') | KeyCode::Char('o') | KeyCode::Char('O') => {
+                        self.start_notes_editing();
+                        return Ok(false);
+                    }
+                    KeyCode::Char('a') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.start_notes_editing();
+                        return Ok(false);
+                    }
+                    KeyCode::Char('A') => {
+                        self.start_notes_editing();
+                        return Ok(false);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Forward all remaining keys to the focused VimTextArea
+            let input = Input::from(event.clone());
+            match self.preview_pane {
+                PreviewPane::Logs => self.logs_editor.input(input),
+                PreviewPane::Notes => self.notes_editor.input(input),
+            }
         }
         Ok(false)
+    }
+
+    fn start_notes_editing(&mut self) {
+        self.notes_editing = true;
+        self.notes_editor.set_read_only(false);
+        self.notes_editor.set_insert_mode();
+        self.set_status(
+            "Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string(),
+        );
     }
 
     fn handle_notes_editing(&mut self, event: Event) -> Result<bool> {
@@ -2656,6 +2611,7 @@ impl App {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
                 self.notes_editing = false;
                 self.notes_editor.set_normal_mode();
+                self.notes_editor.set_read_only(true);
                 self.save_notes()?;
                 return Ok(false);
             }
@@ -2672,6 +2628,7 @@ impl App {
             // If we pressed Esc and are now in normal mode after being in normal, exit editing
             if input.key == Key::Esc && !was_insert && is_normal_now {
                 self.notes_editing = false;
+                self.notes_editor.set_read_only(true);
                 self.save_notes()?;
                 return Ok(false);
             }
