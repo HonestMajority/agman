@@ -28,7 +28,6 @@ use agman::use_cases;
 use super::ui;
 use super::vim::{VimMode, VimTextArea};
 
-pub const BREAK_INTERVAL: Duration = Duration::from_secs(40 * 60);
 pub const BREAK_WARNING_SECS: u64 = 5 * 60;
 pub const BREAK_PERSIST_MAX_AGE: Duration = Duration::from_secs(2 * 60 * 60);
 
@@ -61,6 +60,7 @@ pub enum View {
     Notifications,
     Notes,
     ShowPrs,
+    Settings,
 }
 
 /// Which wizard requested the directory picker.
@@ -606,7 +606,10 @@ pub struct App {
     show_prs_poll_active: bool,
     pub last_show_prs_poll: Instant,
     // Break reminder
+    pub break_interval: Duration,
     pub last_break_reset: Instant,
+    // Settings view
+    pub settings_selected: usize,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -632,6 +635,8 @@ impl App {
         if dismissed_notifs.prune_older_than(retention) > 0 {
             dismissed_notifs.save(&config.dismissed_notifications_path());
         }
+
+        let break_interval = use_cases::load_break_interval(&config);
 
         let last_break_reset = break_persist::load_break_reset(
             &config.break_state_path(),
@@ -706,7 +711,9 @@ impl App {
             show_prs_poll_rx,
             show_prs_poll_active: false,
             last_show_prs_poll: Instant::now() - Duration::from_secs(60),
+            break_interval,
             last_break_reset,
+            settings_selected: 0,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -2160,6 +2167,7 @@ impl App {
             View::Notifications => self.handle_notifications_event(event),
             View::Notes => self.handle_notes_event(event),
             View::ShowPrs => self.handle_show_prs_event(event),
+            View::Settings => self.handle_settings_event(event),
         }
     }
 
@@ -2297,6 +2305,62 @@ impl App {
                         }
                         Err(e) => {
                             self.set_status(format!("Failed to open notes: {e}"));
+                        }
+                    }
+                }
+                KeyCode::Char('B') => {
+                    self.last_break_reset = Instant::now();
+                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
+                    tracing::info!("break timer reset");
+                }
+                KeyCode::Char(',') => {
+                    self.settings_selected = 0;
+                    self.view = View::Settings;
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_settings_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.should_quit = true;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = View::TaskList;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    // Future: navigate settings (currently only 1 item)
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    // Future: navigate settings (currently only 1 item)
+                }
+                KeyCode::Char('h') | KeyCode::Left => {
+                    // Decrease break interval by 5 mins (min 5)
+                    let current_mins = self.break_interval.as_secs() / 60;
+                    if current_mins > 5 {
+                        let new_mins = current_mins - 5;
+                        tracing::info!(old_mins = current_mins, new_mins, "break interval changed");
+                        self.break_interval = Duration::from_secs(new_mins * 60);
+                        if let Err(e) = use_cases::save_break_interval(&self.config, new_mins) {
+                            tracing::error!(error = %e, "failed to save break interval");
+                            self.set_status(format!("Failed to save: {e}"));
+                        }
+                    }
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    // Increase break interval by 5 mins (max 120)
+                    let current_mins = self.break_interval.as_secs() / 60;
+                    if current_mins < 120 {
+                        let new_mins = current_mins + 5;
+                        tracing::info!(old_mins = current_mins, new_mins, "break interval changed");
+                        self.break_interval = Duration::from_secs(new_mins * 60);
+                        if let Err(e) = use_cases::save_break_interval(&self.config, new_mins) {
+                            tracing::error!(error = %e, "failed to save break interval");
+                            self.set_status(format!("Failed to save: {e}"));
                         }
                     }
                 }
@@ -3842,9 +3906,8 @@ impl App {
                                 let selected_dir = picker.current_dir.clone();
                                 let origin = picker.origin;
 
-                                let config_file = agman::config::ConfigFile {
-                                    repos_dir: Some(selected_dir.to_string_lossy().to_string()),
-                                };
+                                let mut config_file = agman::config::load_config_file(&self.config.base_dir);
+                                config_file.repos_dir = Some(selected_dir.to_string_lossy().to_string());
                                 if let Err(e) = agman::config::save_config_file(&self.config.base_dir, &config_file) {
                                     self.set_status(format!("Failed to save config: {}", e));
                                     self.view = View::TaskList;

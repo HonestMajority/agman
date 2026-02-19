@@ -11,7 +11,7 @@ use agman::task::TaskStatus;
 
 use std::time::Duration;
 
-use super::app::{App, BranchSource, DirPickerOrigin, DirKind, NotesFocus, PreviewPane, RestartWizardStep, View, WizardStep, BREAK_INTERVAL, BREAK_WARNING_SECS};
+use super::app::{App, BranchSource, DirPickerOrigin, DirKind, NotesFocus, PreviewPane, RestartWizardStep, View, WizardStep, BREAK_WARNING_SECS};
 use super::vim::VimMode;
 
 fn vim_mode_color(mode: VimMode) -> Color {
@@ -25,8 +25,8 @@ fn vim_mode_color(mode: VimMode) -> Color {
 
 fn clock_title(app: &App) -> Line<'static> {
     let elapsed = app.last_break_reset.elapsed();
-    let break_spans = if elapsed >= BREAK_INTERVAL {
-        let overdue_mins = (elapsed - BREAK_INTERVAL).as_secs() / 60;
+    let break_spans = if elapsed >= app.break_interval {
+        let overdue_mins = (elapsed - app.break_interval).as_secs() / 60;
         vec![Span::styled(
             format!(" \u{2615} +{}m ", overdue_mins),
             Style::default()
@@ -34,14 +34,14 @@ fn clock_title(app: &App) -> Line<'static> {
                 .bg(Color::Rgb(255, 140, 40))
                 .add_modifier(Modifier::BOLD),
         )]
-    } else if elapsed >= BREAK_INTERVAL - Duration::from_secs(BREAK_WARNING_SECS) {
-        let remaining_mins = (BREAK_INTERVAL - elapsed).as_secs() / 60;
+    } else if elapsed >= app.break_interval - Duration::from_secs(BREAK_WARNING_SECS) {
+        let remaining_mins = (app.break_interval - elapsed).as_secs() / 60;
         vec![Span::styled(
             format!(" \u{2615} {}m ", remaining_mins),
             Style::default().fg(Color::Rgb(180, 140, 60)),
         )]
     } else {
-        let remaining_mins = (BREAK_INTERVAL - elapsed).as_secs() / 60;
+        let remaining_mins = (app.break_interval - elapsed).as_secs() / 60;
         vec![Span::styled(
             format!(" \u{2615} {}m ", remaining_mins),
             Style::default().fg(Color::DarkGray),
@@ -199,6 +199,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::Notifications => draw_notifications(f, app, chunks[0]),
         View::Notes => draw_notes(f, app, chunks[0]),
         View::ShowPrs => draw_show_prs(f, app, chunks[0]),
+        View::Settings => draw_settings(f, app, chunks[0]),
     }
 
     if output_height > 0 {
@@ -1251,7 +1252,7 @@ fn draw_output_pane(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn break_hint_spans(app: &App) -> Vec<Span<'static>> {
-    let break_due = app.last_break_reset.elapsed() >= BREAK_INTERVAL;
+    let break_due = app.last_break_reset.elapsed() >= app.break_interval;
     if break_due {
         vec![
             Span::styled(
@@ -1335,6 +1336,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" prs  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("m", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(",", Style::default().fg(Color::LightYellow)),
+                Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
             ]);
             spans.extend(break_hint_spans(app));
             spans.extend([
@@ -1632,6 +1635,20 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 ]);
                 spans
             }
+        }
+        View::Settings => {
+            let mut spans = vec![
+                Span::styled("h/l", Style::default().fg(Color::LightCyan)),
+                Span::styled(" adjust  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+            ];
+            spans.extend(break_hint_spans(app));
+            spans.extend([
+                Span::styled("q", Style::default().fg(Color::LightCyan)),
+                Span::styled(" back", Style::default().fg(Color::DarkGray)),
+            ]);
+            spans
         }
     };
 
@@ -2887,6 +2904,31 @@ fn draw_show_prs(f: &mut Frame, app: &mut App, area: Rect) {
 
     app.show_prs_list_state.select(visual_index);
     f.render_stateful_widget(list, area, &mut app.show_prs_list_state);
+}
+
+fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
+    let break_mins = app.break_interval.as_secs() / 60;
+
+    let item_style = Style::default().bg(Color::Rgb(40, 40, 50));
+
+    let value_display = format!("  Break interval      \u{25C0}  {} min  \u{25B6}", break_mins);
+    let items = vec![
+        ListItem::new(Line::from(vec![
+            Span::styled(&value_display, Style::default().fg(Color::White)),
+            Span::styled("    (h/l to adjust, 5–120 min)", Style::default().fg(Color::DarkGray)),
+        ]))
+        .style(if app.settings_selected == 0 { item_style } else { Style::default() }),
+    ];
+
+    let list = List::new(items).block(
+        Block::default()
+            .title(" Settings ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title_bottom(clock_title(app)),
+    );
+
+    f.render_widget(list, area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

@@ -24,6 +24,7 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConfigFile {
     pub repos_dir: Option<String>,
+    pub break_interval_mins: Option<u64>,
 }
 
 /// Read `<base_dir>/config.toml`, returning defaults if missing or unparseable.

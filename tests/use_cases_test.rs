@@ -1263,6 +1263,7 @@ fn save_and_load_config_file_roundtrip() {
 
     let cf = agman::config::ConfigFile {
         repos_dir: Some("/tmp/my-repos".to_string()),
+        break_interval_mins: None,
     };
     agman::config::save_config_file(&base_dir, &cf).unwrap();
 
@@ -1860,4 +1861,29 @@ fn parse_search_items_json_prs() {
     assert_eq!(items[1].number, 55);
     assert!(!items[1].is_draft);
     assert_eq!(items[1].kind, GithubItemKind::PullRequest);
+}
+
+// ---------------------------------------------------------------------------
+// Break interval config
+// ---------------------------------------------------------------------------
+
+#[test]
+fn break_interval_default_when_no_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let interval = use_cases::load_break_interval(&config);
+    assert_eq!(interval, std::time::Duration::from_secs(40 * 60));
+}
+
+#[test]
+fn break_interval_config_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    use_cases::save_break_interval(&config, 25).unwrap();
+    let interval = use_cases::load_break_interval(&config);
+    assert_eq!(interval, std::time::Duration::from_secs(25 * 60));
 }
