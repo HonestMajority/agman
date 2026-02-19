@@ -733,103 +733,7 @@ impl App {
         editor
     }
 
-    /// Auto-wrap text in a VimTextArea when lines exceed max_width.
-    fn auto_wrap_vim_editor(editor: &mut VimTextArea<'static>, max_width: usize) {
-        if max_width < 20 {
-            return;
-        }
 
-        let (row, col) = editor.cursor();
-        let lines = editor.lines();
-
-        if row >= lines.len() {
-            return;
-        }
-
-        let current_line = &lines[row];
-        if current_line.len() <= max_width {
-            return;
-        }
-
-        // Find the last space before max_width
-        let wrap_at = current_line[..max_width].rfind(' ').unwrap_or(max_width);
-
-        if wrap_at == 0 {
-            return;
-        }
-
-        // We need to split the line: move cursor to wrap point, insert newline
-        let mut new_lines: Vec<String> = Vec::new();
-        for (i, line) in lines.iter().enumerate() {
-            if i == row {
-                // Split this line
-                let (before, after) = line.split_at(wrap_at);
-                new_lines.push(before.to_string());
-                new_lines.push(after.trim_start().to_string());
-            } else {
-                new_lines.push(line.clone());
-            }
-        }
-
-        // Calculate new cursor position
-        let new_col = if col > wrap_at {
-            col - wrap_at - 1 // Account for removed space
-        } else {
-            col
-        };
-        let new_row = if col > wrap_at { row + 1 } else { row };
-
-        // Save vim mode before recreating
-        let current_mode = editor.mode();
-
-        // Recreate the editor with new content
-        editor.set_content(&new_lines.join("\n"));
-        editor.vim.mode = current_mode;
-
-        // Restore cursor position
-        editor.move_cursor(CursorMove::Jump(new_row as u16, new_col as u16));
-    }
-
-    /// Hard-wrap all lines in a string to a given max width at word boundaries.
-    /// Unlike `auto_wrap_vim_editor` which operates on a single line during editing,
-    /// this wraps all lines in bulk — useful for pre-wrapping content before loading.
-    fn wrap_content(text: &str, max_width: usize) -> String {
-        if max_width < 10 {
-            return text.to_string();
-        }
-
-        let mut result = Vec::new();
-        for line in text.lines() {
-            if line.chars().count() <= max_width {
-                result.push(line.to_string());
-            } else {
-                let mut remaining = line;
-                while remaining.chars().count() > max_width {
-                    // Find the byte offset of the max_width-th character
-                    let byte_offset = remaining
-                        .char_indices()
-                        .nth(max_width)
-                        .map(|(i, _)| i)
-                        .unwrap_or(remaining.len());
-                    let wrap_at = remaining[..byte_offset]
-                        .rfind(' ')
-                        .unwrap_or(byte_offset);
-                    if wrap_at == 0 {
-                        // No space found, force break at char boundary
-                        result.push(remaining[..byte_offset].to_string());
-                        remaining = &remaining[byte_offset..];
-                    } else {
-                        result.push(remaining[..wrap_at].to_string());
-                        remaining = &remaining[wrap_at..].trim_start();
-                    }
-                }
-                if !remaining.is_empty() {
-                    result.push(remaining.to_string());
-                }
-            }
-        }
-        result.join("\n")
-    }
 
     pub fn refresh_tasks(&mut self) {
         let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
@@ -2600,11 +2504,6 @@ impl App {
     }
 
     fn handle_notes_editing(&mut self, event: Event) -> Result<bool> {
-        // Calculate wrap width dynamically: notes panel is 30% of screen width, minus borders
-        let wrap_width = crossterm::terminal::size()
-            .map(|(w, _)| ((w as f32 * 0.30) as usize).saturating_sub(4))
-            .unwrap_or(30);
-
         if let Event::Key(key) = event {
             // Check for Ctrl+S to save in any mode
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
@@ -2632,10 +2531,7 @@ impl App {
                 return Ok(false);
             }
 
-            // Auto-wrap only in insert mode
-            if self.notes_editor.mode() == VimMode::Insert {
-                Self::auto_wrap_vim_editor(&mut self.notes_editor, wrap_width);
-            }
+
         }
         Ok(false)
     }
@@ -2648,23 +2544,12 @@ impl App {
                 .unwrap_or_else(|_| "No TASK.md available".to_string());
             self.task_file_content = content.clone();
 
-            // Pre-wrap content to fit the modal width (same formula as handle_task_editor_event)
-            let wrap_width = crossterm::terminal::size()
-                .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
-                .unwrap_or(70);
-            let wrapped = Self::wrap_content(&content, wrap_width);
-
-            self.task_file_editor = VimTextArea::from_lines(wrapped.lines());
+            self.task_file_editor = VimTextArea::from_lines(content.lines());
         }
         self.view = View::TaskEditor;
     }
 
     fn handle_task_editor_event(&mut self, event: Event) -> Result<bool> {
-        // Calculate wrap width dynamically: modal is ~80% of screen width, minus borders
-        let wrap_width = crossterm::terminal::size()
-            .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
-            .unwrap_or(70);
-
         if let Event::Key(key) = event {
             // Check for Ctrl+S to save and close in any mode
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
@@ -2694,20 +2579,12 @@ impl App {
                 return Ok(false);
             }
 
-            // Auto-wrap only in insert mode
-            if self.task_file_editor.mode() == VimMode::Insert {
-                Self::auto_wrap_vim_editor(&mut self.task_file_editor, wrap_width);
-            }
+
         }
         Ok(false)
     }
 
     fn handle_feedback_event(&mut self, event: Event) -> Result<bool> {
-        // Calculate wrap width dynamically: feedback modal is 70% of screen width, minus borders
-        let wrap_width = crossterm::terminal::size()
-            .map(|(w, _)| ((w as f32 * 0.70) as usize).saturating_sub(6))
-            .unwrap_or(70);
-
         if let Event::Key(key) = event {
             // Check for Ctrl+S to submit in any mode
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
@@ -2742,10 +2619,7 @@ impl App {
                 return Ok(false);
             }
 
-            // Auto-wrap only in insert mode
-            if self.feedback_editor.mode() == VimMode::Insert {
-                Self::auto_wrap_vim_editor(&mut self.feedback_editor, wrap_width);
-            }
+
         }
         Ok(false)
     }
@@ -2923,11 +2797,6 @@ impl App {
                     }
                 }
                 WizardStep::EnterDescription => {
-                    // Calculate wrap width dynamically: wizard is 80% of screen width, minus borders
-                    let wrap_width = crossterm::terminal::size()
-                        .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
-                        .unwrap_or(70);
-
                     // Check for Ctrl+S to submit in any mode
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('s')
@@ -2958,10 +2827,7 @@ impl App {
                         return Ok(false);
                     }
 
-                    // Auto-wrap only in insert mode
-                    if wizard.description_editor.mode() == VimMode::Insert {
-                        Self::auto_wrap_vim_editor(&mut wizard.description_editor, wrap_width);
-                    }
+
                 }
             }
         }
@@ -3766,12 +3632,7 @@ impl App {
             return Ok(());
         }
 
-        // Pre-wrap content for the editor
-        let wrap_width = crossterm::terminal::size()
-            .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
-            .unwrap_or(70);
-        let wrapped = Self::wrap_content(&task_content, wrap_width);
-        let task_editor = VimTextArea::from_lines(wrapped.lines());
+        let task_editor = VimTextArea::from_lines(task_content.lines());
 
         // Load preview if coming from TaskList
         if self.view == View::TaskList {
@@ -3808,11 +3669,6 @@ impl App {
 
             match wizard_step {
                 RestartWizardStep::EditTask => {
-                    // Calculate wrap width
-                    let wrap_width = crossterm::terminal::size()
-                        .map(|(w, _)| ((w as f32 * 0.80) as usize).saturating_sub(6))
-                        .unwrap_or(70);
-
                     // Ctrl+S: save TASK.md and advance to SelectAgent
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('s')
@@ -3875,12 +3731,7 @@ impl App {
                         return Ok(false);
                     }
 
-                    // Auto-wrap in insert mode
-                    if let Some(w) = &mut self.restart_wizard {
-                        if w.task_editor.mode() == VimMode::Insert {
-                            Self::auto_wrap_vim_editor(&mut w.task_editor, wrap_width);
-                        }
-                    }
+
                 }
                 RestartWizardStep::SelectAgent => match key.code {
                     KeyCode::Char('j') | KeyCode::Down => {
