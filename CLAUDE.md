@@ -124,29 +124,31 @@ Internal commands are hidden subcommands invoked by the TUI via subprocess or tm
 ### Task List
 - `j/k` - Navigate, `g/G` - Jump to first/last
 - `l/Enter` - Preview
-- `n` - New task, `r` - Review wizard
-- `R` - Rerun task (edit TASK.md + pick flow step)
-- `S` - Stop running task
+- `n` - New task, `v` - Review wizard
+- `r` - Rerun task (edit TASK.md + pick flow step)
+- `s` - Stop running task
 - `f` - Give feedback, `t` - Edit TASK.md, `x` - Run command
 - `a` - Answer (InputNeeded tasks only)
 - `o` - Open linked PR in browser
-- `H` - Hold/unhold task
+- `h` - Hold/unhold task
 - `c` - Clear review-addressed
 - `d` - Delete task
-- `N` - Notifications, `m` - Notes
+- `i` - Inbox (notifications), `p` - PRs, `m` - Notes
+- `b` - Break timer reset
+- `,` - Settings
 - `q/Esc` - Quit
 
 ### Preview
 - `Tab` - Switch pane (logs/notes)
 - `j/k` - Scroll, `g/G` - Jump to top/bottom, `Ctrl+D/U` - Half-page scroll
 - `i` - Edit notes
-- `R` - Rerun task
-- `S` - Stop running task
+- `r` - Rerun task
+- `s` - Stop running task
 - `f` - Give feedback, `t` - Edit TASK.md, `x` - Run command
 - `a` - Answer (InputNeeded tasks only)
 - `o` - Open linked PR in browser
-- `H` - Hold/unhold task
-- `Q` - Queue feedback
+- `h` - Hold/unhold task
+- `w` - Queue feedback
 - `Enter` - Attach to tmux
 - `q/Esc` - Back
 

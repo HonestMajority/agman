@@ -2191,7 +2191,7 @@ impl App {
                     self.preview_pane = PreviewPane::Logs;
                     self.view = View::Preview;
                 }
-                KeyCode::Char('S') => {
+                KeyCode::Char('s') => {
                     self.stop_task()?;
                 }
                 KeyCode::Char('d') => {
@@ -2221,7 +2221,7 @@ impl App {
                     // Start new task wizard
                     self.start_wizard()?;
                 }
-                KeyCode::Char('r') => {
+                KeyCode::Char('v') => {
                     // Start review wizard
                     self.start_review_wizard()?;
                 }
@@ -2260,11 +2260,11 @@ impl App {
                         self.set_status("No linked PR".to_string());
                     }
                 }
-                KeyCode::Char('R') => {
+                KeyCode::Char('r') => {
                     // Rerun task wizard
                     self.start_restart_wizard()?;
                 }
-                KeyCode::Char('H') => {
+                KeyCode::Char('h') => {
                     self.toggle_hold()?;
                 }
                 KeyCode::Char('c') => {
@@ -2286,11 +2286,11 @@ impl App {
                         self.set_status("Review tracking only for owned PRs".to_string());
                     }
                 }
-                KeyCode::Char('N') => {
+                KeyCode::Char('i') => {
                     self.selected_notif_index = 0;
                     self.view = View::Notifications;
                 }
-                KeyCode::Char('I') => {
+                KeyCode::Char('p') => {
                     self.show_prs_selected = 0;
                     self.view = View::ShowPrs;
                     if !self.show_prs_first_poll_done && !self.show_prs_poll_active {
@@ -2308,7 +2308,7 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('B') => {
+                KeyCode::Char('b') => {
                     self.last_break_reset = Instant::now();
                     break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
                     tracing::info!("break timer reset");
@@ -2487,11 +2487,11 @@ impl App {
                     self.open_command_list();
                     return Ok(false);
                 }
-                KeyCode::Char('Q') => {
+                KeyCode::Char('w') => {
                     self.open_feedback_queue();
                     return Ok(false);
                 }
-                KeyCode::Char('S') => {
+                KeyCode::Char('s') => {
                     self.stop_task()?;
                     return Ok(false);
                 }
@@ -2507,11 +2507,11 @@ impl App {
                     }
                     return Ok(false);
                 }
-                KeyCode::Char('R') => {
+                KeyCode::Char('r') => {
                     self.start_restart_wizard()?;
                     return Ok(false);
                 }
-                KeyCode::Char('H') => {
+                KeyCode::Char('h') => {
                     self.toggle_hold()?;
                     return Ok(false);
                 }
@@ -2974,7 +2974,7 @@ impl App {
                     // Delete selected feedback item
                     self.delete_queued_feedback()?;
                 }
-                KeyCode::Char('C') => {
+                KeyCode::Char('c') => {
                     // Clear all queued feedback
                     self.clear_all_queued_feedback()?;
                 }
@@ -3183,7 +3183,7 @@ impl App {
                         self.set_status("Opening in browser...".to_string());
                     }
                 }
-                KeyCode::Char('R') => {
+                KeyCode::Char('r') => {
                     self.show_prs_poll_active = false; // force allow re-poll
                     self.start_show_prs_poll();
                     self.last_show_prs_poll = Instant::now();
@@ -3352,7 +3352,7 @@ impl App {
                         KeyCode::Char('a') => {
                             nv.create_input = Some((TextArea::default(), false));
                         }
-                        KeyCode::Char('A') => {
+                        KeyCode::Char('n') => {
                             nv.create_input = Some((TextArea::default(), true));
                         }
                         KeyCode::Char('d') => {
@@ -3372,7 +3372,7 @@ impl App {
                                 nv.focus = NotesFocus::Editor;
                             }
                         }
-                        KeyCode::Char('J') => {
+                        KeyCode::Char(']') => {
                             if !nv.entries.is_empty() && nv.selected_index < nv.entries.len() - 1 {
                                 let entry_name = nv.entries[nv.selected_index].file_name.clone();
                                 let dir = nv.current_dir.clone();
@@ -3387,7 +3387,7 @@ impl App {
                                 }
                             }
                         }
-                        KeyCode::Char('K') => {
+                        KeyCode::Char('[') => {
                             if nv.selected_index > 0 {
                                 let entry_name = nv.entries[nv.selected_index].file_name.clone();
                                 let dir = nv.current_dir.clone();
