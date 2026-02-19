@@ -2364,11 +2364,6 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('B') => {
-                    self.last_break_reset = Instant::now();
-                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
-                    tracing::info!("break timer reset");
-                }
                 _ => {}
             }
         }
@@ -2518,12 +2513,6 @@ impl App {
                 }
                 KeyCode::Char('H') => {
                     self.toggle_hold()?;
-                    return Ok(false);
-                }
-                KeyCode::Char('B') => {
-                    self.last_break_reset = Instant::now();
-                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
-                    tracing::info!("break timer reset");
                     return Ok(false);
                 }
                 _ => {}
@@ -3158,11 +3147,6 @@ impl App {
                         self.set_status("Opening notification...".to_string());
                     }
                 }
-                KeyCode::Char('B') => {
-                    self.last_break_reset = Instant::now();
-                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
-                    tracing::info!("break timer reset");
-                }
                 _ => {}
             }
         }
@@ -3204,11 +3188,6 @@ impl App {
                     self.start_show_prs_poll();
                     self.last_show_prs_poll = Instant::now();
                     self.set_status("Refreshing...".to_string());
-                }
-                KeyCode::Char('B') => {
-                    self.last_break_reset = Instant::now();
-                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
-                    tracing::info!("break timer reset");
                 }
                 _ => {}
             }
@@ -3462,11 +3441,6 @@ impl App {
                             let _ = nv.save_current();
                             self.notes_view = None;
                             self.view = View::TaskList;
-                        }
-                        KeyCode::Char('B') => {
-                            self.last_break_reset = Instant::now();
-                            break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
-                            tracing::info!("break timer reset");
                         }
                         _ => {}
                     }
