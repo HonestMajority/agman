@@ -135,15 +135,18 @@ fn should_undismiss_when_notification_has_new_activity() {
     // Dismiss a notification with updated_at = T1
     dn.insert("thread-1".to_string(), "2025-06-01T10:00:00Z".to_string());
 
-    // Same updated_at — should NOT un-dismiss
-    assert!(!dn.should_undismiss("thread-1", "2025-06-01T10:00:00Z"));
+    // Same updated_at, unread — should NOT un-dismiss
+    assert!(!dn.should_undismiss("thread-1", "2025-06-01T10:00:00Z", true));
 
-    // Older updated_at — should NOT un-dismiss
-    assert!(!dn.should_undismiss("thread-1", "2025-06-01T09:00:00Z"));
+    // Older updated_at, unread — should NOT un-dismiss
+    assert!(!dn.should_undismiss("thread-1", "2025-06-01T09:00:00Z", true));
 
-    // Newer updated_at — SHOULD un-dismiss (new activity)
-    assert!(dn.should_undismiss("thread-1", "2025-06-01T11:00:00Z"));
+    // Newer updated_at, unread — SHOULD un-dismiss (new activity)
+    assert!(dn.should_undismiss("thread-1", "2025-06-01T11:00:00Z", true));
 
-    // Unknown thread — should NOT un-dismiss
-    assert!(!dn.should_undismiss("thread-unknown", "2025-06-01T11:00:00Z"));
+    // Newer updated_at, NOT unread — should NOT un-dismiss (likely timestamp bump from dismiss/read action)
+    assert!(!dn.should_undismiss("thread-1", "2025-06-01T11:00:00Z", false));
+
+    // Unknown thread, unread — should NOT un-dismiss
+    assert!(!dn.should_undismiss("thread-unknown", "2025-06-01T11:00:00Z", true));
 }

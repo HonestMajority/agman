@@ -108,9 +108,13 @@ impl DismissedNotifications {
         self.ids.remove(id).is_some()
     }
 
-    /// Returns true if the notification should be un-dismissed because its
+    /// Returns true if the notification should be un-dismissed because it has
+    /// genuinely new activity: `is_unread` is true (GitHub marks it unread) AND
     /// `current_updated_at` is newer than what was stored at dismissal time.
-    pub fn should_undismiss(&self, thread_id: &str, current_updated_at: &str) -> bool {
+    pub fn should_undismiss(&self, thread_id: &str, current_updated_at: &str, is_unread: bool) -> bool {
+        if !is_unread {
+            return false;
+        }
         let entry = match self.ids.get(thread_id) {
             Some(e) => e,
             None => return false,

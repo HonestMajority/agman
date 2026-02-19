@@ -5,7 +5,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
-use std::collections::HashSet;
 use std::io;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
@@ -4312,22 +4311,17 @@ impl App {
         self.notifications = result.notifications;
 
         // Filter out notifications that were dismissed but may not yet be reflected by the API.
-        // Remove IDs from the dismissed set only when they no longer appear in poll results
-        // (confirming the server processed the DELETE). Keep IDs that are still present
-        // (the DELETE may still be in-flight).
+        // Dismissed entries are only removed by retention-based pruning or explicit un-dismiss
+        // when there's genuine new activity (unread + newer updated_at).
         if !self.dismissed_notifs.ids.is_empty() {
-            let fetched_ids: HashSet<&str> = self.notifications.iter().map(|n| n.id.as_str()).collect();
-            // IDs not in the fetched results are confirmed deleted — remove from tracking set
-            let before_cleanup = self.dismissed_notifs.ids.len();
-            self.dismissed_notifs.ids.retain(|id, _entry| fetched_ids.contains(id.as_str()));
             // Prune entries older than the retention window
             let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
-            self.dismissed_notifs.prune_older_than(retention);
+            let pruned = self.dismissed_notifs.prune_older_than(retention);
 
             // Un-dismiss threads that have new activity since they were dismissed
             let mut undismissed: Vec<(String, String, String)> = Vec::new();
             for notif in &self.notifications {
-                if self.dismissed_notifs.should_undismiss(&notif.id, &notif.updated_at) {
+                if self.dismissed_notifs.should_undismiss(&notif.id, &notif.updated_at, notif.unread) {
                     let old_updated_at = self.dismissed_notifs.ids.get(&notif.id)
                         .map(|e| e.updated_at.clone())
                         .unwrap_or_default();
@@ -4344,11 +4338,10 @@ impl App {
                 self.dismissed_notifs.remove(thread_id);
             }
 
-            let changed = self.dismissed_notifs.ids.len() < before_cleanup || !undismissed.is_empty();
-            if changed {
+            if pruned > 0 || !undismissed.is_empty() {
                 self.dismissed_notifs.save(&self.config.dismissed_notifications_path());
                 tracing::debug!(
-                    removed = before_cleanup.saturating_sub(self.dismissed_notifs.ids.len()),
+                    pruned,
                     undismissed = undismissed.len(),
                     "cleaned up dismissed notification entries"
                 );
