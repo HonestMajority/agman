@@ -1396,7 +1396,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("Enter", Style::default().fg(Color::LightCyan)),
                     Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
                 ]);
-                spans.extend(break_hint_spans(app));
                 spans.extend([
                     Span::styled("q", Style::default().fg(Color::LightCyan)),
                     Span::styled(" back", Style::default().fg(Color::DarkGray)),
@@ -1567,7 +1566,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("o", Style::default().fg(Color::LightGreen)),
                 Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
             ];
-            spans.extend(break_hint_spans(app));
             spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
@@ -1583,7 +1581,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("R", Style::default().fg(Color::LightYellow)),
                 Span::styled(" refresh  ", Style::default().fg(Color::DarkGray)),
             ];
-            spans.extend(break_hint_spans(app));
             spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
@@ -1628,7 +1625,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("Tab", Style::default().fg(Color::LightCyan)),
                     Span::styled(" editor  ", Style::default().fg(Color::DarkGray)),
                 ];
-                spans.extend(break_hint_spans(app));
                 spans.extend([
                     Span::styled("q", Style::default().fg(Color::LightCyan)),
                     Span::styled(" back", Style::default().fg(Color::DarkGray)),
@@ -1643,7 +1639,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
             ];
-            spans.extend(break_hint_spans(app));
             spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
