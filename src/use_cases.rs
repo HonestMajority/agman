@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::git::{self, Git};
@@ -781,6 +782,26 @@ pub enum DirKind {
     Plain,
 }
 
+
+// ---------------------------------------------------------------------------
+// Break Interval Settings
+// ---------------------------------------------------------------------------
+
+const DEFAULT_BREAK_INTERVAL_MINS: u64 = 40;
+
+/// Load the break interval from config, defaulting to 40 minutes.
+pub fn load_break_interval(config: &Config) -> Duration {
+    let cf = crate::config::load_config_file(&config.base_dir);
+    let mins = cf.break_interval_mins.unwrap_or(DEFAULT_BREAK_INTERVAL_MINS);
+    Duration::from_secs(mins * 60)
+}
+
+/// Save the break interval to config, preserving other config fields.
+pub fn save_break_interval(config: &Config, mins: u64) -> Result<()> {
+    let mut cf = crate::config::load_config_file(&config.base_dir);
+    cf.break_interval_mins = Some(mins);
+    crate::config::save_config_file(&config.base_dir, &cf)
+}
 
 // ---------------------------------------------------------------------------
 // GitHub Notifications
