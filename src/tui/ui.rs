@@ -1,6 +1,6 @@
 use chrono::{Local, Utc};
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap},
@@ -12,8 +12,16 @@ use agman::task::TaskStatus;
 use std::time::Duration;
 
 use super::app::{App, BranchSource, DirPickerOrigin, DirKind, NotesFocus, PreviewPane, RestartWizardStep, View, WizardStep, BREAK_INTERVAL, BREAK_WARNING_SECS};
-use super::log_render;
 use super::vim::VimMode;
+
+fn vim_mode_color(mode: VimMode) -> Color {
+    match mode {
+        VimMode::Normal => Color::LightCyan,
+        VimMode::Insert => Color::LightGreen,
+        VimMode::Visual => Color::LightYellow,
+        VimMode::Operator(_) => Color::LightMagenta,
+    }
+}
 
 fn clock_title(app: &App) -> Line<'static> {
     let elapsed = app.last_break_reset.elapsed();
@@ -690,116 +698,71 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
     draw_notes_panel(f, app, panels[1]);
 }
 
-fn clamp_log_scroll(paragraph: &Paragraph, area: Rect, scroll: u16) -> u16 {
-    let inner = area.inner(Margin::new(1, 1));
-    let total_rows = paragraph.line_count(inner.width) as u16;
-    let max_scroll = total_rows.saturating_sub(inner.height);
-    scroll.min(max_scroll)
-}
-
 fn draw_logs_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.preview_pane == PreviewPane::Logs;
-    let border_color = if is_focused {
-        Color::LightYellow
-    } else {
-        Color::DarkGray
-    };
 
-    let title_style = if is_focused {
-        Style::default()
-            .fg(Color::LightYellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let styled_lines = log_render::render_log_lines(&app.preview_content);
-
-    let logs = Paragraph::new(styled_lines)
-        .block(
-            Block::default()
-                .title(Span::styled(" Logs (Enter: attach tmux) ", title_style))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color)),
+    let (title, title_style, border_color) = if is_focused {
+        let mode = app.logs_editor.mode();
+        let color = vim_mode_color(mode);
+        (
+            format!(" Logs [{}] ", mode.indicator()),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+            color,
         )
-        .wrap(Wrap { trim: false });
+    } else {
+        (
+            " Logs ".to_string(),
+            Style::default().fg(Color::DarkGray),
+            Color::DarkGray,
+        )
+    };
 
-    app.preview_scroll = clamp_log_scroll(&logs, area, app.preview_scroll);
-
-    let logs = logs.scroll((app.preview_scroll, 0));
-
-    f.render_widget(logs, area);
+    app.logs_editor.textarea.set_block(
+        Block::default()
+            .title(Span::styled(title, title_style))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color)),
+    );
+    app.logs_editor.textarea.set_cursor_style(
+        Style::default().bg(Color::DarkGray).fg(Color::White),
+    );
+    f.render_widget(&app.logs_editor.textarea, area);
 }
 
 fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let is_focused = app.preview_pane == PreviewPane::Notes;
-    let border_color = if is_focused {
-        Color::LightGreen
+
+    let (title, title_style, border_color) = if is_focused {
+        let mode = app.notes_editor.mode();
+        let color = vim_mode_color(mode);
+        (
+            format!(" Notes [{}] ", mode.indicator()),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+            color,
+        )
     } else {
-        Color::DarkGray
+        (
+            " Notes ".to_string(),
+            Style::default().fg(Color::DarkGray),
+            Color::DarkGray,
+        )
     };
 
-    let title = if app.notes_editing {
-        let mode = app.notes_editor.mode();
-        format!(" Notes [{}] ", mode.indicator())
-    } else if is_focused {
-        " Notes (i: edit) ".to_string()
+    app.notes_editor.textarea.set_block(
+        Block::default()
+            .title(Span::styled(title, title_style))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color)),
+    );
+
+    let cursor_style = if app.notes_editing {
+        Style::default().bg(Color::White).fg(Color::Black)
     } else {
-        " Notes ".to_string()
+        Style::default().bg(Color::DarkGray).fg(Color::White)
     };
+    app.notes_editor.textarea.set_cursor_style(cursor_style);
 
-    let title_style = if app.notes_editing {
-        let mode = app.notes_editor.mode();
-        let mode_color = match mode {
-            VimMode::Normal => Color::LightCyan,
-            VimMode::Insert => Color::LightGreen,
-            VimMode::Visual => Color::LightYellow,
-            VimMode::Operator(_) => Color::LightMagenta,
-        };
-        Style::default().fg(mode_color).add_modifier(Modifier::BOLD)
-    } else if is_focused {
-        Style::default()
-            .fg(Color::LightGreen)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    if app.notes_editing {
-        let mode = app.notes_editor.mode();
-        let border_color = match mode {
-            VimMode::Normal => Color::LightCyan,
-            VimMode::Insert => Color::LightGreen,
-            VimMode::Visual => Color::LightYellow,
-            VimMode::Operator(_) => Color::LightMagenta,
-        };
-
-        // Show the editor
-        app.notes_editor.textarea.set_block(
-            Block::default()
-                .title(Span::styled(title, title_style))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color)),
-        );
-        app.notes_editor
-            .textarea
-            .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
-        f.render_widget(&app.notes_editor.textarea, area);
-    } else {
-        // Show read-only notes
-        let notes = Paragraph::new(app.notes_content.as_str())
-            .block(
-                Block::default()
-                    .title(Span::styled(title, title_style))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(border_color)),
-            )
-            .style(Style::default().fg(Color::Gray))
-            .wrap(Wrap { trim: false })
-            .scroll((app.notes_scroll, 0));
-
-        f.render_widget(notes, area);
-    }
+    f.render_widget(&app.notes_editor.textarea, area);
 }
 
 fn draw_task_editor(f: &mut Frame, app: &mut App) {
@@ -1390,8 +1353,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 let mut spans = vec![
                     Span::styled("Tab", Style::default().fg(Color::LightCyan)),
                     Span::styled(" pane  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
                 ];
                 if let Some(task) = app.selected_task() {
                     // State-conditional hints
@@ -1429,8 +1390,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 spans.extend([
                     Span::styled("Q", Style::default().fg(Color::LightYellow)),
                     Span::styled(" queue  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("i", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" edit  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Enter", Style::default().fg(Color::LightCyan)),
                     Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
                 ]);
