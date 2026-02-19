@@ -1256,7 +1256,7 @@ fn break_hint_spans(app: &App) -> Vec<Span<'static>> {
     if break_due {
         vec![
             Span::styled(
-                "B",
+                "b",
                 Style::default()
                     .fg(Color::Rgb(255, 140, 40))
                     .add_modifier(Modifier::BOLD),
@@ -1265,7 +1265,7 @@ fn break_hint_spans(app: &App) -> Vec<Span<'static>> {
         ]
     } else {
         vec![
-            Span::styled("B", Style::default().fg(Color::Rgb(180, 140, 60))),
+            Span::styled("b", Style::default().fg(Color::Rgb(180, 140, 60))),
             Span::styled(" break  ", Style::default().fg(Color::DarkGray)),
         ]
     }
@@ -1279,7 +1279,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("r", Style::default().fg(Color::LightGreen)),
+                Span::styled("v", Style::default().fg(Color::LightGreen)),
                 Span::styled(" review  ", Style::default().fg(Color::DarkGray)),
             ];
             if let Some(task) = app.selected_task() {
@@ -1290,49 +1290,49 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 }
                 if task.meta.linked_pr.is_some() {
                     spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
-                    spans.push(Span::styled(" PR  ", Style::default().fg(Color::DarkGray)));
+                    spans.push(Span::styled(" open pr  ", Style::default().fg(Color::DarkGray)));
                 }
                 if task.meta.status == TaskStatus::Stopped {
-                    spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
+                    spans.push(Span::styled("h", Style::default().fg(Color::Rgb(180, 140, 60))));
                     spans.push(Span::styled(" hold  ", Style::default().fg(Color::DarkGray)));
                 } else if task.meta.status == TaskStatus::OnHold {
-                    spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
+                    spans.push(Span::styled("h", Style::default().fg(Color::Rgb(180, 140, 60))));
                     spans.push(Span::styled(" unhold  ", Style::default().fg(Color::DarkGray)));
                 }
                 if task.meta.review_addressed && task.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned) {
                     spans.push(Span::styled("c", Style::default().fg(Color::LightGreen)));
-                    spans.push(Span::styled(" clear ✓  ", Style::default().fg(Color::DarkGray)));
+                    spans.push(Span::styled(" clear  ", Style::default().fg(Color::DarkGray)));
                 }
                 if task.meta.status == TaskStatus::Running {
-                    spans.push(Span::styled("S", Style::default().fg(Color::LightRed)));
+                    spans.push(Span::styled("s", Style::default().fg(Color::LightRed)));
                     spans.push(Span::styled(" stop  ", Style::default().fg(Color::DarkGray)));
                 }
                 // Task-selected hints (always shown when a task is selected)
                 spans.extend([
-                    Span::styled("R", Style::default().fg(Color::LightMagenta)),
+                    Span::styled("r", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("t", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("x", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("f", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("d", Style::default().fg(Color::LightCyan)),
+                    Span::styled("x", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("d", Style::default().fg(Color::LightRed)),
                     Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
             let unread_count = app.notifications.iter().filter(|n| n.unread).count();
-            let notif_label = if unread_count > 0 {
-                format!(" notif({})  ", unread_count)
+            let inbox_label = if unread_count > 0 {
+                format!(" inbox({})  ", unread_count)
             } else if !app.gh_notif_first_poll_done {
-                " notif(...)  ".to_string()
+                " inbox(...)  ".to_string()
             } else {
-                " notif  ".to_string()
+                " inbox  ".to_string()
             };
             spans.extend([
-                Span::styled("N", Style::default().fg(Color::LightYellow)),
-                Span::styled(notif_label, Style::default().fg(Color::DarkGray)),
-                Span::styled("I", Style::default().fg(Color::LightYellow)),
+                Span::styled("i", Style::default().fg(Color::LightYellow)),
+                Span::styled(inbox_label, Style::default().fg(Color::DarkGray)),
+                Span::styled("p", Style::default().fg(Color::LightYellow)),
                 Span::styled(" prs  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("m", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
@@ -1365,22 +1365,22 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     }
                     if task.meta.linked_pr.is_some() {
                         spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
-                        spans.push(Span::styled(" PR  ", Style::default().fg(Color::DarkGray)));
+                        spans.push(Span::styled(" open pr  ", Style::default().fg(Color::DarkGray)));
                     }
                     if task.meta.status == TaskStatus::Stopped {
-                        spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
+                        spans.push(Span::styled("h", Style::default().fg(Color::Rgb(180, 140, 60))));
                         spans.push(Span::styled(" hold  ", Style::default().fg(Color::DarkGray)));
                     } else if task.meta.status == TaskStatus::OnHold {
-                        spans.push(Span::styled("H", Style::default().fg(Color::Rgb(180, 140, 60))));
+                        spans.push(Span::styled("h", Style::default().fg(Color::Rgb(180, 140, 60))));
                         spans.push(Span::styled(" unhold  ", Style::default().fg(Color::DarkGray)));
                     }
                     if task.meta.status == TaskStatus::Running {
-                        spans.push(Span::styled("S", Style::default().fg(Color::LightRed)));
+                        spans.push(Span::styled("s", Style::default().fg(Color::LightRed)));
                         spans.push(Span::styled(" stop  ", Style::default().fg(Color::DarkGray)));
                     }
                     // Task-selected hints (always shown when a task is selected)
                     spans.extend([
-                        Span::styled("R", Style::default().fg(Color::LightMagenta)),
+                        Span::styled("r", Style::default().fg(Color::LightMagenta)),
                         Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
                         Span::styled("t", Style::default().fg(Color::LightMagenta)),
                         Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
@@ -1391,7 +1391,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     ]);
                 }
                 spans.extend([
-                    Span::styled("Q", Style::default().fg(Color::LightYellow)),
+                    Span::styled("w", Style::default().fg(Color::LightYellow)),
                     Span::styled(" queue  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Enter", Style::default().fg(Color::LightCyan)),
                     Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
@@ -1472,8 +1472,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightRed)),
-                Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("C", Style::default().fg(Color::LightRed)),
+                Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("c", Style::default().fg(Color::LightRed)),
                 Span::styled(" clear all  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q/Esc", Style::default().fg(Color::LightCyan)),
                 Span::styled(" close", Style::default().fg(Color::DarkGray)),
@@ -1578,7 +1578,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("o", Style::default().fg(Color::LightGreen)),
                 Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("R", Style::default().fg(Color::LightYellow)),
+                Span::styled("r", Style::default().fg(Color::LightYellow)),
                 Span::styled(" refresh  ", Style::default().fg(Color::DarkGray)),
             ];
             spans.extend([
