@@ -951,8 +951,10 @@ pub fn dismiss_github_notification(thread_id: &str) -> Result<()> {
 
 /// Result of a Keybase unread-conversations poll.
 pub struct KeybasePollResult {
-    /// Number of conversations with unread messages.
-    pub unread_count: usize,
+    /// Number of DM conversations with unread messages (high priority).
+    pub dm_unread_count: usize,
+    /// Number of team channel conversations with unread messages (normal priority).
+    pub channel_unread_count: usize,
     /// Whether the `keybase` binary was found. When `false`, the TUI should
     /// disable future polls.
     pub keybase_available: bool,
@@ -969,8 +971,15 @@ struct RawKeybaseResult {
 }
 
 #[derive(Deserialize)]
+struct RawKeybaseChannel {
+    members_type: Option<String>,
+    topic_name: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct RawKeybaseConversation {
     unread: bool,
+    channel: Option<RawKeybaseChannel>,
 }
 
 /// Poll Keybase for conversations with unread messages.
@@ -990,14 +999,16 @@ pub fn fetch_keybase_unreads() -> KeybasePollResult {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tracing::warn!("keybase binary not found, disabling poll");
             return KeybasePollResult {
-                unread_count: 0,
+                dm_unread_count: 0,
+                channel_unread_count: 0,
                 keybase_available: false,
             };
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to run keybase chat api");
             return KeybasePollResult {
-                unread_count: 0,
+                dm_unread_count: 0,
+                channel_unread_count: 0,
                 keybase_available: true,
             };
         }
@@ -1007,7 +1018,8 @@ pub fn fetch_keybase_unreads() -> KeybasePollResult {
         let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::warn!(stderr = %stderr, "keybase chat api returned error");
         return KeybasePollResult {
-            unread_count: 0,
+            dm_unread_count: 0,
+            channel_unread_count: 0,
             keybase_available: true,
         };
     }
@@ -1018,22 +1030,43 @@ pub fn fetch_keybase_unreads() -> KeybasePollResult {
         Err(e) => {
             tracing::warn!(error = %e, "failed to parse keybase chat api response");
             return KeybasePollResult {
-                unread_count: 0,
+                dm_unread_count: 0,
+                channel_unread_count: 0,
                 keybase_available: true,
             };
         }
     };
 
-    let unread_count = parsed
+    let (dm_unread_count, channel_unread_count) = parsed
         .result
         .conversations
         .as_ref()
-        .map(|convos| convos.iter().filter(|c| c.unread).count())
-        .unwrap_or(0);
+        .map(|convos| {
+            let mut dm = 0usize;
+            let mut channel = 0usize;
+            for c in convos.iter().filter(|c| c.unread) {
+                let is_dm = c
+                    .channel
+                    .as_ref()
+                    .map(|ch| {
+                        ch.members_type.as_deref() == Some("impteamnative")
+                            && ch.topic_name.is_none()
+                    })
+                    .unwrap_or(false);
+                if is_dm {
+                    dm += 1;
+                } else {
+                    channel += 1;
+                }
+            }
+            (dm, channel)
+        })
+        .unwrap_or((0, 0));
 
-    tracing::debug!(unread_count, "keybase unread poll complete");
+    tracing::debug!(unread_dm = dm_unread_count, unread_channel = channel_unread_count, "keybase unread poll complete");
     KeybasePollResult {
-        unread_count,
+        dm_unread_count,
+        channel_unread_count,
         keybase_available: true,
     }
 }
