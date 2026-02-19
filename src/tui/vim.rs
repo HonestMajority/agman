@@ -4,7 +4,7 @@
 //! https://github.com/rhysd/tui-textarea/blob/main/examples/vim.rs
 
 use std::fmt;
-use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
+use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea, WrapMode};
 
 /// Vim editing mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -522,6 +522,7 @@ impl<'a> VimTextArea<'a> {
     pub fn new() -> Self {
         let mut textarea = TextArea::default();
         textarea.set_cursor_line_style(ratatui::style::Style::default());
+        textarea.set_wrap_mode(WrapMode::WordOrGlyph);
         Self {
             textarea,
             vim: Vim::default(),
@@ -536,6 +537,7 @@ impl<'a> VimTextArea<'a> {
         let lines: Vec<String> = lines.into_iter().map(Into::into).collect();
         let mut textarea = TextArea::from(lines.iter().map(|s| s.as_str()));
         textarea.set_cursor_line_style(ratatui::style::Style::default());
+        textarea.set_wrap_mode(WrapMode::WordOrGlyph);
         Self {
             textarea,
             vim: Vim::default(),
@@ -628,6 +630,7 @@ impl<'a> VimTextArea<'a> {
         self.textarea = TextArea::from(content.lines());
         self.textarea
             .set_cursor_line_style(ratatui::style::Style::default());
+        self.textarea.set_wrap_mode(WrapMode::WordOrGlyph);
     }
 }
 
