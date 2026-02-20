@@ -1010,7 +1010,7 @@ const LOCAL_MERGE_COMMAND: &str = r#"name: Local Merge
 id: local-merge
 description: Merge current branch into a local branch, with conflict resolution via rebase
 requires_arg: branch
-post_action: delete_task
+post_action: archive_task
 
 steps:
   - agent: local-merge-executor
@@ -1020,7 +1020,7 @@ steps:
 const PUSH_AND_MERGE_COMMAND: &str = r#"name: Push & Merge
 id: push-and-merge
 description: Pushes branch, creates PR, monitors CI, waits for approval, merges, and updates local main
-post_action: delete_task
+post_action: archive_task
 
 steps:
   - agent: push-rebaser

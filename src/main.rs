@@ -9,9 +9,9 @@ use agman::agent;
 use agman::command;
 use agman::config::Config;
 use agman::flow::{self, Flow};
-use agman::git::Git;
 use agman::task::{Task, TaskStatus};
 use agman::tmux::Tmux;
+use agman::use_cases;
 use cli::{Cli, Commands};
 use tui::run_tui;
 
@@ -387,12 +387,11 @@ fn cmd_command_flow_run(
 
     // Check for post_action after successful completion
     let is_success = result == flow::StopCondition::AgentDone || result == flow::StopCondition::TaskComplete;
-    if is_success && cmd.post_action.as_deref() == Some("delete_task") {
+    if is_success && matches!(cmd.post_action.as_deref(), Some("archive_task") | Some("delete_task")) {
         println!();
-        println!("Post-action: deleting task after successful merge...");
+        println!("Post-action: archiving task after successful merge...");
 
         let task_id = task.meta.task_id();
-        let branch_name = task.meta.branch_name.clone();
 
         // Collect all tmux sessions to kill last (we may be running in one).
         // For multi-repo tasks, also include the parent-dir session.
@@ -401,20 +400,10 @@ fn cmd_command_flow_run(
             tmux_sessions.push(Config::tmux_session_name(&task.meta.name, &task.meta.branch_name));
         }
 
-        // Remove worktrees and branches for all repos
-        for repo in &task.meta.repos {
-            let repo_path = config.repo_path(&repo.repo_name);
-            println!("  Removing git worktree for {}...", repo.repo_name);
-            let _ = Git::remove_worktree(&repo_path, &repo.worktree_path);
-            println!("  Deleting git branch for {}...", repo.repo_name);
-            let _ = Git::delete_branch(&repo_path, &branch_name);
-        }
+        // Archive the task (removes worktrees/branches, sets archived_at)
+        use_cases::archive_task(config, &mut task, false)?;
 
-        // Delete task directory
-        println!("  Removing task directory...");
-        task.delete(config)?;
-
-        println!("Task '{}' deleted after successful merge.", task_id);
+        println!("Task '{}' archived after successful merge.", task_id);
 
         // Kill tmux sessions LAST — this process runs inside a tmux session,
         // so killing it will terminate us. All cleanup must happen before this.
@@ -423,7 +412,7 @@ fn cmd_command_flow_run(
             let _ = Tmux::kill_session(session);
         }
     } else {
-        // Restore original flow settings (only if we're NOT deleting the task)
+        // Restore original flow settings (only if we're NOT archiving the task)
         task.meta.flow_name = original_flow;
         task.meta.flow_step = original_step;
         task.save_meta()?;
