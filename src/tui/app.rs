@@ -61,6 +61,7 @@ pub enum View {
     Notes,
     ShowPrs,
     Settings,
+    Archive,
 }
 
 /// Which wizard requested the directory picker.
@@ -325,12 +326,6 @@ pub struct RestartWizard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeleteMode {
-    Everything,
-    TaskOnly,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewPane {
     Logs,
     Notes,
@@ -555,7 +550,7 @@ pub struct App {
     pub selected_rebase_branch_index: usize,
     pub pending_branch_command: Option<StoredCommand>,
     // Delete mode chooser
-    pub delete_mode_index: usize,
+    pub archive_mode_index: usize,
     // Restart task wizard
     pub restart_wizard: Option<RestartWizard>,
     // Restart modal state (binary restart)
@@ -610,6 +605,14 @@ pub struct App {
     pub last_break_reset: Instant,
     // Settings view
     pub settings_selected: usize,
+    pub archive_retention_days: u64,
+    // Archive view
+    pub archive_tasks: Vec<(Task, String)>,
+    pub archive_search: TextArea<'static>,
+    pub archive_selected: usize,
+    pub archive_list_state: ListState,
+    pub archive_preview: Option<String>,
+    pub archive_scroll: u16,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -618,6 +621,15 @@ pub struct App {
 impl App {
     pub fn new(config: Config) -> Result<Self> {
         use_cases::migrate_old_tasks(&config);
+        match use_cases::purge_old_archives(&config) {
+            Ok(count) if count > 0 => {
+                tracing::info!(purged = count, "purged expired archived tasks on startup");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "failed to purge old archives on startup");
+            }
+        }
         let tasks = Task::list_all(&config);
         let commands = StoredCommand::list_all(&config.commands_dir).unwrap_or_default();
         let notes_editor = VimTextArea::new();
@@ -637,6 +649,7 @@ impl App {
         }
 
         let break_interval = use_cases::load_break_interval(&config);
+        let archive_retention_days = use_cases::load_archive_retention(&config);
 
         let last_break_reset = break_persist::load_break_reset(
             &config.break_state_path(),
@@ -672,7 +685,7 @@ impl App {
             rebase_branches: Vec::new(),
             selected_rebase_branch_index: 0,
             pending_branch_command: None,
-            delete_mode_index: 0,
+            archive_mode_index: 0,
             restart_wizard: None,
             restart_pending: false,
             restart_confirm_index: 0,
@@ -714,6 +727,13 @@ impl App {
             break_interval,
             last_break_reset,
             settings_selected: 0,
+            archive_retention_days,
+            archive_tasks: Vec::new(),
+            archive_search: Self::create_plain_editor(),
+            archive_selected: 0,
+            archive_list_state: ListState::default(),
+            archive_preview: None,
+            archive_scroll: 0,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -1082,24 +1102,16 @@ impl App {
         Ok(())
     }
 
-    fn delete_task(&mut self, mode: DeleteMode) -> Result<()> {
+    fn archive_task(&mut self, saved: bool) -> Result<()> {
         if self.tasks.is_empty() {
             return Ok(());
         }
 
-        let task = self.tasks.remove(self.selected_index);
+        let mut task = self.tasks.remove(self.selected_index);
         let task_id = task.meta.task_id();
 
-        let uc_mode = match mode {
-            DeleteMode::Everything => use_cases::DeleteMode::Everything,
-            DeleteMode::TaskOnly => use_cases::DeleteMode::TaskOnly,
-        };
-
-        tracing::info!(task_id = %task_id, mode = ?mode, "TUI: delete task requested");
-        self.log_output(format!("Deleting task {} ({})...", task_id, match mode {
-            DeleteMode::Everything => "everything",
-            DeleteMode::TaskOnly => "task only",
-        }));
+        tracing::info!(task_id = %task_id, saved, "TUI: archive task requested");
+        self.log_output(format!("Archiving task {}...", task_id));
 
         // Kill tmux sessions for all repos (side effect)
         if task.meta.has_repos() {
@@ -1115,14 +1127,15 @@ impl App {
         self.log_output("  Killed tmux session(s)".to_string());
 
         // Delegate business logic to use_cases
-        use_cases::delete_task(&self.config, task, uc_mode)?;
-        self.log_output("  Deleted task files".to_string());
+        use_cases::archive_task(&self.config, &mut task, saved)?;
+        self.log_output("  Archived task".to_string());
 
         if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
             self.selected_index = self.tasks.len() - 1;
         }
 
-        self.set_status(format!("Deleted: {}", task_id));
+        let label = if saved { "Archived & saved" } else { "Archived" };
+        self.set_status(format!("{}: {}", label, task_id));
         self.view = View::TaskList;
         Ok(())
     }
@@ -2168,6 +2181,7 @@ impl App {
             View::Notes => self.handle_notes_event(event),
             View::ShowPrs => self.handle_show_prs_event(event),
             View::Settings => self.handle_settings_event(event),
+            View::Archive => self.handle_archive_event(event),
         }
     }
 
@@ -2196,7 +2210,7 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     if !self.tasks.is_empty() {
-                        self.delete_mode_index = 0;
+                        self.archive_mode_index = 0;
                         self.view = View::DeleteConfirm;
                     }
                 }
@@ -2313,6 +2327,14 @@ impl App {
                     break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
                     tracing::info!("break timer reset");
                 }
+                KeyCode::Char('z') => {
+                    self.archive_tasks = use_cases::list_archived_tasks(&self.config);
+                    self.archive_search = Self::create_plain_editor();
+                    self.archive_selected = 0;
+                    self.archive_preview = None;
+                    self.archive_scroll = 0;
+                    self.view = View::Archive;
+                }
                 KeyCode::Char(',') => {
                     self.settings_selected = 0;
                     self.view = View::Settings;
@@ -2333,39 +2355,221 @@ impl App {
                     self.view = View::TaskList;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    // Future: navigate settings (currently only 1 item)
+                    if self.settings_selected < 1 {
+                        self.settings_selected += 1;
+                    }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    // Future: navigate settings (currently only 1 item)
+                    if self.settings_selected > 0 {
+                        self.settings_selected -= 1;
+                    }
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
-                    // Decrease break interval by 5 mins (min 5)
-                    let current_mins = self.break_interval.as_secs() / 60;
-                    if current_mins > 5 {
-                        let new_mins = current_mins - 5;
-                        tracing::info!(old_mins = current_mins, new_mins, "break interval changed");
-                        self.break_interval = Duration::from_secs(new_mins * 60);
-                        if let Err(e) = use_cases::save_break_interval(&self.config, new_mins) {
-                            tracing::error!(error = %e, "failed to save break interval");
-                            self.set_status(format!("Failed to save: {e}"));
+                    match self.settings_selected {
+                        0 => {
+                            // Decrease break interval by 5 mins (min 5)
+                            let current_mins = self.break_interval.as_secs() / 60;
+                            if current_mins > 5 {
+                                let new_mins = current_mins - 5;
+                                tracing::info!(old_mins = current_mins, new_mins, "break interval changed");
+                                self.break_interval = Duration::from_secs(new_mins * 60);
+                                if let Err(e) = use_cases::save_break_interval(&self.config, new_mins) {
+                                    tracing::error!(error = %e, "failed to save break interval");
+                                    self.set_status(format!("Failed to save: {e}"));
+                                }
+                            }
                         }
+                        1 => {
+                            // Decrease archive retention by 7 days (min 7)
+                            if self.archive_retention_days > 7 {
+                                let new_days = self.archive_retention_days - 7;
+                                tracing::info!(old_days = self.archive_retention_days, new_days, "archive retention changed");
+                                self.archive_retention_days = new_days;
+                                if let Err(e) = use_cases::save_archive_retention(&self.config, new_days) {
+                                    tracing::error!(error = %e, "failed to save archive retention");
+                                    self.set_status(format!("Failed to save: {e}"));
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
-                    // Increase break interval by 5 mins (max 120)
-                    let current_mins = self.break_interval.as_secs() / 60;
-                    if current_mins < 120 {
-                        let new_mins = current_mins + 5;
-                        tracing::info!(old_mins = current_mins, new_mins, "break interval changed");
-                        self.break_interval = Duration::from_secs(new_mins * 60);
-                        if let Err(e) = use_cases::save_break_interval(&self.config, new_mins) {
-                            tracing::error!(error = %e, "failed to save break interval");
-                            self.set_status(format!("Failed to save: {e}"));
+                    match self.settings_selected {
+                        0 => {
+                            // Increase break interval by 5 mins (max 120)
+                            let current_mins = self.break_interval.as_secs() / 60;
+                            if current_mins < 120 {
+                                let new_mins = current_mins + 5;
+                                tracing::info!(old_mins = current_mins, new_mins, "break interval changed");
+                                self.break_interval = Duration::from_secs(new_mins * 60);
+                                if let Err(e) = use_cases::save_break_interval(&self.config, new_mins) {
+                                    tracing::error!(error = %e, "failed to save break interval");
+                                    self.set_status(format!("Failed to save: {e}"));
+                                }
+                            }
                         }
+                        1 => {
+                            // Increase archive retention by 7 days (max 365)
+                            if self.archive_retention_days < 365 {
+                                let new_days = self.archive_retention_days + 7;
+                                tracing::info!(old_days = self.archive_retention_days, new_days, "archive retention changed");
+                                self.archive_retention_days = new_days;
+                                if let Err(e) = use_cases::save_archive_retention(&self.config, new_days) {
+                                    tracing::error!(error = %e, "failed to save archive retention");
+                                    self.set_status(format!("Failed to save: {e}"));
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 _ => {}
             }
+        }
+        Ok(false)
+    }
+
+    /// Return indices into `self.archive_tasks` that match the current search query.
+    pub fn archive_filtered_indices(&self) -> Vec<usize> {
+        let query: String = self.archive_search.lines().join("").to_lowercase();
+        if query.is_empty() {
+            return (0..self.archive_tasks.len()).collect();
+        }
+        self.archive_tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, (task, content))| {
+                task.meta.task_id().to_lowercase().contains(&query)
+                    || content.to_lowercase().contains(&query)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn handle_archive_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            if self.archive_preview.is_some() {
+                // Preview mode
+                return self.handle_archive_preview_event(key.code, key.modifiers);
+            }
+
+            // Search mode
+            match key.code {
+                KeyCode::Esc => {
+                    self.view = View::TaskList;
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    let filtered = self.archive_filtered_indices();
+                    if !filtered.is_empty() {
+                        if key.code == KeyCode::Up {
+                            self.archive_selected = self.archive_selected.saturating_sub(1);
+                        } else {
+                            self.archive_selected = (self.archive_selected + 1).min(filtered.len() - 1);
+                        }
+                    }
+                }
+                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let filtered = self.archive_filtered_indices();
+                    if !filtered.is_empty() {
+                        self.archive_selected = (self.archive_selected + 1).min(filtered.len() - 1);
+                    }
+                }
+                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.archive_selected = self.archive_selected.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    let filtered = self.archive_filtered_indices();
+                    if let Some(&task_idx) = filtered.get(self.archive_selected) {
+                        let content = self.archive_tasks[task_idx].1.clone();
+                        self.archive_preview = Some(content);
+                        self.archive_scroll = 0;
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.archive_search.input(Input { key: Key::Backspace, ctrl: false, alt: false, shift: false });
+                    // Reset selection after search change
+                    self.archive_selected = 0;
+                }
+                KeyCode::Char(c) => {
+                    self.archive_search.input(Input { key: Key::Char(c), ctrl: false, alt: false, shift: false });
+                    // Reset selection after search change
+                    self.archive_selected = 0;
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_archive_preview_event(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.archive_preview = None;
+            }
+            KeyCode::Char('j') => {
+                self.archive_scroll = self.archive_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') => {
+                self.archive_scroll = self.archive_scroll.saturating_sub(1);
+            }
+            KeyCode::Char('g') => {
+                self.archive_scroll = 0;
+            }
+            KeyCode::Char('G') => {
+                // Jump to bottom — use a large value, clamped during rendering
+                self.archive_scroll = u16::MAX;
+            }
+            KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.archive_scroll = self.archive_scroll.saturating_add(15);
+            }
+            KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.archive_scroll = self.archive_scroll.saturating_sub(15);
+            }
+            KeyCode::Char('s') => {
+                // Toggle saved
+                let filtered = self.archive_filtered_indices();
+                if let Some(&task_idx) = filtered.get(self.archive_selected) {
+                    let task = &mut self.archive_tasks[task_idx].0;
+                    match use_cases::toggle_archive_saved(&self.config, task) {
+                        Ok(()) => {
+                            let label = if task.meta.saved { "Saved" } else { "Unsaved" };
+                            let task_id = task.meta.task_id();
+                            self.set_status(format!("{}: {}", label, task_id));
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "failed to toggle archive saved");
+                            self.set_status(format!("Failed to toggle saved: {e}"));
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('d') => {
+                // Permanently delete
+                let filtered = self.archive_filtered_indices();
+                if let Some(&task_idx) = filtered.get(self.archive_selected) {
+                    let (task, _) = self.archive_tasks.remove(task_idx);
+                    let task_id = task.meta.task_id();
+                    if let Err(e) = use_cases::permanently_delete_archived_task(&self.config, task) {
+                        tracing::error!(task_id = %task_id, error = %e, "failed to permanently delete archived task");
+                        self.set_status(format!("Delete failed: {e}"));
+                    } else {
+                        self.set_status(format!("Deleted: {}", task_id));
+                    }
+                    self.archive_preview = None;
+                    // Clamp selection
+                    let filtered = self.archive_filtered_indices();
+                    if self.archive_selected >= filtered.len() && !filtered.is_empty() {
+                        self.archive_selected = filtered.len() - 1;
+                    }
+                }
+            }
+            _ => {}
         }
         Ok(false)
     }
@@ -2681,18 +2885,14 @@ impl App {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    self.delete_mode_index = (self.delete_mode_index + 1) % 2;
+                    self.archive_mode_index = (self.archive_mode_index + 1) % 2;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    self.delete_mode_index = if self.delete_mode_index == 0 { 1 } else { 0 };
+                    self.archive_mode_index = if self.archive_mode_index == 0 { 1 } else { 0 };
                 }
                 KeyCode::Enter => {
-                    let mode = if self.delete_mode_index == 0 {
-                        DeleteMode::Everything
-                    } else {
-                        DeleteMode::TaskOnly
-                    };
-                    self.delete_task(mode)?;
+                    let saved = self.archive_mode_index == 1;
+                    self.archive_task(saved)?;
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
@@ -4093,7 +4293,7 @@ impl App {
 
         for (task_id, pr_number) in to_delete {
             if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
-                let task = self.tasks.remove(idx);
+                let mut task = self.tasks.remove(idx);
 
                 // Kill all tmux sessions for the task
                 for repo in &task.meta.repos {
@@ -4104,14 +4304,14 @@ impl App {
                     let _ = Tmux::kill_session(&parent_session);
                 }
 
-                let _ = use_cases::delete_task(
+                let _ = use_cases::archive_task(
                     &self.config,
-                    task,
-                    use_cases::DeleteMode::Everything,
+                    &mut task,
+                    false,
                 );
 
                 self.log_output(format!(
-                    "Auto-deleted task {}: PR #{} merged",
+                    "Auto-archived task {}: PR #{} merged",
                     task_id, pr_number
                 ));
 

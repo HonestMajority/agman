@@ -150,7 +150,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::Preview => draw_preview(f, app, chunks[0]),
         View::DeleteConfirm => {
             draw_task_list(f, app, chunks[0]);
-            draw_delete_confirm(f, app);
+            draw_delete_confirm(f, app, app.archive_retention_days);
         }
         View::Feedback => {
             draw_preview(f, app, chunks[0]);
@@ -200,6 +200,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::Notes => draw_notes(f, app, chunks[0]),
         View::ShowPrs => draw_show_prs(f, app, chunks[0]),
         View::Settings => draw_settings(f, app, chunks[0]),
+        View::Archive => {
+            draw_archive(f, app, chunks[0]);
+            if app.archive_preview.is_some() {
+                draw_archive_preview(f, app);
+            }
+        }
     }
 
     if output_height > 0 {
@@ -948,7 +954,7 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(review_label), chunks[2]);
 }
 
-fn draw_delete_confirm(f: &mut Frame, app: &App) {
+fn draw_delete_confirm(f: &mut Frame, app: &App, retention_days: u64) {
     let area = centered_rect(55, 45, f.area());
 
     f.render_widget(Clear, area);
@@ -958,74 +964,74 @@ fn draw_delete_confirm(f: &mut Frame, app: &App) {
         .map(|t| t.meta.task_id())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let sel = app.delete_mode_index;
+    let sel = app.archive_mode_index;
 
-    let everything_style = if sel == 0 {
+    let archive_style = if sel == 0 {
         Style::default()
             .fg(Color::White)
-            .bg(Color::Rgb(60, 30, 30))
+            .bg(Color::Rgb(30, 40, 60))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
     };
-    let task_only_style = if sel == 1 {
+    let save_style = if sel == 1 {
         Style::default()
             .fg(Color::White)
-            .bg(Color::Rgb(60, 60, 20))
+            .bg(Color::Rgb(20, 50, 40))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
     };
 
-    let everything_prefix = if sel == 0 { "▸ " } else { "  " };
-    let task_only_prefix = if sel == 1 { "▸ " } else { "  " };
+    let archive_prefix = if sel == 0 { "▸ " } else { "  " };
+    let save_prefix = if sel == 1 { "▸ " } else { "  " };
 
     let text = vec![
         Line::from(""),
         Line::from(Span::styled(
-            format!("  Delete task '{}'?", task_id),
+            format!("  Archive task '{}'?", task_id),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            format!("{}Delete everything", everything_prefix),
-            everything_style,
+            format!("{}Archive", archive_prefix),
+            archive_style,
         )),
         Line::from(Span::styled(
-            "    Kill tmux, remove worktree, delete branch,",
-            Style::default().fg(Color::LightRed),
+            "    Kill tmux, remove worktree + branch,",
+            Style::default().fg(Color::LightBlue),
         )),
         Line::from(Span::styled(
-            "    delete task files",
-            Style::default().fg(Color::LightRed),
+            format!("    keep task files. Auto-purged after {} days.", retention_days),
+            Style::default().fg(Color::LightBlue),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            format!("{}Delete task only", task_only_prefix),
-            task_only_style,
+            format!("{}Archive & Save", save_prefix),
+            save_style,
         )),
         Line::from(Span::styled(
-            "    Kill tmux, delete task files, remove TASK.md",
-            Style::default().fg(Color::LightYellow),
+            "    Same as Archive, but will NOT be auto-purged.",
+            Style::default().fg(Color::LightCyan),
         )),
         Line::from(Span::styled(
-            "    Keep worktree and branch intact",
-            Style::default().fg(Color::LightYellow),
+            "    Use for tasks you want to keep permanently.",
+            Style::default().fg(Color::LightCyan),
         )),
     ];
 
     let popup = Paragraph::new(text).block(
         Block::default()
             .title(Span::styled(
-                " Delete Task ",
+                " Archive Task ",
                 Style::default()
-                    .fg(Color::LightRed)
+                    .fg(Color::LightBlue)
                     .add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightRed)),
+            .border_style(Style::default().fg(Color::LightBlue)),
     );
 
     f.render_widget(popup, area);
@@ -1336,6 +1342,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" prs  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("m", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("z", Style::default().fg(Color::LightYellow)),
+                Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(",", Style::default().fg(Color::LightYellow)),
                 Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
             ]);
@@ -1644,6 +1652,43 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
             ]);
             spans
+        }
+        View::Archive => {
+            if app.archive_preview.is_some() {
+                vec![
+                    Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("s", Style::default().fg(Color::LightGreen)),
+                    Span::styled(
+                        {
+                            let filtered = app.archive_filtered_indices();
+                            if filtered.get(app.archive_selected)
+                                .and_then(|&i| app.archive_tasks.get(i))
+                                .map(|(t, _)| t.meta.saved)
+                                .unwrap_or(false)
+                            {
+                                " unsave  "
+                            } else {
+                                " save  "
+                            }
+                        },
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled("d", Style::default().fg(Color::LightRed)),
+                    Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" close", Style::default().fg(Color::DarkGray)),
+                ]
+            } else {
+                vec![
+                    Span::styled("\u{2191}\u{2193}", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                    Span::styled(" preview  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                ]
+            }
         }
     };
 
@@ -2901,18 +2946,263 @@ fn draw_show_prs(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(list, area, &mut app.show_prs_list_state);
 }
 
+// ---------------------------------------------------------------------------
+// Archive view
+// ---------------------------------------------------------------------------
+
+/// Split `text` into segments of (substring, is_match) for case-insensitive
+/// highlighting of `query` (already lowercased). Uses char boundaries from the
+/// original string so it is safe for non-ASCII content.
+fn highlight_segments<'a>(text: &'a str, query: &str) -> Vec<(&'a str, bool)> {
+    if query.is_empty() {
+        return vec![(text, false)];
+    }
+
+    let mut segments = Vec::new();
+    let lower = text.to_lowercase();
+    let mut last = 0; // byte offset into `text`
+    let mut search_from = 0; // byte offset into `lower`
+
+    // Build a mapping from byte offsets in `lower` back to byte offsets in `text`.
+    // Both strings have the same number of chars, but byte widths may differ.
+    let text_offsets: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    let lower_offsets: Vec<usize> = lower.char_indices().map(|(i, _)| i).collect();
+
+    // Reverse map: byte offset in `lower` → char index
+    // We only need lookups at the positions returned by `find`, so build on demand.
+    while let Some(rel_pos) = lower[search_from..].find(query) {
+        let lower_start = search_from + rel_pos;
+        let lower_end = lower_start + query.len();
+
+        // Find char index for lower_start and lower_end
+        let char_start = match lower_offsets.binary_search(&lower_start) {
+            Ok(i) => i,
+            Err(_) => break, // not on a char boundary — shouldn't happen
+        };
+        let char_end = if lower_end == lower.len() {
+            text.len() // match extends to the end
+        } else {
+            match lower_offsets.binary_search(&lower_end) {
+                Ok(i) => text_offsets[i],
+                Err(_) => break, // mid-char boundary
+            }
+        };
+        let text_start = text_offsets[char_start];
+
+        if text_start > last {
+            segments.push((&text[last..text_start], false));
+        }
+        segments.push((&text[text_start..char_end], true));
+        last = char_end;
+
+        // Advance search past this match in `lower`
+        search_from = lower_end;
+    }
+
+    if last < text.len() {
+        segments.push((&text[last..], false));
+    }
+
+    if segments.is_empty() {
+        vec![(text, false)]
+    } else {
+        segments
+    }
+}
+
+fn format_time_ago(archived_at: &chrono::DateTime<Utc>) -> String {
+    let duration = Utc::now().signed_duration_since(*archived_at);
+    let days = duration.num_days();
+    if days > 0 {
+        format!("{}d ago", days)
+    } else {
+        let hours = duration.num_hours();
+        if hours > 0 {
+            format!("{}h ago", hours)
+        } else {
+            let mins = duration.num_minutes();
+            format!("{}m ago", mins.max(1))
+        }
+    }
+}
+
+fn draw_archive(f: &mut Frame, app: &mut App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
+
+    // Search input
+    let search_block = Block::default()
+        .title(" Archive Search ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::LightCyan));
+    let search_inner = search_block.inner(chunks[0]);
+    f.render_widget(search_block, chunks[0]);
+    f.render_widget(&app.archive_search, search_inner);
+
+    // Filtered results
+    let filtered = app.archive_filtered_indices();
+    let query: String = app.archive_search.lines().join("").to_lowercase();
+
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .map(|&idx| {
+            let (task, _) = &app.archive_tasks[idx];
+            let task_name = task.meta.task_id();
+            let time_ago = task
+                .meta
+                .archived_at
+                .as_ref()
+                .map(|at| format_time_ago(at))
+                .unwrap_or_default();
+
+            let mut spans: Vec<Span> = Vec::new();
+
+            // Task name with match highlighting (Unicode-safe)
+            for (seg, is_match) in highlight_segments(&task_name, &query) {
+                let style = if is_match {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                spans.push(Span::styled(seg.to_string(), style));
+            }
+
+            // Time ago
+            spans.push(Span::styled(
+                format!("  {}", time_ago),
+                Style::default().fg(Color::DarkGray),
+            ));
+
+            // Saved badge
+            if task.meta.saved {
+                spans.push(Span::styled(
+                    "  [SAVED]",
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ));
+            }
+
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let title = format!(" Archive ({}) ", filtered.len());
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title_bottom(clock_title(app)),
+        )
+        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 50)));
+
+    // Clamp selection
+    if !filtered.is_empty() && app.archive_selected >= filtered.len() {
+        app.archive_selected = filtered.len() - 1;
+    }
+    app.archive_list_state.select(if filtered.is_empty() {
+        None
+    } else {
+        Some(app.archive_selected)
+    });
+
+    f.render_stateful_widget(list, chunks[1], &mut app.archive_list_state);
+}
+
+fn draw_archive_preview(f: &mut Frame, app: &mut App) {
+    let content = match &app.archive_preview {
+        Some(c) => c.clone(),
+        None => return,
+    };
+
+    let filtered = app.archive_filtered_indices();
+    let task_name = filtered
+        .get(app.archive_selected)
+        .and_then(|&i| app.archive_tasks.get(i))
+        .map(|(t, _)| t.meta.task_id())
+        .unwrap_or_default();
+
+    let saved = filtered
+        .get(app.archive_selected)
+        .and_then(|&i| app.archive_tasks.get(i))
+        .map(|(t, _)| t.meta.saved)
+        .unwrap_or(false);
+
+    let title = if saved {
+        format!(" {} [SAVED] ", task_name)
+    } else {
+        format!(" {} ", task_name)
+    };
+
+    let area = centered_rect(80, 80, f.area());
+    f.render_widget(Clear, area);
+
+    let query: String = app.archive_search.lines().join("").to_lowercase();
+    let lines: Vec<Line> = content
+        .lines()
+        .map(|line| {
+            let segments = highlight_segments(line, &query);
+            let spans: Vec<Span> = segments
+                .into_iter()
+                .map(|(seg, is_match)| {
+                    let style = if is_match {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    Span::styled(seg.to_string(), style)
+                })
+                .collect();
+            Line::from(spans)
+        })
+        .collect();
+
+    let total_lines = lines.len() as u16;
+    let inner_height = area.height.saturating_sub(2); // borders
+    let max_scroll = total_lines.saturating_sub(inner_height);
+    if app.archive_scroll > max_scroll {
+        app.archive_scroll = max_scroll;
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::LightCyan)),
+        )
+        .scroll((app.archive_scroll, 0))
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
+}
+
 fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
     let break_mins = app.break_interval.as_secs() / 60;
+    let retention_days = app.archive_retention_days;
 
-    let item_style = Style::default().bg(Color::Rgb(40, 40, 50));
+    let selected_style = Style::default().bg(Color::Rgb(40, 40, 50));
 
-    let value_display = format!("  Break interval      \u{25C0}  {} min  \u{25B6}", break_mins);
+    let break_display = format!("  Break interval      \u{25C0}  {} min  \u{25B6}", break_mins);
+    let retention_display = format!("  Archive retention   \u{25C0}  {} days \u{25B6}", retention_days);
+
     let items = vec![
         ListItem::new(Line::from(vec![
-            Span::styled(&value_display, Style::default().fg(Color::White)),
-            Span::styled("    (h/l to adjust, 5–120 min)", Style::default().fg(Color::DarkGray)),
+            Span::styled(&break_display, Style::default().fg(Color::White)),
+            Span::styled("    (h/l to adjust, 5\u{2013}120 min)", Style::default().fg(Color::DarkGray)),
         ]))
-        .style(if app.settings_selected == 0 { item_style } else { Style::default() }),
+        .style(if app.settings_selected == 0 { selected_style } else { Style::default() }),
+        ListItem::new(Line::from(vec![
+            Span::styled(&retention_display, Style::default().fg(Color::White)),
+            Span::styled("    (h/l to adjust, 7\u{2013}365 days)", Style::default().fg(Color::DarkGray)),
+        ]))
+        .style(if app.settings_selected == 1 { selected_style } else { Style::default() }),
     ];
 
     let list = List::new(items).block(

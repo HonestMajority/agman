@@ -3,7 +3,7 @@ mod helpers;
 use agman::git::parse_github_owner_repo;
 use agman::repo_stats::RepoStats;
 use agman::task::{Task, TaskStatus};
-use agman::use_cases::{self, DeleteMode, GithubItemKind, PrPollAction, WorktreeSource};
+use agman::use_cases::{self, GithubItemKind, PrPollAction, WorktreeSource};
 use helpers::{create_test_task, init_test_repo, test_config};
 
 // ---------------------------------------------------------------------------
@@ -222,19 +222,19 @@ fn create_setup_only_task() {
 }
 
 // ---------------------------------------------------------------------------
-// Delete task (everything)
+// Archive task
 // ---------------------------------------------------------------------------
 
 #[test]
-fn delete_task_everything() {
+fn archive_task() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     let _repo_path = init_test_repo(&tmp, "myrepo");
 
-    let task = use_cases::create_task(
+    let mut task = use_cases::create_task(
         &config,
         "myrepo",
-        "to-delete",
+        "to-archive",
         "desc",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
@@ -247,28 +247,64 @@ fn delete_task_everything() {
     assert!(task_dir.exists());
     assert!(worktree_path.exists());
 
-    use_cases::delete_task(&config, task, DeleteMode::Everything).unwrap();
+    use_cases::archive_task(&config, &mut task, false).unwrap();
 
-    // Task dir removed
-    assert!(!task_dir.exists());
+    // Task dir still exists (archived, not deleted)
+    assert!(task_dir.exists());
     // Worktree removed
     assert!(!worktree_path.exists());
+    // archived_at is set
+    assert!(task.meta.archived_at.is_some());
+    // saved is false
+    assert!(!task.meta.saved);
+
+    // Persisted to disk
+    let loaded = Task::load(&config, "myrepo", "to-archive").unwrap();
+    assert!(loaded.meta.archived_at.is_some());
+    assert!(!loaded.meta.saved);
 }
 
 // ---------------------------------------------------------------------------
-// Delete task (task only)
+// Archive task with saved flag
 // ---------------------------------------------------------------------------
 
 #[test]
-fn delete_task_only() {
+fn archive_task_saved() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     let _repo_path = init_test_repo(&tmp, "myrepo");
 
-    let task = use_cases::create_task(
+    let mut task = use_cases::create_task(
         &config,
         "myrepo",
-        "task-only-del",
+        "to-save",
+        "desc",
+        "new",
+        WorktreeSource::NewBranch { base_branch: None },
+        false,
+    )
+    .unwrap();
+
+    use_cases::archive_task(&config, &mut task, true).unwrap();
+
+    assert!(task.meta.archived_at.is_some());
+    assert!(task.meta.saved);
+}
+
+// ---------------------------------------------------------------------------
+// Permanently delete archived task
+// ---------------------------------------------------------------------------
+
+#[test]
+fn permanently_delete_archived_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    let mut task = use_cases::create_task(
+        &config,
+        "myrepo",
+        "perm-del",
         "desc",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
@@ -277,17 +313,11 @@ fn delete_task_only() {
     .unwrap();
 
     let task_dir = task.dir.clone();
-    let worktree_path = task.meta.primary_repo().worktree_path.clone();
-    let task_md = task_dir.join("TASK.md");
-    assert!(task_md.exists());
+    use_cases::archive_task(&config, &mut task, false).unwrap();
+    assert!(task_dir.exists());
 
-    use_cases::delete_task(&config, task, DeleteMode::TaskOnly).unwrap();
-
-    // Task dir removed (including TASK.md which now lives in task dir)
+    use_cases::permanently_delete_archived_task(&config, task).unwrap();
     assert!(!task_dir.exists());
-    assert!(!task_md.exists());
-    // Worktree directory itself still exists (branch preserved)
-    assert!(worktree_path.exists());
 }
 
 // ---------------------------------------------------------------------------
@@ -689,7 +719,7 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
     let _repo_path = init_test_repo(&tmp, "myrepo");
 
     // Create a task with a new branch (sets up worktree + branch)
-    let task = use_cases::create_task(
+    let mut task = use_cases::create_task(
         &config,
         "myrepo",
         "reuse-branch",
@@ -703,27 +733,31 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
     let worktree_path = task.meta.primary_repo().worktree_path.clone();
     assert!(worktree_path.exists());
 
-    // Delete the task with TaskOnly mode (keeps worktree + branch)
-    use_cases::delete_task(&config, task, DeleteMode::TaskOnly).unwrap();
+    // Archive the task (removes worktree + branch, keeps task dir)
+    use_cases::archive_task(&config, &mut task, false).unwrap();
 
-    // Worktree still exists, but task metadata is gone
-    assert!(worktree_path.exists());
+    // Worktree is gone (archived removes it), task dir still exists but is archived
+    assert!(!worktree_path.exists());
+    assert!(config.task_dir("myrepo", "reuse-branch").exists());
+
+    // Permanently delete the archived task to clean up the task dir
+    use_cases::permanently_delete_archived_task(&config, task).unwrap();
     assert!(!config.task_dir("myrepo", "reuse-branch").exists());
 
-    // Create a new task for the same branch with ExistingBranch source —
-    // this should succeed by reusing the existing worktree
+    // Create a new task for the same branch with NewBranch source —
+    // this should succeed by creating a fresh worktree
     let task2 = use_cases::create_task(
         &config,
         "myrepo",
         "reuse-branch",
         "Recreated task",
         "new",
-        WorktreeSource::ExistingBranch,
+        WorktreeSource::NewBranch { base_branch: None },
         false,
     )
     .unwrap();
 
-    assert_eq!(task2.meta.primary_repo().worktree_path, worktree_path);
+    assert!(task2.meta.primary_repo().worktree_path.exists());
     assert!(task2.dir.join("meta.json").exists());
     let content = task2.read_task().unwrap();
     assert!(content.contains("Recreated task"));
@@ -988,11 +1022,11 @@ fn parse_repos_from_task_md_no_colon() {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-repo task deletion
+// Multi-repo task archive
 // ---------------------------------------------------------------------------
 
 #[test]
-fn delete_multi_repo_task() {
+fn archive_multi_repo_task() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
@@ -1007,7 +1041,7 @@ fn delete_multi_repo_task() {
         &config,
         "repos",
         "multi-del",
-        "Multi delete test",
+        "Multi archive test",
         "new-multi",
         parent_dir,
         false,
@@ -1037,13 +1071,15 @@ fn delete_multi_repo_task() {
     assert!(wt_a.exists());
     assert!(wt_b.exists());
 
-    use_cases::delete_task(&config, task, DeleteMode::Everything).unwrap();
+    use_cases::archive_task(&config, &mut task, false).unwrap();
 
-    // Task dir removed
-    assert!(!task_dir.exists());
+    // Task dir still exists (archived)
+    assert!(task_dir.exists());
     // Both worktrees removed
     assert!(!wt_a.exists());
     assert!(!wt_b.exists());
+    // archived_at is set
+    assert!(task.meta.archived_at.is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -1264,6 +1300,7 @@ fn save_and_load_config_file_roundtrip() {
     let cf = agman::config::ConfigFile {
         repos_dir: Some("/tmp/my-repos".to_string()),
         break_interval_mins: None,
+        archive_retention_days: None,
     };
     agman::config::save_config_file(&base_dir, &cf).unwrap();
 
@@ -1886,4 +1923,159 @@ fn break_interval_config_roundtrip() {
     use_cases::save_break_interval(&config, 25).unwrap();
     let interval = use_cases::load_break_interval(&config);
     assert_eq!(interval, std::time::Duration::from_secs(25 * 60));
+}
+
+// ---------------------------------------------------------------------------
+// Toggle archive saved
+// ---------------------------------------------------------------------------
+
+#[test]
+fn toggle_archive_saved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    let mut task = use_cases::create_task(
+        &config,
+        "myrepo",
+        "toggle-saved",
+        "desc",
+        "new",
+        WorktreeSource::NewBranch { base_branch: None },
+        false,
+    )
+    .unwrap();
+
+    use_cases::archive_task(&config, &mut task, false).unwrap();
+    assert!(!task.meta.saved);
+
+    use_cases::toggle_archive_saved(&config, &mut task).unwrap();
+    assert!(task.meta.saved);
+
+    // Persisted to disk
+    let loaded = Task::load(&config, "myrepo", "toggle-saved").unwrap();
+    assert!(loaded.meta.saved);
+
+    // Toggle back
+    use_cases::toggle_archive_saved(&config, &mut task).unwrap();
+    assert!(!task.meta.saved);
+}
+
+// ---------------------------------------------------------------------------
+// Purge old archives
+// ---------------------------------------------------------------------------
+
+#[test]
+fn purge_old_archives() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    // Create three archived tasks with different timestamps
+    // 1. Old unsaved (should be purged)
+    let mut old_unsaved = create_test_task(&config, "repo", "old-unsaved");
+    old_unsaved.meta.archived_at = Some(chrono::Utc::now() - chrono::Duration::days(60));
+    old_unsaved.meta.saved = false;
+    old_unsaved.save_meta().unwrap();
+
+    // 2. Old saved (should survive)
+    let mut old_saved = create_test_task(&config, "repo", "old-saved");
+    old_saved.meta.archived_at = Some(chrono::Utc::now() - chrono::Duration::days(60));
+    old_saved.meta.saved = true;
+    old_saved.save_meta().unwrap();
+
+    // 3. Recent unsaved (should survive)
+    let mut recent = create_test_task(&config, "repo", "recent");
+    recent.meta.archived_at = Some(chrono::Utc::now() - chrono::Duration::days(5));
+    recent.meta.saved = false;
+    recent.save_meta().unwrap();
+
+    // 4. Active task (not archived, should not be touched)
+    let _active = create_test_task(&config, "repo", "active");
+
+    let purged = use_cases::purge_old_archives(&config).unwrap();
+    assert_eq!(purged, 1);
+
+    // Old unsaved is gone
+    assert!(!config.task_dir("repo", "old-unsaved").exists());
+    // Old saved survives
+    assert!(config.task_dir("repo", "old-saved").exists());
+    // Recent survives
+    assert!(config.task_dir("repo", "recent").exists());
+    // Active survives
+    assert!(config.task_dir("repo", "active").exists());
+}
+
+// ---------------------------------------------------------------------------
+// List archived tasks
+// ---------------------------------------------------------------------------
+
+#[test]
+fn list_archived_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    // Create an active task
+    let _active = create_test_task(&config, "repo", "active");
+
+    // Create an archived task
+    let mut archived = create_test_task(&config, "repo", "archived");
+    archived.meta.archived_at = Some(chrono::Utc::now());
+    archived.save_meta().unwrap();
+    // Write TASK.md for the archived task
+    archived.write_task("# Goal\nArchived task goal\n").unwrap();
+
+    let results = use_cases::list_archived_tasks(&config);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0.meta.task_id(), "repo--archived");
+    assert!(results[0].1.contains("Archived task goal"));
+}
+
+// ---------------------------------------------------------------------------
+// Task::list_all excludes archived tasks
+// ---------------------------------------------------------------------------
+
+#[test]
+fn list_all_excludes_archived_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    // Create an active task
+    let _active = create_test_task(&config, "repo", "active-list");
+
+    // Create an archived task
+    let mut archived = create_test_task(&config, "repo", "archived-list");
+    archived.meta.archived_at = Some(chrono::Utc::now());
+    archived.save_meta().unwrap();
+
+    let tasks = use_cases::list_tasks(&config);
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].meta.task_id(), "repo--active-list");
+}
+
+// ---------------------------------------------------------------------------
+// Archive retention config
+// ---------------------------------------------------------------------------
+
+#[test]
+fn archive_retention_default_when_no_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let days = use_cases::load_archive_retention(&config);
+    assert_eq!(days, 30);
+}
+
+#[test]
+fn archive_retention_config_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    use_cases::save_archive_retention(&config, 90).unwrap();
+    let days = use_cases::load_archive_retention(&config);
+    assert_eq!(days, 90);
 }

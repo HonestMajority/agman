@@ -180,39 +180,83 @@ pub fn create_multi_repo_task(
     Ok(task)
 }
 
-/// How to delete a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeleteMode {
-    /// Remove worktree, delete branch, delete task dir.
-    Everything,
-    /// Remove TASK.md from worktree, delete task dir (keep worktree + branch).
-    TaskOnly,
+/// Archive a task: remove worktrees/branches, set archived_at and saved, save meta.
+///
+/// This is the pure business logic behind archiving from the task list.
+/// It does NOT kill tmux sessions — that's a side effect handled by the caller.
+/// It does NOT remove the task directory — the directory is kept as the archive.
+pub fn archive_task(config: &Config, task: &mut Task, saved: bool) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), saved, "archiving task");
+
+    // Remove worktrees and branches for all repos
+    for repo in &task.meta.repos {
+        let repo_path = config.repo_path(&repo.repo_name);
+        let _ = Git::remove_worktree(&repo_path, &repo.worktree_path);
+        let _ = Git::delete_branch(&repo_path, &task.meta.branch_name);
+    }
+
+    // Mark as archived
+    task.meta.archived_at = Some(chrono::Utc::now());
+    task.meta.saved = saved;
+    task.save_meta()?;
+
+    Ok(())
 }
 
-/// Delete a task according to the specified mode.
+/// Permanently delete an archived task by removing its directory from disk.
 ///
-/// This is the pure business logic behind `App::delete_task()`.
-/// It does NOT kill tmux sessions — that's a side effect handled by the caller.
-pub fn delete_task(config: &Config, task: Task, mode: DeleteMode) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), mode = ?mode, "deleting task");
+/// Only used from the archive view. Git worktrees/branches are already gone
+/// (cleaned up during archiving).
+pub fn permanently_delete_archived_task(config: &Config, task: Task) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), "permanently deleting archived task");
+    task.delete(config)?;
+    Ok(())
+}
 
-    match mode {
-        DeleteMode::Everything => {
-            // Remove worktrees and branches for all repos
-            for repo in &task.meta.repos {
-                let repo_path = config.repo_path(&repo.repo_name);
-                let _ = Git::remove_worktree(&repo_path, &repo.worktree_path);
-                let _ = Git::delete_branch(&repo_path, &task.meta.branch_name);
-            }
-        }
-        DeleteMode::TaskOnly => {
-            // TASK.md is in the task dir now, no worktree cleanup needed
+/// Toggle the saved flag on an archived task.
+pub fn toggle_archive_saved(_config: &Config, task: &mut Task) -> Result<()> {
+    let new_saved = !task.meta.saved;
+    tracing::info!(task_id = %task.meta.task_id(), saved = new_saved, "toggling archive saved");
+    let old_saved = task.meta.saved;
+    task.meta.saved = new_saved;
+    if let Err(e) = task.save_meta() {
+        task.meta.saved = old_saved;
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Purge expired archived tasks that are not saved.
+///
+/// Returns the count of purged tasks.
+pub fn purge_old_archives(config: &Config) -> Result<usize> {
+    let retention_days = load_archive_retention(config);
+    let archived = Task::list_archived(config);
+    let mut purged = 0;
+
+    for task in archived {
+        if task.is_archive_expired(retention_days) {
+            let task_id = task.meta.task_id();
+            task.delete(config)?;
+            tracing::info!(task_id = %task_id, "purged expired archived task");
+            purged += 1;
         }
     }
 
-    // Delete task directory (includes TASK.md)
-    task.delete(config)?;
-    Ok(())
+    Ok(purged)
+}
+
+/// List archived tasks with their TASK.md content loaded.
+///
+/// Returns (task, task_md_content) pairs for use in the archive view.
+pub fn list_archived_tasks(config: &Config) -> Vec<(Task, String)> {
+    Task::list_archived(config)
+        .into_iter()
+        .map(|task| {
+            let content = task.read_task().unwrap_or_default();
+            (task, content)
+        })
+        .collect()
 }
 
 /// Stop a running task: set status to Stopped and clear current_agent.
@@ -800,6 +844,25 @@ pub fn load_break_interval(config: &Config) -> Duration {
 pub fn save_break_interval(config: &Config, mins: u64) -> Result<()> {
     let mut cf = crate::config::load_config_file(&config.base_dir);
     cf.break_interval_mins = Some(mins);
+    crate::config::save_config_file(&config.base_dir, &cf)
+}
+
+// ---------------------------------------------------------------------------
+// Archive Retention Settings
+// ---------------------------------------------------------------------------
+
+const DEFAULT_ARCHIVE_RETENTION_DAYS: u64 = 30;
+
+/// Load the archive retention period from config, defaulting to 30 days.
+pub fn load_archive_retention(config: &Config) -> u64 {
+    let cf = crate::config::load_config_file(&config.base_dir);
+    cf.archive_retention_days.unwrap_or(DEFAULT_ARCHIVE_RETENTION_DAYS)
+}
+
+/// Save the archive retention period to config, preserving other config fields.
+pub fn save_archive_retention(config: &Config, days: u64) -> Result<()> {
+    let mut cf = crate::config::load_config_file(&config.base_dir);
+    cf.archive_retention_days = Some(days);
     crate::config::save_config_file(&config.base_dir, &cf)
 }
 

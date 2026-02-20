@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -80,6 +80,13 @@ pub struct TaskMeta {
     /// Reset to false on every transition to Stopped; set to true when the user opens preview.
     #[serde(default)]
     pub seen: bool,
+    /// When set, this task is archived (removed from active list, but directory kept).
+    /// The timestamp records when the task was archived.
+    #[serde(default)]
+    pub archived_at: Option<DateTime<Utc>>,
+    /// When true, this archived task is exempt from auto-purge.
+    #[serde(default)]
+    pub saved: bool,
 }
 
 fn default_true() -> bool {
@@ -126,6 +133,8 @@ impl TaskMeta {
             last_review_count: None,
             review_addressed: false,
             seen: false,
+            archived_at: None,
+            saved: false,
         }
     }
 
@@ -153,6 +162,8 @@ impl TaskMeta {
             last_review_count: None,
             review_addressed: false,
             seen: false,
+            archived_at: None,
+            saved: false,
         }
     }
 
@@ -325,7 +336,12 @@ impl Task {
                 let task_id = entry.file_name().to_string_lossy().to_string();
                 if let Some((repo_name, branch_name)) = Config::parse_task_id(&task_id) {
                     match Task::load(config, &repo_name, &branch_name) {
-                        Ok(task) => tasks.push(task),
+                        Ok(task) => {
+                            // Filter out archived tasks
+                            if task.meta.archived_at.is_none() {
+                                tasks.push(task);
+                            }
+                        }
                         Err(e) => {
                             tracing::warn!(task_id = %task_id, error = %e, "failed to load task");
                         }
@@ -348,6 +364,53 @@ impl Task {
             } else {
                 b.meta.updated_at.cmp(&a.meta.updated_at)
             }
+        });
+
+        tasks
+    }
+
+    /// List all archived tasks, sorted by `archived_at` descending (most recently archived first).
+    pub fn list_archived(config: &Config) -> Vec<Task> {
+        let mut tasks = Vec::new();
+
+        if !config.tasks_dir.exists() {
+            return tasks;
+        }
+
+        let read_dir = match std::fs::read_dir(&config.tasks_dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                tracing::warn!(path = %config.tasks_dir.display(), error = %e, "failed to read tasks directory");
+                return tasks;
+            }
+        };
+
+        for entry in read_dir {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+            if is_dir {
+                let task_id = entry.file_name().to_string_lossy().to_string();
+                if let Some((repo_name, branch_name)) = Config::parse_task_id(&task_id) {
+                    match Task::load(config, &repo_name, &branch_name) {
+                        Ok(task) => {
+                            if task.meta.archived_at.is_some() {
+                                tasks.push(task);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(task_id = %task_id, error = %e, "failed to load task");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by archived_at descending (most recently archived first)
+        tasks.sort_by(|a, b| {
+            b.meta.archived_at.cmp(&a.meta.archived_at)
         });
 
         tasks
@@ -665,6 +728,17 @@ impl Task {
             format!("{}m ago", duration.num_minutes())
         } else {
             "just now".to_string()
+        }
+    }
+
+    /// Check if this archived task has expired based on the retention period.
+    pub fn is_archive_expired(&self, retention_days: u64) -> bool {
+        match self.meta.archived_at {
+            Some(archived_at) if !self.meta.saved => {
+                let retention = Duration::days(retention_days as i64);
+                Utc::now().signed_duration_since(archived_at) > retention
+            }
+            _ => false,
         }
     }
 
