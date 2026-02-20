@@ -13,7 +13,7 @@ fn stored_command_load() {
 id: test-cmd
 description: A test command
 requires_arg: branch
-post_action: delete_task
+post_action: archive_task
 
 steps:
   - agent: coder
@@ -27,7 +27,7 @@ steps:
     assert_eq!(cmd.id, "test-cmd");
     assert_eq!(cmd.description, "A test command");
     assert_eq!(cmd.requires_arg.as_deref(), Some("branch"));
-    assert_eq!(cmd.post_action.as_deref(), Some("delete_task"));
+    assert_eq!(cmd.post_action.as_deref(), Some("archive_task"));
     assert_eq!(cmd.flow_path, path);
 }
 
