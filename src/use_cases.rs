@@ -214,12 +214,15 @@ pub fn permanently_delete_archived_task(config: &Config, task: Task) -> Result<(
 }
 
 /// Toggle the saved flag on an archived task.
-pub fn toggle_archive_saved(config: &Config, task: &mut Task) -> Result<()> {
+pub fn toggle_archive_saved(_config: &Config, task: &mut Task) -> Result<()> {
     let new_saved = !task.meta.saved;
     tracing::info!(task_id = %task.meta.task_id(), saved = new_saved, "toggling archive saved");
+    let old_saved = task.meta.saved;
     task.meta.saved = new_saved;
-    task.save_meta()?;
-    let _ = config; // used for consistency with other use_cases signatures
+    if let Err(e) = task.save_meta() {
+        task.meta.saved = old_saved;
+        return Err(e);
+    }
     Ok(())
 }
 

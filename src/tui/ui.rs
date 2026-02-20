@@ -150,7 +150,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::Preview => draw_preview(f, app, chunks[0]),
         View::DeleteConfirm => {
             draw_task_list(f, app, chunks[0]);
-            draw_delete_confirm(f, app);
+            draw_delete_confirm(f, app, app.archive_retention_days);
         }
         View::Feedback => {
             draw_preview(f, app, chunks[0]);
@@ -954,7 +954,7 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(review_label), chunks[2]);
 }
 
-fn draw_delete_confirm(f: &mut Frame, app: &App) {
+fn draw_delete_confirm(f: &mut Frame, app: &App, retention_days: u64) {
     let area = centered_rect(55, 45, f.area());
 
     f.render_widget(Clear, area);
@@ -1004,7 +1004,7 @@ fn draw_delete_confirm(f: &mut Frame, app: &App) {
             Style::default().fg(Color::LightBlue),
         )),
         Line::from(Span::styled(
-            "    keep task files. Auto-purged after 30 days.",
+            format!("    keep task files. Auto-purged after {} days.", retention_days),
             Style::default().fg(Color::LightBlue),
         )),
         Line::from(""),
@@ -2950,6 +2950,66 @@ fn draw_show_prs(f: &mut Frame, app: &mut App, area: Rect) {
 // Archive view
 // ---------------------------------------------------------------------------
 
+/// Split `text` into segments of (substring, is_match) for case-insensitive
+/// highlighting of `query` (already lowercased). Uses char boundaries from the
+/// original string so it is safe for non-ASCII content.
+fn highlight_segments<'a>(text: &'a str, query: &str) -> Vec<(&'a str, bool)> {
+    if query.is_empty() {
+        return vec![(text, false)];
+    }
+
+    let mut segments = Vec::new();
+    let lower = text.to_lowercase();
+    let mut last = 0; // byte offset into `text`
+    let mut search_from = 0; // byte offset into `lower`
+
+    // Build a mapping from byte offsets in `lower` back to byte offsets in `text`.
+    // Both strings have the same number of chars, but byte widths may differ.
+    let text_offsets: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    let lower_offsets: Vec<usize> = lower.char_indices().map(|(i, _)| i).collect();
+
+    // Reverse map: byte offset in `lower` → char index
+    // We only need lookups at the positions returned by `find`, so build on demand.
+    while let Some(rel_pos) = lower[search_from..].find(query) {
+        let lower_start = search_from + rel_pos;
+        let lower_end = lower_start + query.len();
+
+        // Find char index for lower_start and lower_end
+        let char_start = match lower_offsets.binary_search(&lower_start) {
+            Ok(i) => i,
+            Err(_) => break, // not on a char boundary — shouldn't happen
+        };
+        let char_end = if lower_end == lower.len() {
+            text.len() // match extends to the end
+        } else {
+            match lower_offsets.binary_search(&lower_end) {
+                Ok(i) => text_offsets[i],
+                Err(_) => break, // mid-char boundary
+            }
+        };
+        let text_start = text_offsets[char_start];
+
+        if text_start > last {
+            segments.push((&text[last..text_start], false));
+        }
+        segments.push((&text[text_start..char_end], true));
+        last = char_end;
+
+        // Advance search past this match in `lower`
+        search_from = lower_end;
+    }
+
+    if last < text.len() {
+        segments.push((&text[last..], false));
+    }
+
+    if segments.is_empty() {
+        vec![(text, false)]
+    } else {
+        segments
+    }
+}
+
 fn format_time_ago(archived_at: &chrono::DateTime<Utc>) -> String {
     let duration = Utc::now().signed_duration_since(*archived_at);
     let days = duration.num_days();
@@ -2999,34 +3059,16 @@ fn draw_archive(f: &mut Frame, app: &mut App, area: Rect) {
 
             let mut spans: Vec<Span> = Vec::new();
 
-            // Task name with match highlighting
-            if !query.is_empty() {
-                let lower = task_name.to_lowercase();
-                if let Some(pos) = lower.find(&query) {
-                    let end = pos + query.len();
-                    if pos > 0 {
-                        spans.push(Span::styled(
-                            task_name[..pos].to_string(),
-                            Style::default().fg(Color::White),
-                        ));
-                    }
-                    spans.push(Span::styled(
-                        task_name[pos..end].to_string(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    if end < task_name.len() {
-                        spans.push(Span::styled(
-                            task_name[end..].to_string(),
-                            Style::default().fg(Color::White),
-                        ));
-                    }
+            // Task name with match highlighting (Unicode-safe)
+            for (seg, is_match) in highlight_segments(&task_name, &query) {
+                let style = if is_match {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    spans.push(Span::styled(task_name.clone(), Style::default().fg(Color::White)));
-                }
-            } else {
-                spans.push(Span::styled(task_name.clone(), Style::default().fg(Color::White)));
+                    Style::default().fg(Color::White)
+                };
+                spans.push(Span::styled(seg.to_string(), style));
             }
 
             // Time ago
@@ -3103,43 +3145,21 @@ fn draw_archive_preview(f: &mut Frame, app: &mut App) {
     let lines: Vec<Line> = content
         .lines()
         .map(|line| {
-            if !query.is_empty() {
-                let lower = line.to_lowercase();
-                let mut spans: Vec<Span> = Vec::new();
-                let mut last = 0;
-                let mut search_from = 0;
-                while let Some(pos) = lower[search_from..].find(&query) {
-                    let abs_pos = search_from + pos;
-                    let end = abs_pos + query.len();
-                    if abs_pos > last {
-                        spans.push(Span::styled(
-                            line[last..abs_pos].to_string(),
-                            Style::default().fg(Color::White),
-                        ));
-                    }
-                    spans.push(Span::styled(
-                        line[abs_pos..end].to_string(),
+            let segments = highlight_segments(line, &query);
+            let spans: Vec<Span> = segments
+                .into_iter()
+                .map(|(seg, is_match)| {
+                    let style = if is_match {
                         Style::default()
                             .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    last = end;
-                    search_from = end;
-                }
-                if last < line.len() {
-                    spans.push(Span::styled(
-                        line[last..].to_string(),
-                        Style::default().fg(Color::White),
-                    ));
-                }
-                if spans.is_empty() {
-                    Line::from(Span::styled(line.to_string(), Style::default().fg(Color::White)))
-                } else {
-                    Line::from(spans)
-                }
-            } else {
-                Line::from(Span::styled(line.to_string(), Style::default().fg(Color::White)))
-            }
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    Span::styled(seg.to_string(), style)
+                })
+                .collect();
+            Line::from(spans)
         })
         .collect();
 

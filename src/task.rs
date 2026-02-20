@@ -731,24 +731,6 @@ impl Task {
         }
     }
 
-    pub fn time_since_archived(&self) -> String {
-        match self.meta.archived_at {
-            Some(archived_at) => {
-                let duration = Utc::now().signed_duration_since(archived_at);
-                if duration.num_days() > 0 {
-                    format!("{}d ago", duration.num_days())
-                } else if duration.num_hours() > 0 {
-                    format!("{}h ago", duration.num_hours())
-                } else if duration.num_minutes() > 0 {
-                    format!("{}m ago", duration.num_minutes())
-                } else {
-                    "just now".to_string()
-                }
-            }
-            None => "N/A".to_string(),
-        }
-    }
-
     /// Check if this archived task has expired based on the retention period.
     pub fn is_archive_expired(&self, retention_days: u64) -> bool {
         match self.meta.archived_at {
