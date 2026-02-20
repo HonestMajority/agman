@@ -2953,52 +2953,75 @@ fn draw_show_prs(f: &mut Frame, app: &mut App, area: Rect) {
 /// Split `text` into segments of (substring, is_match) for case-insensitive
 /// highlighting of `query` (already lowercased). Uses char boundaries from the
 /// original string so it is safe for non-ASCII content.
-fn highlight_segments<'a>(text: &'a str, query: &str) -> Vec<(&'a str, bool)> {
-    if query.is_empty() {
+fn highlight_segments<'a>(text: &'a str, terms: &[&str]) -> Vec<(&'a str, bool)> {
+    if terms.is_empty() {
         return vec![(text, false)];
     }
 
-    let mut segments = Vec::new();
     let lower = text.to_lowercase();
-    let mut last = 0; // byte offset into `text`
-    let mut search_from = 0; // byte offset into `lower`
 
     // Build a mapping from byte offsets in `lower` back to byte offsets in `text`.
     // Both strings have the same number of chars, but byte widths may differ.
     let text_offsets: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
     let lower_offsets: Vec<usize> = lower.char_indices().map(|(i, _)| i).collect();
 
-    // Reverse map: byte offset in `lower` → char index
-    // We only need lookups at the positions returned by `find`, so build on demand.
-    while let Some(rel_pos) = lower[search_from..].find(query) {
-        let lower_start = search_from + rel_pos;
-        let lower_end = lower_start + query.len();
-
-        // Find char index for lower_start and lower_end
-        let char_start = match lower_offsets.binary_search(&lower_start) {
-            Ok(i) => i,
-            Err(_) => break, // not on a char boundary — shouldn't happen
-        };
-        let char_end = if lower_end == lower.len() {
-            text.len() // match extends to the end
-        } else {
-            match lower_offsets.binary_search(&lower_end) {
-                Ok(i) => text_offsets[i],
-                Err(_) => break, // mid-char boundary
-            }
-        };
-        let text_start = text_offsets[char_start];
-
-        if text_start > last {
-            segments.push((&text[last..text_start], false));
+    // Collect all match ranges (as byte offsets in `text`) across all terms
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for term in terms {
+        if term.is_empty() {
+            continue;
         }
-        segments.push((&text[text_start..char_end], true));
-        last = char_end;
+        let mut search_from = 0;
+        while let Some(rel_pos) = lower[search_from..].find(term) {
+            let lower_start = search_from + rel_pos;
+            let lower_end = lower_start + term.len();
 
-        // Advance search past this match in `lower`
-        search_from = lower_end;
+            let char_start = match lower_offsets.binary_search(&lower_start) {
+                Ok(i) => i,
+                Err(_) => break,
+            };
+            let char_end = if lower_end == lower.len() {
+                text.len()
+            } else {
+                match lower_offsets.binary_search(&lower_end) {
+                    Ok(i) => text_offsets[i],
+                    Err(_) => break,
+                }
+            };
+            let text_start = text_offsets[char_start];
+
+            ranges.push((text_start, char_end));
+            search_from = lower_end;
+        }
     }
 
+    if ranges.is_empty() {
+        return vec![(text, false)];
+    }
+
+    // Sort by start, then merge overlapping/adjacent ranges
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+
+    // Build segments from merged ranges
+    let mut segments = Vec::new();
+    let mut last = 0;
+    for (start, end) in merged {
+        if start > last {
+            segments.push((&text[last..start], false));
+        }
+        segments.push((&text[start..end], true));
+        last = end;
+    }
     if last < text.len() {
         segments.push((&text[last..], false));
     }
@@ -3044,6 +3067,7 @@ fn draw_archive(f: &mut Frame, app: &mut App, area: Rect) {
     // Filtered results
     let filtered = app.archive_filtered_indices();
     let query: String = app.archive_search.lines().join("").to_lowercase();
+    let terms: Vec<&str> = query.split_whitespace().collect();
 
     let items: Vec<ListItem> = filtered
         .iter()
@@ -3060,7 +3084,7 @@ fn draw_archive(f: &mut Frame, app: &mut App, area: Rect) {
             let mut spans: Vec<Span> = Vec::new();
 
             // Task name with match highlighting (Unicode-safe)
-            for (seg, is_match) in highlight_segments(&task_name, &query) {
+            for (seg, is_match) in highlight_segments(&task_name, &terms) {
                 let style = if is_match {
                     Style::default()
                         .fg(Color::Yellow)
@@ -3142,10 +3166,11 @@ fn draw_archive_preview(f: &mut Frame, app: &mut App) {
     f.render_widget(Clear, area);
 
     let query: String = app.archive_search.lines().join("").to_lowercase();
+    let terms: Vec<&str> = query.split_whitespace().collect();
     let lines: Vec<Line> = content
         .lines()
         .map(|line| {
-            let segments = highlight_segments(line, &query);
+            let segments = highlight_segments(line, &terms);
             let spans: Vec<Span> = segments
                 .into_iter()
                 .map(|(seg, is_match)| {

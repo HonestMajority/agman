@@ -2433,15 +2433,19 @@ impl App {
     /// Return indices into `self.archive_tasks` that match the current search query.
     pub fn archive_filtered_indices(&self) -> Vec<usize> {
         let query: String = self.archive_search.lines().join("").to_lowercase();
-        if query.is_empty() {
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        if terms.is_empty() {
             return (0..self.archive_tasks.len()).collect();
         }
         self.archive_tasks
             .iter()
             .enumerate()
             .filter(|(_, (task, content))| {
-                task.meta.task_id().to_lowercase().contains(&query)
-                    || content.to_lowercase().contains(&query)
+                let id_lower = task.meta.task_id().to_lowercase();
+                let content_lower = content.to_lowercase();
+                terms
+                    .iter()
+                    .all(|term| id_lower.contains(term) || content_lower.contains(term))
             })
             .map(|(i, _)| i)
             .collect()
