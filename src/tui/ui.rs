@@ -958,74 +958,74 @@ fn draw_delete_confirm(f: &mut Frame, app: &App) {
         .map(|t| t.meta.task_id())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let sel = app.delete_mode_index;
+    let sel = app.archive_mode_index;
 
-    let everything_style = if sel == 0 {
+    let archive_style = if sel == 0 {
         Style::default()
             .fg(Color::White)
-            .bg(Color::Rgb(60, 30, 30))
+            .bg(Color::Rgb(30, 40, 60))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
     };
-    let task_only_style = if sel == 1 {
+    let save_style = if sel == 1 {
         Style::default()
             .fg(Color::White)
-            .bg(Color::Rgb(60, 60, 20))
+            .bg(Color::Rgb(20, 50, 40))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
     };
 
-    let everything_prefix = if sel == 0 { "▸ " } else { "  " };
-    let task_only_prefix = if sel == 1 { "▸ " } else { "  " };
+    let archive_prefix = if sel == 0 { "▸ " } else { "  " };
+    let save_prefix = if sel == 1 { "▸ " } else { "  " };
 
     let text = vec![
         Line::from(""),
         Line::from(Span::styled(
-            format!("  Delete task '{}'?", task_id),
+            format!("  Archive task '{}'?", task_id),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            format!("{}Delete everything", everything_prefix),
-            everything_style,
+            format!("{}Archive", archive_prefix),
+            archive_style,
         )),
         Line::from(Span::styled(
-            "    Kill tmux, remove worktree, delete branch,",
-            Style::default().fg(Color::LightRed),
+            "    Kill tmux, remove worktree + branch,",
+            Style::default().fg(Color::LightBlue),
         )),
         Line::from(Span::styled(
-            "    delete task files",
-            Style::default().fg(Color::LightRed),
+            "    keep task files. Auto-purged after 30 days.",
+            Style::default().fg(Color::LightBlue),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            format!("{}Delete task only", task_only_prefix),
-            task_only_style,
+            format!("{}Archive & Save", save_prefix),
+            save_style,
         )),
         Line::from(Span::styled(
-            "    Kill tmux, delete task files, remove TASK.md",
-            Style::default().fg(Color::LightYellow),
+            "    Same as Archive, but will NOT be auto-purged.",
+            Style::default().fg(Color::LightCyan),
         )),
         Line::from(Span::styled(
-            "    Keep worktree and branch intact",
-            Style::default().fg(Color::LightYellow),
+            "    Use for tasks you want to keep permanently.",
+            Style::default().fg(Color::LightCyan),
         )),
     ];
 
     let popup = Paragraph::new(text).block(
         Block::default()
             .title(Span::styled(
-                " Delete Task ",
+                " Archive Task ",
                 Style::default()
-                    .fg(Color::LightRed)
+                    .fg(Color::LightBlue)
                     .add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightRed)),
+            .border_style(Style::default().fg(Color::LightBlue)),
     );
 
     f.render_widget(popup, area);

@@ -25,6 +25,7 @@ pub struct Config {
 pub struct ConfigFile {
     pub repos_dir: Option<String>,
     pub break_interval_mins: Option<u64>,
+    pub archive_retention_days: Option<u64>,
 }
 
 /// Read `<base_dir>/config.toml`, returning defaults if missing or unparseable.

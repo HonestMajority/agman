@@ -325,12 +325,6 @@ pub struct RestartWizard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeleteMode {
-    Everything,
-    TaskOnly,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewPane {
     Logs,
     Notes,
@@ -555,7 +549,7 @@ pub struct App {
     pub selected_rebase_branch_index: usize,
     pub pending_branch_command: Option<StoredCommand>,
     // Delete mode chooser
-    pub delete_mode_index: usize,
+    pub archive_mode_index: usize,
     // Restart task wizard
     pub restart_wizard: Option<RestartWizard>,
     // Restart modal state (binary restart)
@@ -672,7 +666,7 @@ impl App {
             rebase_branches: Vec::new(),
             selected_rebase_branch_index: 0,
             pending_branch_command: None,
-            delete_mode_index: 0,
+            archive_mode_index: 0,
             restart_wizard: None,
             restart_pending: false,
             restart_confirm_index: 0,
@@ -1082,24 +1076,16 @@ impl App {
         Ok(())
     }
 
-    fn delete_task(&mut self, mode: DeleteMode) -> Result<()> {
+    fn archive_task(&mut self, saved: bool) -> Result<()> {
         if self.tasks.is_empty() {
             return Ok(());
         }
 
-        let task = self.tasks.remove(self.selected_index);
+        let mut task = self.tasks.remove(self.selected_index);
         let task_id = task.meta.task_id();
 
-        let uc_mode = match mode {
-            DeleteMode::Everything => use_cases::DeleteMode::Everything,
-            DeleteMode::TaskOnly => use_cases::DeleteMode::TaskOnly,
-        };
-
-        tracing::info!(task_id = %task_id, mode = ?mode, "TUI: delete task requested");
-        self.log_output(format!("Deleting task {} ({})...", task_id, match mode {
-            DeleteMode::Everything => "everything",
-            DeleteMode::TaskOnly => "task only",
-        }));
+        tracing::info!(task_id = %task_id, saved, "TUI: archive task requested");
+        self.log_output(format!("Archiving task {}...", task_id));
 
         // Kill tmux sessions for all repos (side effect)
         if task.meta.has_repos() {
@@ -1115,14 +1101,15 @@ impl App {
         self.log_output("  Killed tmux session(s)".to_string());
 
         // Delegate business logic to use_cases
-        use_cases::delete_task(&self.config, task, uc_mode)?;
-        self.log_output("  Deleted task files".to_string());
+        use_cases::archive_task(&self.config, &mut task, saved)?;
+        self.log_output("  Archived task".to_string());
 
         if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
             self.selected_index = self.tasks.len() - 1;
         }
 
-        self.set_status(format!("Deleted: {}", task_id));
+        let label = if saved { "Archived & saved" } else { "Archived" };
+        self.set_status(format!("{}: {}", label, task_id));
         self.view = View::TaskList;
         Ok(())
     }
@@ -2196,7 +2183,7 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     if !self.tasks.is_empty() {
-                        self.delete_mode_index = 0;
+                        self.archive_mode_index = 0;
                         self.view = View::DeleteConfirm;
                     }
                 }
@@ -2681,18 +2668,14 @@ impl App {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    self.delete_mode_index = (self.delete_mode_index + 1) % 2;
+                    self.archive_mode_index = (self.archive_mode_index + 1) % 2;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    self.delete_mode_index = if self.delete_mode_index == 0 { 1 } else { 0 };
+                    self.archive_mode_index = if self.archive_mode_index == 0 { 1 } else { 0 };
                 }
                 KeyCode::Enter => {
-                    let mode = if self.delete_mode_index == 0 {
-                        DeleteMode::Everything
-                    } else {
-                        DeleteMode::TaskOnly
-                    };
-                    self.delete_task(mode)?;
+                    let saved = self.archive_mode_index == 1;
+                    self.archive_task(saved)?;
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
@@ -4093,7 +4076,7 @@ impl App {
 
         for (task_id, pr_number) in to_delete {
             if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
-                let task = self.tasks.remove(idx);
+                let mut task = self.tasks.remove(idx);
 
                 // Kill all tmux sessions for the task
                 for repo in &task.meta.repos {
@@ -4104,14 +4087,14 @@ impl App {
                     let _ = Tmux::kill_session(&parent_session);
                 }
 
-                let _ = use_cases::delete_task(
+                let _ = use_cases::archive_task(
                     &self.config,
-                    task,
-                    use_cases::DeleteMode::Everything,
+                    &mut task,
+                    false,
                 );
 
                 self.log_output(format!(
-                    "Auto-deleted task {}: PR #{} merged",
+                    "Auto-archived task {}: PR #{} merged",
                     task_id, pr_number
                 ));
 
