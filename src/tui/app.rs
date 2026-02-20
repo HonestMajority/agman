@@ -4357,6 +4357,36 @@ impl App {
 
         self.notifications = result.notifications;
 
+        // Auto-dismiss CI/workflow failure notifications
+        let ci_notifs: Vec<(String, String, String)> = self
+            .notifications
+            .iter()
+            .filter(|n| n.reason == "ci_activity")
+            .map(|n| (n.id.clone(), n.updated_at.clone(), n.title.clone()))
+            .collect();
+        if !ci_notifs.is_empty() {
+            tracing::info!(
+                count = ci_notifs.len(),
+                titles = ?ci_notifs.iter().map(|(_, _, t)| t.as_str()).collect::<Vec<_>>(),
+                "auto-dismissing ci_activity notifications"
+            );
+            for (thread_id, updated_at, _title) in &ci_notifs {
+                self.dismissed_notifs
+                    .insert(thread_id.clone(), updated_at.clone());
+                let tid = thread_id.clone();
+                self.rt.spawn(async move {
+                    let _ = tokio::task::spawn_blocking(move || {
+                        if let Err(e) = use_cases::dismiss_github_notification(&tid) {
+                            tracing::warn!(thread_id = %tid, error = %e, "failed to auto-dismiss ci_activity notification");
+                        }
+                    })
+                    .await;
+                });
+            }
+            self.dismissed_notifs
+                .save(&self.config.dismissed_notifications_path());
+        }
+
         // Filter out notifications that were dismissed but may not yet be reflected by the API.
         // Dismissed entries are only removed by retention-based pruning or explicit un-dismiss
         // when there's genuine new activity (unread + newer updated_at).
