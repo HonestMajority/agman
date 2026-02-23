@@ -538,9 +538,10 @@ The Goal section carries two kinds of context:
 Instructions:
 1. Read and understand all the context provided
 2. Check for Claude Code skills in the repo (`.claude/skills/*/SKILL.md` and `.claude/commands/*.md`). If any exist, preserve skill annotations on completed steps and annotate new remaining steps with relevant skills where appropriate.
-3. Focus primarily on the NEW FEEDBACK - this is what matters now
-4. Before rewriting TASK.md, assess whether the feedback's concerns are already addressed — examine the git diff and commit log provided to you. The feature may already be implemented, the bug may already be fixed, or the requested behavior may already be present.
-5. Rewrite TASK.md with:
+3. **Detect and reconcile stale TASK.md.** The user may have made significant manual code changes between agman iterations that TASK.md does not reflect. Before rewriting, compare the Plan's Completed/Remaining steps against the git diff, commit log, and actual codebase. If the code has progressed beyond what TASK.md shows — steps completed but not marked, new work done that isn't in the plan, or code significantly refactored — treat the code as the source of truth. Browse the codebase to understand what changed. When rewriting, ensure both Completed and Remaining accurately reflect the real code state, not just what the previous TASK.md claimed.
+4. Focus primarily on the NEW FEEDBACK - this is what matters now
+5. Before rewriting TASK.md, assess whether the feedback's concerns are already addressed — examine the git diff and commit log provided to you. The feature may already be implemented, the bug may already be fixed, or the requested behavior may already be present.
+6. Rewrite TASK.md with:
    - A Goal section that preserves foundational context (big-picture goal, design philosophy, architectural intent) from the existing Goal, and updates the tactical parts (current focus, next priorities) based on feedback and progress
    - A Plan section with Completed steps (what's been done) and Remaining steps
    - The Goal should be self-contained — the coder should be able to follow it without any other context, which is why foundational context must be preserved rather than stripped
