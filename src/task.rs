@@ -5,6 +5,14 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 
+/// A single item in the task queue (feedback or command).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum QueueItem {
+    Feedback { text: String },
+    Command { command_id: String, branch: Option<String> },
+}
+
 #[derive(Debug, Clone, Copy)]
 enum SectionKind {
     AgentOutput,
@@ -778,25 +786,50 @@ impl Task {
         Ok(())
     }
 
-    /// Path to the separate feedback queue file (avoids meta.json write conflicts)
+    /// Path to the task queue file
     fn queue_file_path(&self) -> PathBuf {
+        self.dir.join("queue.json")
+    }
+
+    /// Path to the old feedback queue file (for migration)
+    fn old_queue_file_path(&self) -> PathBuf {
         self.dir.join("feedback_queue.json")
     }
 
-    /// Read the feedback queue from its dedicated file
-    fn read_queue_file(&self) -> Vec<String> {
+    /// Read the queue from its dedicated file, with migration from old format
+    fn read_queue_file(&self) -> Vec<QueueItem> {
         let path = self.queue_file_path();
-        if !path.exists() {
-            return Vec::new();
+        if path.exists() {
+            return match std::fs::read_to_string(&path) {
+                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
         }
-        match std::fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => Vec::new(),
+
+        // Migration: if old feedback_queue.json exists, convert it
+        let old_path = self.old_queue_file_path();
+        if old_path.exists() {
+            let old_items: Vec<String> = match std::fs::read_to_string(&old_path) {
+                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+                Err(_) => return Vec::new(),
+            };
+            let migrated: Vec<QueueItem> = old_items
+                .into_iter()
+                .map(|text| QueueItem::Feedback { text })
+                .collect();
+            // Write new format and delete old file
+            if let Ok(content) = serde_json::to_string_pretty(&migrated) {
+                let _ = std::fs::write(&path, content);
+            }
+            let _ = std::fs::remove_file(&old_path);
+            return migrated;
         }
+
+        Vec::new()
     }
 
-    /// Write the feedback queue to its dedicated file (deletes file if empty)
-    fn write_queue_file(&self, queue: &[String]) -> Result<()> {
+    /// Write the queue to its dedicated file (deletes file if empty)
+    fn write_queue_file(&self, queue: &[QueueItem]) -> Result<()> {
         let path = self.queue_file_path();
         if queue.is_empty() {
             if path.exists() {
@@ -813,38 +846,49 @@ impl Task {
     pub fn queue_feedback(&self, feedback: &str) -> Result<()> {
         let mut queue = self.read_queue_file();
         tracing::debug!(task_id = %self.meta.task_id(), queue_size = queue.len() + 1, "queuing feedback");
-        queue.push(feedback.to_string());
+        queue.push(QueueItem::Feedback { text: feedback.to_string() });
         self.write_queue_file(&queue)
     }
 
-    /// Pop the first feedback item from the queue
-    pub fn pop_feedback_queue(&self) -> Result<Option<String>> {
+    /// Queue a command to be run when the task stops
+    pub fn queue_command(&self, command_id: &str, branch: Option<&str>) -> Result<()> {
+        let mut queue = self.read_queue_file();
+        tracing::debug!(task_id = %self.meta.task_id(), queue_size = queue.len() + 1, command_id, "queuing command");
+        queue.push(QueueItem::Command {
+            command_id: command_id.to_string(),
+            branch: branch.map(|b| b.to_string()),
+        });
+        self.write_queue_file(&queue)
+    }
+
+    /// Pop the first item from the queue
+    pub fn pop_queue(&self) -> Result<Option<QueueItem>> {
         let mut queue = self.read_queue_file();
         if queue.is_empty() {
             return Ok(None);
         }
-        let feedback = queue.remove(0);
+        let item = queue.remove(0);
         self.write_queue_file(&queue)?;
-        Ok(Some(feedback))
+        Ok(Some(item))
     }
 
-    /// Check if there's queued feedback
-    pub fn has_queued_feedback(&self) -> bool {
+    /// Check if there are queued items
+    pub fn has_queued_items(&self) -> bool {
         !self.read_queue_file().is_empty()
     }
 
-    /// Get the number of queued feedback items
-    pub fn queued_feedback_count(&self) -> usize {
+    /// Get the number of queued items
+    pub fn queued_item_count(&self) -> usize {
         self.read_queue_file().len()
     }
 
-    /// Read all queued feedback items (for display purposes)
-    pub fn read_feedback_queue(&self) -> Vec<String> {
+    /// Read all queued items (for display purposes)
+    pub fn read_queue(&self) -> Vec<QueueItem> {
         self.read_queue_file()
     }
 
-    /// Remove a single feedback item by index
-    pub fn remove_feedback_queue_item(&self, index: usize) -> Result<()> {
+    /// Remove a single queue item by index
+    pub fn remove_queue_item(&self, index: usize) -> Result<()> {
         let mut queue = self.read_queue_file();
         if index < queue.len() {
             queue.remove(index);
@@ -853,8 +897,8 @@ impl Task {
         Ok(())
     }
 
-    /// Clear all queued feedback
-    pub fn clear_feedback_queue(&self) -> Result<()> {
+    /// Clear all queued items
+    pub fn clear_queue(&self) -> Result<()> {
         let path = self.queue_file_path();
         if path.exists() {
             std::fs::remove_file(&path)?;
