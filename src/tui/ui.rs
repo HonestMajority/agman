@@ -2079,7 +2079,7 @@ fn draw_feedback_queue(f: &mut Frame, app: &App) {
     }
 }
 
-fn draw_rebase_branch_picker(f: &mut Frame, app: &App) {
+fn draw_rebase_branch_picker(f: &mut Frame, app: &mut App) {
     let area = centered_rect(60, 60, f.area());
     f.render_widget(Clear, area);
 
@@ -2166,17 +2166,19 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &App) {
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .title(Span::styled(
-                list_title,
-                Style::default().fg(Color::LightGreen),
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::LightGreen)),
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(Span::styled(
+                    list_title,
+                    Style::default().fg(Color::LightGreen),
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::LightGreen)),
+        )
+        .highlight_style(Style::default());
 
-    f.render_widget(list, chunks[1]);
+    f.render_stateful_widget(list, chunks[1], &mut app.rebase_branch_list_state);
 }
 
 fn draw_session_picker(f: &mut Frame, app: &App) {

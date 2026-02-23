@@ -548,6 +548,7 @@ pub struct App {
     // Branch picker (rebase, local-merge, etc.)
     pub rebase_branches: Vec<String>,
     pub selected_rebase_branch_index: usize,
+    pub rebase_branch_list_state: ListState,
     pub pending_branch_command: Option<StoredCommand>,
     // Delete mode chooser
     pub archive_mode_index: usize,
@@ -684,6 +685,7 @@ impl App {
             selected_queue_index: 0,
             rebase_branches: Vec::new(),
             selected_rebase_branch_index: 0,
+            rebase_branch_list_state: ListState::default(),
             pending_branch_command: None,
             archive_mode_index: 0,
             restart_wizard: None,
@@ -1425,23 +1427,29 @@ impl App {
                     return;
                 }
 
-                // Preselect main/master for local-merge command
-                let preselect_index = if self
+                // Preselect sensible default branch based on command
+                let cmd_id = self
                     .pending_branch_command
                     .as_ref()
-                    .map(|c| c.id == "local-merge")
-                    .unwrap_or(false)
-                {
-                    branches
+                    .map(|c| c.id.as_str());
+                let preselect_index = match cmd_id {
+                    Some("local-merge") => branches
                         .iter()
                         .position(|b| b == "main" || b == "master")
-                        .unwrap_or(0)
-                } else {
-                    0
+                        .unwrap_or(0),
+                    Some("rebase") => branches
+                        .iter()
+                        .position(|b| b == "origin/main")
+                        .or_else(|| branches.iter().position(|b| b == "origin/master"))
+                        .or_else(|| branches.iter().position(|b| b == "main"))
+                        .or_else(|| branches.iter().position(|b| b == "master"))
+                        .unwrap_or(0),
+                    _ => 0,
                 };
 
                 self.rebase_branches = branches;
                 self.selected_rebase_branch_index = preselect_index;
+                self.rebase_branch_list_state.select(Some(preselect_index));
                 self.view = View::RebaseBranchPicker;
             }
             Err(e) => {
@@ -3203,6 +3211,7 @@ impl App {
                     if !self.rebase_branches.is_empty() {
                         self.selected_rebase_branch_index =
                             (self.selected_rebase_branch_index + 1) % self.rebase_branches.len();
+                        self.rebase_branch_list_state.select(Some(self.selected_rebase_branch_index));
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
@@ -3213,6 +3222,7 @@ impl App {
                             } else {
                                 self.selected_rebase_branch_index - 1
                             };
+                        self.rebase_branch_list_state.select(Some(self.selected_rebase_branch_index));
                     }
                 }
                 KeyCode::Enter => {
