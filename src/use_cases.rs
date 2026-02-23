@@ -180,7 +180,10 @@ pub fn create_multi_repo_task(
     Ok(task)
 }
 
-/// Archive a task: remove worktrees/branches, set archived_at and saved, save meta.
+/// Archive a task: remove worktrees, set archived_at and saved, save meta.
+///
+/// Branches are preserved so the user can revisit them later. They are cleaned
+/// up when the task is permanently deleted (see `permanently_delete_archived_task`).
 ///
 /// This is the pure business logic behind archiving from the task list.
 /// It does NOT kill tmux sessions — that's a side effect handled by the caller.
@@ -188,11 +191,10 @@ pub fn create_multi_repo_task(
 pub fn archive_task(config: &Config, task: &mut Task, saved: bool) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), saved, "archiving task");
 
-    // Remove worktrees and branches for all repos
+    // Remove worktrees (branches are kept for later reference)
     for repo in &task.meta.repos {
         let repo_path = config.repo_path(&repo.repo_name);
         let _ = Git::remove_worktree(&repo_path, &repo.worktree_path);
-        let _ = Git::delete_branch(&repo_path, &task.meta.branch_name);
     }
 
     // Mark as archived
@@ -203,12 +205,20 @@ pub fn archive_task(config: &Config, task: &mut Task, saved: bool) -> Result<()>
     Ok(())
 }
 
-/// Permanently delete an archived task by removing its directory from disk.
+/// Permanently delete an archived task by deleting its git branches and removing
+/// its directory from disk.
 ///
-/// Only used from the archive view. Git worktrees/branches are already gone
-/// (cleaned up during archiving).
+/// Used from the archive view and by `purge_old_archives`. Branch deletion is
+/// best-effort — branches may have already been manually deleted.
 pub fn permanently_delete_archived_task(config: &Config, task: Task) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), "permanently deleting archived task");
+
+    // Delete branches for all repos (best-effort)
+    for repo in &task.meta.repos {
+        let repo_path = config.repo_path(&repo.repo_name);
+        let _ = Git::delete_branch(&repo_path, &task.meta.branch_name);
+    }
+
     task.delete(config)?;
     Ok(())
 }
@@ -228,7 +238,8 @@ pub fn toggle_archive_saved(_config: &Config, task: &mut Task) -> Result<()> {
 
 /// Purge expired archived tasks that are not saved.
 ///
-/// Returns the count of purged tasks.
+/// Delegates to `permanently_delete_archived_task` so that branch cleanup is
+/// centralized in one place. Returns the count of purged tasks.
 pub fn purge_old_archives(config: &Config) -> Result<usize> {
     let retention_days = load_archive_retention(config);
     let archived = Task::list_archived(config);
@@ -236,9 +247,7 @@ pub fn purge_old_archives(config: &Config) -> Result<usize> {
 
     for task in archived {
         if task.is_archive_expired(retention_days) {
-            let task_id = task.meta.task_id();
-            task.delete(config)?;
-            tracing::info!(task_id = %task_id, "purged expired archived task");
+            permanently_delete_archived_task(config, task)?;
             purged += 1;
         }
     }
