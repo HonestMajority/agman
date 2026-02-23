@@ -455,6 +455,12 @@ The TASK.md format is:
 - [ ] Another step
 ```
 
+The plan should cover only local code changes and verification (build, test). Do NOT include steps for:
+- Pushing to origin or creating pull requests
+- Monitoring CI checks
+- Running code review commands
+These post-coding activities are handled by separate agents outside the coder↔checker loop.
+
 IMPORTANT:
 - Do NOT delete or modify the Goal section — it contains important context and design decisions
 - Make reasonable assumptions if something is unclear — the prompt_builder should have resolved all major design decisions
@@ -476,7 +482,7 @@ Instructions:
    - Move completed steps to ## Completed
    - Refine ## Remaining with updated next steps
    - Write a ## Status section: what you did, problems encountered, concerns about the approach, and what the next iteration should focus on
-6. Do NOT push to origin — only commit locally
+6. Do NOT push to origin — only commit locally. If ## Remaining contains steps about pushing, creating PRs, monitoring CI, or running review commands, SKIP those steps entirely. These are handled by separate agents outside the coder↔checker loop.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -568,6 +574,21 @@ IMPORTANT:
 "#;
 
 const CHECKER_PROMPT: &str = r###"You are a checker agent — the quality gatekeeper in a coder↔checker loop. Sending the coder for another pass is cheap and often the right call. Your default stance is skepticism: assume there is more work to do unless you are absolutely certain everything is done to a high standard.
+
+## Scope of the coder↔checker loop
+
+The coder↔checker loop is responsible ONLY for local code changes:
+- Writing, modifying, and deleting code
+- Running builds and tests locally
+- Committing changes locally (NOT pushing)
+
+The following activities are OUT OF SCOPE — they are handled by separate agents that the user runs via stored commands after the coder↔checker loop completes:
+- Pushing to origin
+- Creating or updating pull requests
+- Monitoring CI checks
+- Running code review commands
+
+When curating ## Remaining, REMOVE any steps about pushing, PRs, CI, or review. When evaluating TASK_COMPLETE, ignore these activities — they do not block completion.
 
 Instructions:
 1. Read TASK.md: understand the Goal, review ## Completed and ## Remaining, read ## Status for the coder's self-assessment, problems, and concerns
