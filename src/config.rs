@@ -317,6 +317,24 @@ You do NOT create a detailed implementation plan — that is the planner's job. 
 3. Use subagents to explore the codebase structure — understand the relevant modules, patterns, and architecture
 4. Identify key design decisions that need to be made
 5. While investigating, assess whether the requested work is actually needed — the feature may already exist, the bug may not be present, or the concern may already be addressed
+6. **Resolve cross-task references** — if the Goal mentions another agman task (see below), read that task's context and weave relevant details into the enhanced Goal
+
+### Referencing Other Tasks
+
+The user's Goal may reference other agman tasks — for example, "Do X, similar to what we did in task agman--my-feature" or "like the my-feature task". When you spot a reference:
+
+1. **Identify the task ID.** Task IDs follow the pattern `<repo>--<branch>` (with `/` replaced by `-`). Look for:
+   - Explicit IDs: `agman--my-feature`, `lana-bank--chore--fix-bug`
+   - Partial references: "task my-feature", "the my-feature task"
+   - Natural language: "like we did in feature X", "similar to task Y"
+2. **Read the referenced task's files** at `~/.agman/tasks/<task_id>/`:
+   - `TASK.md` — the task description and plan (most useful for understanding what was done and how)
+   - `meta.json` — metadata including `branch_name` (real branch name with `/`), `name` (repo name), `repos[].worktree_path`, `status`
+3. **Find the actual code changes** if needed:
+   - Read `meta.json` to get `repos[].worktree_path` — if the worktree still exists, explore it directly
+   - If the worktree is gone, use `git log <branch>` or `git diff main..<branch>` in the main repo (the branch may still exist even after the worktree is removed)
+4. **If the reference is ambiguous**, list available tasks with `ls ~/.agman/tasks/` to find the best match
+5. **Weave the relevant context** from the referenced task into the enhanced Goal — extract the patterns, approach, or decisions that are relevant, not the entire task verbatim
 
 ### Step 2: Check for Answered Questions
 If there is a `[QUESTIONS]` section AND a `[ANSWERS]` section in TASK.md:
@@ -409,6 +427,18 @@ Instructions:
 5. Break the goal down into concrete, actionable steps
 6. Identify any dependencies or prerequisites
 7. Update TASK.md — keep the ENTIRE Goal section intact and rewrite ONLY the Plan section with your detailed plan
+
+## Referencing Other Tasks
+
+If the Goal or your investigation references another agman task (e.g., "similar to agman--my-feature" or "like the my-feature task"), you can look it up:
+
+1. Task directories live at `~/.agman/tasks/<task_id>/` where task IDs follow the pattern `<repo>--<branch>` (with `/` in branch names replaced by `-`)
+2. Read `TASK.md` in the referenced task directory to understand what was done and the approach taken
+3. Read `meta.json` for metadata: `branch_name` (real branch with `/`), `name` (repo), `repos[].worktree_path`
+4. To see actual code changes: explore the worktree if it still exists (path from `meta.json`), or use `git log <branch>` / `git diff main..<branch>` in the main repo
+5. If a reference is ambiguous, `ls ~/.agman/tasks/` to find the right task
+
+Use the referenced task's context to inform your plan — for example, to follow a similar implementation pattern or avoid problems encountered in that task.
 
 The TASK.md format is:
 ```
@@ -508,6 +538,18 @@ Instructions:
    - A Goal section that preserves foundational context (big-picture goal, design philosophy, architectural intent) from the existing Goal, and updates the tactical parts (current focus, next priorities) based on feedback and progress
    - A Plan section with Completed steps (what's been done) and Remaining steps
    - The Goal should be self-contained — the coder should be able to follow it without any other context, which is why foundational context must be preserved rather than stripped
+
+## Referencing Other Tasks
+
+User feedback may reference other agman tasks (e.g., "make it work like task agman--my-feature" or "use the same approach as the my-feature task"). When you spot a reference:
+
+1. Task directories live at `~/.agman/tasks/<task_id>/` where task IDs follow the pattern `<repo>--<branch>` (with `/` in branch names replaced by `-`)
+2. Read `TASK.md` in the referenced task directory to understand what was done and the approach taken
+3. Read `meta.json` for metadata: `branch_name` (real branch with `/`), `name` (repo), `repos[].worktree_path`
+4. To see actual code changes: explore the worktree if it still exists (path from `meta.json`), or use `git log <branch>` / `git diff main..<branch>` in the main repo
+5. If a reference is ambiguous, `ls ~/.agman/tasks/` to find the right task
+
+Incorporate the relevant context from the referenced task into the rewritten Goal so the coder has the full picture.
 
 IMPORTANT:
 - Do NOT implement any changes yourself
