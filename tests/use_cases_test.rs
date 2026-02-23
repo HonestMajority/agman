@@ -258,6 +258,17 @@ fn archive_task() {
     // saved is false
     assert!(!task.meta.saved);
 
+    // Branch is preserved (not deleted during archive)
+    let branch_check = std::process::Command::new("git")
+        .args(["branch", "--list", "to-archive"])
+        .current_dir(&_repo_path)
+        .output()
+        .unwrap();
+    assert!(
+        !branch_check.stdout.is_empty(),
+        "branch should still exist after archiving"
+    );
+
     // Persisted to disk
     let loaded = Task::load(&config, "myrepo", "to-archive").unwrap();
     assert!(loaded.meta.archived_at.is_some());
@@ -316,8 +327,27 @@ fn permanently_delete_archived_task() {
     use_cases::archive_task(&config, &mut task, false).unwrap();
     assert!(task_dir.exists());
 
+    // Branch should still exist after archive
+    let branch_check = std::process::Command::new("git")
+        .args(["branch", "--list", "perm-del"])
+        .current_dir(&_repo_path)
+        .output()
+        .unwrap();
+    assert!(!branch_check.stdout.is_empty(), "branch should exist after archive");
+
     use_cases::permanently_delete_archived_task(&config, task).unwrap();
     assert!(!task_dir.exists());
+
+    // Branch should be deleted after permanent delete
+    let branch_check = std::process::Command::new("git")
+        .args(["branch", "--list", "perm-del"])
+        .current_dir(&_repo_path)
+        .output()
+        .unwrap();
+    assert!(
+        branch_check.stdout.is_empty(),
+        "branch should be deleted after permanent delete"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1110,19 @@ fn archive_multi_repo_task() {
     assert!(!wt_b.exists());
     // archived_at is set
     assert!(task.meta.archived_at.is_some());
+
+    // Branches are preserved in both repos
+    for repo_name in &["repo-a", "repo-b"] {
+        let branch_check = std::process::Command::new("git")
+            .args(["branch", "--list", "multi-del"])
+            .current_dir(config.repo_path(repo_name))
+            .output()
+            .unwrap();
+        assert!(
+            !branch_check.stdout.is_empty(),
+            "branch should still exist in {repo_name} after archiving"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
