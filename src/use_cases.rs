@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::git::{self, Git};
 use crate::repo_stats::RepoStats;
-use crate::task::{RepoEntry, Task, TaskStatus};
+use crate::task::{QueueItem, RepoEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
 
 /// Required external tools that must be on $PATH.
@@ -342,7 +342,14 @@ pub fn queue_feedback(task: &Task, feedback: &str) -> Result<usize> {
     tracing::info!(task_id = %task.meta.task_id(), "queuing feedback");
     task.append_feedback_to_log(feedback)?;
     task.queue_feedback(feedback)?;
-    Ok(task.queued_feedback_count())
+    Ok(task.queued_item_count())
+}
+
+/// Queue a command on a running task.
+pub fn queue_command(task: &Task, command_id: &str, branch: Option<&str>) -> Result<usize> {
+    tracing::info!(task_id = %task.meta.task_id(), command_id, "queuing command");
+    task.queue_command(command_id, branch)?;
+    Ok(task.queued_item_count())
 }
 
 /// Write immediate feedback for a stopped task.
@@ -354,16 +361,16 @@ pub fn write_immediate_feedback(task: &Task, feedback: &str) -> Result<()> {
     task.write_feedback(feedback)
 }
 
-/// Delete a single queued feedback item by index.
-pub fn delete_queued_feedback(task: &Task, index: usize) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), index, "deleting queued feedback item");
-    task.remove_feedback_queue_item(index)
+/// Delete a single queued item by index.
+pub fn delete_queue_item(task: &Task, index: usize) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), index, "deleting queued item");
+    task.remove_queue_item(index)
 }
 
-/// Clear all queued feedback.
-pub fn clear_all_queued_feedback(task: &Task) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), "clearing all queued feedback");
-    task.clear_feedback_queue()
+/// Clear all queued items.
+pub fn clear_queue(task: &Task) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), "clearing all queued items");
+    task.clear_queue()
 }
 
 /// List all tasks, sorted by status (running > input_needed > stopped) then by updated_at desc.
@@ -399,17 +406,20 @@ pub fn restart_task(task: &mut Task, step_index: usize) -> Result<()> {
     Ok(())
 }
 
-/// Pop the first queued feedback item and write it as immediate feedback.
+/// Pop the first queued item and apply it if it's feedback.
 ///
-/// This is the pure business logic behind `App::process_stranded_feedback()`.
-/// It does NOT run `agman continue` — that's a side effect handled by the caller.
-/// Returns the feedback string if one was popped, or None if the queue was empty.
-pub fn pop_and_apply_feedback(task: &Task) -> Result<Option<String>> {
-    tracing::info!(task_id = %task.meta.task_id(), "popping and applying queued feedback");
-    match task.pop_feedback_queue()? {
-        Some(feedback) => {
-            task.write_feedback(&feedback)?;
-            Ok(Some(feedback))
+/// This is the pure business logic behind `App::process_stranded_queue()`.
+/// For `QueueItem::Feedback`, writes FEEDBACK.md. For `QueueItem::Command`, just returns it.
+/// The caller decides what side effects to perform (run continue vs run-command).
+/// Returns the popped item, or None if the queue was empty.
+pub fn pop_and_apply_queue_item(task: &Task) -> Result<Option<QueueItem>> {
+    tracing::info!(task_id = %task.meta.task_id(), "popping and applying queued item");
+    match task.pop_queue()? {
+        Some(item) => {
+            if let QueueItem::Feedback { ref text } = item {
+                task.write_feedback(text)?;
+            }
+            Ok(Some(item))
         }
         None => Ok(None),
     }

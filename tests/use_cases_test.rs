@@ -2,7 +2,7 @@ mod helpers;
 
 use agman::git::parse_github_owner_repo;
 use agman::repo_stats::RepoStats;
-use agman::task::{Task, TaskStatus};
+use agman::task::{QueueItem, Task, TaskStatus};
 use agman::use_cases::{self, GithubItemKind, PrPollAction, WorktreeSource};
 use helpers::{create_test_task, init_test_repo, test_config};
 
@@ -430,10 +430,16 @@ fn queue_feedback_on_running_task() {
     let count2 = use_cases::queue_feedback(&task, "also fix the header").unwrap();
     assert_eq!(count2, 2);
 
-    let queue = task.read_feedback_queue();
+    let queue = task.read_queue();
     assert_eq!(queue.len(), 2);
-    assert_eq!(queue[0], "fix the button");
-    assert_eq!(queue[1], "also fix the header");
+    match &queue[0] {
+        QueueItem::Feedback { text } => assert_eq!(text, "fix the button"),
+        _ => panic!("Expected Feedback item"),
+    }
+    match &queue[1] {
+        QueueItem::Feedback { text } => assert_eq!(text, "also fix the header"),
+        _ => panic!("Expected Feedback item"),
+    }
 
     // Feedback should also be logged to agent.log
     let log = task.read_agent_log().unwrap();
@@ -463,7 +469,7 @@ fn write_immediate_feedback_on_stopped_task() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn delete_queued_feedback() {
+fn delete_queue_item() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     let task = create_test_task(&config, "repo", "branch");
@@ -472,12 +478,18 @@ fn delete_queued_feedback() {
     task.queue_feedback("b").unwrap();
     task.queue_feedback("c").unwrap();
 
-    use_cases::delete_queued_feedback(&task, 1).unwrap();
+    use_cases::delete_queue_item(&task, 1).unwrap();
 
-    let queue = task.read_feedback_queue();
+    let queue = task.read_queue();
     assert_eq!(queue.len(), 2);
-    assert_eq!(queue[0], "a");
-    assert_eq!(queue[1], "c");
+    match &queue[0] {
+        QueueItem::Feedback { text } => assert_eq!(text, "a"),
+        _ => panic!("Expected Feedback item"),
+    }
+    match &queue[1] {
+        QueueItem::Feedback { text } => assert_eq!(text, "c"),
+        _ => panic!("Expected Feedback item"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +497,7 @@ fn delete_queued_feedback() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn clear_all_queued_feedback() {
+fn clear_queue() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     let task = create_test_task(&config, "repo", "branch");
@@ -493,9 +505,9 @@ fn clear_all_queued_feedback() {
     task.queue_feedback("a").unwrap();
     task.queue_feedback("b").unwrap();
 
-    use_cases::clear_all_queued_feedback(&task).unwrap();
+    use_cases::clear_queue(&task).unwrap();
 
-    assert!(task.read_feedback_queue().is_empty());
+    assert!(task.read_queue().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -527,7 +539,7 @@ fn restart_task_sets_flow_step_and_status() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn pop_and_apply_feedback_writes_first_queued_item() {
+fn pop_and_apply_queue_item_writes_first_feedback() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     let task = create_test_task(&config, "repo", "branch");
@@ -535,27 +547,135 @@ fn pop_and_apply_feedback_writes_first_queued_item() {
     task.queue_feedback("first feedback").unwrap();
     task.queue_feedback("second feedback").unwrap();
 
-    let result = use_cases::pop_and_apply_feedback(&task).unwrap();
-    assert_eq!(result, Some("first feedback".to_string()));
+    let result = use_cases::pop_and_apply_queue_item(&task).unwrap();
+    match result {
+        Some(QueueItem::Feedback { text }) => assert_eq!(text, "first feedback"),
+        _ => panic!("Expected Some(Feedback)"),
+    }
 
     // FEEDBACK.md written
     let fb = task.read_feedback().unwrap();
     assert_eq!(fb, "first feedback");
 
     // Queue now has one item
-    let queue = task.read_feedback_queue();
+    let queue = task.read_queue();
     assert_eq!(queue.len(), 1);
-    assert_eq!(queue[0], "second feedback");
+    match &queue[0] {
+        QueueItem::Feedback { text } => assert_eq!(text, "second feedback"),
+        _ => panic!("Expected Feedback item"),
+    }
 }
 
 #[test]
-fn pop_and_apply_feedback_empty_queue_returns_none() {
+fn pop_and_apply_queue_item_empty_queue_returns_none() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     let task = create_test_task(&config, "repo", "branch");
 
-    let result = use_cases::pop_and_apply_feedback(&task).unwrap();
-    assert_eq!(result, None);
+    let result = use_cases::pop_and_apply_queue_item(&task).unwrap();
+    assert!(result.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Queue command
+// ---------------------------------------------------------------------------
+
+#[test]
+fn queue_command_on_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "branch");
+
+    let count = use_cases::queue_command(&task, "rebase", Some("main")).unwrap();
+    assert_eq!(count, 1);
+
+    let queue = task.read_queue();
+    assert_eq!(queue.len(), 1);
+    match &queue[0] {
+        QueueItem::Command { command_id, branch } => {
+            assert_eq!(command_id, "rebase");
+            assert_eq!(branch.as_deref(), Some("main"));
+        }
+        _ => panic!("Expected Command item"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Queue command without branch
+// ---------------------------------------------------------------------------
+
+#[test]
+fn queue_command_without_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "branch");
+
+    let count = use_cases::queue_command(&task, "create-pr", None).unwrap();
+    assert_eq!(count, 1);
+
+    let queue = task.read_queue();
+    assert_eq!(queue.len(), 1);
+    match &queue[0] {
+        QueueItem::Command { command_id, branch } => {
+            assert_eq!(command_id, "create-pr");
+            assert!(branch.is_none());
+        }
+        _ => panic!("Expected Command item"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mixed queue (feedback + commands)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mixed_queue_preserves_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "branch");
+
+    task.queue_feedback("fix the bug").unwrap();
+    task.queue_command("rebase", Some("main")).unwrap();
+    task.queue_feedback("also fix the header").unwrap();
+
+    let queue = task.read_queue();
+    assert_eq!(queue.len(), 3);
+    assert!(matches!(&queue[0], QueueItem::Feedback { text } if text == "fix the bug"));
+    assert!(matches!(&queue[1], QueueItem::Command { command_id, .. } if command_id == "rebase"));
+    assert!(matches!(&queue[2], QueueItem::Feedback { text } if text == "also fix the header"));
+}
+
+// ---------------------------------------------------------------------------
+// Migrate old feedback_queue.json to queue.json
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migrate_old_feedback_queue_to_queue_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "branch");
+
+    // Write old-format feedback_queue.json manually
+    let old_path = task.dir.join("feedback_queue.json");
+    let old_content = serde_json::to_string(&vec!["old feedback 1", "old feedback 2"]).unwrap();
+    std::fs::write(&old_path, old_content).unwrap();
+
+    // Reading the queue should trigger migration
+    let queue = task.read_queue();
+    assert_eq!(queue.len(), 2);
+    match &queue[0] {
+        QueueItem::Feedback { text } => assert_eq!(text, "old feedback 1"),
+        _ => panic!("Expected Feedback item"),
+    }
+    match &queue[1] {
+        QueueItem::Feedback { text } => assert_eq!(text, "old feedback 2"),
+        _ => panic!("Expected Feedback item"),
+    }
+
+    // Old file should be deleted
+    assert!(!old_path.exists());
+    // New file should exist
+    assert!(task.dir.join("queue.json").exists());
 }
 
 // ---------------------------------------------------------------------------

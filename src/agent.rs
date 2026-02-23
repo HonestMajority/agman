@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 
 use crate::config::Config;
 use crate::flow::{AgentStep, Flow, FlowStep, StopCondition};
-use crate::task::{Task, TaskStatus};
+use crate::task::{QueueItem, Task, TaskStatus};
 use crate::tmux::Tmux;
 
 pub struct Agent {
@@ -497,21 +497,32 @@ impl AgentRunner {
         }
     }
 
-    /// Process queued feedback if any exists
+    /// Process queued feedback if any exists (skips non-feedback items).
     /// Returns Some(StopCondition) if feedback was processed and a new flow completed,
-    /// or None if no feedback was queued
+    /// or None if no feedback was queued.
     fn process_queued_feedback(&self, task: &mut Task) -> Result<Option<StopCondition>> {
-        // Queue is stored in a separate file (feedback_queue.json), so no need
+        // Queue is stored in a separate file (queue.json), so no need
         // to reload meta — the queue methods read directly from disk.
-        if !task.has_queued_feedback() {
+        if !task.has_queued_items() {
             return Ok(None);
         }
 
-        println!();
-        println!("=== Processing queued feedback ({} items) ===", task.queued_feedback_count());
+        // Peek at the first item — only process feedback, leave commands for the TUI
+        let queue = task.read_queue();
+        match queue.first() {
+            Some(QueueItem::Feedback { .. }) => {}
+            _ => return Ok(None),
+        }
 
-        // Pop the first feedback item
-        let feedback = task.pop_feedback_queue()?.expect("Queue was not empty");
+        println!();
+        println!("=== Processing queued feedback ({} items in queue) ===", task.queued_item_count());
+
+        // Pop the first item (we already verified it's Feedback)
+        let item = task.pop_queue()?.expect("Queue was not empty");
+        let feedback = match item {
+            QueueItem::Feedback { text } => text,
+            _ => return Ok(None), // Shouldn't happen, but be safe
+        };
 
         println!("Feedback: {}", if feedback.len() > 100 {
             format!("{}...", &feedback[..100])

@@ -21,7 +21,7 @@ use agman::dismissed_notifications::DismissedNotifications;
 use agman::flow::Flow;
 use agman::git::Git;
 use agman::repo_stats::RepoStats;
-use agman::task::{Task, TaskStatus};
+use agman::task::{QueueItem, Task, TaskStatus};
 use agman::tmux::Tmux;
 use agman::use_cases;
 
@@ -50,7 +50,7 @@ pub enum View {
     NewTaskWizard,
     CommandList,
     TaskEditor,
-    FeedbackQueue,
+    Queue,
     RebaseBranchPicker,
     ReviewWizard,
     RestartConfirm,
@@ -814,66 +814,108 @@ impl App {
         }
     }
 
-    /// Process any stranded feedback queues for stopped tasks.
-    /// This is a safety net: if feedback was queued while a task was running and
-    /// the agent process exited without processing it, the TUI picks it up.
-    pub fn process_stranded_feedback(&mut self) {
-        // Collect (index, task_id) for stopped tasks with queued feedback
-        let stranded: Vec<(usize, String)> = self
+    /// Process any stranded queue items for stopped tasks.
+    /// This is a safety net: if items were queued while a task was running and
+    /// the agent process exited without processing them, the TUI picks them up.
+    pub fn process_stranded_queue(&mut self) {
+        // Collect task_ids for stopped tasks with queued items
+        let stranded: Vec<String> = self
             .tasks
             .iter()
-            .enumerate()
-            .filter(|(_, t)| t.meta.status == TaskStatus::Stopped && t.has_queued_feedback())
-            .map(|(i, t)| (i, t.meta.task_id()))
+            .filter(|t| t.meta.status == TaskStatus::Stopped && t.has_queued_items())
+            .map(|t| t.meta.task_id())
             .collect();
 
-        for (_, task_id) in stranded {
-            // Pop the first queued feedback item and write it as immediate feedback
-            match self
+        for task_id in stranded {
+            // Pop the first queued item and apply it
+            let item = match self
                 .tasks
                 .iter()
                 .find(|t| t.meta.task_id() == task_id)
             {
-                Some(task) => match use_cases::pop_and_apply_feedback(task) {
-                    Ok(Some(_)) => {}
+                Some(task) => match use_cases::pop_and_apply_queue_item(task) {
+                    Ok(Some(item)) => item,
                     Ok(None) => continue,
                     Err(e) => {
-                        self.log_output(format!("Error processing feedback for {}: {}", task_id, e));
+                        self.log_output(format!("Error processing queue for {}: {}", task_id, e));
                         continue;
                     }
                 },
                 None => continue,
-            }
+            };
 
-            self.log_output(format!(
-                "Processing stranded feedback for {}...",
-                task_id
-            ));
+            match item {
+                QueueItem::Feedback { .. } => {
+                    self.log_output(format!(
+                        "Processing queued feedback for {}...",
+                        task_id
+                    ));
 
-            let output = Command::new("agman")
-                .args(["continue", &task_id])
-                .output();
+                    let output = Command::new("agman")
+                        .args(["continue", &task_id])
+                        .output();
 
-            match output {
-                Ok(o) if o.status.success() => {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    if !stdout.is_empty() {
-                        for line in stdout.lines() {
-                            self.log_output(line.to_string());
+                    match output {
+                        Ok(o) if o.status.success() => {
+                            let stdout = String::from_utf8_lossy(&o.stdout);
+                            if !stdout.is_empty() {
+                                for line in stdout.lines() {
+                                    self.log_output(line.to_string());
+                                }
+                            }
+                            self.log_output(format!("Queued feedback processed for {}", task_id));
+                            self.set_status(format!("Processing queued feedback for {}", task_id));
+                        }
+                        Ok(o) => {
+                            let stderr = String::from_utf8_lossy(&o.stderr);
+                            self.log_output(format!(
+                                "Failed to process queued feedback for {}: {}",
+                                task_id, stderr
+                            ));
+                        }
+                        Err(e) => {
+                            self.log_output(format!("Error processing queued feedback: {}", e));
                         }
                     }
-                    self.log_output(format!("Stranded feedback processed for {}", task_id));
-                    self.set_status(format!("Processing stranded feedback for {}", task_id));
                 }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
+                QueueItem::Command { command_id, branch } => {
                     self.log_output(format!(
-                        "Failed to process stranded feedback for {}: {}",
-                        task_id, stderr
+                        "Processing queued command '{}' for {}...",
+                        command_id, task_id
                     ));
-                }
-                Err(e) => {
-                    self.log_output(format!("Error processing stranded feedback: {}", e));
+
+                    let mut args = vec!["run-command".to_string(), task_id.clone(), command_id.clone()];
+                    if let Some(ref b) = branch {
+                        args.push("--branch".to_string());
+                        args.push(b.clone());
+                    }
+
+                    let output = Command::new("agman")
+                        .args(&args)
+                        .output();
+
+                    match output {
+                        Ok(o) if o.status.success() => {
+                            let stdout = String::from_utf8_lossy(&o.stdout);
+                            if !stdout.is_empty() {
+                                for line in stdout.lines() {
+                                    self.log_output(line.to_string());
+                                }
+                            }
+                            self.log_output(format!("Queued command '{}' processed for {}", command_id, task_id));
+                            self.set_status(format!("Processing queued command for {}", task_id));
+                        }
+                        Ok(o) => {
+                            let stderr = String::from_utf8_lossy(&o.stderr);
+                            self.log_output(format!(
+                                "Failed to process queued command for {}: {}",
+                                task_id, stderr
+                            ));
+                        }
+                        Err(e) => {
+                            self.log_output(format!("Error processing queued command: {}", e));
+                        }
+                    }
                 }
             }
 
@@ -1477,6 +1519,22 @@ impl App {
             }
         };
 
+        // If task is running, queue the command instead of running it immediately
+        if let Some(task) = self.selected_task() {
+            if task.meta.status == TaskStatus::Running {
+                match use_cases::queue_command(task, &command.id, Some(branch)) {
+                    Ok(count) => {
+                        self.set_status(format!("Command queued: {} → {} ({} in queue)", command.name, branch, count));
+                    }
+                    Err(e) => {
+                        self.set_status(format!("Failed to queue command: {}", e));
+                    }
+                }
+                self.view = View::Preview;
+                return Ok(());
+            }
+        }
+
         self.log_output(format!(
             "Running '{}' with branch '{}' for task {}...",
             command.name, branch, task_id
@@ -1557,6 +1615,22 @@ impl App {
                 return Ok(());
             }
         };
+
+        // If task is running, queue the command instead of running it immediately
+        if let Some(task) = self.selected_task() {
+            if task.meta.status == TaskStatus::Running {
+                match use_cases::queue_command(task, &command.id, None) {
+                    Ok(count) => {
+                        self.set_status(format!("Command queued: {} ({} in queue)", command.name, count));
+                    }
+                    Err(e) => {
+                        self.set_status(format!("Failed to queue command: {}", e));
+                    }
+                }
+                self.view = View::Preview;
+                return Ok(());
+            }
+        }
 
         // Guard: refuse create-pr if a PR is already linked
         if command.id == "create-pr" {
@@ -2178,7 +2252,7 @@ impl App {
             View::NewTaskWizard => self.handle_wizard_event(event),
             View::CommandList => self.handle_command_list_event(event),
             View::TaskEditor => self.handle_task_editor_event(event),
-            View::FeedbackQueue => self.handle_feedback_queue_event(event),
+            View::Queue => self.handle_queue_event(event),
             View::RebaseBranchPicker => self.handle_rebase_branch_picker_event(event),
             View::ReviewWizard => self.handle_review_wizard_event(event),
             View::RestartConfirm => self.handle_restart_confirm_event(event),
@@ -2704,7 +2778,7 @@ impl App {
                     return Ok(false);
                 }
                 KeyCode::Char('w') => {
-                    self.open_feedback_queue();
+                    self.open_queue();
                     return Ok(false);
                 }
                 KeyCode::Char('s') => {
@@ -3137,10 +3211,10 @@ impl App {
         Ok(false)
     }
 
-    fn open_feedback_queue(&mut self) {
+    fn open_queue(&mut self) {
         if let Some(task) = self.selected_task() {
-            if task.queued_feedback_count() == 0 {
-                self.set_status("No feedback queued for this task".to_string());
+            if task.queued_item_count() == 0 {
+                self.set_status("No items queued for this task".to_string());
                 return;
             }
         } else {
@@ -3148,10 +3222,10 @@ impl App {
             return;
         }
         self.selected_queue_index = 0;
-        self.view = View::FeedbackQueue;
+        self.view = View::Queue;
     }
 
-    fn handle_feedback_queue_event(&mut self, event: Event) -> Result<bool> {
+    fn handle_queue_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             // Check for Ctrl+C to quit
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -3160,7 +3234,7 @@ impl App {
             }
 
             let queue_len = self.selected_task()
-                .map(|t| t.queued_feedback_count())
+                .map(|t| t.queued_item_count())
                 .unwrap_or(0);
 
             match key.code {
@@ -3183,12 +3257,10 @@ impl App {
                     }
                 }
                 KeyCode::Char('d') | KeyCode::Delete => {
-                    // Delete selected feedback item
-                    self.delete_queued_feedback()?;
+                    self.delete_queue_item()?;
                 }
                 KeyCode::Char('c') => {
-                    // Clear all queued feedback
-                    self.clear_all_queued_feedback()?;
+                    self.clear_queue()?;
                 }
                 _ => {}
             }
@@ -3784,17 +3856,17 @@ impl App {
         Ok(false)
     }
 
-    fn delete_queued_feedback(&mut self) -> Result<()> {
+    fn delete_queue_item(&mut self) -> Result<()> {
         if let Some(task) = self.tasks.get(self.selected_index) {
-            let queue_len = task.queued_feedback_count();
+            let queue_len = task.queued_item_count();
             if queue_len == 0 {
                 return Ok(());
             }
 
-            use_cases::delete_queued_feedback(task, self.selected_queue_index)?;
+            use_cases::delete_queue_item(task, self.selected_queue_index)?;
 
             // Adjust selected index if needed
-            let remaining = task.queued_feedback_count();
+            let remaining = task.queued_item_count();
             if self.selected_queue_index >= remaining && self.selected_queue_index > 0 {
                 self.selected_queue_index -= 1;
             }
@@ -3809,9 +3881,9 @@ impl App {
         Ok(())
     }
 
-    fn clear_all_queued_feedback(&mut self) -> Result<()> {
+    fn clear_queue(&mut self) -> Result<()> {
         if let Some(task) = self.tasks.get_mut(self.selected_index) {
-            use_cases::clear_all_queued_feedback(task)?;
+            use_cases::clear_queue(task)?;
             self.view = View::Preview;
             self.set_status("Queue cleared".to_string());
         }
@@ -4703,8 +4775,8 @@ pub fn run_tui(config: Config) -> Result<()> {
             if last_refresh.elapsed() >= refresh_interval {
                 if app.view == View::TaskList {
                     app.refresh_tasks();
-                    // Check for stranded feedback queues on stopped tasks
-                    app.process_stranded_feedback();
+                    // Check for stranded queue items on stopped tasks
+                    app.process_stranded_queue();
                 }
                 last_refresh = Instant::now();
             }

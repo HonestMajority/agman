@@ -7,7 +7,8 @@ use ratatui::{
     Frame,
 };
 
-use agman::task::TaskStatus;
+use agman::command::StoredCommand;
+use agman::task::{QueueItem, TaskStatus};
 
 use std::time::Duration;
 
@@ -120,7 +121,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::NewTaskWizard
             | View::CommandList
             | View::TaskEditor
-            | View::FeedbackQueue
+            | View::Queue
             | View::RebaseBranchPicker
             | View::ReviewWizard
             | View::RestartConfirm
@@ -168,9 +169,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_preview(f, app, chunks[0]);
             draw_task_editor(f, app);
         }
-        View::FeedbackQueue => {
+        View::Queue => {
             draw_preview(f, app, chunks[0]);
-            draw_feedback_queue(f, app);
+            draw_queue(f, app);
         }
         View::RebaseBranchPicker => {
             draw_preview(f, app, chunks[0]);
@@ -296,7 +297,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .tasks
         .iter()
         .map(|t| {
-            let queue_count = t.queued_feedback_count();
+            let queue_count = t.queued_item_count();
             let suffix_len = if queue_count > 0 {
                 format!(" (+{})", queue_count).len()
             } else {
@@ -501,7 +502,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         };
 
         // Build display branch name with optional queue indicator
-        let queue_count = task.queued_feedback_count();
+        let queue_count = task.queued_item_count();
         let queue_suffix = if queue_count > 0 {
             format!(" (+{})", queue_count)
         } else {
@@ -634,7 +635,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             "none"
         };
-        let queue_count = task.queued_feedback_count();
+        let queue_count = task.queued_item_count();
 
         let mut header_spans = vec![
             Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
@@ -1475,7 +1476,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]
         }
-        View::FeedbackQueue => {
+        View::Queue => {
             vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
@@ -1970,7 +1971,7 @@ fn draw_command_list(f: &mut Frame, app: &mut App) {
     f.render_stateful_widget(list, chunks[1], &mut app.command_list_state);
 }
 
-fn draw_feedback_queue(f: &mut Frame, app: &App) {
+fn draw_queue(f: &mut Frame, app: &App) {
     let area = centered_rect(70, 60, f.area());
     f.render_widget(Clear, area);
 
@@ -1981,7 +1982,13 @@ fn draw_feedback_queue(f: &mut Frame, app: &App) {
 
     let queue = app
         .selected_task()
-        .map(|t| t.read_feedback_queue())
+        .map(|t| t.read_queue())
+        .unwrap_or_default();
+
+    // Load stored commands for resolving command_id → display name
+    let commands: Vec<StoredCommand> = app
+        .selected_task()
+        .and_then(|_| StoredCommand::list_all(&app.config.commands_dir).ok())
         .unwrap_or_default();
 
     // Split into header, list, and footer
@@ -1996,7 +2003,7 @@ fn draw_feedback_queue(f: &mut Frame, app: &App) {
 
     // Header
     let header = Paragraph::new(Line::from(vec![
-        Span::styled("Queued feedback for: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Queued items for: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             &task_id,
             Style::default()
@@ -2011,7 +2018,7 @@ fn draw_feedback_queue(f: &mut Frame, app: &App) {
     .block(
         Block::default()
             .title(Span::styled(
-                " Feedback Queue ",
+                " Queue ",
                 Style::default()
                     .fg(Color::LightYellow)
                     .add_modifier(Modifier::BOLD),
@@ -2025,7 +2032,7 @@ fn draw_feedback_queue(f: &mut Frame, app: &App) {
     let items: Vec<ListItem> = queue
         .iter()
         .enumerate()
-        .map(|(i, feedback)| {
+        .map(|(i, item)| {
             let is_selected = i == app.selected_queue_index;
             let style = if is_selected {
                 Style::default()
@@ -2037,20 +2044,49 @@ fn draw_feedback_queue(f: &mut Frame, app: &App) {
             };
             let prefix = if is_selected { "▸ " } else { "  " };
 
-            // Truncate feedback preview to fit on one line
-            let preview = if feedback.len() > 60 {
-                format!("{}...", &feedback[..57])
-            } else {
-                feedback.clone()
-            };
-            // Replace newlines with spaces for display
-            let preview = preview.replace('\n', " ");
-
-            ListItem::new(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(prefix, style),
                 Span::styled(format!("{}. ", i + 1), Style::default().fg(Color::DarkGray)),
-                Span::styled(preview, style),
-            ]))
+            ];
+
+            match item {
+                QueueItem::Feedback { text } => {
+                    spans.push(Span::styled("[feedback] ", style));
+                    // Truncate preview to fit on one line
+                    let preview = if text.len() > 50 {
+                        format!("{}...", &text[..47])
+                    } else {
+                        text.clone()
+                    };
+                    let preview = preview.replace('\n', " ");
+                    spans.push(Span::styled(preview, style));
+                }
+                QueueItem::Command { command_id, branch } => {
+                    let tag_style = if is_selected {
+                        Style::default()
+                            .fg(Color::LightMagenta)
+                            .bg(Color::Rgb(40, 40, 60))
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::LightMagenta)
+                    };
+                    spans.push(Span::styled("[cmd] ", tag_style));
+                    // Resolve command_id to display name
+                    let display_name = commands
+                        .iter()
+                        .find(|c| c.id == *command_id)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| command_id.clone());
+                    let label = if let Some(b) = branch {
+                        format!("{} → {}", display_name, b)
+                    } else {
+                        display_name
+                    };
+                    spans.push(Span::styled(label, style));
+                }
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -2066,11 +2102,27 @@ fn draw_feedback_queue(f: &mut Frame, app: &App) {
     f.render_widget(list, chunks[1]);
 
     // Selected item preview (if any)
-    if let Some(feedback) = queue.get(app.selected_queue_index) {
-        let preview_text = if feedback.len() > 200 {
-            format!("{}...", &feedback[..197])
-        } else {
-            feedback.clone()
+    if let Some(item) = queue.get(app.selected_queue_index) {
+        let preview_text = match item {
+            QueueItem::Feedback { text } => {
+                if text.len() > 200 {
+                    format!("{}...", &text[..197])
+                } else {
+                    text.clone()
+                }
+            }
+            QueueItem::Command { command_id, branch } => {
+                let cmd = commands.iter().find(|c| c.id == *command_id);
+                let name = cmd.map(|c| c.name.as_str()).unwrap_or(command_id.as_str());
+                let desc = cmd
+                    .map(|c| c.description.as_str())
+                    .unwrap_or("(no description)");
+                if let Some(b) = branch {
+                    format!("{} → {}  —  {}", name, b, desc)
+                } else {
+                    format!("{}  —  {}", name, desc)
+                }
+            }
         };
         let preview = Paragraph::new(preview_text)
             .style(Style::default().fg(Color::Gray))
