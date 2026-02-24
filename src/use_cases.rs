@@ -44,6 +44,39 @@ pub fn install_hint(tool: &str) -> &'static str {
     }
 }
 
+/// Copy `.env` from the main repo to a new worktree if it exists.
+///
+/// Best-effort: logs a warning on failure, never fails task creation.
+pub fn copy_repo_files_to_worktree(
+    config: &Config,
+    repo_name: &str,
+    worktree_path: &Path,
+) -> Result<()> {
+    let repo_root = config.repo_path(repo_name);
+    let src = repo_root.join(".env");
+
+    if !src.exists() {
+        return Ok(());
+    }
+
+    let dst = worktree_path.join(".env");
+    if dst.exists() {
+        tracing::debug!(repo = repo_name, "worktree already has .env, skipping copy");
+        return Ok(());
+    }
+
+    match std::fs::copy(&src, &dst) {
+        Ok(_) => {
+            tracing::info!(repo = repo_name, "copied .env to worktree");
+        }
+        Err(e) => {
+            tracing::warn!(repo = repo_name, error = %e, "failed to copy .env to worktree");
+        }
+    }
+
+    Ok(())
+}
+
 /// How to handle the worktree when creating a task.
 pub enum WorktreeSource {
     /// Create a brand-new worktree with a new branch.
@@ -112,6 +145,11 @@ pub fn create_task(
             }
         }
     };
+
+    // Copy configured files (e.g. .env) from main repo to worktree (best-effort)
+    if let Err(e) = copy_repo_files_to_worktree(config, repo_name, &worktree_path) {
+        tracing::warn!(repo = repo_name, branch = branch_name, error = %e, "failed to copy repo files to worktree");
+    }
 
     // Create task files
     let mut task = Task::create(
@@ -773,6 +811,11 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> 
             let _ = Git::direnv_allow(&path);
             path
         };
+
+        // Copy configured files (e.g. .env) from main repo to worktree (best-effort)
+        if let Err(e) = copy_repo_files_to_worktree(config, repo_name, &worktree_path) {
+            tracing::warn!(repo = repo_name, branch = %task.meta.branch_name, error = %e, "failed to copy repo files to worktree");
+        }
 
         // Create tmux session (best-effort — tmux may not be available in tests)
         let tmux_session = Config::tmux_session_name(repo_name, &task.meta.branch_name);
