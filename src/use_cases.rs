@@ -44,6 +44,68 @@ pub fn install_hint(tool: &str) -> &'static str {
     }
 }
 
+/// Per-repo configuration read from `.agman.toml` in the repo root.
+#[derive(Debug, Default, Deserialize)]
+struct RepoConfig {
+    #[serde(default)]
+    copy_to_worktree: Vec<String>,
+}
+
+/// Copy files listed in the repo's `.agman.toml` `copy_to_worktree` to a worktree.
+///
+/// Best-effort: logs warnings on individual failures and continues.
+/// Returns `Ok(())` even when individual files fail to copy.
+pub fn copy_repo_files_to_worktree(
+    config: &Config,
+    repo_name: &str,
+    worktree_path: &Path,
+) -> Result<()> {
+    let repo_root = config.repo_path(repo_name);
+    let config_path = repo_root.join(".agman.toml");
+
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&config_path)
+        .context("failed to read .agman.toml")?;
+    let repo_config: RepoConfig = toml::from_str(&content)
+        .context("failed to parse .agman.toml")?;
+
+    for entry in &repo_config.copy_to_worktree {
+        let src = repo_root.join(entry);
+        let dst = worktree_path.join(entry);
+
+        if !src.exists() {
+            tracing::warn!(repo = repo_name, file = entry.as_str(), "source file not found, skipping");
+            continue;
+        }
+
+        if dst.exists() {
+            tracing::debug!(repo = repo_name, file = entry.as_str(), "file already exists in worktree, skipping");
+            continue;
+        }
+
+        if let Some(parent) = dst.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(repo = repo_name, file = entry.as_str(), error = %e, "failed to create parent directory");
+                continue;
+            }
+        }
+
+        match std::fs::copy(&src, &dst) {
+            Ok(_) => {
+                tracing::info!(repo = repo_name, file = entry.as_str(), "copied file to worktree");
+            }
+            Err(e) => {
+                tracing::warn!(repo = repo_name, file = entry.as_str(), error = %e, "failed to copy file to worktree");
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// How to handle the worktree when creating a task.
 pub enum WorktreeSource {
     /// Create a brand-new worktree with a new branch.
@@ -112,6 +174,11 @@ pub fn create_task(
             }
         }
     };
+
+    // Copy configured files (e.g. .env) from main repo to worktree (best-effort)
+    if let Err(e) = copy_repo_files_to_worktree(config, repo_name, &worktree_path) {
+        tracing::warn!(repo = repo_name, branch = branch_name, error = %e, "failed to copy repo files to worktree");
+    }
 
     // Create task files
     let mut task = Task::create(
@@ -773,6 +840,11 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> 
             let _ = Git::direnv_allow(&path);
             path
         };
+
+        // Copy configured files (e.g. .env) from main repo to worktree (best-effort)
+        if let Err(e) = copy_repo_files_to_worktree(config, repo_name, &worktree_path) {
+            tracing::warn!(repo = repo_name, branch = %task.meta.branch_name, error = %e, "failed to copy repo files to worktree");
+        }
 
         // Create tmux session (best-effort — tmux may not be available in tests)
         let tmux_session = Config::tmux_session_name(repo_name, &task.meta.branch_name);

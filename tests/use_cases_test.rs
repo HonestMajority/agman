@@ -2242,3 +2242,58 @@ fn archive_retention_config_roundtrip() {
     let days = use_cases::load_archive_retention(&config);
     assert_eq!(days, 90);
 }
+
+// ---------------------------------------------------------------------------
+// Copy repo files to worktree
+// ---------------------------------------------------------------------------
+
+#[test]
+fn copy_repo_files_to_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let repo_path = init_test_repo(&tmp, "myrepo");
+
+    // Write .agman.toml to repo root
+    std::fs::write(
+        repo_path.join(".agman.toml"),
+        "copy_to_worktree = [\".env\", \"config/secrets.json\"]\n",
+    )
+    .unwrap();
+
+    // Write source files in the main repo
+    std::fs::write(repo_path.join(".env"), "SECRET=abc123\n").unwrap();
+    std::fs::create_dir_all(repo_path.join("config")).unwrap();
+    std::fs::write(
+        repo_path.join("config/secrets.json"),
+        "{\"key\": \"value\"}\n",
+    )
+    .unwrap();
+
+    // Create a worktree directory (simulating worktree creation)
+    let worktree_path = tmp.path().join("worktree");
+    std::fs::create_dir_all(&worktree_path).unwrap();
+
+    // Call the use-case function
+    use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path).unwrap();
+
+    // Assert files were copied with correct content
+    assert_eq!(
+        std::fs::read_to_string(worktree_path.join(".env")).unwrap(),
+        "SECRET=abc123\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree_path.join("config/secrets.json")).unwrap(),
+        "{\"key\": \"value\"}\n"
+    );
+
+    // Write a different .env in the worktree to test no-overwrite
+    std::fs::write(worktree_path.join(".env"), "EXISTING=keep\n").unwrap();
+
+    // Call again — should NOT overwrite the existing file
+    use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(worktree_path.join(".env")).unwrap(),
+        "EXISTING=keep\n"
+    );
+}
