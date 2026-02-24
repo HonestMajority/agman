@@ -550,6 +550,7 @@ pub struct App {
     pub selected_rebase_branch_index: usize,
     pub rebase_branch_list_state: ListState,
     pub pending_branch_command: Option<StoredCommand>,
+    pub rebase_branch_search: TextArea<'static>,
     // Delete mode chooser
     pub archive_mode_index: usize,
     // Restart task wizard
@@ -687,6 +688,7 @@ impl App {
             selected_rebase_branch_index: 0,
             rebase_branch_list_state: ListState::default(),
             pending_branch_command: None,
+            rebase_branch_search: Self::create_plain_editor(),
             archive_mode_index: 0,
             restart_wizard: None,
             restart_pending: false,
@@ -1492,6 +1494,7 @@ impl App {
                 self.rebase_branches = branches;
                 self.selected_rebase_branch_index = preselect_index;
                 self.rebase_branch_list_state.select(Some(preselect_index));
+                self.rebase_branch_search = Self::create_plain_editor();
                 self.view = View::RebaseBranchPicker;
             }
             Err(e) => {
@@ -2533,6 +2536,24 @@ impl App {
             .collect()
     }
 
+    /// Return indices into `self.rebase_branches` that match the current search query.
+    pub fn rebase_branch_filtered_indices(&self) -> Vec<usize> {
+        let query: String = self.rebase_branch_search.lines().join("").to_lowercase();
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        if terms.is_empty() {
+            return (0..self.rebase_branches.len()).collect();
+        }
+        self.rebase_branches
+            .iter()
+            .enumerate()
+            .filter(|(_, branch)| {
+                let branch_lower = branch.to_lowercase();
+                terms.iter().all(|term| branch_lower.contains(term))
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     fn handle_archive_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -3276,31 +3297,57 @@ impl App {
             }
 
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
+                KeyCode::Esc => {
                     self.view = View::Preview;
                 }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if !self.rebase_branches.is_empty() {
-                        self.selected_rebase_branch_index =
-                            (self.selected_rebase_branch_index + 1) % self.rebase_branches.len();
-                        self.rebase_branch_list_state.select(Some(self.selected_rebase_branch_index));
+                KeyCode::Up | KeyCode::Down => {
+                    let filtered = self.rebase_branch_filtered_indices();
+                    if !filtered.is_empty() {
+                        if key.code == KeyCode::Up {
+                            self.selected_rebase_branch_index =
+                                self.selected_rebase_branch_index.saturating_sub(1);
+                        } else {
+                            self.selected_rebase_branch_index =
+                                (self.selected_rebase_branch_index + 1).min(filtered.len() - 1);
+                        }
                     }
                 }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    if !self.rebase_branches.is_empty() {
+                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let filtered = self.rebase_branch_filtered_indices();
+                    if !filtered.is_empty() {
                         self.selected_rebase_branch_index =
-                            if self.selected_rebase_branch_index == 0 {
-                                self.rebase_branches.len() - 1
-                            } else {
-                                self.selected_rebase_branch_index - 1
-                            };
-                        self.rebase_branch_list_state.select(Some(self.selected_rebase_branch_index));
+                            (self.selected_rebase_branch_index + 1).min(filtered.len() - 1);
                     }
+                }
+                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.selected_rebase_branch_index =
+                        self.selected_rebase_branch_index.saturating_sub(1);
                 }
                 KeyCode::Enter => {
-                    if let Some(branch) = self.rebase_branches.get(self.selected_rebase_branch_index).cloned() {
-                        self.run_branch_command(&branch)?;
+                    let filtered = self.rebase_branch_filtered_indices();
+                    if let Some(&real_idx) = filtered.get(self.selected_rebase_branch_index) {
+                        if let Some(branch) = self.rebase_branches.get(real_idx).cloned() {
+                            self.run_branch_command(&branch)?;
+                        }
                     }
+                }
+                KeyCode::Backspace => {
+                    self.rebase_branch_search.input(Input {
+                        key: Key::Backspace,
+                        ctrl: false,
+                        alt: false,
+                        shift: false,
+                    });
+                    self.selected_rebase_branch_index = 0;
+                }
+                KeyCode::Char(c) => {
+                    self.rebase_branch_search.input(Input {
+                        key: Key::Char(c),
+                        ctrl: false,
+                        alt: false,
+                        shift: false,
+                    });
+                    self.selected_rebase_branch_index = 0;
                 }
                 _ => {}
             }

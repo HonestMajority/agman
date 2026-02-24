@@ -1488,7 +1488,19 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" close", Style::default().fg(Color::DarkGray)),
             ]
         }
-        View::RebaseBranchPicker | View::SessionPicker => {
+        View::RebaseBranchPicker => {
+            vec![
+                Span::styled("type", Style::default().fg(Color::LightCyan)),
+                Span::styled(" to filter  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("↑/↓", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightRed)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
+        }
+        View::SessionPicker => {
             vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
@@ -2141,32 +2153,24 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &mut App) {
         .unwrap_or_else(|| "unknown".to_string());
 
     // Dynamic title and labels based on the pending command
-    let (picker_title, header_label, list_title) = match app
+    let (picker_title, header_label) = match app
         .pending_branch_command
         .as_ref()
         .map(|c| c.id.as_str())
     {
-        Some("local-merge") => (
-            " Merge Branch Picker ",
-            "Merge task into: ",
-            " Select branch to merge into (Enter to select, Esc to cancel) ",
-        ),
-        Some("rebase") => (
-            " Rebase Branch Picker ",
-            "Rebase task: ",
-            " Select branch to rebase onto (Enter to select, Esc to cancel) ",
-        ),
-        _ => (
-            " Branch Picker ",
-            "Task: ",
-            " Select branch (Enter to select, Esc to cancel) ",
-        ),
+        Some("local-merge") => (" Merge Branch Picker ", "Merge task into: "),
+        Some("rebase") => (" Rebase Branch Picker ", "Rebase task: "),
+        _ => (" Branch Picker ", "Task: "),
     };
 
-    // Split into header and list
+    // Split into header, search input, and list
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(5),
+        ])
         .split(area);
 
     // Header
@@ -2192,13 +2196,34 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &mut App) {
     );
     f.render_widget(header, chunks[0]);
 
-    // Branch list
-    let items: Vec<ListItem> = app
-        .rebase_branches
+    // Search input
+    let search_block = Block::default()
+        .title(" Filter ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::LightCyan));
+    let search_inner = search_block.inner(chunks[1]);
+    f.render_widget(search_block, chunks[1]);
+    f.render_widget(&app.rebase_branch_search, search_inner);
+
+    // Filtered results
+    let filtered = app.rebase_branch_filtered_indices();
+    let query: String = app.rebase_branch_search.lines().join("").to_lowercase();
+    let terms: Vec<&str> = query.split_whitespace().collect();
+
+    // Clamp selection
+    if !filtered.is_empty() && app.selected_rebase_branch_index >= filtered.len() {
+        app.selected_rebase_branch_index = filtered.len() - 1;
+    }
+
+    let items: Vec<ListItem> = filtered
         .iter()
         .enumerate()
-        .map(|(i, branch)| {
-            let style = if i == app.selected_rebase_branch_index {
+        .map(|(i, &real_idx)| {
+            let branch = &app.rebase_branches[real_idx];
+            let is_selected = i == app.selected_rebase_branch_index;
+
+            let prefix = if is_selected { "▸ " } else { "  " };
+            let prefix_style = if is_selected {
                 Style::default()
                     .fg(Color::White)
                     .bg(Color::Rgb(40, 40, 60))
@@ -2206,18 +2231,31 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &mut App) {
             } else {
                 Style::default().fg(Color::Gray)
             };
-            let prefix = if i == app.selected_rebase_branch_index {
-                "▸ "
-            } else {
-                "  "
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(branch, style),
-            ]))
+
+            let mut spans: Vec<Span> = vec![Span::styled(prefix, prefix_style)];
+
+            // Branch name with match highlighting
+            for (seg, is_match) in highlight_segments(branch, &terms) {
+                let style = if is_match {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_selected {
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(Color::Rgb(40, 40, 60))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                spans.push(Span::styled(seg.to_string(), style));
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
+    let list_title = format!(" Branches ({}) ", filtered.len());
     let list = List::new(items)
         .block(
             Block::default()
@@ -2230,7 +2268,13 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &mut App) {
         )
         .highlight_style(Style::default());
 
-    f.render_stateful_widget(list, chunks[1], &mut app.rebase_branch_list_state);
+    app.rebase_branch_list_state.select(if filtered.is_empty() {
+        None
+    } else {
+        Some(app.selected_rebase_branch_index)
+    });
+
+    f.render_stateful_widget(list, chunks[2], &mut app.rebase_branch_list_state);
 }
 
 fn draw_session_picker(f: &mut Frame, app: &App) {
