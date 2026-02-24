@@ -44,62 +44,33 @@ pub fn install_hint(tool: &str) -> &'static str {
     }
 }
 
-/// Per-repo configuration read from `.agman.toml` in the repo root.
-#[derive(Debug, Default, Deserialize)]
-struct RepoConfig {
-    #[serde(default)]
-    copy_to_worktree: Vec<String>,
-}
-
-/// Copy files listed in the repo's `.agman.toml` `copy_to_worktree` to a worktree.
+/// Copy `.env` from the main repo to a new worktree if it exists.
 ///
-/// Best-effort: logs warnings on individual failures and continues.
-/// Returns `Ok(())` even when individual files fail to copy.
+/// Best-effort: logs a warning on failure, never fails task creation.
 pub fn copy_repo_files_to_worktree(
     config: &Config,
     repo_name: &str,
     worktree_path: &Path,
 ) -> Result<()> {
     let repo_root = config.repo_path(repo_name);
-    let config_path = repo_root.join(".agman.toml");
+    let src = repo_root.join(".env");
 
-    if !config_path.exists() {
+    if !src.exists() {
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&config_path)
-        .context("failed to read .agman.toml")?;
-    let repo_config: RepoConfig = toml::from_str(&content)
-        .context("failed to parse .agman.toml")?;
+    let dst = worktree_path.join(".env");
+    if dst.exists() {
+        tracing::debug!(repo = repo_name, "worktree already has .env, skipping copy");
+        return Ok(());
+    }
 
-    for entry in &repo_config.copy_to_worktree {
-        let src = repo_root.join(entry);
-        let dst = worktree_path.join(entry);
-
-        if !src.exists() {
-            tracing::warn!(repo = repo_name, file = entry.as_str(), "source file not found, skipping");
-            continue;
+    match std::fs::copy(&src, &dst) {
+        Ok(_) => {
+            tracing::info!(repo = repo_name, "copied .env to worktree");
         }
-
-        if dst.exists() {
-            tracing::debug!(repo = repo_name, file = entry.as_str(), "file already exists in worktree, skipping");
-            continue;
-        }
-
-        if let Some(parent) = dst.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::warn!(repo = repo_name, file = entry.as_str(), error = %e, "failed to create parent directory");
-                continue;
-            }
-        }
-
-        match std::fs::copy(&src, &dst) {
-            Ok(_) => {
-                tracing::info!(repo = repo_name, file = entry.as_str(), "copied file to worktree");
-            }
-            Err(e) => {
-                tracing::warn!(repo = repo_name, file = entry.as_str(), error = %e, "failed to copy file to worktree");
-            }
+        Err(e) => {
+            tracing::warn!(repo = repo_name, error = %e, "failed to copy .env to worktree");
         }
     }
 

@@ -2253,21 +2253,8 @@ fn copy_repo_files_to_worktree() {
     let config = test_config(&tmp);
     let repo_path = init_test_repo(&tmp, "myrepo");
 
-    // Write .agman.toml to repo root
-    std::fs::write(
-        repo_path.join(".agman.toml"),
-        "copy_to_worktree = [\".env\", \"config/secrets.json\"]\n",
-    )
-    .unwrap();
-
-    // Write source files in the main repo
+    // Write .env in the main repo
     std::fs::write(repo_path.join(".env"), "SECRET=abc123\n").unwrap();
-    std::fs::create_dir_all(repo_path.join("config")).unwrap();
-    std::fs::write(
-        repo_path.join("config/secrets.json"),
-        "{\"key\": \"value\"}\n",
-    )
-    .unwrap();
 
     // Create a worktree directory (simulating worktree creation)
     let worktree_path = tmp.path().join("worktree");
@@ -2276,14 +2263,10 @@ fn copy_repo_files_to_worktree() {
     // Call the use-case function
     use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path).unwrap();
 
-    // Assert files were copied with correct content
+    // Assert .env was copied with correct content
     assert_eq!(
         std::fs::read_to_string(worktree_path.join(".env")).unwrap(),
         "SECRET=abc123\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(worktree_path.join("config/secrets.json")).unwrap(),
-        "{\"key\": \"value\"}\n"
     );
 
     // Write a different .env in the worktree to test no-overwrite
