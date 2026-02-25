@@ -684,30 +684,34 @@ Instructions:
 1. Read the target branch name from the file `.branch-target` in the current task directory (the task dir path is in the meta.json, or you can look for .branch-target in the worktree root or task dir).
    - If .branch-target does not exist, also check for `.rebase-target` as a fallback (legacy name)
    - If neither exists in the working directory, check the task dir at ~/.agman/tasks/<task_id>/
-2. Fetch the latest changes for the target branch from origin (if origin exists):
+2. Review the `# Current Task` section appended to this prompt. Understand:
+   - The branch's goal — what feature or fix is being implemented
+   - Which files are central to the task (e.g., files mentioned in the plan or goal)
+   - What changes this branch is making — so you can preserve them during conflict resolution
+3. Fetch the latest changes for the target branch from origin (if origin exists):
    ```
    git fetch origin <target_branch>
    ```
    If fetch fails (e.g., no remote), that's okay - just use the local branch.
-3. Determine the rebase target ref:
+4. Determine the rebase target ref:
    - If `origin/<target_branch>` exists, rebase onto `origin/<target_branch>`
    - Otherwise, rebase onto the local `<target_branch>`
-4. Run the rebase:
+5. Run the rebase:
    ```
    git rebase <target_ref>
    ```
-5. If there are conflicts:
+6. If there are conflicts:
    a. For each conflicted file, examine the conflict markers
-   b. Resolve the conflict using your best judgment:
-      - Prefer keeping the current branch's changes when they implement task-specific features
-      - Accept the target branch's changes for infrastructure, dependencies, or unrelated code
-      - When both sides have meaningful changes, merge them intelligently
+   b. Use your understanding of the task goals from step 2 to guide resolution:
+      - For files central to the task: carefully merge both sides, preserving the task-specific changes while incorporating upstream updates
+      - For files unrelated to the task: prefer the target branch's version unless the task explicitly modified them
+      - When both sides have meaningful changes, merge them intelligently — task goals take priority
    c. After resolving each file: `git add <file>`
    d. Continue the rebase: `git rebase --continue`
    e. Repeat until the rebase is complete
-6. After the rebase is complete, verify the code still compiles by running the build command (e.g., `cargo build`, `npm run build`, etc. - check the project type)
-7. Read TASK.md and verify the task goals are still being met (the code changes haven't been lost)
-8. Clean up: remove the `.branch-target` and `.rebase-target` files if they exist in the working directory or task dir
+7. After the rebase is complete, verify the code still compiles by running the build command (e.g., `cargo build`, `npm run build`, etc. - check the project type)
+8. Read TASK.md and verify the task goals are still being met (the code changes haven't been lost)
+9. Clean up: remove the `.branch-target` and `.rebase-target` files if they exist in the working directory or task dir
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
