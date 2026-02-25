@@ -956,7 +956,7 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_delete_confirm(f: &mut Frame, app: &App, retention_days: u64) {
-    let area = centered_rect(55, 45, f.area());
+    let area = centered_rect(55, 55, f.area());
 
     f.render_widget(Clear, area);
 
@@ -983,9 +983,18 @@ fn draw_delete_confirm(f: &mut Frame, app: &App, retention_days: u64) {
     } else {
         Style::default().fg(Color::Gray)
     };
+    let delete_style = if sel == 2 {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(60, 20, 20))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
 
     let archive_prefix = if sel == 0 { "▸ " } else { "  " };
     let save_prefix = if sel == 1 { "▸ " } else { "  " };
+    let delete_prefix = if sel == 2 { "▸ " } else { "  " };
 
     let text = vec![
         Line::from(""),
@@ -1021,12 +1030,25 @@ fn draw_delete_confirm(f: &mut Frame, app: &App, retention_days: u64) {
             "    Use for tasks you want to keep permanently.",
             Style::default().fg(Color::LightCyan),
         )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("{}Delete", delete_prefix),
+            delete_style,
+        )),
+        Line::from(Span::styled(
+            "    Kill tmux, remove worktree, delete branches",
+            Style::default().fg(Color::LightRed),
+        )),
+        Line::from(Span::styled(
+            "    and task files. Irreversible.",
+            Style::default().fg(Color::LightRed),
+        )),
     ];
 
     let popup = Paragraph::new(text).block(
         Block::default()
             .title(Span::styled(
-                " Archive Task ",
+                " Remove Task ",
                 Style::default()
                     .fg(Color::LightBlue)
                     .add_modifier(Modifier::BOLD),

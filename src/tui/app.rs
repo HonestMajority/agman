@@ -1186,6 +1186,43 @@ impl App {
         Ok(())
     }
 
+    fn fully_delete_task(&mut self) -> Result<()> {
+        if self.tasks.is_empty() {
+            return Ok(());
+        }
+
+        let task = self.tasks.remove(self.selected_index);
+        let task_id = task.meta.task_id();
+
+        tracing::info!(task_id = %task_id, "TUI: full delete requested");
+        self.log_output(format!("Fully deleting task {}...", task_id));
+
+        // Kill tmux sessions for all repos (side effect)
+        if task.meta.has_repos() {
+            for repo in &task.meta.repos {
+                let _ = Tmux::kill_session(&repo.tmux_session);
+            }
+        }
+        // Also kill the parent-dir session (used for repo-inspector in multi-repo tasks)
+        if task.meta.is_multi_repo() {
+            let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+            let _ = Tmux::kill_session(&parent_session);
+        }
+        self.log_output("  Killed tmux session(s)".to_string());
+
+        // Delegate business logic to use_cases
+        use_cases::fully_delete_task(&self.config, task)?;
+        self.log_output("  Deleted task".to_string());
+
+        if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
+            self.selected_index = self.tasks.len() - 1;
+        }
+
+        self.set_status(format!("Deleted: {}", task_id));
+        self.view = View::TaskList;
+        Ok(())
+    }
+
     fn start_feedback(&mut self) {
         // Clear the feedback editor and start in insert mode
         self.feedback_editor = VimTextArea::new();
@@ -2992,14 +3029,17 @@ impl App {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    self.archive_mode_index = (self.archive_mode_index + 1) % 2;
+                    self.archive_mode_index = (self.archive_mode_index + 1) % 3;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    self.archive_mode_index = if self.archive_mode_index == 0 { 1 } else { 0 };
+                    self.archive_mode_index = (self.archive_mode_index + 2) % 3;
                 }
                 KeyCode::Enter => {
-                    let saved = self.archive_mode_index == 1;
-                    self.archive_task(saved)?;
+                    match self.archive_mode_index {
+                        0 => self.archive_task(false)?,
+                        1 => self.archive_task(true)?,
+                        _ => self.fully_delete_task()?,
+                    }
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
