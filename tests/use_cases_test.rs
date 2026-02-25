@@ -351,6 +351,52 @@ fn permanently_delete_archived_task() {
 }
 
 // ---------------------------------------------------------------------------
+// Fully delete task
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fully_delete_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo_path = init_test_repo(&tmp, "myrepo");
+
+    let task = use_cases::create_task(
+        &config,
+        "myrepo",
+        "full-del",
+        "desc",
+        "new",
+        WorktreeSource::NewBranch { base_branch: None },
+        false,
+    )
+    .unwrap();
+
+    let task_dir = task.dir.clone();
+
+    // Branch should exist after creation
+    let branch_check = std::process::Command::new("git")
+        .args(["branch", "--list", "full-del"])
+        .current_dir(&_repo_path)
+        .output()
+        .unwrap();
+    assert!(!branch_check.stdout.is_empty(), "branch should exist after creation");
+
+    use_cases::fully_delete_task(&config, task).unwrap();
+    assert!(!task_dir.exists(), "task directory should be removed");
+
+    // Branch should be deleted after full delete
+    let branch_check = std::process::Command::new("git")
+        .args(["branch", "--list", "full-del"])
+        .current_dir(&_repo_path)
+        .output()
+        .unwrap();
+    assert!(
+        branch_check.stdout.is_empty(),
+        "branch should be deleted after full delete"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Stop task
 // ---------------------------------------------------------------------------
 

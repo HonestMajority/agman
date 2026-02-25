@@ -261,6 +261,29 @@ pub fn permanently_delete_archived_task(config: &Config, task: Task) -> Result<(
     Ok(())
 }
 
+/// Fully delete a task: remove worktrees, delete branches, and remove the task
+/// directory. This is the "nuclear option" — everything is gone immediately.
+///
+/// Like `archive_task`, this does NOT kill tmux sessions — the caller handles that.
+pub fn fully_delete_task(config: &Config, task: Task) -> Result<()> {
+    tracing::info!(task_id = %task.meta.task_id(), "fully deleting task");
+
+    // Remove worktrees (best-effort)
+    for repo in &task.meta.repos {
+        let repo_path = config.repo_path(&repo.repo_name);
+        let _ = Git::remove_worktree(&repo_path, &repo.worktree_path);
+    }
+
+    // Delete branches (best-effort)
+    for repo in &task.meta.repos {
+        let repo_path = config.repo_path(&repo.repo_name);
+        let _ = Git::delete_branch(&repo_path, &task.meta.branch_name);
+    }
+
+    task.delete(config)?;
+    Ok(())
+}
+
 /// Toggle the saved flag on an archived task.
 pub fn toggle_archive_saved(_config: &Config, task: &mut Task) -> Result<()> {
     let new_saved = !task.meta.saved;
