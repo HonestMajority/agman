@@ -1458,12 +1458,7 @@ impl App {
                     if branch.contains("HEAD") {
                         continue;
                     }
-                    // Only add if not already represented by a local branch
-                    // e.g., if we have "main" locally, don't add "origin/main"
-                    let short_name = branch.split('/').skip(1).collect::<Vec<_>>().join("/");
-                    if !branches.contains(&short_name) {
-                        branches.push(branch.to_string());
-                    }
+                    branches.push(branch.to_string());
                 }
             }
         }
@@ -2580,7 +2575,8 @@ impl App {
         if terms.is_empty() {
             return (0..self.rebase_branches.len()).collect();
         }
-        self.rebase_branches
+        let mut matched: Vec<usize> = self
+            .rebase_branches
             .iter()
             .enumerate()
             .filter(|(_, branch)| {
@@ -2588,7 +2584,13 @@ impl App {
                 terms.iter().all(|term| branch_lower.contains(term))
             })
             .map(|(i, _)| i)
-            .collect()
+            .collect();
+        matched.sort_by(|&a, &b| {
+            let score_a = branch_search_score(&self.rebase_branches[a], &terms);
+            let score_b = branch_search_score(&self.rebase_branches[b], &terms);
+            score_b.cmp(&score_a)
+        });
+        matched
     }
 
     fn handle_archive_event(&mut self, event: Event) -> Result<bool> {
@@ -4793,6 +4795,24 @@ impl Drop for App {
         break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
         self.stop_caffeinate();
     }
+}
+
+/// Score a branch name against search terms for relevance ranking.
+/// Higher score = more relevant. Used by `rebase_branch_filtered_indices()`.
+fn branch_search_score(branch: &str, terms: &[&str]) -> i64 {
+    let branch_lower = branch.to_lowercase();
+    let segments: Vec<&str> = branch_lower.split(|c| c == '/' || c == '-').collect();
+    let mut score: i64 = 0;
+    for term in terms {
+        if branch_lower == *term {
+            score += 1000;
+        } else if segments.iter().any(|seg| seg.starts_with(term)) {
+            score += 100;
+        }
+    }
+    // Shorter branch names rank higher as tiebreaker
+    score -= branch.len() as i64;
+    score
 }
 
 pub fn run_tui(config: Config) -> Result<()> {
