@@ -8,7 +8,7 @@ use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use std::io;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tokio::sync::mpsc as tokio_mpsc;
 use std::time::{Duration, Instant};
@@ -296,6 +296,8 @@ pub struct ReviewWizard {
     pub step: ReviewWizardStep,
     /// The repo name, selected via DirectoryPicker before creating the wizard.
     pub selected_repo: String,
+    /// The actual filesystem path of the repo (may be outside repos_dir).
+    pub selected_repo_path: PathBuf,
     pub branch_source: BranchSource,
     pub branch_editor: TextArea<'static>,
     pub existing_branches: Vec<String>,
@@ -1366,8 +1368,8 @@ impl App {
         let (branches, worktrees) = if is_multi {
             (Vec::new(), Vec::new())
         } else {
-            let branches = self.scan_branches(&repo_name)?;
-            let worktrees = self.scan_existing_worktrees(&repo_name)?;
+            let branches = self.scan_branches(&repo_name, &repo_path)?;
+            let worktrees = self.scan_existing_worktrees(&repo_name, &repo_path)?;
             (branches, worktrees)
         };
 
@@ -1394,9 +1396,9 @@ impl App {
     }
 
     /// Create a ReviewWizard from a directory picker selection, starting at `EnterBranch`.
-    fn create_review_wizard_from_picker(&mut self, repo_name: String) -> Result<()> {
-        let branches = self.scan_branches(&repo_name)?;
-        let worktrees = self.scan_existing_worktrees(&repo_name)?;
+    fn create_review_wizard_from_picker(&mut self, repo_name: String, repo_path: PathBuf) -> Result<()> {
+        let branches = self.scan_branches(&repo_name, &repo_path)?;
+        let worktrees = self.scan_existing_worktrees(&repo_name, &repo_path)?;
 
         let mut branch_editor = Self::create_plain_editor();
         branch_editor.set_cursor_line_style(ratatui::style::Style::default());
@@ -1404,6 +1406,7 @@ impl App {
         self.review_wizard = Some(ReviewWizard {
             step: ReviewWizardStep::EnterBranch,
             selected_repo: repo_name,
+            selected_repo_path: repo_path,
             branch_source: BranchSource::NewBranch,
             branch_editor,
             existing_branches: branches,
@@ -1425,12 +1428,10 @@ impl App {
         Ok(())
     }
 
-    fn scan_rebase_branches(&self, repo_name: &str, local_only: bool) -> Result<Vec<String>> {
-        let repo_path = self.config.repo_path(repo_name);
-
+    fn scan_rebase_branches(&self, repo_path: &Path, local_only: bool) -> Result<Vec<String>> {
         // Get local branches
         let output = Command::new("git")
-            .current_dir(&repo_path)
+            .current_dir(repo_path)
             .args(["branch", "--list", "--format=%(refname:short)"])
             .output()?;
 
@@ -1446,7 +1447,7 @@ impl App {
         if !local_only {
             // Also get remote-tracking branches
             let remote_output = Command::new("git")
-                .current_dir(&repo_path)
+                .current_dir(repo_path)
                 .args(["branch", "-r", "--format=%(refname:short)"])
                 .output()?;
 
@@ -1466,13 +1467,13 @@ impl App {
         branches.sort();
         branches.dedup();
 
-        tracing::debug!(repo = %repo_name, count = branches.len(), local_only, "scanned branches for picker");
+        tracing::debug!(repo = %repo_path.display(), count = branches.len(), local_only, "scanned branches for picker");
 
         Ok(branches)
     }
 
     fn open_branch_picker(&mut self) {
-        let repo_name = match self.selected_task() {
+        let (_repo_name, repo_path) = match self.selected_task() {
             Some(t) => {
                 if t.meta.is_multi_repo() {
                     self.set_status("Branch picker not supported for multi-repo tasks".to_string());
@@ -1482,7 +1483,9 @@ impl App {
                     self.set_status("Task has no repos configured yet".to_string());
                     return;
                 }
-                t.meta.primary_repo().repo_name.clone()
+                let name = t.meta.primary_repo().repo_name.clone();
+                let path = self.config.repo_path_for(t.meta.parent_dir.as_deref(), &name);
+                (name, path)
             }
             None => {
                 self.set_status("No task selected".to_string());
@@ -1496,7 +1499,7 @@ impl App {
             .map(|c| c.id == "local-merge")
             .unwrap_or(false);
 
-        match self.scan_rebase_branches(&repo_name, local_only) {
+        match self.scan_rebase_branches(&repo_path, local_only) {
             Ok(branches) => {
                 if branches.is_empty() {
                     self.set_status("No branches found".to_string());
@@ -1722,11 +1725,9 @@ impl App {
         Ok(())
     }
 
-    fn scan_branches(&self, repo_name: &str) -> Result<Vec<String>> {
-        let repo_path = self.config.repo_path(repo_name);
-
+    fn scan_branches(&self, repo_name: &str, repo_path: &Path) -> Result<Vec<String>> {
         let output = Command::new("git")
-            .current_dir(&repo_path)
+            .current_dir(repo_path)
             .args(["branch", "--list", "--format=%(refname:short)"])
             .output()?;
 
@@ -1751,9 +1752,9 @@ impl App {
         Ok(branches)
     }
 
-    fn scan_existing_worktrees(&self, repo_name: &str) -> Result<Vec<(String, PathBuf)>> {
-        let repo_path = self.config.repo_path(repo_name);
-        let worktrees = Git::list_worktrees(&repo_path)?;
+    fn scan_existing_worktrees(&self, repo_name: &str, repo_path: &Path) -> Result<Vec<(String, PathBuf)>> {
+        let repo_path_buf = repo_path.to_path_buf();
+        let worktrees = Git::list_worktrees(&repo_path_buf)?;
 
         // Build set of branches that already have tasks for this repo
         let existing_tasks: std::collections::HashSet<String> = self
@@ -1763,7 +1764,7 @@ impl App {
             .map(|t| t.meta.branch_name.clone())
             .collect();
 
-        let main_repo_path = repo_path.canonicalize().unwrap_or(repo_path);
+        let main_repo_path = repo_path.canonicalize().unwrap_or(repo_path_buf);
 
         let orphans: Vec<(String, PathBuf)> = worktrees
             .into_iter()
@@ -1971,7 +1972,15 @@ impl App {
             self.refresh_tasks_and_select(&task_id);
             self.set_status(format!("Created multi-repo task: {}", task_id));
         } else {
-            // Single-repo path: existing behavior
+            // Single-repo path: compute parent_dir when repo is outside repos_dir
+            let parent_dir = repo_path.parent().and_then(|p| {
+                if p != self.config.repos_dir {
+                    Some(p.to_path_buf())
+                } else {
+                    None
+                }
+            });
+
             let task = match use_cases::create_task(
                 &self.config,
                 &name,
@@ -1980,6 +1989,7 @@ impl App {
                 "new",
                 worktree_source,
                 review_after,
+                parent_dir,
             ) {
                 Ok(t) => t,
                 Err(e) => {
@@ -2027,6 +2037,7 @@ impl App {
         };
 
         let repo_name = wizard.selected_repo_name().to_string();
+        let repo_path = wizard.selected_repo_path.clone();
 
         let (branch_name, worktree_source) = match wizard.branch_source {
             BranchSource::ExistingWorktree => {
@@ -2046,6 +2057,15 @@ impl App {
             }
         };
 
+        // Compute parent_dir when repo is outside repos_dir
+        let parent_dir = repo_path.parent().and_then(|p| {
+            if p != self.config.repos_dir {
+                Some(p.to_path_buf())
+            } else {
+                None
+            }
+        });
+
         tracing::info!(repo = %repo_name, branch = %branch_name, "creating setup-only task via wizard");
         self.log_output(format!("Creating setup-only task {}--{}...", repo_name, branch_name));
 
@@ -2055,6 +2075,7 @@ impl App {
             &repo_name,
             &branch_name,
             worktree_source,
+            parent_dir,
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -2193,6 +2214,7 @@ impl App {
         };
 
         let repo_name = wizard.selected_repo_name().to_string();
+        let repo_path = wizard.selected_repo_path.clone();
         let (branch_name, worktree_source) = match wizard.branch_source {
             BranchSource::ExistingWorktree => {
                 let (branch, path) =
@@ -2209,6 +2231,15 @@ impl App {
             }
         };
 
+        // Compute parent_dir when repo is outside repos_dir
+        let parent_dir = repo_path.parent().and_then(|p| {
+            if p != self.config.repos_dir {
+                Some(p.to_path_buf())
+            } else {
+                None
+            }
+        });
+
         self.log_output(format!(
             "Creating review task {}--{}...",
             repo_name, branch_name
@@ -2220,6 +2251,7 @@ impl App {
             &repo_name,
             &branch_name,
             worktree_source,
+            parent_dir,
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -4328,7 +4360,7 @@ impl App {
                 DirKind::GitRepo => {
                     self.dir_picker = None;
                     tracing::info!(repo = %entry_name, path = %entry_path.display(), "selected git repo from review picker");
-                    self.create_review_wizard_from_picker(entry_name)?;
+                    self.create_review_wizard_from_picker(entry_name, entry_path)?;
                 }
                 DirKind::MultiRepoParent | DirKind::Plain => {
                     // Navigate into — review wizard only accepts single git repos

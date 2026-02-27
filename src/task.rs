@@ -68,10 +68,18 @@ pub struct TaskMeta {
     pub flow_step: usize,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    /// For multi-repo tasks: the parent directory containing all repos.
-    /// None for single-repo tasks.
+    /// The parent directory containing the repo(s), when it differs from `config.repos_dir`.
+    /// Set for multi-repo tasks (always) and single-repo tasks whose repo lives outside `repos_dir`.
+    /// `None` when the repo is under `config.repos_dir`.
     #[serde(default)]
     pub parent_dir: Option<PathBuf>,
+    /// Whether this is a multi-repo task (multiple repos sharing one branch).
+    /// Distinct from `parent_dir` which can also be set for single-repo tasks
+    /// whose repo lives outside `repos_dir`.
+    /// `None` for tasks created before this field existed — falls back to
+    /// `parent_dir.is_some()` for backward compatibility.
+    #[serde(default)]
+    pub multi_repo: Option<bool>,
     /// When true, run the review-pr command automatically after the flow completes
     #[serde(default)]
     pub review_after: bool,
@@ -136,6 +144,7 @@ impl TaskMeta {
             created_at: now,
             updated_at: now,
             parent_dir: None,
+            multi_repo: Some(false),
             review_after: false,
             linked_pr: None,
             last_review_count: None,
@@ -165,6 +174,7 @@ impl TaskMeta {
             created_at: now,
             updated_at: now,
             parent_dir: Some(parent_dir),
+            multi_repo: Some(true),
             review_after: false,
             linked_pr: None,
             last_review_count: None,
@@ -186,10 +196,15 @@ impl TaskMeta {
     }
 
     /// Whether this is a multi-repo task.
-    /// Uses `parent_dir` as the indicator, not repos count, because multi-repo
-    /// tasks start with empty repos (before `setup_repos` post-hook runs).
+    /// Uses the explicit `multi_repo` field when present. Falls back to
+    /// `parent_dir.is_some()` for tasks created before the field existed.
     pub fn is_multi_repo(&self) -> bool {
-        self.parent_dir.is_some()
+        match self.multi_repo {
+            Some(v) => v,
+            // Backward compat: tasks created before `multi_repo` was added
+            // used `parent_dir` exclusively for multi-repo tasks.
+            None => self.parent_dir.is_some(),
+        }
     }
 
     /// Returns true if repos have been populated (safe to call `primary_repo()`).

@@ -51,8 +51,9 @@ pub fn copy_repo_files_to_worktree(
     config: &Config,
     repo_name: &str,
     worktree_path: &Path,
+    parent_dir: Option<&Path>,
 ) -> Result<()> {
-    let repo_root = config.repo_path(repo_name);
+    let repo_root = config.repo_path_for(parent_dir, repo_name);
     let src = repo_root.join(".env");
 
     if !src.exists() {
@@ -102,6 +103,7 @@ pub fn create_task(
     flow_name: &str,
     worktree_source: WorktreeSource,
     review_after: bool,
+    parent_dir: Option<PathBuf>,
 ) -> Result<Task> {
     tracing::info!(
         repo = repo_name,
@@ -110,6 +112,8 @@ pub fn create_task(
         review_after,
         "creating task"
     );
+    let parent_dir_ref = parent_dir.as_deref();
+
     // Initialize default files (flows, prompts, commands)
     config.init_default_files(false)?;
 
@@ -120,26 +124,26 @@ pub fn create_task(
             path
         }
         WorktreeSource::NewBranch { base_branch } => {
-            let candidate = config.worktree_path(repo_name, branch_name);
+            let candidate = config.worktree_path_for(parent_dir_ref, repo_name, branch_name);
             if candidate.exists() {
                 tracing::info!(repo = repo_name, branch = branch_name, "worktree already exists, reusing");
                 let _ = Git::direnv_allow(&candidate);
                 candidate
             } else {
-                let path = Git::create_worktree_quiet(config, repo_name, branch_name, base_branch.as_deref())?;
+                let path = Git::create_worktree_quiet(config, repo_name, branch_name, base_branch.as_deref(), parent_dir_ref)?;
                 let _ = Git::direnv_allow(&path);
                 path
             }
         }
         WorktreeSource::ExistingBranch => {
-            let candidate = config.worktree_path(repo_name, branch_name);
+            let candidate = config.worktree_path_for(parent_dir_ref, repo_name, branch_name);
             if candidate.exists() {
                 tracing::info!(repo = repo_name, branch = branch_name, "worktree already exists, reusing");
                 let _ = Git::direnv_allow(&candidate);
                 candidate
             } else {
                 let path =
-                    Git::create_worktree_for_existing_branch_quiet(config, repo_name, branch_name)?;
+                    Git::create_worktree_for_existing_branch_quiet(config, repo_name, branch_name, parent_dir_ref)?;
                 let _ = Git::direnv_allow(&path);
                 path
             }
@@ -147,7 +151,7 @@ pub fn create_task(
     };
 
     // Copy configured files (e.g. .env) from main repo to worktree (best-effort)
-    if let Err(e) = copy_repo_files_to_worktree(config, repo_name, &worktree_path) {
+    if let Err(e) = copy_repo_files_to_worktree(config, repo_name, &worktree_path, parent_dir_ref) {
         tracing::warn!(repo = repo_name, branch = branch_name, error = %e, "failed to copy repo files to worktree");
     }
 
@@ -160,6 +164,12 @@ pub fn create_task(
         flow_name,
         worktree_path,
     )?;
+
+    // Store parent_dir if repo is outside repos_dir
+    if parent_dir.is_some() {
+        task.meta.parent_dir = parent_dir;
+        task.save_meta()?;
+    }
 
     // Ensure TASK.md is excluded from git tracking
     let _ = task.ensure_git_excludes_task();
@@ -230,8 +240,9 @@ pub fn archive_task(config: &Config, task: &mut Task, saved: bool) -> Result<()>
     tracing::info!(task_id = %task.meta.task_id(), saved, "archiving task");
 
     // Remove worktrees (branches are kept for later reference)
+    let parent_dir = task.meta.parent_dir.as_deref();
     for repo in &task.meta.repos {
-        let repo_path = config.repo_path(&repo.repo_name);
+        let repo_path = config.repo_path_for(parent_dir, &repo.repo_name);
         let _ = Git::remove_worktree(&repo_path, &repo.worktree_path);
     }
 
@@ -252,8 +263,9 @@ pub fn permanently_delete_archived_task(config: &Config, task: Task) -> Result<(
     tracing::info!(task_id = %task.meta.task_id(), "permanently deleting archived task");
 
     // Delete branches for all repos (best-effort)
+    let parent_dir = task.meta.parent_dir.as_deref();
     for repo in &task.meta.repos {
-        let repo_path = config.repo_path(&repo.repo_name);
+        let repo_path = config.repo_path_for(parent_dir, &repo.repo_name);
         let _ = Git::delete_branch(&repo_path, &task.meta.branch_name);
     }
 
@@ -269,14 +281,15 @@ pub fn fully_delete_task(config: &Config, task: Task) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), "fully deleting task");
 
     // Remove worktrees (best-effort)
+    let parent_dir = task.meta.parent_dir.as_deref();
     for repo in &task.meta.repos {
-        let repo_path = config.repo_path(&repo.repo_name);
+        let repo_path = config.repo_path_for(parent_dir, &repo.repo_name);
         let _ = Git::remove_worktree(&repo_path, &repo.worktree_path);
     }
 
     // Delete branches (best-effort)
     for repo in &task.meta.repos {
-        let repo_path = config.repo_path(&repo.repo_name);
+        let repo_path = config.repo_path_for(parent_dir, &repo.repo_name);
         let _ = Git::delete_branch(&repo_path, &task.meta.branch_name);
     }
 
@@ -555,12 +568,15 @@ pub fn create_setup_only_task(
     repo_name: &str,
     branch_name: &str,
     worktree_source: WorktreeSource,
+    parent_dir: Option<PathBuf>,
 ) -> Result<Task> {
     tracing::info!(
         repo = repo_name,
         branch = branch_name,
         "creating setup-only task"
     );
+    let parent_dir_ref = parent_dir.as_deref();
+
     // Initialize default files (flows, prompts, commands)
     config.init_default_files(false)?;
 
@@ -571,13 +587,13 @@ pub fn create_setup_only_task(
             path
         }
         WorktreeSource::NewBranch { base_branch } => {
-            let path = Git::create_worktree_quiet(config, repo_name, branch_name, base_branch.as_deref())?;
+            let path = Git::create_worktree_quiet(config, repo_name, branch_name, base_branch.as_deref(), parent_dir_ref)?;
             let _ = Git::direnv_allow(&path);
             path
         }
         WorktreeSource::ExistingBranch => {
             let path =
-                Git::create_worktree_for_existing_branch_quiet(config, repo_name, branch_name)?;
+                Git::create_worktree_for_existing_branch_quiet(config, repo_name, branch_name, parent_dir_ref)?;
             let _ = Git::direnv_allow(&path);
             path
         }
@@ -592,6 +608,12 @@ pub fn create_setup_only_task(
         "none",
         worktree_path,
     )?;
+
+    // Store parent_dir if repo is outside repos_dir
+    if parent_dir.is_some() {
+        task.meta.parent_dir = parent_dir;
+        task.save_meta()?;
+    }
 
     // Override status to Stopped (Task::create sets Running by default)
     task.update_status(TaskStatus::Stopped)?;
@@ -623,6 +645,7 @@ pub fn create_review_task(
     repo_name: &str,
     branch_name: &str,
     worktree_source: WorktreeSource,
+    parent_dir: Option<PathBuf>,
 ) -> Result<Task> {
     tracing::info!(repo = repo_name, branch = branch_name, "creating review task");
     let description = format!("Review branch {}", branch_name);
@@ -634,6 +657,7 @@ pub fn create_review_task(
         "new",
         worktree_source,
         false,
+        parent_dir,
     )
 }
 
@@ -821,22 +845,24 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> 
 
     let mut entries = Vec::new();
 
+    let parent_dir = task.meta.parent_dir.as_deref();
+
     for repo_name in &repo_names {
         // Check if worktree already exists (idempotent on retry after partial failure)
-        let candidate = config.worktree_path(repo_name, &task.meta.branch_name);
+        let candidate = config.worktree_path_for(parent_dir, repo_name, &task.meta.branch_name);
         let worktree_path = if candidate.exists() {
             tracing::info!(repo = repo_name, branch = %task.meta.branch_name, "worktree already exists, reusing");
             let _ = Git::direnv_allow(&candidate);
             candidate
         } else {
-            let path = Git::create_worktree_quiet(config, repo_name, &task.meta.branch_name, None)
+            let path = Git::create_worktree_quiet(config, repo_name, &task.meta.branch_name, None, parent_dir)
                 .with_context(|| format!("Failed to create worktree for repo '{}'", repo_name))?;
             let _ = Git::direnv_allow(&path);
             path
         };
 
         // Copy configured files (e.g. .env) from main repo to worktree (best-effort)
-        if let Err(e) = copy_repo_files_to_worktree(config, repo_name, &worktree_path) {
+        if let Err(e) = copy_repo_files_to_worktree(config, repo_name, &worktree_path, parent_dir) {
             tracing::warn!(repo = repo_name, branch = %task.meta.branch_name, error = %e, "failed to copy repo files to worktree");
         }
 

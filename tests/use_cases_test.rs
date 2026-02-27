@@ -4,7 +4,7 @@ use agman::git::parse_github_owner_repo;
 use agman::repo_stats::RepoStats;
 use agman::task::{QueueItem, Task, TaskStatus};
 use agman::use_cases::{self, GithubItemKind, PrPollAction, WorktreeSource};
-use helpers::{create_test_task, init_test_repo, test_config};
+use helpers::{create_test_task, init_test_repo, init_test_repo_at, test_config};
 
 // ---------------------------------------------------------------------------
 // Create task
@@ -24,6 +24,7 @@ fn create_task_with_new_branch() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -75,6 +76,7 @@ fn create_task_with_existing_worktree() {
         "new",
         WorktreeSource::ExistingWorktree(wt_path.clone()),
         false,
+        None,
     )
     .unwrap();
 
@@ -90,7 +92,7 @@ fn create_task_reuses_existing_worktree() {
 
     // Create a worktree via git (simulates a worktree that already exists on disk)
     let wt_path =
-        agman::git::Git::create_worktree_quiet(&config, "myrepo", "reuse-branch", None).unwrap();
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "reuse-branch", None, None).unwrap();
     assert!(wt_path.exists());
 
     // Now create a task with ExistingBranch — should reuse the worktree instead of failing
@@ -102,6 +104,7 @@ fn create_task_reuses_existing_worktree() {
         "new",
         WorktreeSource::ExistingBranch,
         false,
+        None,
     )
     .unwrap();
 
@@ -128,6 +131,7 @@ fn create_task_with_review_after() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         true,
+        None,
     )
     .unwrap();
 
@@ -161,6 +165,7 @@ fn create_task_with_custom_base_branch() {
             base_branch: Some("feature-base".to_string()),
         },
         false,
+        None,
     )
     .unwrap();
 
@@ -191,6 +196,7 @@ fn create_setup_only_task() {
         "myrepo",
         "empty-branch",
         WorktreeSource::NewBranch { base_branch: None },
+        None,
     )
     .unwrap();
 
@@ -239,6 +245,7 @@ fn archive_task() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -293,6 +300,7 @@ fn archive_task_saved() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -320,6 +328,7 @@ fn permanently_delete_archived_task() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -368,6 +377,7 @@ fn fully_delete_task() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -890,6 +900,7 @@ fn create_review_task() {
         "myrepo",
         "review-branch",
         WorktreeSource::ExistingWorktree(wt_path),
+        None,
     )
     .unwrap();
 
@@ -923,6 +934,7 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -950,6 +962,7 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -1052,6 +1065,7 @@ fn set_linked_pr() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -1091,6 +1105,7 @@ fn set_linked_pr_owned_flag() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -1245,8 +1260,8 @@ fn archive_multi_repo_task() {
     .unwrap();
 
     // Manually populate repos (simulating what setup_repos_from_task_md would do)
-    let wt_a = agman::git::Git::create_worktree_quiet(&config, "repo-a", "multi-del", None).unwrap();
-    let wt_b = agman::git::Git::create_worktree_quiet(&config, "repo-b", "multi-del", None).unwrap();
+    let wt_a = agman::git::Git::create_worktree_quiet(&config, "repo-a", "multi-del", None, None).unwrap();
+    let wt_b = agman::git::Git::create_worktree_quiet(&config, "repo-b", "multi-del", None, None).unwrap();
 
     task.meta.repos = vec![
         agman::task::RepoEntry {
@@ -1576,6 +1591,7 @@ fn create_task_with_slash_in_branch_name() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -2152,6 +2168,7 @@ fn toggle_archive_saved() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
     )
     .unwrap();
 
@@ -2307,7 +2324,7 @@ fn copy_repo_files_to_worktree() {
     std::fs::create_dir_all(&worktree_path).unwrap();
 
     // Call the use-case function
-    use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path).unwrap();
+    use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path, None).unwrap();
 
     // Assert .env was copied with correct content
     assert_eq!(
@@ -2319,10 +2336,112 @@ fn copy_repo_files_to_worktree() {
     std::fs::write(worktree_path.join(".env"), "EXISTING=keep\n").unwrap();
 
     // Call again — should NOT overwrite the existing file
-    use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path).unwrap();
+    use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path, None).unwrap();
 
     assert_eq!(
         std::fs::read_to_string(worktree_path.join(".env")).unwrap(),
         "EXISTING=keep\n"
     );
+}
+
+// ---------------------------------------------------------------------------
+// setup_repos_from_task_md — multi-repo with parent_dir != repos_dir
+// ---------------------------------------------------------------------------
+
+#[test]
+fn setup_repos_from_task_md_multi_repo_different_parent_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp); // repos_dir = tmp/repos/
+
+    // Create a separate parent directory that is NOT the same as repos_dir
+    let other_repos = tmp.path().join("other-repos");
+    std::fs::create_dir_all(&other_repos).unwrap();
+
+    // Initialize two child git repos inside the separate parent directory
+    let _repo1 = init_test_repo_at(&other_repos, "alpha");
+    let _repo2 = init_test_repo_at(&other_repos, "beta");
+
+    // Create a multi-repo task with parent_dir pointing to the separate directory
+    let mut task = use_cases::create_multi_repo_task(
+        &config,
+        "other-repos",
+        "cross-fix",
+        "Fix across repos",
+        "new-multi",
+        other_repos.clone(),
+        false,
+    )
+    .unwrap();
+
+    assert!(task.meta.repos.is_empty());
+    assert_eq!(task.meta.parent_dir.as_deref(), Some(other_repos.as_path()));
+
+    // Write TASK.md with a # Repos section (simulating repo-inspector output)
+    task.write_task(
+        "# Goal\nFix across repos\n\n# Repos\n- alpha: first repo\n- beta: second repo\n\n# Plan\n(TBD)\n",
+    )
+    .unwrap();
+
+    // Run the setup_repos post-hook logic
+    use_cases::setup_repos_from_task_md(&config, &mut task).unwrap();
+
+    // Repos should be populated
+    assert_eq!(task.meta.repos.len(), 2);
+    assert_eq!(task.meta.repos[0].repo_name, "alpha");
+    assert_eq!(task.meta.repos[1].repo_name, "beta");
+
+    // Worktrees should exist under the OTHER parent dir, NOT under repos_dir
+    assert!(task.meta.repos[0].worktree_path.exists());
+    assert!(task.meta.repos[1].worktree_path.exists());
+
+    // Worktrees should be under other-repos/<repo>-wt/<branch>/, not repos/<repo>-wt/
+    assert!(task.meta.repos[0].worktree_path.starts_with(&other_repos));
+    assert!(task.meta.repos[1].worktree_path.starts_with(&other_repos));
+    assert!(!task.meta.repos[0].worktree_path.starts_with(tmp.path().join("repos")));
+    assert!(!task.meta.repos[1].worktree_path.starts_with(tmp.path().join("repos")));
+}
+
+// ---------------------------------------------------------------------------
+// Create single-repo task with repo outside repos_dir
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_task_with_repo_outside_repos_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp); // repos_dir = tmp/repos/
+
+    // Create a repo in a directory that is NOT under repos_dir
+    let external_dir = tmp.path().join("external-repos");
+    std::fs::create_dir_all(&external_dir).unwrap();
+    let _repo_path = init_test_repo_at(&external_dir, "myrepo");
+
+    // Pass parent_dir = external_dir (since the repo is not under repos_dir)
+    let task = use_cases::create_task(
+        &config,
+        "myrepo",
+        "feat-external",
+        "Build the external widget",
+        "new",
+        WorktreeSource::NewBranch { base_branch: None },
+        false,
+        Some(external_dir.clone()),
+    )
+    .unwrap();
+
+    // Task directory and meta exist
+    assert!(task.dir.join("meta.json").exists());
+    assert_eq!(task.meta.name, "myrepo");
+    assert_eq!(task.meta.branch_name, "feat-external");
+
+    // parent_dir is stored in meta
+    assert_eq!(task.meta.parent_dir.as_deref(), Some(external_dir.as_path()));
+
+    // Task is NOT multi-repo (single repo with external parent_dir)
+    assert!(!task.meta.is_multi_repo());
+
+    // Worktree should exist under external_dir, NOT under repos_dir
+    let wt_path = &task.meta.primary_repo().worktree_path;
+    assert!(wt_path.exists());
+    assert!(wt_path.starts_with(&external_dir));
+    assert!(!wt_path.starts_with(tmp.path().join("repos")));
 }

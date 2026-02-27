@@ -215,7 +215,8 @@ fn cmd_continue(
     }
 
     // For multi-repo tasks, also ensure the parent-dir session exists (the flow runs there)
-    let tmux_target = if let Some(ref parent_dir) = task.meta.parent_dir {
+    let tmux_target = if task.meta.is_multi_repo() {
+        let parent_dir = task.meta.parent_dir.as_ref().expect("multi-repo task must have parent_dir");
         let session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
         if !Tmux::session_exists(&session) {
             println!("Recreating parent-dir tmux session...");
@@ -292,7 +293,8 @@ fn cmd_run_command(
 
     // Dispatch the flow execution to tmux (non-blocking) so the caller returns immediately.
     // For multi-repo tasks, also ensure the parent-dir session exists and dispatch there.
-    let tmux_target = if let Some(ref parent_dir) = task.meta.parent_dir {
+    let tmux_target = if task.meta.is_multi_repo() {
+        let parent_dir = task.meta.parent_dir.as_ref().expect("multi-repo task must have parent_dir");
         let session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
         if !Tmux::session_exists(&session) {
             println!("Recreating parent-dir tmux session...");
@@ -396,7 +398,7 @@ fn cmd_command_flow_run(
         // Collect all tmux sessions to kill last (we may be running in one).
         // For multi-repo tasks, also include the parent-dir session.
         let mut tmux_sessions: Vec<String> = task.meta.repos.iter().map(|r| r.tmux_session.clone()).collect();
-        if task.meta.parent_dir.is_some() {
+        if task.meta.is_multi_repo() {
             tmux_sessions.push(Config::tmux_session_name(&task.meta.name, &task.meta.branch_name));
         }
 

@@ -128,7 +128,7 @@ impl Agent {
 
         // Send to the agman window in tmux.
         // For multi-repo tasks, the flow runs in the parent-dir session, not per-repo sessions.
-        let tmux_target = if task.meta.parent_dir.is_some() {
+        let tmux_target = if task.meta.is_multi_repo() {
             Config::tmux_session_name(&task.meta.name, &task.meta.branch_name)
         } else {
             task.meta.primary_repo().tmux_session.clone()
@@ -144,17 +144,22 @@ impl Agent {
         let prompt = self.build_prompt(task)?;
 
         // Determine working directory: parent_dir for multi-repo, worktree for single-repo
-        let working_dir = match task.meta.parent_dir.as_deref() {
-            Some(parent) => parent.to_path_buf(),
-            None => {
-                if !task.meta.has_repos() {
-                    anyhow::bail!(
-                        "No repos configured and no parent_dir for task '{}'",
-                        task.meta.task_id()
-                    );
-                }
-                task.meta.primary_repo().worktree_path.clone()
+        let working_dir = if task.meta.is_multi_repo() {
+            match task.meta.parent_dir.as_deref() {
+                Some(parent) => parent.to_path_buf(),
+                None => anyhow::bail!(
+                    "Multi-repo task '{}' has no parent_dir",
+                    task.meta.task_id()
+                ),
             }
+        } else {
+            if !task.meta.has_repos() {
+                anyhow::bail!(
+                    "No repos configured for task '{}'",
+                    task.meta.task_id()
+                );
+            }
+            task.meta.primary_repo().worktree_path.clone()
         };
 
         // Log start
@@ -296,17 +301,22 @@ impl AgentRunner {
         agent_step: &AgentStep,
     ) -> Result<Option<StopCondition>> {
         if let Some(ref cmd) = agent_step.pre_command {
-            let working_dir = match task.meta.parent_dir.as_deref() {
-                Some(parent) => parent.to_path_buf(),
-                None => {
-                    if !task.meta.has_repos() {
-                        anyhow::bail!(
-                            "No repos configured and no parent_dir for task '{}'",
-                            task.meta.task_id()
-                        );
-                    }
-                    task.meta.primary_repo().worktree_path.clone()
+            let working_dir = if task.meta.is_multi_repo() {
+                match task.meta.parent_dir.as_deref() {
+                    Some(parent) => parent.to_path_buf(),
+                    None => anyhow::bail!(
+                        "Multi-repo task '{}' has no parent_dir",
+                        task.meta.task_id()
+                    ),
                 }
+            } else {
+                if !task.meta.has_repos() {
+                    anyhow::bail!(
+                        "No repos configured for task '{}'",
+                        task.meta.task_id()
+                    );
+                }
+                task.meta.primary_repo().worktree_path.clone()
             };
 
             tracing::debug!(

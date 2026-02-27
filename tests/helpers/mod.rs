@@ -37,6 +37,33 @@ pub fn init_test_repo(tmp: &TempDir, name: &str) -> PathBuf {
     repo_path
 }
 
+/// Create a git repo at `<dir>/<name>/` with an initial commit.
+/// Unlike `init_test_repo`, allows placing the repo at an arbitrary path
+/// (not necessarily under `repos/`). Used for multi-repo task tests.
+#[allow(dead_code)]
+pub fn init_test_repo_at(dir: &std::path::Path, name: &str) -> PathBuf {
+    let repo_path = dir.join(name);
+    std::fs::create_dir_all(&repo_path).unwrap();
+
+    let run = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo_path)
+            .output()
+            .expect("git command failed")
+    };
+
+    run(&["init", "-b", "main"]);
+    run(&["config", "user.email", "test@test.com"]);
+    run(&["config", "user.name", "Test"]);
+
+    std::fs::write(repo_path.join("README.md"), "# test repo\n").unwrap();
+    run(&["add", "."]);
+    run(&["commit", "-m", "initial commit"]);
+
+    repo_path
+}
+
 /// Create a minimal Task (directory + meta.json + init files) without real git.
 /// Sets up a fake worktree directory so file I/O methods work.
 #[allow(dead_code)]
