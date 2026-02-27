@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::Config;
@@ -125,17 +125,20 @@ impl Git {
         branch_name: &str,
         base_ref: Option<&str>,
     ) -> Result<PathBuf> {
-        Self::create_worktree_impl(config, repo_name, branch_name, base_ref, false)
+        Self::create_worktree_impl(config, repo_name, branch_name, base_ref, None, false)
     }
 
     /// Create a new worktree with a new branch (quiet mode for TUI)
+    /// When `parent_dir` is `Some`, paths are resolved relative to that directory
+    /// instead of `config.repos_dir` (used for multi-repo tasks).
     pub fn create_worktree_quiet(
         config: &Config,
         repo_name: &str,
         branch_name: &str,
         base_ref: Option<&str>,
+        parent_dir: Option<&Path>,
     ) -> Result<PathBuf> {
-        Self::create_worktree_impl(config, repo_name, branch_name, base_ref, true)
+        Self::create_worktree_impl(config, repo_name, branch_name, base_ref, parent_dir, true)
     }
 
     fn create_worktree_impl(
@@ -143,10 +146,11 @@ impl Git {
         repo_name: &str,
         branch_name: &str,
         base_ref: Option<&str>,
+        parent_dir: Option<&Path>,
         quiet: bool,
     ) -> Result<PathBuf> {
         tracing::info!(repo = repo_name, branch = branch_name, "creating worktree");
-        let repo_path = config.repo_path(repo_name);
+        let repo_path = config.repo_path_for(parent_dir, repo_name);
 
         if !repo_path.exists() {
             anyhow::bail!("Repository does not exist: {}", repo_path.display());
@@ -157,8 +161,8 @@ impl Git {
             anyhow::bail!("Not a git repository: {}", repo_path.display());
         }
 
-        let worktree_base = config.worktree_base(repo_name);
-        let worktree_path = config.worktree_path(repo_name, branch_name);
+        let worktree_base = config.worktree_base_for(parent_dir, repo_name);
+        let worktree_path = config.worktree_path_for(parent_dir, repo_name, branch_name);
 
         // Idempotent: if the worktree already exists on disk, reuse it
         if worktree_path.exists() {

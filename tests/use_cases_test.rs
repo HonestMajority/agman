@@ -4,7 +4,7 @@ use agman::git::parse_github_owner_repo;
 use agman::repo_stats::RepoStats;
 use agman::task::{QueueItem, Task, TaskStatus};
 use agman::use_cases::{self, GithubItemKind, PrPollAction, WorktreeSource};
-use helpers::{create_test_task, init_test_repo, test_config};
+use helpers::{create_test_task, init_test_repo, init_test_repo_at, test_config};
 
 // ---------------------------------------------------------------------------
 // Create task
@@ -90,7 +90,7 @@ fn create_task_reuses_existing_worktree() {
 
     // Create a worktree via git (simulates a worktree that already exists on disk)
     let wt_path =
-        agman::git::Git::create_worktree_quiet(&config, "myrepo", "reuse-branch", None).unwrap();
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "reuse-branch", None, None).unwrap();
     assert!(wt_path.exists());
 
     // Now create a task with ExistingBranch — should reuse the worktree instead of failing
@@ -1245,8 +1245,8 @@ fn archive_multi_repo_task() {
     .unwrap();
 
     // Manually populate repos (simulating what setup_repos_from_task_md would do)
-    let wt_a = agman::git::Git::create_worktree_quiet(&config, "repo-a", "multi-del", None).unwrap();
-    let wt_b = agman::git::Git::create_worktree_quiet(&config, "repo-b", "multi-del", None).unwrap();
+    let wt_a = agman::git::Git::create_worktree_quiet(&config, "repo-a", "multi-del", None, None).unwrap();
+    let wt_b = agman::git::Git::create_worktree_quiet(&config, "repo-b", "multi-del", None, None).unwrap();
 
     task.meta.repos = vec![
         agman::task::RepoEntry {
@@ -2307,7 +2307,7 @@ fn copy_repo_files_to_worktree() {
     std::fs::create_dir_all(&worktree_path).unwrap();
 
     // Call the use-case function
-    use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path).unwrap();
+    use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path, None).unwrap();
 
     // Assert .env was copied with correct content
     assert_eq!(
@@ -2319,10 +2319,67 @@ fn copy_repo_files_to_worktree() {
     std::fs::write(worktree_path.join(".env"), "EXISTING=keep\n").unwrap();
 
     // Call again — should NOT overwrite the existing file
-    use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path).unwrap();
+    use_cases::copy_repo_files_to_worktree(&config, "myrepo", &worktree_path, None).unwrap();
 
     assert_eq!(
         std::fs::read_to_string(worktree_path.join(".env")).unwrap(),
         "EXISTING=keep\n"
     );
+}
+
+// ---------------------------------------------------------------------------
+// setup_repos_from_task_md — multi-repo with parent_dir != repos_dir
+// ---------------------------------------------------------------------------
+
+#[test]
+fn setup_repos_from_task_md_multi_repo_different_parent_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp); // repos_dir = tmp/repos/
+
+    // Create a separate parent directory that is NOT the same as repos_dir
+    let other_repos = tmp.path().join("other-repos");
+    std::fs::create_dir_all(&other_repos).unwrap();
+
+    // Initialize two child git repos inside the separate parent directory
+    let _repo1 = init_test_repo_at(&other_repos, "alpha");
+    let _repo2 = init_test_repo_at(&other_repos, "beta");
+
+    // Create a multi-repo task with parent_dir pointing to the separate directory
+    let mut task = use_cases::create_multi_repo_task(
+        &config,
+        "other-repos",
+        "cross-fix",
+        "Fix across repos",
+        "new-multi",
+        other_repos.clone(),
+        false,
+    )
+    .unwrap();
+
+    assert!(task.meta.repos.is_empty());
+    assert_eq!(task.meta.parent_dir.as_deref(), Some(other_repos.as_path()));
+
+    // Write TASK.md with a # Repos section (simulating repo-inspector output)
+    task.write_task(
+        "# Goal\nFix across repos\n\n# Repos\n- alpha: first repo\n- beta: second repo\n\n# Plan\n(TBD)\n",
+    )
+    .unwrap();
+
+    // Run the setup_repos post-hook logic
+    use_cases::setup_repos_from_task_md(&config, &mut task).unwrap();
+
+    // Repos should be populated
+    assert_eq!(task.meta.repos.len(), 2);
+    assert_eq!(task.meta.repos[0].repo_name, "alpha");
+    assert_eq!(task.meta.repos[1].repo_name, "beta");
+
+    // Worktrees should exist under the OTHER parent dir, NOT under repos_dir
+    assert!(task.meta.repos[0].worktree_path.exists());
+    assert!(task.meta.repos[1].worktree_path.exists());
+
+    // Worktrees should be under other-repos/<repo>-wt/<branch>/, not repos/<repo>-wt/
+    assert!(task.meta.repos[0].worktree_path.starts_with(&other_repos));
+    assert!(task.meta.repos[1].worktree_path.starts_with(&other_repos));
+    assert!(!task.meta.repos[0].worktree_path.starts_with(tmp.path().join("repos")));
+    assert!(!task.meta.repos[1].worktree_path.starts_with(tmp.path().join("repos")));
 }
