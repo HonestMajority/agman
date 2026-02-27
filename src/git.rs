@@ -226,21 +226,25 @@ impl Git {
     }
 
     /// Create a worktree for an existing remote branch (quiet mode for TUI)
+    /// When `parent_dir` is `Some`, paths are resolved relative to that directory
+    /// instead of `config.repos_dir`.
     pub fn create_worktree_for_existing_branch_quiet(
         config: &Config,
         repo_name: &str,
         branch_name: &str,
+        parent_dir: Option<&Path>,
     ) -> Result<PathBuf> {
-        Self::create_worktree_for_existing_branch_impl(config, repo_name, branch_name, true)
+        Self::create_worktree_for_existing_branch_impl(config, repo_name, branch_name, parent_dir, true)
     }
 
     fn create_worktree_for_existing_branch_impl(
         config: &Config,
         repo_name: &str,
         branch_name: &str,
+        parent_dir: Option<&Path>,
         quiet: bool,
     ) -> Result<PathBuf> {
-        let repo_path = config.repo_path(repo_name);
+        let repo_path = config.repo_path_for(parent_dir, repo_name);
 
         if !repo_path.exists() {
             anyhow::bail!("Repository does not exist: {}", repo_path.display());
@@ -250,8 +254,8 @@ impl Git {
             anyhow::bail!("Not a git repository: {}", repo_path.display());
         }
 
-        let worktree_base = config.worktree_base(repo_name);
-        let worktree_path = config.worktree_path(repo_name, branch_name);
+        let worktree_base = config.worktree_base_for(parent_dir, repo_name);
+        let worktree_path = config.worktree_path_for(parent_dir, repo_name, branch_name);
 
         // Idempotent: if the worktree already exists on disk, reuse it
         if worktree_path.exists() {

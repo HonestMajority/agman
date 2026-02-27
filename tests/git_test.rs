@@ -117,7 +117,7 @@ fn git_create_worktree_for_existing_branch_idempotent() {
     // Now call create_worktree_for_existing_branch_quiet for the same branch —
     // the worktree is already on disk, so it should reuse it
     let path2 =
-        Git::create_worktree_for_existing_branch_quiet(&config, "myrepo", "exist-branch").unwrap();
+        Git::create_worktree_for_existing_branch_quiet(&config, "myrepo", "exist-branch", None).unwrap();
     assert_eq!(path1, path2);
     assert!(path2.exists());
 }
