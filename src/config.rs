@@ -123,8 +123,8 @@ impl Config {
         self.repos_dir.join(repo_name)
     }
 
-    /// Get main repo path, using `parent_dir` as base when provided (multi-repo tasks).
-    /// Falls back to `self.repo_path()` when `parent_dir` is `None` (single-repo tasks).
+    /// Get main repo path, using `parent_dir` as base when provided (repos outside `repos_dir`).
+    /// Falls back to `self.repo_path()` when `parent_dir` is `None`.
     pub fn repo_path_for(&self, parent_dir: Option<&Path>, repo_name: &str) -> PathBuf {
         match parent_dir {
             Some(parent) => parent.join(repo_name),
@@ -137,7 +137,7 @@ impl Config {
         self.repos_dir.join(format!("{}-wt", repo_name))
     }
 
-    /// Get worktree base path, using `parent_dir` as base when provided (multi-repo tasks).
+    /// Get worktree base path, using `parent_dir` as base when provided (repos outside `repos_dir`).
     pub fn worktree_base_for(&self, parent_dir: Option<&Path>, repo_name: &str) -> PathBuf {
         match parent_dir {
             Some(parent) => parent.join(format!("{}-wt", repo_name)),
@@ -152,7 +152,7 @@ impl Config {
             .join(sanitize_branch_for_id(branch_name))
     }
 
-    /// Get worktree path, using `parent_dir` as base when provided (multi-repo tasks).
+    /// Get worktree path, using `parent_dir` as base when provided (repos outside `repos_dir`).
     pub fn worktree_path_for(
         &self,
         parent_dir: Option<&Path>,
