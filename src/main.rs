@@ -207,11 +207,8 @@ fn cmd_continue(
 
     // Ensure tmux sessions exist for all repos
     for repo in &task.meta.repos {
-        if !Tmux::session_exists(&repo.tmux_session) {
-            println!("Recreating tmux session for {}...", repo.repo_name);
-            Tmux::create_session_with_windows(&repo.tmux_session, &repo.worktree_path)?;
-            Tmux::add_review_window(&repo.tmux_session, &repo.worktree_path)?;
-        }
+        println!("Ensuring tmux session for {}...", repo.repo_name);
+        Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path)?;
     }
 
     // For multi-repo tasks, also ensure the parent-dir session exists (the flow runs there)
@@ -281,11 +278,8 @@ fn cmd_run_command(
 
     // Ensure tmux sessions exist for all repos
     for repo in &task.meta.repos {
-        if !Tmux::session_exists(&repo.tmux_session) {
-            println!("Recreating tmux session for {}...", repo.repo_name);
-            Tmux::create_session_with_windows(&repo.tmux_session, &repo.worktree_path)?;
-            Tmux::add_review_window(&repo.tmux_session, &repo.worktree_path)?;
-        }
+        println!("Ensuring tmux session for {}...", repo.repo_name);
+        Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path)?;
     }
 
     // Update task to running state
