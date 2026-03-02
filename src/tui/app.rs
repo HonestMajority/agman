@@ -1126,10 +1126,7 @@ impl App {
             // Side effects: ensure tmux sessions exist for all repos and dispatch flow
             if let Some(task) = self.selected_task() {
                 for repo in &task.meta.repos {
-                    if !Tmux::session_exists(&repo.tmux_session) {
-                        let _ = Tmux::create_session_with_windows(&repo.tmux_session, &repo.worktree_path);
-                        let _ = Tmux::add_review_window(&repo.tmux_session, &repo.worktree_path);
-                    }
+                    let _ = Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path);
                 }
                 // For multi-repo tasks with no repos yet, ensure the primary session exists
                 if !task.meta.has_repos() && !Tmux::session_exists(&tmux_session) {
@@ -2813,6 +2810,10 @@ impl App {
                     PreviewPane::Logs => {
                         if let Some(task) = self.selected_task() {
                             if task.meta.is_multi_repo() && task.meta.repos.len() > 1 {
+                                // Ensure all repo sessions exist before showing picker
+                                for repo in &task.meta.repos {
+                                    let _ = Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path);
+                                }
                                 let sessions: Vec<(String, String)> = task
                                     .meta
                                     .repos
@@ -2826,11 +2827,20 @@ impl App {
                                     self.view = View::SessionPicker;
                                 }
                             } else if task.meta.has_repos() {
+                                let _ = Tmux::ensure_session(
+                                    &task.meta.primary_repo().tmux_session,
+                                    &task.meta.primary_repo().worktree_path,
+                                );
                                 if Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
                                     return Ok(true);
                                 }
                             } else if task.meta.is_multi_repo() {
                                 let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+                                if let Some(ref parent_dir) = task.meta.parent_dir {
+                                    if !Tmux::session_exists(&parent_session) {
+                                        let _ = Tmux::create_session_with_windows(&parent_session, parent_dir);
+                                    }
+                                }
                                 if Tmux::session_exists(&parent_session) {
                                     return Ok(true);
                                 }
@@ -4801,11 +4811,10 @@ impl App {
         let _ = use_cases::set_review_addressed(&mut self.tasks[task_idx], false);
 
         // Ensure tmux session exists
-        if !Tmux::session_exists(&tmux_session) {
+        if self.tasks[task_idx].meta.has_repos() {
+            let _ = Tmux::ensure_session(&tmux_session, &working_dir);
+        } else if !Tmux::session_exists(&tmux_session) {
             let _ = Tmux::create_session_with_windows(&tmux_session, &working_dir);
-            if self.tasks[task_idx].meta.has_repos() {
-                let _ = Tmux::add_review_window(&tmux_session, &working_dir);
-            }
         }
 
         // Dispatch flow-run

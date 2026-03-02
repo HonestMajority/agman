@@ -207,6 +207,20 @@ impl Tmux {
         Ok(())
     }
 
+    /// Ensure a tmux session exists with all standard windows (including review).
+    ///
+    /// If the session already exists, this is a no-op. Otherwise, creates the
+    /// session with `create_session_with_windows` and adds the review window.
+    pub fn ensure_session(session_name: &str, working_dir: &Path) -> Result<()> {
+        if Self::session_exists(session_name) {
+            return Ok(());
+        }
+        tracing::info!(session = session_name, dir = %working_dir.display(), "recreating missing tmux session");
+        Self::create_session_with_windows(session_name, working_dir)?;
+        Self::add_review_window(session_name, working_dir)?;
+        Ok(())
+    }
+
     /// Wipe REVIEW.md to a clean slate in the given working directory.
     pub fn wipe_review_md(working_dir: &Path) -> Result<()> {
         let review_md_path = working_dir.join("REVIEW.md");
