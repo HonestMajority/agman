@@ -1709,6 +1709,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                         },
                         Style::default().fg(Color::DarkGray),
                     ),
+                    Span::styled("n", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" new-from  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("d", Style::default().fg(Color::LightRed)),
                     Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Esc", Style::default().fg(Color::LightCyan)),

@@ -2744,6 +2744,36 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('n') => {
+                // New task from archived task
+                let filtered = self.archive_filtered_indices();
+                if let Some(&task_idx) = filtered.get(self.archive_selected) {
+                    let (task, _content) = &self.archive_tasks[task_idx];
+                    let repo_name = task.meta.name.clone();
+                    let task_id = task.meta.task_id();
+                    let branch_name = task.meta.branch_name.clone();
+                    let repo_path = self.config.repo_path_for(
+                        task.meta.parent_dir.as_deref(),
+                        &repo_name,
+                    );
+
+                    if !repo_path.exists() {
+                        self.set_status(format!("Repo path not found: {}", repo_path.display()));
+                    } else {
+                        tracing::info!(task_id = %task_id, repo = %repo_name, "starting new task from archived task");
+                        self.archive_preview = None;
+                        self.create_wizard_from_picker(repo_name, repo_path, false)?;
+
+                        let prefill = format!(
+                            "Reference: task \"{}\" (branch: {}). Examine ~/.agman/tasks/{}/TASK.md for context, and the git branch/PR if needed.\n\n\n",
+                            task_id, branch_name, task_id,
+                        );
+                        if let Some(wizard) = self.wizard.as_mut() {
+                            wizard.description_editor.textarea.insert_str(&prefill);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         Ok(false)
