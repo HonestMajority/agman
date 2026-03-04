@@ -1341,10 +1341,8 @@ fn setup_repos_from_task_md() {
     )
     .unwrap();
 
-    // Run the setup_repos post-hook logic
-    // Note: tmux calls will fail silently (no tmux in test), but worktree
-    // creation and meta persistence should succeed.
-    use_cases::setup_repos_from_task_md(&config, &mut task).unwrap();
+    // Run the setup_repos post-hook logic (skip_tmux=true to avoid leaking real sessions)
+    use_cases::setup_repos_from_task_md(&config, &mut task, true).unwrap();
 
     // Repos should be populated
     assert_eq!(task.meta.repos.len(), 2);
@@ -2382,8 +2380,8 @@ fn setup_repos_from_task_md_multi_repo_different_parent_dir() {
     )
     .unwrap();
 
-    // Run the setup_repos post-hook logic
-    use_cases::setup_repos_from_task_md(&config, &mut task).unwrap();
+    // Run the setup_repos post-hook logic (skip_tmux=true to avoid leaking real sessions)
+    use_cases::setup_repos_from_task_md(&config, &mut task, true).unwrap();
 
     // Repos should be populated
     assert_eq!(task.meta.repos.len(), 2);

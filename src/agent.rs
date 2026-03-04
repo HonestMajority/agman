@@ -496,7 +496,7 @@ impl AgentRunner {
         match hook {
             "setup_repos" => {
                 tracing::info!(task_id = %task.meta.task_id(), "executing setup_repos post-hook");
-                crate::use_cases::setup_repos_from_task_md(&self.config, task)?;
+                crate::use_cases::setup_repos_from_task_md(&self.config, task, false)?;
                 Ok(())
             }
             _ => {
