@@ -824,7 +824,7 @@ fn migrate_single_task(task_dir: &std::path::Path, dir_name: &str) -> anyhow::Re
 /// and populate `task.meta.repos`.
 ///
 /// Called after the repo-inspector agent finishes (via the `setup_repos` post-hook).
-pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> {
+pub fn setup_repos_from_task_md(config: &Config, task: &mut Task, skip_tmux: bool) -> Result<()> {
     let task_content = task
         .read_task()
         .context("Failed to read TASK.md for repo setup")?;
@@ -866,9 +866,8 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task) -> Result<()> 
             tracing::warn!(repo = repo_name, branch = %task.meta.branch_name, error = %e, "failed to copy repo files to worktree");
         }
 
-        // Create tmux session (best-effort — tmux may not be available in tests)
         let tmux_session = Config::tmux_session_name(repo_name, &task.meta.branch_name);
-        if !Tmux::session_exists(&tmux_session) {
+        if !skip_tmux && !Tmux::session_exists(&tmux_session) {
             if let Err(e) = Tmux::create_session_with_windows(&tmux_session, &worktree_path) {
                 tracing::warn!(repo = repo_name, error = %e, "failed to create tmux session (non-fatal)");
             } else {
