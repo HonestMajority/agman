@@ -73,6 +73,8 @@ fn main() -> Result<()> {
 
         Some(Commands::ProjectStatus { name }) => cmd_project_status(&config, &name),
 
+        Some(Commands::DeleteProject { name }) => cmd_delete_project(&config, &name),
+
         Some(Commands::CreatePmTask {
             project,
             repo,
@@ -516,6 +518,12 @@ fn cmd_project_status(config: &Config, name: &str) -> Result<()> {
             println!("{:<30} {:<15}", t.meta.task_id(), t.meta.status);
         }
     }
+    Ok(())
+}
+
+fn cmd_delete_project(config: &Config, name: &str) -> Result<()> {
+    use_cases::delete_project(config, name)?;
+    println!("Project '{}' deleted. All tasks have been archived.", name);
     Ok(())
 }
 
