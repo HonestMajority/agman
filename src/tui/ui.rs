@@ -130,6 +130,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::SessionPicker
             | View::ProjectWizard
             | View::ProjectPicker
+            | View::ProjectDeleteConfirm
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -224,6 +225,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 draw_task_list(f, app, chunks[0]);
             }
             draw_project_picker(f, app);
+        }
+        View::ProjectDeleteConfirm => {
+            draw_project_list(f, app, chunks[0]);
+            draw_project_delete_confirm(f, app);
         }
     }
 
@@ -1385,6 +1390,55 @@ fn draw_delete_confirm(f: &mut Frame, app: &App, retention_days: u64) {
     f.render_widget(popup, area);
 }
 
+fn draw_project_delete_confirm(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 30, f.area());
+
+    f.render_widget(Clear, area);
+
+    let project_name = app
+        .project_to_delete
+        .as_deref()
+        .unwrap_or("unknown");
+
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  Delete project '{}'?", project_name),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  All tasks will be archived (not permanently deleted).",
+            Style::default().fg(Color::LightBlue),
+        )),
+        Line::from(Span::styled(
+            "  Branches and task files are preserved.",
+            Style::default().fg(Color::LightBlue),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  [Enter] confirm   [Esc] cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let popup = Paragraph::new(text).block(
+        Block::default()
+            .title(Span::styled(
+                " Delete Project ",
+                Style::default()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightRed)),
+    );
+
+    f.render_widget(popup, area);
+}
+
 fn draw_restart_confirm(f: &mut Frame, app: &App) {
     let area = centered_rect(50, 35, f.area());
 
@@ -1645,6 +1699,13 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 spans.extend([
                     Span::styled("m", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" migrate  ", Style::default().fg(Color::DarkGray)),
+                ]);
+            }
+            // Show delete hint when a real project is selected
+            if app.selected_project_index < app.projects.len() {
+                spans.extend([
+                    Span::styled("d", Style::default().fg(Color::LightRed)),
+                    Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
             spans.extend([
@@ -2104,6 +2165,14 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Enter", Style::default().fg(Color::LightGreen)),
                 Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
+        }
+        View::ProjectDeleteConfirm => {
+            vec![
+                Span::styled("Enter", Style::default().fg(Color::LightRed)),
+                Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc", Style::default().fg(Color::LightCyan)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]

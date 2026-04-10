@@ -93,6 +93,13 @@ pub enum Commands {
         name: String,
     },
 
+    /// Delete a project and archive all its tasks
+    #[command(hide = true)]
+    DeleteProject {
+        /// Project name
+        name: String,
+    },
+
     /// Create a task within a project
     #[command(hide = true)]
     CreatePmTask {
