@@ -1,4 +1,6 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+use agman::task::TaskStatus;
 
 #[derive(Parser)]
 #[command(name = "agman")]
@@ -119,6 +121,9 @@ pub enum Commands {
     ListPmTasks {
         /// Project name
         project: String,
+        /// Filter by task status (running, stopped, input_needed, on_hold)
+        #[arg(long)]
+        status: Option<StatusFilter>,
     },
 
     /// Get status and recent log for a task
@@ -146,4 +151,23 @@ pub enum Commands {
         /// Feedback text to queue
         feedback: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum StatusFilter {
+    Running,
+    Stopped,
+    InputNeeded,
+    OnHold,
+}
+
+impl StatusFilter {
+    pub fn to_task_status(self) -> TaskStatus {
+        match self {
+            StatusFilter::Running => TaskStatus::Running,
+            StatusFilter::Stopped => TaskStatus::Stopped,
+            StatusFilter::InputNeeded => TaskStatus::InputNeeded,
+            StatusFilter::OnHold => TaskStatus::OnHold,
+        }
+    }
 }
