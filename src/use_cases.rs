@@ -11,6 +11,7 @@ use crate::git::{self, Git};
 use crate::inbox;
 use crate::project::Project;
 use crate::repo_stats::RepoStats;
+use crate::researcher::Researcher;
 use crate::task::{QueueItem, RepoEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
 
@@ -2048,6 +2049,9 @@ pub fn send_message(config: &Config, target: &str, from: &str, message: &str) ->
         config.ceo_inbox()
     } else if target == "telegram" {
         config.telegram_outbox()
+    } else if let Some(researcher_id) = target.strip_prefix("researcher:") {
+        let (project, name) = parse_researcher_id(researcher_id)?;
+        config.researcher_inbox(project, name)
     } else {
         config.project_inbox(target)
     };
@@ -2073,7 +2077,7 @@ pub fn start_ceo_session(config: &Config) -> Result<()> {
 
     let session_name = Config::ceo_tmux_session();
     tracing::info!(session = session_name, "starting CEO session");
-    Tmux::create_agent_session(session_name, DEFAULT_CEO_PROMPT, resume_ref)?;
+    Tmux::create_agent_session(session_name, DEFAULT_CEO_PROMPT, resume_ref, None)?;
     Ok(())
 }
 
@@ -2100,7 +2104,7 @@ pub fn start_pm_session(config: &Config, project_name: &str) -> Result<()> {
     let prompt = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
     let session_name = Config::pm_tmux_session(project_name);
     tracing::info!(session = &session_name, project = project_name, "starting PM session");
-    Tmux::create_agent_session(&session_name, &prompt, resume_ref)?;
+    Tmux::create_agent_session(&session_name, &prompt, resume_ref, None)?;
     Ok(())
 }
 
@@ -2117,6 +2121,128 @@ pub fn open_pm_popup(config: &Config, project_name: &str) -> Result<()> {
 /// Check if an agent's tmux session is running.
 pub fn agent_session_running(session_name: &str) -> bool {
     Tmux::session_exists(session_name)
+}
+
+// ---------------------------------------------------------------------------
+// Researcher management
+// ---------------------------------------------------------------------------
+
+/// Create a new researcher for a project.
+pub fn create_researcher(
+    config: &Config,
+    project: &str,
+    name: &str,
+    description: &str,
+    repo: Option<String>,
+    branch: Option<String>,
+    task_id: Option<String>,
+) -> Result<Researcher> {
+    // Validate project exists
+    let project_dir = config.project_dir(project);
+    if !project_dir.exists() {
+        anyhow::bail!("project '{}' does not exist", project);
+    }
+
+    tracing::info!(project = project, name = name, "creating researcher");
+    Researcher::create(config, project, name, description, repo, branch, task_id)
+}
+
+/// Start a researcher's Claude Code tmux session.
+pub fn start_researcher_session(config: &Config, project: &str, name: &str) -> Result<()> {
+    let dir = config.researcher_dir(project, name);
+    let researcher = Researcher::load(dir)?;
+
+    let session_id_path = config.researcher_session_id(project, name);
+    let resume_id = std::fs::read_to_string(&session_id_path).ok();
+    let resume_ref = resume_id.as_deref().map(|s| s.trim());
+
+    let mut prompt = DEFAULT_RESEARCHER_PROMPT_TEMPLATE
+        .replace("{{PROJECT_NAME}}", project)
+        .replace("{{RESEARCHER_NAME}}", name);
+
+    if !researcher.meta.description.is_empty() {
+        prompt.push_str(&format!(
+            "\nYour research question: {}",
+            researcher.meta.description
+        ));
+    }
+
+    // Resolve working directory
+    let work_dir = resolve_researcher_work_dir(config, &researcher);
+
+    let session_name = Config::researcher_tmux_session(project, name);
+    tracing::info!(session = &session_name, project = project, name = name, "starting researcher session");
+    Tmux::create_agent_session(&session_name, &prompt, resume_ref, work_dir.as_deref())?;
+    Ok(())
+}
+
+/// Resolve the working directory for a researcher session.
+fn resolve_researcher_work_dir(config: &Config, researcher: &Researcher) -> Option<PathBuf> {
+    // If task_id is set, try to resolve to the task's worktree path
+    if let Some(ref task_id) = researcher.meta.task_id {
+        // task_id is "<repo>--<branch>" format
+        if let Some((repo, branch)) = task_id.split_once("--") {
+            if let Ok(task) = Task::load(config, repo, branch) {
+                if let Some(repo_entry) = task.meta.repos.first() {
+                    let wt_path = PathBuf::from(&repo_entry.worktree_path);
+                    if wt_path.exists() {
+                        return Some(wt_path);
+                    }
+                }
+            }
+        }
+    }
+
+    // If repo + branch, resolve to worktree
+    if let (Some(ref repo), Some(ref branch)) = (&researcher.meta.repo, &researcher.meta.branch) {
+        let wt_dir = config.repos_dir.parent()?.join(format!("{repo}-wt")).join(branch);
+        if wt_dir.exists() {
+            return Some(wt_dir);
+        }
+    }
+
+    // If repo only, resolve to main repo dir
+    if let Some(ref repo) = researcher.meta.repo {
+        let repo_dir = config.repos_dir.join(repo);
+        if repo_dir.exists() {
+            return Some(repo_dir);
+        }
+    }
+
+    None
+}
+
+/// List researchers, optionally filtered by project.
+pub fn list_researchers(config: &Config, project: Option<&str>) -> Result<Vec<Researcher>> {
+    match project {
+        Some(p) => Researcher::list_for_project(config, p),
+        None => Researcher::list_all(config),
+    }
+}
+
+/// Archive a researcher (kill tmux session, set status to Archived).
+pub fn archive_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
+    let dir = config.researcher_dir(project, name);
+    let mut researcher = Researcher::load(dir)?;
+
+    let session_name = Config::researcher_tmux_session(project, name);
+    if Tmux::session_exists(&session_name) {
+        tracing::info!(session = &session_name, "killing researcher tmux session");
+        Tmux::kill_session(&session_name)?;
+    }
+
+    researcher.meta.status = crate::researcher::ResearcherStatus::Archived;
+    researcher.save_meta()?;
+    tracing::info!(project = project, name = name, "researcher archived");
+    Ok(())
+}
+
+/// Parse a researcher ID of the form "<project>--<name>" into (project, name).
+pub fn parse_researcher_id(id: &str) -> Result<(&str, &str)> {
+    let pos = id
+        .find("--")
+        .ok_or_else(|| anyhow::anyhow!("invalid researcher id '{}': expected '<project>--<name>'", id))?;
+    Ok((&id[..pos], &id[pos + 2..]))
 }
 
 // ---------------------------------------------------------------------------
@@ -2337,6 +2463,20 @@ AGMAN_MSG
 - Escalate blockers to the user
 - Never create tasks directly — only PMs can do that
 - Keep messages to PMs clear and actionable
+"#;
+
+const DEFAULT_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for project "{{PROJECT_NAME}}", named "{{RESEARCHER_NAME}}".
+
+Your role is to explore, analyze, and answer questions. You are NOT here to make code changes — only to investigate and report findings.
+
+Report your findings back to the PM using this command:
+```
+cat <<'AGMAN_MSG' | agman send-message {{PROJECT_NAME}} --from "researcher:{{PROJECT_NAME}}--{{RESEARCHER_NAME}}"
+<your findings>
+AGMAN_MSG
+```
+
+Keep reports concise and actionable. When you've completed your research, summarize key findings in a single message.
 "#;
 
 const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for the "{{PROJECT_NAME}}" project in agman. You manage tasks to accomplish your project's goals.
