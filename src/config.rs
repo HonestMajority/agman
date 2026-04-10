@@ -251,6 +251,10 @@ impl Config {
         self.telegram_dir().join("outbox.seq")
     }
 
+    pub fn whisper_model_path(&self) -> PathBuf {
+        self.base_dir.join("whisper").join("ggml-base.bin")
+    }
+
     pub fn init_default_files(&self, force: bool) -> Result<()> {
         self.ensure_dirs()?;
 
