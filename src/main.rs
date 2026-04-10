@@ -535,7 +535,19 @@ fn cmd_create_pm_task(
     description: &str,
 ) -> Result<()> {
     let task = use_cases::create_pm_task(config, project, repo, branch, description)?;
-    println!("Task '{}' created in project '{}'", task.meta.task_id(), project);
+    let task_id = task.meta.task_id();
+
+    let worktree_path = task.meta.primary_repo().worktree_path.clone();
+    let session = &task.meta.primary_repo().tmux_session;
+
+    Tmux::create_session_with_windows(session, &worktree_path)?;
+    let _ = Tmux::add_review_window(session, &worktree_path);
+
+    let flow_cmd = format!("agman flow-run {}", task_id);
+    tracing::info!(task_id = %task_id, "dispatching flow-run for PM task");
+    let _ = Tmux::send_keys_to_window(session, "agman", &flow_cmd);
+
+    println!("Task '{}' created in project '{}'", task_id, project);
     Ok(())
 }
 
