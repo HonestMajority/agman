@@ -124,6 +124,9 @@ pub enum Commands {
         tail: usize,
     },
 
+    /// Show aggregated status across all projects and tasks
+    Status,
+
     /// Queue feedback on a running task
     QueueFeedback {
         /// Task identifier (repo--branch format, or just branch if unambiguous)

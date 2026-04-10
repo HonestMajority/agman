@@ -4,7 +4,7 @@ use agman::git::parse_github_owner_repo;
 use agman::repo_stats::RepoStats;
 use agman::task::{QueueItem, Task, TaskStatus};
 use agman::use_cases::{self, GithubItemKind, PrPollAction, WorktreeSource};
-use helpers::{create_test_task, init_test_repo, init_test_repo_at, test_config};
+use helpers::{create_test_project, create_test_task, init_test_repo, init_test_repo_at, test_config};
 
 // ---------------------------------------------------------------------------
 // Create task
@@ -2761,4 +2761,65 @@ fn delete_project() {
     // Task should now be archived
     let reloaded = agman::task::Task::load_by_id(&config, &task.meta.task_id()).unwrap();
     assert!(reloaded.meta.archived_at.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Aggregated status
+// ---------------------------------------------------------------------------
+
+#[test]
+fn aggregated_status() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    // Create a flow YAML so total_steps can be resolved
+    config.ensure_dirs().unwrap();
+    let flow_yaml = r#"
+name: new
+steps:
+  - agent: planner
+    until: AGENT_DONE
+  - agent: coder
+    until: AGENT_DONE
+  - agent: reviewer
+    until: TASK_COMPLETE
+"#;
+    std::fs::write(config.flow_path("new"), flow_yaml).unwrap();
+
+    // Create a project with 2 tasks
+    let _project = create_test_project(&config, "backend");
+
+    let mut task1 = create_test_task(&config, "myrepo", "feat-a");
+    task1.meta.project = Some("backend".to_string());
+    task1.meta.status = TaskStatus::Running;
+    task1.save_meta().unwrap();
+
+    let mut task2 = create_test_task(&config, "myrepo", "feat-b");
+    task2.meta.project = Some("backend".to_string());
+    task2.meta.status = TaskStatus::Stopped;
+    task2.save_meta().unwrap();
+
+    // Create an unassigned task
+    let _task3 = create_test_task(&config, "other", "experiment");
+
+    let result = use_cases::aggregated_status(&config).unwrap();
+
+    // Should have 1 project group
+    assert_eq!(result.projects.len(), 1);
+    assert_eq!(result.projects[0].name, "backend");
+    assert_eq!(result.projects[0].tasks.len(), 2);
+
+    // Check task statuses in the project group
+    let statuses: Vec<_> = result.projects[0].tasks.iter().map(|t| t.status).collect();
+    assert!(statuses.contains(&TaskStatus::Running));
+    assert!(statuses.contains(&TaskStatus::Stopped));
+
+    // Check total_steps is resolved from the flow
+    for t in &result.projects[0].tasks {
+        assert_eq!(t.total_steps, Some(3));
+    }
+
+    // Should have 1 unassigned task
+    assert_eq!(result.unassigned.len(), 1);
+    assert_eq!(result.unassigned[0].task_id, "other--experiment");
 }

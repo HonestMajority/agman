@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1863,6 +1863,75 @@ pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
     tracing::info!(project = %project_name, archived_count, "deleted project");
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Aggregated status
+// ---------------------------------------------------------------------------
+
+/// Summary of a single task for the aggregated status view.
+pub struct TaskSummary {
+    pub task_id: String,
+    pub status: TaskStatus,
+    pub flow_step: usize,
+    pub total_steps: Option<usize>,
+    pub current_agent: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A group of tasks belonging to a project.
+pub struct ProjectGroup {
+    pub name: String,
+    pub tasks: Vec<TaskSummary>,
+}
+
+/// Aggregated status across all projects and tasks.
+pub struct AggregatedStatus {
+    pub projects: Vec<ProjectGroup>,
+    pub unassigned: Vec<TaskSummary>,
+}
+
+fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
+    let total_steps = Flow::load(&config.flow_path(&task.meta.flow_name))
+        .ok()
+        .map(|f| f.steps.len());
+
+    TaskSummary {
+        task_id: task.meta.task_id(),
+        status: task.meta.status,
+        flow_step: task.meta.flow_step,
+        total_steps,
+        current_agent: task.meta.current_agent.clone(),
+        updated_at: task.meta.updated_at,
+    }
+}
+
+/// Get aggregated status across all projects and their tasks.
+pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
+    tracing::info!("computing aggregated status");
+
+    let projects = list_projects(config)?;
+    let mut project_groups = Vec::new();
+
+    for project in &projects {
+        let tasks = list_project_tasks(config, &project.meta.name)?;
+        let summaries: Vec<TaskSummary> = tasks.iter().map(|t| task_to_summary(config, t)).collect();
+        project_groups.push(ProjectGroup {
+            name: project.meta.name.clone(),
+            tasks: summaries,
+        });
+    }
+
+    let unassigned_tasks = list_unassigned_tasks(config)?;
+    let unassigned: Vec<TaskSummary> = unassigned_tasks
+        .iter()
+        .map(|t| task_to_summary(config, t))
+        .collect();
+
+    Ok(AggregatedStatus {
+        projects: project_groups,
+        unassigned,
+    })
 }
 
 // ---------------------------------------------------------------------------
