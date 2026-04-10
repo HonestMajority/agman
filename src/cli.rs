@@ -152,4 +152,38 @@ pub enum Commands {
         /// Feedback text to queue
         feedback: String,
     },
+
+    /// Create a researcher within a project
+    CreateResearcher {
+        /// Project name
+        project: String,
+        /// Researcher name (alphanumeric + hyphens)
+        name: String,
+        /// Repository name (for working directory context)
+        #[arg(long)]
+        repo: Option<String>,
+        /// Branch name (used with --repo for worktree resolution)
+        #[arg(long)]
+        branch: Option<String>,
+        /// Task ID to inherit working directory from
+        #[arg(long)]
+        task: Option<String>,
+        /// Research description/question
+        #[arg(long, short)]
+        description: Option<String>,
+    },
+
+    /// List researchers
+    ListResearchers {
+        /// Filter by project name
+        project: Option<String>,
+    },
+
+    /// Archive a researcher (kill session, preserve history)
+    ArchiveResearcher {
+        /// Project name
+        project: String,
+        /// Researcher name
+        name: String,
+    },
 }
