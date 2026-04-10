@@ -136,6 +136,12 @@ pub enum Commands {
         tail: usize,
     },
 
+    /// Read the current plan (TASK.md) for a task
+    TaskCurrentPlan {
+        /// Task identifier (repo--branch format)
+        task_id: String,
+    },
+
     /// Show aggregated status across all projects and tasks
     Status,
 

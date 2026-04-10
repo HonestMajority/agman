@@ -2259,6 +2259,23 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
     Ok(out)
 }
 
+/// Read the full contents of a task's TASK.md.
+pub fn get_task_current_plan(config: &Config, task_id: &str) -> Result<String> {
+    let (repo, branch) = Config::parse_task_id(task_id)
+        .context(format!("invalid task ID: {}", task_id))?;
+    let task = Task::load(config, &repo, &branch)?;
+    let plan_path = task.dir.join("TASK.md");
+
+    if !plan_path.exists() {
+        return Ok(String::new());
+    }
+
+    let contents = std::fs::read_to_string(&plan_path)
+        .with_context(|| format!("failed to read {}", plan_path.display()))?;
+
+    Ok(contents)
+}
+
 /// Read the last N lines of a task's agent.log.
 pub fn get_task_log_tail(config: &Config, task_id: &str, n: usize) -> Result<String> {
     let (repo, branch) = Config::parse_task_id(task_id)
