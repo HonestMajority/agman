@@ -9,16 +9,9 @@ agman (Agent Manager) is a Rust CLI/TUI tool for orchestrating stateless AI agen
 
 ## Design Principles
 
-### TUI-only application
+### TUI and CLI
 
-agman is exclusively an interactive TUI application. **No user-facing CLI subcommands should ever be added.** The only CLI subcommands permitted are hidden internal commands (`#[command(hide = true)]`) that the TUI invokes as background processes via subprocess or tmux. Current internal commands:
-
-- `flow-run` — runs a flow for a task in a tmux session
-- `continue` — continues a paused task with feedback
-- `run-command` — executes a stored command in a worktree
-- `command-flow-run` — runs a command-driven flow
-
-If you need new functionality, expose it through the TUI interface and implement the business logic in `src/use_cases.rs`. Only add a hidden internal command if the TUI needs to run something in a separate process (e.g., inside a tmux session).
+agman has two interfaces: a TUI (`agman` with no args) for interactive use, and CLI subcommands (`agman <command>`) used by PM agents and for scripting. Business logic lives in `src/use_cases.rs` — both the TUI and CLI commands call into the same use-case functions.
 
 ## Quick Reference
 
@@ -26,15 +19,18 @@ If you need new functionality, expose it through the TUI interface and implement
 # Build and install
 ./release.sh
 
-# Launch TUI (the only user-facing interface)
+# Launch TUI
 agman
+
+# List CLI subcommands
+agman --help
 ```
 
 ## Architecture
 
 ```
 src/
-├── main.rs      # Entry point, internal command handlers
+├── main.rs      # Entry point, CLI command handlers
 ├── cli.rs       # Clap CLI definitions
 ├── config.rs    # Paths, default flows/prompts
 ├── task.rs      # Task state management
@@ -100,11 +96,10 @@ src/
 
 ## Common Modifications
 
-### Adding a new internal command
-Internal commands are hidden subcommands invoked by the TUI via subprocess or tmux:
-1. Add variant to `Commands` enum in `cli.rs` with `#[command(hide = true)]`
+### Adding a new CLI command
+1. Add variant to `Commands` enum in `cli.rs`
 2. Add match arm in `main.rs`
-3. Implement `cmd_<name>` function
+3. Implement `cmd_<name>` function (business logic goes in `use_cases.rs`)
 
 ### Adding a new agent
 1. Create prompt in `~/.agman/prompts/<name>.md`
