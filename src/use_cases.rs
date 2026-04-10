@@ -1793,6 +1793,7 @@ pub struct ProjectStatusInfo {
     pub project: Project,
     pub total_tasks: usize,
     pub active_tasks: usize,
+    pub archived_tasks: usize,
 }
 
 /// Get detailed status of a project.
@@ -1803,11 +1804,16 @@ pub fn project_status(config: &Config, name: &str) -> Result<ProjectStatusInfo> 
         .iter()
         .filter(|t| t.meta.status == TaskStatus::Running)
         .count();
+    let archived_tasks = Task::list_archived(config)
+        .iter()
+        .filter(|t| t.meta.project.as_deref() == Some(name))
+        .count();
 
     Ok(ProjectStatusInfo {
         project,
         total_tasks: tasks.len(),
         active_tasks,
+        archived_tasks,
     })
 }
 
@@ -1883,12 +1889,14 @@ pub struct TaskSummary {
 pub struct ProjectGroup {
     pub name: String,
     pub tasks: Vec<TaskSummary>,
+    pub archived_count: usize,
 }
 
 /// Aggregated status across all projects and tasks.
 pub struct AggregatedStatus {
     pub projects: Vec<ProjectGroup>,
     pub unassigned: Vec<TaskSummary>,
+    pub archived_unassigned: usize,
 }
 
 fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
@@ -1910,15 +1918,21 @@ fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
 pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
     tracing::info!("computing aggregated status");
 
+    let archived = Task::list_archived(config);
     let projects = list_projects(config)?;
     let mut project_groups = Vec::new();
 
     for project in &projects {
         let tasks = list_project_tasks(config, &project.meta.name)?;
         let summaries: Vec<TaskSummary> = tasks.iter().map(|t| task_to_summary(config, t)).collect();
+        let archived_count = archived
+            .iter()
+            .filter(|t| t.meta.project.as_deref() == Some(&project.meta.name))
+            .count();
         project_groups.push(ProjectGroup {
             name: project.meta.name.clone(),
             tasks: summaries,
+            archived_count,
         });
     }
 
@@ -1928,9 +1942,15 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
         .map(|t| task_to_summary(config, t))
         .collect();
 
+    let archived_unassigned = archived
+        .iter()
+        .filter(|t| t.meta.project.is_none())
+        .count();
+
     Ok(AggregatedStatus {
         projects: project_groups,
         unassigned,
+        archived_unassigned,
     })
 }
 

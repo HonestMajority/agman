@@ -499,8 +499,9 @@ fn cmd_list_projects(config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<8} {:<8}", "NAME", "TASKS", "ACTIVE");
-    println!("{}", "-".repeat(40));
+    let archived = Task::list_archived(config);
+    println!("{:<20} {:<8} {:<8} {:<8}", "NAME", "TASKS", "ACTIVE", "ARCHIVED");
+    println!("{}", "-".repeat(48));
     for p in &projects {
         let tasks = use_cases::list_project_tasks(config, &p.meta.name)
             .unwrap_or_default();
@@ -508,11 +509,16 @@ fn cmd_list_projects(config: &Config) -> Result<()> {
             .iter()
             .filter(|t| t.meta.status == TaskStatus::Running)
             .count();
+        let archived_count = archived
+            .iter()
+            .filter(|t| t.meta.project.as_deref() == Some(&p.meta.name))
+            .count();
         println!(
-            "{:<20} {:<8} {:<8}",
+            "{:<20} {:<8} {:<8} {:<8}",
             p.meta.name,
             tasks.len(),
-            active
+            active,
+            archived_count
         );
     }
     Ok(())
@@ -523,7 +529,14 @@ fn cmd_project_status(config: &Config, name: &str) -> Result<()> {
     println!("Project: {}", status.project.meta.name);
     println!("Description: {}", status.project.meta.description);
     println!("Created: {}", status.project.meta.created_at);
-    println!("Tasks: {} total, {} active", status.total_tasks, status.active_tasks);
+    if status.archived_tasks > 0 {
+        println!(
+            "Tasks: {} total, {} active, +{} archived",
+            status.total_tasks, status.active_tasks, status.archived_tasks
+        );
+    } else {
+        println!("Tasks: {} total, {} active", status.total_tasks, status.active_tasks);
+    }
 
     let tasks = use_cases::list_project_tasks(config, name)?;
     if !tasks.is_empty() {
@@ -600,6 +613,15 @@ fn cmd_list_pm_tasks(config: &Config, project: &str) -> Result<()> {
             t.meta.updated_at.format("%Y-%m-%d %H:%M")
         );
     }
+
+    let archived_count = Task::list_archived(config)
+        .iter()
+        .filter(|t| t.meta.project.as_deref() == Some(project))
+        .count();
+    if archived_count > 0 {
+        println!("(+{} archived)", archived_count);
+    }
+
     Ok(())
 }
 
@@ -656,12 +678,18 @@ fn cmd_status(config: &Config) -> Result<()> {
         println!();
         let task_word = if group.tasks.len() == 1 { "task" } else { "tasks" };
         let breakdown = format_status_breakdown(&group.tasks);
+        let archived_suffix = if group.archived_count > 0 {
+            format!(", +{} archived", group.archived_count)
+        } else {
+            String::new()
+        };
         println!(
-            "{} ({} {}: {})",
+            "{} ({} {}: {}{})",
             group.name,
             group.tasks.len(),
             task_word,
-            breakdown
+            breakdown,
+            archived_suffix
         );
         for t in &group.tasks {
             let step_str = match t.total_steps {
@@ -684,10 +712,15 @@ fn cmd_status(config: &Config) -> Result<()> {
         }
     }
 
-    if !status.unassigned.is_empty() {
+    if !status.unassigned.is_empty() || status.archived_unassigned > 0 {
         println!();
         let task_word = if status.unassigned.len() == 1 { "task" } else { "tasks" };
-        println!("Unassigned ({} {})", status.unassigned.len(), task_word);
+        let archived_suffix = if status.archived_unassigned > 0 {
+            format!(", +{} archived", status.archived_unassigned)
+        } else {
+            String::new()
+        };
+        println!("Unassigned ({} {}{})", status.unassigned.len(), task_word, archived_suffix);
         for t in &status.unassigned {
             let step_str = match t.total_steps {
                 Some(total) => format!("step {}/{}", t.flow_step, total),
