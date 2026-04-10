@@ -1738,6 +1738,7 @@ impl App {
         }
 
         self.view = View::Preview;
+        self.load_preview();
         Ok(())
     }
 
@@ -1855,6 +1856,7 @@ impl App {
         }
 
         self.view = View::Preview;
+        self.load_preview();
         Ok(())
     }
 
