@@ -129,6 +129,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::DirectoryPicker
             | View::SessionPicker
             | View::ProjectWizard
+            | View::ProjectPicker
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -212,6 +213,17 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::ProjectWizard => {
             draw_project_list(f, app, chunks[0]);
             draw_project_wizard(f, app);
+        }
+        View::ProjectPicker => {
+            // Draw the underlying view behind the modal
+            if app.project_picker.as_ref().is_some_and(|p| {
+                matches!(p.action, super::app::ProjectPickerAction::MigrateAllUnassigned)
+            }) {
+                draw_project_list(f, app, chunks[0]);
+            } else {
+                draw_task_list(f, app, chunks[0]);
+            }
+            draw_project_picker(f, app);
         }
     }
 
@@ -475,6 +487,53 @@ fn draw_project_wizard(f: &mut Frame, app: &mut App) {
     let footer = Paragraph::new(Line::from(footer_spans))
         .alignment(Alignment::Center);
     f.render_widget(footer, chunks[2]);
+}
+
+fn draw_project_picker(f: &mut Frame, app: &mut App) {
+    let Some(picker) = &app.project_picker else {
+        return;
+    };
+
+    let title = match &picker.action {
+        super::app::ProjectPickerAction::MigrateAllUnassigned => "Migrate All Unassigned Tasks To",
+        super::app::ProjectPickerAction::MoveTask(_) => "Move Task To Project",
+    };
+
+    let area = centered_rect(40, 50, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::LightBlue));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let items: Vec<ListItem> = picker
+        .projects
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let style = if i == picker.selected {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(40, 40, 60))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            ListItem::new(Span::styled(format!("  {name}"), style))
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, inner);
 }
 
 fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
@@ -1581,6 +1640,15 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("s", Style::default().fg(Color::LightRed)),
                 Span::styled(" stop CEO  ", Style::default().fg(Color::DarkGray)),
             ];
+            // Show migrate hint when (unassigned) is selected
+            let is_unassigned = app.selected_project_index >= app.projects.len()
+                && app.unassigned_task_count > 0;
+            if is_unassigned {
+                spans.extend([
+                    Span::styled("m", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" migrate  ", Style::default().fg(Color::DarkGray)),
+                ]);
+            }
             spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" quit", Style::default().fg(Color::DarkGray)),
@@ -1640,6 +1708,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("d", Style::default().fg(Color::LightRed)),
                     Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("M", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" move  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
             let unread_count = app.notifications.iter().filter(|n| n.unread).count();
@@ -2026,6 +2096,16 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" switch field  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
                 Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
+        }
+        View::ProjectPicker => {
+            vec![
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc", Style::default().fg(Color::LightCyan)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]

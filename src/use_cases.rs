@@ -1794,6 +1794,52 @@ pub fn list_unassigned_tasks(config: &Config) -> Result<Vec<Task>> {
 }
 
 // ---------------------------------------------------------------------------
+// Task migration
+// ---------------------------------------------------------------------------
+
+/// Migrate tasks to a project by setting their `project` field.
+/// The target project must already exist. Returns the number of tasks migrated.
+pub fn migrate_tasks_to_project(
+    config: &Config,
+    project_name: &str,
+    task_ids: &[String],
+) -> Result<usize> {
+    // Verify the target project exists
+    let _project = Project::load_by_name(config, project_name)
+        .with_context(|| format!("target project '{}' does not exist", project_name))?;
+
+    let mut migrated = 0;
+    for task_id in task_ids {
+        let task_dir = config.tasks_dir.join(task_id);
+        if !task_dir.exists() {
+            tracing::warn!(task_id = %task_id, "task not found, skipping");
+            continue;
+        }
+        let meta_path = task_dir.join("meta.json");
+        let load_result: Result<Task> = (|| {
+            let content = std::fs::read_to_string(&meta_path)
+                .context("failed to read meta.json")?;
+            let meta: crate::task::TaskMeta =
+                serde_json::from_str(&content).context("failed to parse meta.json")?;
+            Ok(Task { meta, dir: task_dir.clone() })
+        })();
+        match load_result {
+            Ok(mut task) => {
+                task.meta.project = Some(project_name.to_string());
+                task.save_meta()?;
+                tracing::info!(task_id = %task_id, project = project_name, "migrated task to project");
+                migrated += 1;
+            }
+            Err(e) => {
+                tracing::warn!(task_id = %task_id, error = %e, "failed to load task, skipping");
+            }
+        }
+    }
+
+    Ok(migrated)
+}
+
+// ---------------------------------------------------------------------------
 // Task creation with project
 // ---------------------------------------------------------------------------
 

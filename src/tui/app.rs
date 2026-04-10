@@ -66,6 +66,7 @@ pub enum View {
     Settings,
     Archive,
     ProjectWizard,
+    ProjectPicker,
 }
 
 /// Which wizard requested the directory picker.
@@ -329,6 +330,21 @@ pub struct RestartWizard {
     pub flow_steps: Vec<String>,
     pub selected_step_index: usize,
     pub task_id: String,
+}
+
+/// What triggered the project picker modal.
+#[derive(Debug, Clone)]
+pub enum ProjectPickerAction {
+    /// Migrate all unassigned tasks to the selected project.
+    MigrateAllUnassigned,
+    /// Move a single task (by task_id) to the selected project.
+    MoveTask(String),
+}
+
+pub struct ProjectPicker {
+    pub projects: Vec<String>,
+    pub selected: usize,
+    pub action: ProjectPickerAction,
 }
 
 pub struct ProjectWizard {
@@ -643,6 +659,8 @@ pub struct App {
     pub project_task_counts: std::collections::HashMap<String, (usize, usize)>, // (total, active)
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
+    // Project picker (for task migration/move)
+    pub project_picker: Option<ProjectPicker>,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<Vec<InboxPollResult>>,
@@ -778,6 +796,7 @@ impl App {
             unassigned_task_count: 0,
             project_task_counts: std::collections::HashMap::new(),
             project_wizard: None,
+            project_picker: None,
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -2442,6 +2461,7 @@ impl App {
             View::Settings => self.handle_settings_event(event),
             View::Archive => self.handle_archive_event(event),
             View::ProjectWizard => self.handle_project_wizard_event(event),
+            View::ProjectPicker => self.handle_project_picker_event(event),
         }
     }
 
@@ -2542,6 +2562,28 @@ impl App {
                         error_message: None,
                     });
                     self.view = View::ProjectWizard;
+                }
+                KeyCode::Char('m') => {
+                    // Migrate all unassigned tasks — only available when (unassigned) is selected
+                    let is_unassigned = self.selected_project_index >= self.projects.len()
+                        && self.unassigned_task_count > 0;
+                    if is_unassigned {
+                        let project_names: Vec<String> = self
+                            .projects
+                            .iter()
+                            .map(|p| p.meta.name.clone())
+                            .collect();
+                        if project_names.is_empty() {
+                            self.set_status("Create a project first with 'n'".to_string());
+                        } else {
+                            self.project_picker = Some(ProjectPicker {
+                                projects: project_names,
+                                selected: 0,
+                                action: ProjectPickerAction::MigrateAllUnassigned,
+                            });
+                            self.view = View::ProjectPicker;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -2726,6 +2768,27 @@ impl App {
                     self.archive_preview = None;
                     self.archive_scroll = 0;
                     self.view = View::Archive;
+                }
+                KeyCode::Char('M') => {
+                    // Move selected task to a different project
+                    if let Some(task) = self.selected_task() {
+                        let task_id = task.meta.task_id();
+                        let project_names: Vec<String> = self
+                            .projects
+                            .iter()
+                            .map(|p| p.meta.name.clone())
+                            .collect();
+                        if project_names.is_empty() {
+                            self.set_status("Create a project first".to_string());
+                        } else {
+                            self.project_picker = Some(ProjectPicker {
+                                projects: project_names,
+                                selected: 0,
+                                action: ProjectPickerAction::MoveTask(task_id),
+                            });
+                            self.view = View::ProjectPicker;
+                        }
+                    }
                 }
                 KeyCode::Char(',') => {
                     self.settings_selected = 0;
@@ -2945,6 +3008,115 @@ impl App {
                     }
                     wizard.name_editor.input(input);
                 }
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_project_picker_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.should_quit = true;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    let was_migrate_all = self
+                        .project_picker
+                        .as_ref()
+                        .is_some_and(|p| matches!(p.action, ProjectPickerAction::MigrateAllUnassigned));
+                    self.project_picker = None;
+                    self.view = if was_migrate_all {
+                        View::ProjectList
+                    } else {
+                        View::TaskList
+                    };
+                }
+                KeyCode::Char('j') => {
+                    if let Some(picker) = &mut self.project_picker {
+                        if !picker.projects.is_empty() {
+                            picker.selected = (picker.selected + 1) % picker.projects.len();
+                        }
+                    }
+                }
+                KeyCode::Char('k') => {
+                    if let Some(picker) = &mut self.project_picker {
+                        if !picker.projects.is_empty() {
+                            picker.selected = if picker.selected == 0 {
+                                picker.projects.len() - 1
+                            } else {
+                                picker.selected - 1
+                            };
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(picker) = self.project_picker.take() {
+                        if let Some(project_name) = picker.projects.get(picker.selected) {
+                            let project_name = project_name.clone();
+                            match &picker.action {
+                                ProjectPickerAction::MigrateAllUnassigned => {
+                                    let unassigned = use_cases::list_unassigned_tasks(&self.config)
+                                        .unwrap_or_default();
+                                    let task_ids: Vec<String> =
+                                        unassigned.iter().map(|t| t.meta.task_id()).collect();
+                                    match use_cases::migrate_tasks_to_project(
+                                        &self.config,
+                                        &project_name,
+                                        &task_ids,
+                                    ) {
+                                        Ok(count) => {
+                                            tracing::info!(
+                                                project = %project_name,
+                                                count,
+                                                "migrated unassigned tasks"
+                                            );
+                                            self.set_status(format!(
+                                                "Migrated {count} tasks to {project_name}"
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(error = %e, "failed to migrate tasks");
+                                            self.set_status(format!("Migration failed: {e}"));
+                                        }
+                                    }
+                                    self.refresh_projects();
+                                    self.view = View::ProjectList;
+                                }
+                                ProjectPickerAction::MoveTask(task_id) => {
+                                    let task_id = task_id.clone();
+                                    match use_cases::migrate_tasks_to_project(
+                                        &self.config,
+                                        &project_name,
+                                        &[task_id.clone()],
+                                    ) {
+                                        Ok(_) => {
+                                            tracing::info!(
+                                                task_id = %task_id,
+                                                project = %project_name,
+                                                "moved task to project"
+                                            );
+                                            self.set_status(format!(
+                                                "Moved task to {project_name}"
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                task_id = %task_id,
+                                                error = %e,
+                                                "failed to move task"
+                                            );
+                                            self.set_status(format!("Move failed: {e}"));
+                                        }
+                                    }
+                                    self.refresh_projects();
+                                    self.refresh_tasks_for_project();
+                                    self.view = View::TaskList;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         Ok(false)

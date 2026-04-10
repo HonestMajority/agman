@@ -2668,3 +2668,31 @@ fn use_case_get_task_status_text() {
     assert!(text.contains("myrepo--feat-status"));
     assert!(text.contains("running"));
 }
+
+#[test]
+fn use_case_migrate_tasks_to_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo = init_test_repo(&tmp, "myrepo");
+
+    // Create a project to migrate into
+    let _project = helpers::create_test_project(&config, "backend");
+
+    // Create two unassigned tasks
+    let task1 = create_test_task(&config, "myrepo", "feat-a");
+    let task2 = create_test_task(&config, "myrepo", "feat-b");
+    assert!(task1.meta.project.is_none());
+    assert!(task2.meta.project.is_none());
+
+    // Migrate both tasks
+    let task_ids = vec![task1.meta.task_id(), task2.meta.task_id()];
+    let count = use_cases::migrate_tasks_to_project(&config, "backend", &task_ids).unwrap();
+    assert_eq!(count, 2);
+
+    // Verify tasks are now assigned to the project
+    let project_tasks = use_cases::list_project_tasks(&config, "backend").unwrap();
+    assert_eq!(project_tasks.len(), 2);
+
+    let unassigned = use_cases::list_unassigned_tasks(&config).unwrap();
+    assert_eq!(unassigned.len(), 0);
+}
