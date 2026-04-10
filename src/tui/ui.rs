@@ -1636,7 +1636,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("c", Style::default().fg(Color::LightYellow)),
-                Span::styled(" CEO  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" CEO chat  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("s", Style::default().fg(Color::LightRed)),
                 Span::styled(" stop CEO  ", Style::default().fg(Color::DarkGray)),
             ];
@@ -1668,7 +1668,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             if app.current_project.as_deref().is_some_and(|p| p != "(unassigned)") {
                 spans.extend([
                     Span::styled("c", Style::default().fg(Color::LightYellow)),
-                    Span::styled(" PM  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(" PM chat  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
             if let Some(task) = app.selected_task() {

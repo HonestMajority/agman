@@ -2529,22 +2529,16 @@ impl App {
                     }
                 }
                 KeyCode::Char('c') => {
-                    // Attach to CEO tmux session (lazy-start if needed)
-                    let session = Config::ceo_tmux_session();
-                    if !use_cases::agent_session_running(session) {
-                        match use_cases::start_ceo_session(&self.config) {
-                            Ok(()) => {
-                                tracing::info!("started CEO session");
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "failed to start CEO session");
-                                self.set_status(format!("Failed to start CEO: {e}"));
-                                return Ok(false);
-                            }
+                    // Open CEO chat as a tmux popup
+                    match use_cases::open_ceo_popup(&self.config) {
+                        Ok(()) => {
+                            tracing::info!("opened CEO popup");
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "failed to open CEO popup");
+                            self.set_status(format!("Failed to open CEO chat: {e}"));
                         }
                     }
-                    self.attach_session_name = Some(session.to_string());
-                    return Ok(true);
                 }
                 KeyCode::Char('s') => {
                     // Stop CEO session
@@ -2709,22 +2703,16 @@ impl App {
                 KeyCode::Char('c') => {
                     if let Some(ref project_name) = self.current_project.clone() {
                         if project_name != "(unassigned)" {
-                            // Attach to PM tmux session (lazy-start if needed)
-                            let session = Config::pm_tmux_session(project_name);
-                            if !use_cases::agent_session_running(&session) {
-                                match use_cases::start_pm_session(&self.config, project_name) {
-                                    Ok(()) => {
-                                        tracing::info!(project = %project_name, "started PM session");
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(project = %project_name, error = %e, "failed to start PM session");
-                                        self.set_status(format!("Failed to start PM: {e}"));
-                                        return Ok(false);
-                                    }
+                            // Open PM chat as a tmux popup
+                            match use_cases::open_pm_popup(&self.config, project_name) {
+                                Ok(()) => {
+                                    tracing::info!(project = %project_name, "opened PM popup");
+                                }
+                                Err(e) => {
+                                    tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
+                                    self.set_status(format!("Failed to open PM chat: {e}"));
                                 }
                             }
-                            self.attach_session_name = Some(session);
-                            return Ok(true);
                         }
                     } else {
                         // Original behavior: toggle review_addressed

@@ -2596,19 +2596,17 @@ fn task_project_field_roundtrips() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn use_case_create_project_writes_prompt() {
+fn use_case_create_project() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
     let project = use_cases::create_project(&config, "my-proj", "A test project").unwrap();
     assert_eq!(project.meta.name, "my-proj");
+    assert_eq!(project.meta.description, "A test project");
 
-    // PM system prompt should be written
-    let prompt_path = config.project_prompt("my-proj");
-    assert!(prompt_path.exists());
-    let prompt_content = std::fs::read_to_string(&prompt_path).unwrap();
-    assert!(prompt_content.contains("my-proj"));
+    // Project directory and meta should exist
+    assert!(config.project_dir("my-proj").join("meta.json").exists());
 }
 
 #[test]

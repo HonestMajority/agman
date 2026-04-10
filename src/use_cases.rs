@@ -1772,7 +1772,6 @@ pub fn fetch_show_prs_data() -> ShowPrsData {
 pub fn create_project(config: &Config, name: &str, description: &str) -> Result<Project> {
     tracing::info!(project = name, "creating project");
     let project = Project::create(config, name, description)?;
-    write_default_pm_prompt(config, name)?;
     Ok(project)
 }
 
@@ -1933,12 +1932,6 @@ pub fn start_ceo_session(config: &Config) -> Result<()> {
     let ceo_dir = config.ceo_dir();
     std::fs::create_dir_all(&ceo_dir).context("failed to create CEO directory")?;
 
-    // Write default system prompt if missing
-    let prompt_path = config.ceo_prompt();
-    if !prompt_path.exists() {
-        write_default_ceo_prompt(config)?;
-    }
-
     // Check for resume ID
     let session_id_path = config.ceo_session_id();
     let resume_id = std::fs::read_to_string(&session_id_path).ok();
@@ -1946,7 +1939,21 @@ pub fn start_ceo_session(config: &Config) -> Result<()> {
 
     let session_name = Config::ceo_tmux_session();
     tracing::info!(session = session_name, "starting CEO session");
-    Tmux::create_agent_session(session_name, &prompt_path, resume_ref)?;
+    Tmux::create_agent_session(session_name, DEFAULT_CEO_PROMPT, resume_ref)?;
+    Ok(())
+}
+
+/// Open a CEO chat as a tmux popup overlaid on the current pane.
+pub fn open_ceo_popup(config: &Config) -> Result<()> {
+    let ceo_dir = config.ceo_dir();
+    std::fs::create_dir_all(&ceo_dir).context("failed to create CEO directory")?;
+
+    let session_id_path = config.ceo_session_id();
+    let resume_id = std::fs::read_to_string(&session_id_path).ok();
+    let resume_ref = resume_id.as_deref().map(|s| s.trim());
+
+    tracing::info!("opening CEO popup");
+    Tmux::display_popup(DEFAULT_CEO_PROMPT, resume_ref)?;
     Ok(())
 }
 
@@ -1957,18 +1964,31 @@ pub fn start_pm_session(config: &Config, project_name: &str) -> Result<()> {
         anyhow::bail!("project '{}' does not exist", project_name);
     }
 
-    let prompt_path = config.project_prompt(project_name);
-    if !prompt_path.exists() {
-        write_default_pm_prompt(config, project_name)?;
+    let session_id_path = config.project_session_id(project_name);
+    let resume_id = std::fs::read_to_string(&session_id_path).ok();
+    let resume_ref = resume_id.as_deref().map(|s| s.trim());
+
+    let prompt = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
+    let session_name = Config::pm_tmux_session(project_name);
+    tracing::info!(session = &session_name, project = project_name, "starting PM session");
+    Tmux::create_agent_session(&session_name, &prompt, resume_ref)?;
+    Ok(())
+}
+
+/// Open a PM chat as a tmux popup overlaid on the current pane.
+pub fn open_pm_popup(config: &Config, project_name: &str) -> Result<()> {
+    let project_dir = config.project_dir(project_name);
+    if !project_dir.exists() {
+        anyhow::bail!("project '{}' does not exist", project_name);
     }
 
     let session_id_path = config.project_session_id(project_name);
     let resume_id = std::fs::read_to_string(&session_id_path).ok();
     let resume_ref = resume_id.as_deref().map(|s| s.trim());
 
-    let session_name = Config::pm_tmux_session(project_name);
-    tracing::info!(session = &session_name, project = project_name, "starting PM session");
-    Tmux::create_agent_session(&session_name, &prompt_path, resume_ref)?;
+    let prompt = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
+    tracing::info!(project = project_name, "opening PM popup");
+    Tmux::display_popup(&prompt, resume_ref)?;
     Ok(())
 }
 
@@ -2039,24 +2059,6 @@ pub fn get_task_log_tail(config: &Config, task_id: &str, n: usize) -> Result<Str
 // Default system prompts
 // ---------------------------------------------------------------------------
 
-fn write_default_ceo_prompt(config: &Config) -> Result<()> {
-    let prompt_path = config.ceo_prompt();
-    if let Some(parent) = prompt_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&prompt_path, DEFAULT_CEO_PROMPT)?;
-    Ok(())
-}
-
-fn write_default_pm_prompt(config: &Config, project_name: &str) -> Result<()> {
-    let prompt_path = config.project_prompt(project_name);
-    if let Some(parent) = prompt_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let prompt = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
-    std::fs::write(&prompt_path, prompt)?;
-    Ok(())
-}
 
 const DEFAULT_CEO_PROMPT: &str = r#"You are the CEO agent — the strategic orchestrator for agman. You delegate work to Project Managers (PMs), never implement anything yourself.
 
