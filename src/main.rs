@@ -636,15 +636,9 @@ fn format_relative_time(dt: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 fn format_status_breakdown(tasks: &[use_cases::TaskSummary]) -> String {
-    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for t in tasks {
-        let label = match t.status {
-            TaskStatus::Running => "running",
-            TaskStatus::Stopped => "stopped",
-            TaskStatus::InputNeeded => "input_needed",
-            TaskStatus::OnHold => "on_hold",
-        };
-        *counts.entry(label).or_insert(0) += 1;
+        *counts.entry(format!("{}", t.status)).or_insert(0) += 1;
     }
     counts
         .iter()
