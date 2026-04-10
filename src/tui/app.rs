@@ -2038,6 +2038,11 @@ impl App {
         let description = wizard.description_editor.lines_joined().trim().to_string();
         let review_after = wizard.review_after;
 
+        // Determine project assignment from current scope
+        let project = self.current_project.as_ref()
+            .filter(|p| p.as_str() != "(unassigned)")
+            .cloned();
+
         tracing::info!(name = %name, branch = %branch_name, is_multi, "creating task via wizard");
         self.log_output(format!("Creating task {}--{}...", name, branch_name));
 
@@ -2052,6 +2057,7 @@ impl App {
                 "new-multi",
                 parent_dir.clone(),
                 review_after,
+                project,
             ) {
                 Ok(t) => t,
                 Err(e) => {
@@ -2084,7 +2090,11 @@ impl App {
             // Success - close wizard and refresh
             self.wizard = None;
             self.view = View::TaskList;
-            self.refresh_tasks_and_select(&task_id);
+            if self.current_project.is_some() {
+                self.refresh_tasks_for_project();
+            } else {
+                self.refresh_tasks_and_select(&task_id);
+            }
             self.set_status(format!("Created multi-repo task: {}", task_id));
         } else {
             // Single-repo path: compute parent_dir when repo is outside repos_dir
@@ -2105,6 +2115,7 @@ impl App {
                 worktree_source,
                 review_after,
                 parent_dir,
+                project,
             ) {
                 Ok(t) => t,
                 Err(e) => {
@@ -2116,15 +2127,6 @@ impl App {
                     return Ok(());
                 }
             };
-
-            // Set project field if creating within a project scope
-            let mut task = task;
-            if let Some(ref project_name) = self.current_project {
-                if project_name != "(unassigned)" {
-                    task.meta.project = Some(project_name.clone());
-                    let _ = task.save_meta();
-                }
-            }
 
             // Side effects: create tmux session and start flow
             let worktree_path = task.meta.primary_repo().worktree_path.clone();
@@ -2194,6 +2196,11 @@ impl App {
             }
         });
 
+        // Determine project assignment from current scope
+        let project = self.current_project.as_ref()
+            .filter(|p| p.as_str() != "(unassigned)")
+            .cloned();
+
         tracing::info!(repo = %repo_name, branch = %branch_name, "creating setup-only task via wizard");
         self.log_output(format!("Creating setup-only task {}--{}...", repo_name, branch_name));
 
@@ -2204,6 +2211,7 @@ impl App {
             &branch_name,
             worktree_source,
             parent_dir,
+            project,
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -2234,7 +2242,11 @@ impl App {
         let task_id = task.meta.task_id();
         self.wizard = None;
         self.view = View::TaskList;
-        self.refresh_tasks_and_select(&task_id);
+        if self.current_project.is_some() {
+            self.refresh_tasks_for_project();
+        } else {
+            self.refresh_tasks_and_select(&task_id);
+        }
         self.set_status(format!("Created setup-only task: {}", task_id));
 
         Ok(())
@@ -2517,22 +2529,16 @@ impl App {
                     }
                 }
                 KeyCode::Char('c') => {
-                    // Attach to CEO tmux session (lazy-start if needed)
-                    let session = Config::ceo_tmux_session();
-                    if !use_cases::agent_session_running(session) {
-                        match use_cases::start_ceo_session(&self.config) {
-                            Ok(()) => {
-                                tracing::info!("started CEO session");
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "failed to start CEO session");
-                                self.set_status(format!("Failed to start CEO: {e}"));
-                                return Ok(false);
-                            }
+                    // Open CEO chat as a tmux popup
+                    match use_cases::open_ceo_popup(&self.config) {
+                        Ok(()) => {
+                            tracing::info!("opened CEO popup");
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "failed to open CEO popup");
+                            self.set_status(format!("Failed to open CEO chat: {e}"));
                         }
                     }
-                    self.attach_session_name = Some(session.to_string());
-                    return Ok(true);
                 }
                 KeyCode::Char('s') => {
                     // Stop CEO session
@@ -2697,22 +2703,16 @@ impl App {
                 KeyCode::Char('c') => {
                     if let Some(ref project_name) = self.current_project.clone() {
                         if project_name != "(unassigned)" {
-                            // Attach to PM tmux session (lazy-start if needed)
-                            let session = Config::pm_tmux_session(project_name);
-                            if !use_cases::agent_session_running(&session) {
-                                match use_cases::start_pm_session(&self.config, project_name) {
-                                    Ok(()) => {
-                                        tracing::info!(project = %project_name, "started PM session");
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(project = %project_name, error = %e, "failed to start PM session");
-                                        self.set_status(format!("Failed to start PM: {e}"));
-                                        return Ok(false);
-                                    }
+                            // Open PM chat as a tmux popup
+                            match use_cases::open_pm_popup(&self.config, project_name) {
+                                Ok(()) => {
+                                    tracing::info!(project = %project_name, "opened PM popup");
+                                }
+                                Err(e) => {
+                                    tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
+                                    self.set_status(format!("Failed to open PM chat: {e}"));
                                 }
                             }
-                            self.attach_session_name = Some(session);
-                            return Ok(true);
                         }
                     } else {
                         // Original behavior: toggle review_addressed

@@ -233,17 +233,13 @@ impl Tmux {
     /// `claude` session. Used for CEO and PM agents (no nvim/lazygit/shell windows).
     pub fn create_agent_session(
         session_name: &str,
-        system_prompt_path: &Path,
+        system_prompt: &str,
         resume_id: Option<&str>,
     ) -> Result<()> {
         if Self::session_exists(session_name) {
             tracing::debug!(session = session_name, "agent tmux session already exists");
             return Ok(());
         }
-
-        let prompt_path = system_prompt_path
-            .to_str()
-            .context("system prompt path is not valid UTF-8")?;
 
         tracing::info!(session = session_name, "creating agent tmux session");
 
@@ -260,19 +256,56 @@ impl Tmux {
             );
         }
 
-        // Build the claude command
+        // Build and send the claude command
+        let cmd = Self::build_claude_command(system_prompt, resume_id);
+        Self::send_keys_to_session(session_name, &cmd)?;
+
+        Ok(())
+    }
+
+    /// Open a tmux popup running an interactive `claude` session overlaid on
+    /// the current pane. The popup closes when the claude session exits.
+    pub fn display_popup(
+        system_prompt: &str,
+        resume_id: Option<&str>,
+    ) -> Result<()> {
+        let cmd = Self::build_claude_command(system_prompt, resume_id);
+
+        tracing::info!("opening claude popup");
+
+        let output = Command::new("tmux")
+            .args([
+                "display-popup",
+                "-E",    // close popup when command exits
+                "-w", "90%",
+                "-h", "90%",
+                &cmd,
+            ])
+            .output()
+            .context("failed to open tmux popup")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to open tmux popup: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Build a `claude` CLI command string with system prompt and optional resume.
+    fn build_claude_command(system_prompt: &str, resume_id: Option<&str>) -> String {
+        // Shell-escape the prompt by using single quotes with inner escaping
+        let escaped_prompt = system_prompt.replace('\'', "'\\''");
         let mut cmd = format!(
-            "claude --dangerously-skip-permissions --system-prompt {}",
-            prompt_path
+            "claude --dangerously-skip-permissions --system-prompt '{}'",
+            escaped_prompt
         );
         if let Some(id) = resume_id {
             cmd.push_str(&format!(" --resume {}", id));
         }
-
-        // Send the claude command to start the interactive session
-        Self::send_keys_to_session(session_name, &cmd)?;
-
-        Ok(())
+        cmd
     }
 
     /// Send keys to the first (and only) window/pane of a session.

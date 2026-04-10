@@ -219,10 +219,6 @@ impl Config {
         self.ceo_dir().join("session-id")
     }
 
-    pub fn ceo_prompt(&self) -> PathBuf {
-        self.ceo_dir().join("system-prompt.md")
-    }
-
     pub fn project_inbox(&self, name: &str) -> PathBuf {
         self.project_dir(name).join("inbox.jsonl")
     }
@@ -233,10 +229,6 @@ impl Config {
 
     pub fn project_session_id(&self, name: &str) -> PathBuf {
         self.project_dir(name).join("session-id")
-    }
-
-    pub fn project_prompt(&self, name: &str) -> PathBuf {
-        self.project_dir(name).join("system-prompt.md")
     }
 
     pub fn ceo_tmux_session() -> &'static str {
