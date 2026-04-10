@@ -2046,6 +2046,8 @@ pub fn create_pm_task(
 pub fn send_message(config: &Config, target: &str, from: &str, message: &str) -> Result<()> {
     let inbox_path = if target == "ceo" {
         config.ceo_inbox()
+    } else if target == "telegram" {
+        config.telegram_outbox()
     } else {
         config.project_inbox(target)
     };
@@ -2302,6 +2304,12 @@ const DEFAULT_CEO_PROMPT: &str = r#"You are the CEO agent — the strategic orch
 - Send a message to a PM (use heredoc to avoid shell escaping issues):
 ```
 cat <<'AGMAN_MSG' | agman send-message <project-name> --from ceo
+<message content>
+AGMAN_MSG
+```
+- Send a message to the user via Telegram:
+```
+cat <<'AGMAN_MSG' | agman send-message telegram --from ceo
 <message content>
 AGMAN_MSG
 ```
