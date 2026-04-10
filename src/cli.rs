@@ -59,8 +59,11 @@ pub enum Commands {
     SendMessage {
         /// Target: "ceo" or a project name (for the PM)
         target: String,
-        /// Message text
-        message: String,
+        /// Message text (can also be provided via stdin or --file)
+        message: Option<String>,
+        /// Read message from a file
+        #[arg(short = 'F', long)]
+        file: Option<std::path::PathBuf>,
         /// Sender name
         #[arg(long)]
         from: Option<String>,

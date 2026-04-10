@@ -2,7 +2,7 @@ mod cli;
 mod logging;
 mod tui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use agman::agent;
@@ -62,8 +62,9 @@ fn main() -> Result<()> {
         Some(Commands::SendMessage {
             target,
             message,
+            file,
             from,
-        }) => cmd_send_message(&config, &target, &message, from.as_deref()),
+        }) => cmd_send_message(&config, &target, message.as_deref(), file.as_deref(), from.as_deref()),
 
         Some(Commands::CreateProject { name, description }) => {
             cmd_create_project(&config, &name, description.as_deref())
@@ -456,11 +457,28 @@ fn cmd_command_flow_run(
 fn cmd_send_message(
     config: &Config,
     target: &str,
-    message: &str,
+    message: Option<&str>,
+    file: Option<&std::path::Path>,
     from: Option<&str>,
 ) -> Result<()> {
+    use std::io::{IsTerminal, Read as _};
+
+    let resolved = if let Some(path) = file {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read message file: {}", path.display()))?
+    } else if let Some(msg) = message {
+        msg.to_string()
+    } else if !std::io::stdin().is_terminal() {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)
+            .context("Failed to read message from stdin")?;
+        buf
+    } else {
+        anyhow::bail!("No message provided. Pass as argument, --file, or pipe via stdin.");
+    };
+
     let sender = from.unwrap_or("unknown");
-    use_cases::send_message(config, target, sender, message)?;
+    use_cases::send_message(config, target, sender, resolved.trim_end())?;
     println!("Message sent to '{}'", target);
     Ok(())
 }
