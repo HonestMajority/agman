@@ -646,6 +646,7 @@ pub struct App {
     pub settings_selected: usize,
     pub archive_retention_days: u64,
     // Archive view
+    pub archive_count: usize,
     pub archive_tasks: Vec<(Task, String)>,
     pub archive_search: TextArea<'static>,
     pub archive_selected: usize,
@@ -801,6 +802,7 @@ impl App {
             last_break_reset,
             settings_selected: 0,
             archive_retention_days,
+            archive_count: 0,
             archive_tasks: Vec::new(),
             archive_search: Self::create_plain_editor(),
             archive_selected: 0,
@@ -850,6 +852,7 @@ impl App {
     pub fn refresh_tasks(&mut self) {
         let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
         self.tasks = Task::list_all(&self.config);
+        self.archive_count = Task::list_archived(&self.config).len();
         if let Some(ref id) = prev_task_id {
             if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == *id) {
                 self.selected_index = idx;
