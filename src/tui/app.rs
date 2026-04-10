@@ -867,7 +867,8 @@ impl App {
     /// Refresh the task list and restore selection to the task with the given ID.
     /// If the task is no longer present, selection falls back to a valid index.
     fn refresh_tasks_and_select(&mut self, task_id: &str) {
-        self.refresh_tasks();
+        self.archive_count = Task::list_archived(&self.config).len();
+        self.refresh_tasks_for_project();
         if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
             self.selected_index = idx;
         }
