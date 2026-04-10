@@ -93,6 +93,15 @@ pub enum Commands {
         name: String,
     },
 
+    /// Archive a task (remove worktrees, keep directory and branches)
+    ArchiveTask {
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
+        /// Save the task (exempt from automatic purging)
+        #[arg(long, default_value_t = false)]
+        save: bool,
+    },
+
     /// Create a task within a project
     CreatePmTask {
         /// Project name
