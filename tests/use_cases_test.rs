@@ -2443,3 +2443,129 @@ fn create_task_with_repo_outside_repos_dir() {
     assert!(wt_path.starts_with(&external_dir));
     assert!(!wt_path.starts_with(tmp.path().join("repos")));
 }
+
+// ---------------------------------------------------------------------------
+// Project management
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let project =
+        agman::project::Project::create(&config, "my-project", "A test project").unwrap();
+
+    assert_eq!(project.meta.name, "my-project");
+    assert_eq!(project.meta.description, "A test project");
+    assert!(project.dir.join("meta.json").exists());
+}
+
+#[test]
+fn list_projects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    agman::project::Project::create(&config, "alpha", "First").unwrap();
+    agman::project::Project::create(&config, "beta", "Second").unwrap();
+
+    let projects = agman::project::Project::list_all(&config).unwrap();
+    assert_eq!(projects.len(), 2);
+    assert_eq!(projects[0].meta.name, "alpha");
+    assert_eq!(projects[1].meta.name, "beta");
+}
+
+#[test]
+fn list_projects_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let projects = agman::project::Project::list_all(&config).unwrap();
+    assert!(projects.is_empty());
+}
+
+#[test]
+fn create_project_invalid_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let result = agman::project::Project::create(&config, "has spaces", "bad");
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Inbox messaging
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inbox_append_and_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let inbox_path = tmp.path().join("inbox.jsonl");
+
+    let msg1 = agman::inbox::append_message(&inbox_path, "ceo", "Hello PM").unwrap();
+    assert_eq!(msg1.seq, 1);
+    assert_eq!(msg1.from, "ceo");
+
+    let msg2 = agman::inbox::append_message(&inbox_path, "user", "Do this").unwrap();
+    assert_eq!(msg2.seq, 2);
+
+    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].message, "Hello PM");
+    assert_eq!(messages[1].message, "Do this");
+}
+
+#[test]
+fn inbox_undelivered_and_mark_delivered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let inbox_path = tmp.path().join("inbox.jsonl");
+    let seq_path = tmp.path().join("inbox.seq");
+
+    agman::inbox::append_message(&inbox_path, "ceo", "msg1").unwrap();
+    agman::inbox::append_message(&inbox_path, "ceo", "msg2").unwrap();
+    agman::inbox::append_message(&inbox_path, "ceo", "msg3").unwrap();
+
+    // All should be undelivered
+    let undelivered = agman::inbox::read_undelivered(&inbox_path, &seq_path).unwrap();
+    assert_eq!(undelivered.len(), 3);
+
+    // Mark first two as delivered
+    agman::inbox::mark_delivered(&seq_path, 2).unwrap();
+
+    // Only msg3 should be undelivered
+    let undelivered = agman::inbox::read_undelivered(&inbox_path, &seq_path).unwrap();
+    assert_eq!(undelivered.len(), 1);
+    assert_eq!(undelivered[0].seq, 3);
+    assert_eq!(undelivered[0].message, "msg3");
+}
+
+// ---------------------------------------------------------------------------
+// Task project field
+// ---------------------------------------------------------------------------
+
+#[test]
+fn task_project_field_defaults_to_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo = init_test_repo(&tmp, "myrepo");
+    let task = create_test_task(&config, "myrepo", "feat-branch");
+    assert!(task.meta.project.is_none());
+}
+
+#[test]
+fn task_project_field_roundtrips() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo = init_test_repo(&tmp, "myrepo");
+    let mut task = create_test_task(&config, "myrepo", "feat-branch");
+
+    task.meta.project = Some("my-project".to_string());
+    task.save_meta().unwrap();
+
+    let loaded = Task::load(&config, "myrepo", "feat-branch").unwrap();
+    assert_eq!(loaded.meta.project.as_deref(), Some("my-project"));
+}

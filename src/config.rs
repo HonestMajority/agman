@@ -193,6 +193,60 @@ impl Config {
         self.base_dir.join("last_break_reset")
     }
 
+    // --- CEO & Project paths ---
+
+    pub fn ceo_dir(&self) -> PathBuf {
+        self.base_dir.join("ceo")
+    }
+
+    pub fn projects_dir(&self) -> PathBuf {
+        self.base_dir.join("projects")
+    }
+
+    pub fn project_dir(&self, name: &str) -> PathBuf {
+        self.projects_dir().join(name)
+    }
+
+    pub fn ceo_inbox(&self) -> PathBuf {
+        self.ceo_dir().join("inbox.jsonl")
+    }
+
+    pub fn ceo_seq(&self) -> PathBuf {
+        self.ceo_dir().join("inbox.seq")
+    }
+
+    pub fn ceo_session_id(&self) -> PathBuf {
+        self.ceo_dir().join("session-id")
+    }
+
+    pub fn ceo_prompt(&self) -> PathBuf {
+        self.ceo_dir().join("system-prompt.md")
+    }
+
+    pub fn project_inbox(&self, name: &str) -> PathBuf {
+        self.project_dir(name).join("inbox.jsonl")
+    }
+
+    pub fn project_seq(&self, name: &str) -> PathBuf {
+        self.project_dir(name).join("inbox.seq")
+    }
+
+    pub fn project_session_id(&self, name: &str) -> PathBuf {
+        self.project_dir(name).join("session-id")
+    }
+
+    pub fn project_prompt(&self, name: &str) -> PathBuf {
+        self.project_dir(name).join("system-prompt.md")
+    }
+
+    pub fn ceo_tmux_session() -> &'static str {
+        "agman-ceo"
+    }
+
+    pub fn pm_tmux_session(name: &str) -> String {
+        format!("agman-pm-{name}")
+    }
+
     pub fn init_default_files(&self, force: bool) -> Result<()> {
         self.ensure_dirs()?;
 

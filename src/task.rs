@@ -103,6 +103,9 @@ pub struct TaskMeta {
     /// When true, this archived task is exempt from auto-purge.
     #[serde(default)]
     pub saved: bool,
+    /// The project this task belongs to (None for unassigned/legacy tasks).
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -152,6 +155,7 @@ impl TaskMeta {
             seen: false,
             archived_at: None,
             saved: false,
+            project: None,
         }
     }
 
@@ -182,6 +186,7 @@ impl TaskMeta {
             seen: false,
             archived_at: None,
             saved: false,
+            project: None,
         }
     }
 
