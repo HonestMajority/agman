@@ -2823,3 +2823,76 @@ steps:
     assert_eq!(result.unassigned.len(), 1);
     assert_eq!(result.unassigned[0].task_id, "other--experiment");
 }
+
+// ---------------------------------------------------------------------------
+// Project status with archived counts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn project_status_with_archived() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    let _project = create_test_project(&config, "backend");
+
+    // Active task assigned to the project
+    let mut task1 = create_test_task(&config, "repo", "feat-a");
+    task1.meta.project = Some("backend".to_string());
+    task1.meta.status = TaskStatus::Running;
+    task1.save_meta().unwrap();
+
+    // Archived task assigned to the project
+    let mut archived1 = create_test_task(&config, "repo", "old-feat");
+    archived1.meta.project = Some("backend".to_string());
+    archived1.meta.archived_at = Some(chrono::Utc::now());
+    archived1.save_meta().unwrap();
+
+    let result = use_cases::project_status(&config, "backend").unwrap();
+    assert_eq!(result.total_tasks, 1); // only active tasks counted
+    assert_eq!(result.active_tasks, 1);
+    assert_eq!(result.archived_tasks, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Aggregated status with archived counts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn aggregated_status_with_archived() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let flow_yaml = r#"
+name: new
+steps:
+  - agent: planner
+    until: AGENT_DONE
+"#;
+    std::fs::write(config.flow_path("new"), flow_yaml).unwrap();
+
+    // Project with one active task and one archived task
+    let _project = create_test_project(&config, "frontend");
+
+    let mut active = create_test_task(&config, "repo", "feat-x");
+    active.meta.project = Some("frontend".to_string());
+    active.meta.status = TaskStatus::Running;
+    active.save_meta().unwrap();
+
+    let mut proj_archived = create_test_task(&config, "repo", "old-x");
+    proj_archived.meta.project = Some("frontend".to_string());
+    proj_archived.meta.archived_at = Some(chrono::Utc::now());
+    proj_archived.save_meta().unwrap();
+
+    // Unassigned archived task
+    let mut unassigned_archived = create_test_task(&config, "repo", "stale");
+    unassigned_archived.meta.archived_at = Some(chrono::Utc::now());
+    unassigned_archived.save_meta().unwrap();
+
+    let result = use_cases::aggregated_status(&config).unwrap();
+
+    assert_eq!(result.projects.len(), 1);
+    assert_eq!(result.projects[0].tasks.len(), 1); // only active
+    assert_eq!(result.projects[0].archived_count, 1);
+    assert_eq!(result.archived_unassigned, 1);
+}
