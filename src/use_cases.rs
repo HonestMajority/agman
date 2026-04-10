@@ -1944,16 +1944,11 @@ pub fn start_ceo_session(config: &Config) -> Result<()> {
 }
 
 /// Open a CEO chat as a tmux popup overlaid on the current pane.
+/// Ensures the persistent CEO session is running, then attaches a popup to it.
 pub fn open_ceo_popup(config: &Config) -> Result<()> {
-    let ceo_dir = config.ceo_dir();
-    std::fs::create_dir_all(&ceo_dir).context("failed to create CEO directory")?;
-
-    let session_id_path = config.ceo_session_id();
-    let resume_id = std::fs::read_to_string(&session_id_path).ok();
-    let resume_ref = resume_id.as_deref().map(|s| s.trim());
-
+    start_ceo_session(config)?;
     tracing::info!("opening CEO popup");
-    Tmux::display_popup(DEFAULT_CEO_PROMPT, resume_ref)?;
+    Tmux::popup_attach(Config::ceo_tmux_session())?;
     Ok(())
 }
 
@@ -1976,19 +1971,12 @@ pub fn start_pm_session(config: &Config, project_name: &str) -> Result<()> {
 }
 
 /// Open a PM chat as a tmux popup overlaid on the current pane.
+/// Ensures the persistent PM session is running, then attaches a popup to it.
 pub fn open_pm_popup(config: &Config, project_name: &str) -> Result<()> {
-    let project_dir = config.project_dir(project_name);
-    if !project_dir.exists() {
-        anyhow::bail!("project '{}' does not exist", project_name);
-    }
-
-    let session_id_path = config.project_session_id(project_name);
-    let resume_id = std::fs::read_to_string(&session_id_path).ok();
-    let resume_ref = resume_id.as_deref().map(|s| s.trim());
-
-    let prompt = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
+    start_pm_session(config, project_name)?;
+    let session_name = Config::pm_tmux_session(project_name);
     tracing::info!(project = project_name, "opening PM popup");
-    Tmux::display_popup(&prompt, resume_ref)?;
+    Tmux::popup_attach(&session_name)?;
     Ok(())
 }
 
