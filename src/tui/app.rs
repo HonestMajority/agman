@@ -2038,6 +2038,11 @@ impl App {
         let description = wizard.description_editor.lines_joined().trim().to_string();
         let review_after = wizard.review_after;
 
+        // Determine project assignment from current scope
+        let project = self.current_project.as_ref()
+            .filter(|p| p.as_str() != "(unassigned)")
+            .cloned();
+
         tracing::info!(name = %name, branch = %branch_name, is_multi, "creating task via wizard");
         self.log_output(format!("Creating task {}--{}...", name, branch_name));
 
@@ -2052,6 +2057,7 @@ impl App {
                 "new-multi",
                 parent_dir.clone(),
                 review_after,
+                project,
             ) {
                 Ok(t) => t,
                 Err(e) => {
@@ -2084,7 +2090,11 @@ impl App {
             // Success - close wizard and refresh
             self.wizard = None;
             self.view = View::TaskList;
-            self.refresh_tasks_and_select(&task_id);
+            if self.current_project.is_some() {
+                self.refresh_tasks_for_project();
+            } else {
+                self.refresh_tasks_and_select(&task_id);
+            }
             self.set_status(format!("Created multi-repo task: {}", task_id));
         } else {
             // Single-repo path: compute parent_dir when repo is outside repos_dir
@@ -2105,6 +2115,7 @@ impl App {
                 worktree_source,
                 review_after,
                 parent_dir,
+                project,
             ) {
                 Ok(t) => t,
                 Err(e) => {
@@ -2116,15 +2127,6 @@ impl App {
                     return Ok(());
                 }
             };
-
-            // Set project field if creating within a project scope
-            let mut task = task;
-            if let Some(ref project_name) = self.current_project {
-                if project_name != "(unassigned)" {
-                    task.meta.project = Some(project_name.clone());
-                    let _ = task.save_meta();
-                }
-            }
 
             // Side effects: create tmux session and start flow
             let worktree_path = task.meta.primary_repo().worktree_path.clone();
@@ -2194,6 +2196,11 @@ impl App {
             }
         });
 
+        // Determine project assignment from current scope
+        let project = self.current_project.as_ref()
+            .filter(|p| p.as_str() != "(unassigned)")
+            .cloned();
+
         tracing::info!(repo = %repo_name, branch = %branch_name, "creating setup-only task via wizard");
         self.log_output(format!("Creating setup-only task {}--{}...", repo_name, branch_name));
 
@@ -2204,6 +2211,7 @@ impl App {
             &branch_name,
             worktree_source,
             parent_dir,
+            project,
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -2234,7 +2242,11 @@ impl App {
         let task_id = task.meta.task_id();
         self.wizard = None;
         self.view = View::TaskList;
-        self.refresh_tasks_and_select(&task_id);
+        if self.current_project.is_some() {
+            self.refresh_tasks_for_project();
+        } else {
+            self.refresh_tasks_and_select(&task_id);
+        }
         self.set_status(format!("Created setup-only task: {}", task_id));
 
         Ok(())

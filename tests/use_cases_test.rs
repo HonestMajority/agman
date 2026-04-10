@@ -25,6 +25,7 @@ fn create_task_with_new_branch() {
         WorktreeSource::NewBranch { base_branch: None },
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -77,6 +78,7 @@ fn create_task_with_existing_worktree() {
         WorktreeSource::ExistingWorktree(wt_path.clone()),
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -105,6 +107,7 @@ fn create_task_reuses_existing_worktree() {
         WorktreeSource::ExistingBranch,
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -131,6 +134,7 @@ fn create_task_with_review_after() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         true,
+        None,
         None,
     )
     .unwrap();
@@ -166,6 +170,7 @@ fn create_task_with_custom_base_branch() {
         },
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -196,6 +201,7 @@ fn create_setup_only_task() {
         "myrepo",
         "empty-branch",
         WorktreeSource::NewBranch { base_branch: None },
+        None,
         None,
     )
     .unwrap();
@@ -245,6 +251,7 @@ fn archive_task() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
         None,
     )
     .unwrap();
@@ -301,6 +308,7 @@ fn archive_task_saved() {
         WorktreeSource::NewBranch { base_branch: None },
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -328,6 +336,7 @@ fn permanently_delete_archived_task() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
         None,
     )
     .unwrap();
@@ -377,6 +386,7 @@ fn fully_delete_task() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
         None,
     )
     .unwrap();
@@ -935,6 +945,7 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
         WorktreeSource::NewBranch { base_branch: None },
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -962,6 +973,7 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
         None,
     )
     .unwrap();
@@ -1066,6 +1078,7 @@ fn set_linked_pr() {
         WorktreeSource::NewBranch { base_branch: None },
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -1105,6 +1118,7 @@ fn set_linked_pr_owned_flag() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
         None,
     )
     .unwrap();
@@ -1157,6 +1171,7 @@ fn create_multi_repo_task() {
         "new-multi",
         parent_dir.clone(),
         false,
+        None,
     )
     .unwrap();
 
@@ -1256,6 +1271,7 @@ fn archive_multi_repo_task() {
         "new-multi",
         parent_dir,
         false,
+        None,
     )
     .unwrap();
 
@@ -1330,6 +1346,7 @@ fn setup_repos_from_task_md() {
         "new-multi",
         parent_dir,
         false,
+        None,
     )
     .unwrap();
 
@@ -1589,6 +1606,7 @@ fn create_task_with_slash_in_branch_name() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
+        None,
         None,
     )
     .unwrap();
@@ -2167,6 +2185,7 @@ fn toggle_archive_saved() {
         WorktreeSource::NewBranch { base_branch: None },
         false,
         None,
+        None,
     )
     .unwrap();
 
@@ -2368,6 +2387,7 @@ fn setup_repos_from_task_md_multi_repo_different_parent_dir() {
         "new-multi",
         other_repos.clone(),
         false,
+        None,
     )
     .unwrap();
 
@@ -2423,6 +2443,7 @@ fn create_task_with_repo_outside_repos_dir() {
         WorktreeSource::NewBranch { base_branch: None },
         false,
         Some(external_dir.clone()),
+        None,
     )
     .unwrap();
 

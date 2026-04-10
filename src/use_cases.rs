@@ -106,6 +106,7 @@ pub fn create_task(
     worktree_source: WorktreeSource,
     review_after: bool,
     parent_dir: Option<PathBuf>,
+    project: Option<String>,
 ) -> Result<Task> {
     tracing::info!(
         repo = repo_name,
@@ -170,15 +171,23 @@ pub fn create_task(
     // Store parent_dir if repo is outside repos_dir
     if parent_dir.is_some() {
         task.meta.parent_dir = parent_dir;
-        task.save_meta()?;
+    }
+
+    // Set review_after flag if requested
+    if review_after {
+        task.meta.review_after = true;
+    }
+
+    // Assign to project if specified
+    if project.is_some() {
+        task.meta.project = project;
     }
 
     // Ensure TASK.md is excluded from git tracking
     let _ = task.ensure_git_excludes_task();
 
-    // Set review_after flag if requested
-    if review_after {
-        task.meta.review_after = true;
+    // Save if any optional fields were set after creation
+    if task.meta.parent_dir.is_some() || task.meta.review_after || task.meta.project.is_some() {
         task.save_meta()?;
     }
 
@@ -205,6 +214,7 @@ pub fn create_multi_repo_task(
     flow_name: &str,
     parent_dir: PathBuf,
     review_after: bool,
+    project: Option<String>,
 ) -> Result<Task> {
     tracing::info!(
         name = name,
@@ -224,6 +234,15 @@ pub fn create_multi_repo_task(
     // Set review_after flag if requested
     if review_after {
         task.meta.review_after = true;
+    }
+
+    // Assign to project if specified
+    if project.is_some() {
+        task.meta.project = project;
+    }
+
+    // Save if any optional fields were set after creation
+    if task.meta.review_after || task.meta.project.is_some() {
         task.save_meta()?;
     }
 
@@ -571,6 +590,7 @@ pub fn create_setup_only_task(
     branch_name: &str,
     worktree_source: WorktreeSource,
     parent_dir: Option<PathBuf>,
+    project: Option<String>,
 ) -> Result<Task> {
     tracing::info!(
         repo = repo_name,
@@ -614,6 +634,15 @@ pub fn create_setup_only_task(
     // Store parent_dir if repo is outside repos_dir
     if parent_dir.is_some() {
         task.meta.parent_dir = parent_dir;
+    }
+
+    // Assign to project if specified
+    if project.is_some() {
+        task.meta.project = project;
+    }
+
+    // Save if any optional fields were set after creation
+    if task.meta.parent_dir.is_some() || task.meta.project.is_some() {
         task.save_meta()?;
     }
 
@@ -660,6 +689,7 @@ pub fn create_review_task(
         worktree_source,
         false,
         parent_dir,
+        None,
     )
 }
 
@@ -1862,7 +1892,7 @@ pub fn create_pm_task(
     let _project = Project::load_by_name(config, project)?;
 
     // Create the task using the standard create_task function
-    let mut task = create_task(
+    let task = create_task(
         config,
         repo_name,
         branch_name,
@@ -1871,11 +1901,8 @@ pub fn create_pm_task(
         WorktreeSource::NewBranch { base_branch: None },
         false,
         None,
+        Some(project.to_string()),
     )?;
-
-    // Set the project field
-    task.meta.project = Some(project.to_string());
-    task.save_meta()?;
 
     Ok(task)
 }
