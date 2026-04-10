@@ -2010,6 +2010,7 @@ pub fn create_pm_task(
     project: &str,
     repo_name: &str,
     branch_name: &str,
+    description: &str,
 ) -> Result<Task> {
     tracing::info!(
         project = project,
@@ -2026,7 +2027,7 @@ pub fn create_pm_task(
         config,
         repo_name,
         branch_name,
-        "",
+        description,
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,
@@ -2324,7 +2325,7 @@ const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for
 ## Available Commands (use via Bash tool)
 
 ### Task Management
-- `agman create-pm-task {{PROJECT_NAME}} <repo> <branch> "<description>"` — Create a new task
+- `agman create-pm-task {{PROJECT_NAME}} <repo> <task-name> --description "<description>"` — Create a new task
 - `agman list-pm-tasks {{PROJECT_NAME}}` — List your project's tasks
 - `agman task-status <task-id>` — Get task status and recent log
 - `agman task-log <task-id> --tail 100` — Read task's agent log
