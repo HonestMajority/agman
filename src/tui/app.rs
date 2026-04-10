@@ -702,6 +702,11 @@ impl App {
             dismissed_notifs.save(&config.dismissed_notifications_path());
         }
 
+        // Auto-start the CEO agent session in the background
+        if let Err(e) = use_cases::start_ceo_session(&config) {
+            tracing::error!(error = %e, "failed to auto-start CEO session on launch");
+        }
+
         let break_interval = use_cases::load_break_interval(&config);
         let archive_retention_days = use_cases::load_archive_retention(&config);
 
@@ -2522,6 +2527,12 @@ impl App {
                         None
                     };
                     if let Some(name) = project_name {
+                        // Auto-start PM session for this project
+                        if name != "(unassigned)" {
+                            if let Err(e) = use_cases::start_pm_session(&self.config, &name) {
+                                tracing::error!(project = %name, error = %e, "failed to auto-start PM session");
+                            }
+                        }
                         self.current_project = Some(name);
                         self.selected_index = 0;
                         self.refresh_tasks_for_project();

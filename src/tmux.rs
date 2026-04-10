@@ -294,6 +294,34 @@ impl Tmux {
         Ok(())
     }
 
+    /// Open a tmux popup that attaches to an existing persistent session.
+    /// When the user closes the popup (Esc), the session keeps running — the
+    /// popup merely detaches from it.
+    pub fn popup_attach(session_name: &str) -> Result<()> {
+        tracing::info!(session = session_name, "opening popup attached to session");
+
+        let attach_cmd = format!("tmux attach-session -t {}", session_name);
+        let output = Command::new("tmux")
+            .args([
+                "display-popup",
+                "-E", // close popup when attach detaches
+                "-w", "90%",
+                "-h", "90%",
+                &attach_cmd,
+            ])
+            .output()
+            .context("failed to open tmux popup")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to open tmux popup: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
     /// Build a `claude` CLI command string with system prompt and optional resume.
     fn build_claude_command(system_prompt: &str, resume_id: Option<&str>) -> String {
         // Shell-escape the prompt by using single quotes with inner escaping
