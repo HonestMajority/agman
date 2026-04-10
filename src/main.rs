@@ -84,6 +84,8 @@ fn main() -> Result<()> {
 
         Some(Commands::ListPmTasks { project }) => cmd_list_pm_tasks(&config, &project),
 
+        Some(Commands::Status) => cmd_status(&config),
+
         Some(Commands::TaskStatus { task_id }) => cmd_task_status(&config, &task_id),
 
         Some(Commands::TaskLog { task_id, tail }) => cmd_task_log(&config, &task_id, tail),
@@ -614,6 +616,105 @@ fn cmd_task_log(config: &Config, task_id: &str, tail: usize) -> Result<()> {
     } else {
         println!("{}", text);
     }
+    Ok(())
+}
+
+fn format_relative_time(dt: chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let duration = now.signed_duration_since(dt);
+    let secs = duration.num_seconds().max(0);
+
+    if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
+fn format_status_breakdown(tasks: &[use_cases::TaskSummary]) -> String {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for t in tasks {
+        let label = match t.status {
+            TaskStatus::Running => "running",
+            TaskStatus::Stopped => "stopped",
+            TaskStatus::InputNeeded => "input_needed",
+            TaskStatus::OnHold => "on_hold",
+        };
+        *counts.entry(label).or_insert(0) += 1;
+    }
+    counts
+        .iter()
+        .map(|(k, v)| format!("{} {}", v, k))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn cmd_status(config: &Config) -> Result<()> {
+    let status = use_cases::aggregated_status(config)?;
+
+    println!("=== agman status ===");
+
+    for group in &status.projects {
+        println!();
+        let task_word = if group.tasks.len() == 1 { "task" } else { "tasks" };
+        let breakdown = format_status_breakdown(&group.tasks);
+        println!(
+            "{} ({} {}: {})",
+            group.name,
+            group.tasks.len(),
+            task_word,
+            breakdown
+        );
+        for t in &group.tasks {
+            let step_str = match t.total_steps {
+                Some(total) => format!("step {}/{}", t.flow_step, total),
+                None => format!("step {}", t.flow_step),
+            };
+            let agent_str = match &t.current_agent {
+                Some(agent) => format!(" ({})", agent),
+                None => String::new(),
+            };
+            let time_str = format_relative_time(t.updated_at);
+            println!(
+                "  {:<40} {:<14} {}{:<20} {}",
+                t.task_id,
+                format!("{}", t.status),
+                step_str,
+                agent_str,
+                time_str
+            );
+        }
+    }
+
+    if !status.unassigned.is_empty() {
+        println!();
+        let task_word = if status.unassigned.len() == 1 { "task" } else { "tasks" };
+        println!("Unassigned ({} {})", status.unassigned.len(), task_word);
+        for t in &status.unassigned {
+            let step_str = match t.total_steps {
+                Some(total) => format!("step {}/{}", t.flow_step, total),
+                None => format!("step {}", t.flow_step),
+            };
+            let agent_str = match &t.current_agent {
+                Some(agent) => format!(" ({})", agent),
+                None => String::new(),
+            };
+            let time_str = format_relative_time(t.updated_at);
+            println!(
+                "  {:<40} {:<14} {}{:<20} {}",
+                t.task_id,
+                format!("{}", t.status),
+                step_str,
+                agent_str,
+                time_str
+            );
+        }
+    }
+
     Ok(())
 }
 
