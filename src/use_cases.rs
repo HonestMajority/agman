@@ -2071,15 +2071,11 @@ fn extract_goal_summary(path: &Path) -> Option<String> {
         if goal_lines.is_empty() && line.trim().is_empty() {
             continue;
         }
-        char_count += line.len() + 1; // +1 for newline
-        if char_count > 500 {
-            // Truncate this line to fit within 500 chars
-            let remaining = 500 - (char_count - line.len() - 1);
-            if remaining > 0 {
-                goal_lines.push(&line[..remaining]);
-            }
+        if char_count + line.len() + 1 > 500 {
+            // Line would exceed 500 chars — stop without including partial line
             break;
         }
+        char_count += line.len() + 1; // +1 for newline
         goal_lines.push(line);
         if goal_lines.len() >= 5 {
             break;
@@ -2133,7 +2129,7 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
         }
         Err(_) => format!(
             "Flow: {} (step {})\n",
-            task.meta.flow_name, task.meta.flow_step,
+            task.meta.flow_name, task.meta.flow_step + 1,
         ),
     };
     out.push_str(&flow_line);
