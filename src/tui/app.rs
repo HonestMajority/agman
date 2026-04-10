@@ -65,6 +65,7 @@ pub enum View {
     ShowPrs,
     Settings,
     Archive,
+    ProjectWizard,
 }
 
 /// Which wizard requested the directory picker.
@@ -328,6 +329,14 @@ pub struct RestartWizard {
     pub flow_steps: Vec<String>,
     pub selected_step_index: usize,
     pub task_id: String,
+}
+
+pub struct ProjectWizard {
+    pub name_editor: TextArea<'static>,
+    pub description_editor: VimTextArea<'static>,
+    /// false = name field focused, true = description field focused
+    pub description_focus: bool,
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -632,6 +641,8 @@ pub struct App {
     pub current_project: Option<String>,
     pub unassigned_task_count: usize,
     pub project_task_counts: std::collections::HashMap<String, (usize, usize)>, // (total, active)
+    // Project wizard
+    pub project_wizard: Option<ProjectWizard>,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<Vec<InboxPollResult>>,
@@ -766,6 +777,7 @@ impl App {
             current_project: None,
             unassigned_task_count: 0,
             project_task_counts: std::collections::HashMap::new(),
+            project_wizard: None,
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -822,7 +834,10 @@ impl App {
     }
 
     pub fn refresh_projects(&mut self) {
-        self.projects = use_cases::list_projects(&self.config).unwrap_or_default();
+        self.projects = use_cases::list_projects(&self.config).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to list projects");
+            Vec::new()
+        });
         // Count tasks per project and unassigned
         let all_tasks = Task::list_all(&self.config);
         self.project_task_counts.clear();
@@ -2426,6 +2441,7 @@ impl App {
             View::ShowPrs => self.handle_show_prs_event(event),
             View::Settings => self.handle_settings_event(event),
             View::Archive => self.handle_archive_event(event),
+            View::ProjectWizard => self.handle_project_wizard_event(event),
         }
     }
 
@@ -2512,10 +2528,20 @@ impl App {
                     }
                 }
                 KeyCode::Char('n') => {
-                    // Create new project — for now use a simple inline prompt
-                    // We'll use the feedback editor pattern: switch to a small modal
-                    self.set_status("Use: agman create-project <name> --description <desc>".to_string());
-                    // TODO: In a future iteration, add a proper project creation wizard
+                    let mut name_editor = TextArea::default();
+                    name_editor.set_cursor_line_style(ratatui::style::Style::default());
+                    name_editor.set_placeholder_text("project-name");
+                    self.project_wizard = Some(ProjectWizard {
+                        name_editor,
+                        description_editor: {
+                            let mut ed = VimTextArea::new();
+                            ed.set_insert_mode();
+                            ed
+                        },
+                        description_focus: false,
+                        error_message: None,
+                    });
+                    self.view = View::ProjectWizard;
                 }
                 _ => {}
             }
@@ -2840,6 +2866,88 @@ impl App {
             score_b.cmp(&score_a)
         });
         matched
+    }
+
+    fn handle_project_wizard_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            // Ctrl+S to submit
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                if let Some(wizard) = &self.project_wizard {
+                    let name = wizard.name_editor.lines().join("").trim().to_string();
+                    let desc = wizard.description_editor.lines_joined();
+                    let desc = desc.trim().to_string();
+
+                    if name.is_empty() {
+                        if let Some(w) = &mut self.project_wizard {
+                            w.error_message = Some("Project name is required".to_string());
+                        }
+                        return Ok(false);
+                    }
+
+                    match use_cases::create_project(&self.config, &name, &desc) {
+                        Ok(_project) => {
+                            tracing::info!(project = %name, "created project via wizard");
+                            self.set_status(format!("Created project: {name}"));
+                            self.project_wizard = None;
+                            self.view = View::ProjectList;
+                            self.refresh_projects();
+                        }
+                        Err(e) => {
+                            tracing::warn!(project = %name, error = %e, "failed to create project");
+                            if let Some(w) = &mut self.project_wizard {
+                                w.error_message = Some(format!("{e}"));
+                            }
+                        }
+                    }
+                }
+                return Ok(false);
+            }
+
+            if let Some(wizard) = &mut self.project_wizard {
+                wizard.error_message = None;
+                let input = Input::from(event.clone());
+
+                // Tab to switch focus between name and description
+                if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
+                    wizard.description_focus = !wizard.description_focus;
+                    if wizard.description_focus {
+                        wizard.description_editor.set_insert_mode();
+                    }
+                    return Ok(false);
+                }
+
+                if wizard.description_focus {
+                    let was_insert = wizard.description_editor.mode() == VimMode::Insert;
+                    wizard.description_editor.input(input.clone());
+                    let is_normal_now = wizard.description_editor.mode() == VimMode::Normal;
+
+                    // Esc in normal mode goes back to name field
+                    if input.key == Key::Esc && !was_insert && is_normal_now {
+                        wizard.description_focus = false;
+                    }
+                } else {
+                    // Name field: Esc cancels wizard
+                    if key.code == KeyCode::Esc {
+                        self.project_wizard = None;
+                        self.view = View::ProjectList;
+                        return Ok(false);
+                    }
+                    // Enter in name field moves to description
+                    if key.code == KeyCode::Enter {
+                        wizard.description_focus = true;
+                        wizard.description_editor.set_insert_mode();
+                        return Ok(false);
+                    }
+                    wizard.name_editor.input(input);
+                }
+            }
+        }
+        Ok(false)
     }
 
     fn handle_archive_event(&mut self, event: Event) -> Result<bool> {

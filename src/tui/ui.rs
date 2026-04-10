@@ -128,6 +128,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::RestartWizard
             | View::DirectoryPicker
             | View::SessionPicker
+            | View::ProjectWizard
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -207,6 +208,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             if app.archive_preview.is_some() {
                 draw_archive_preview(f, app);
             }
+        }
+        View::ProjectWizard => {
+            draw_project_list(f, app, chunks[0]);
+            draw_project_wizard(f, app);
         }
     }
 
@@ -373,6 +378,103 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         let list = List::new(items);
         f.render_widget(list, chunks[1]);
     }
+}
+
+fn draw_project_wizard(f: &mut Frame, app: &mut App) {
+    let area = centered_rect(60, 40, f.area());
+    f.render_widget(Clear, area);
+
+    let wizard = match &mut app.project_wizard {
+        Some(w) => w,
+        None => return,
+    };
+
+    let has_error = wizard.error_message.is_some();
+    let footer_height = if has_error { 2 } else { 1 };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // name field
+            Constraint::Min(5),   // description field
+            Constraint::Length(footer_height), // help/error
+        ])
+        .split(area);
+
+    // Name field
+    let name_focused = !wizard.description_focus;
+    let name_border_color = if name_focused {
+        Color::LightCyan
+    } else {
+        Color::DarkGray
+    };
+    wizard.name_editor.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(name_border_color))
+            .title(Span::styled(
+                " New Project — Name ",
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    );
+    wizard.name_editor.set_cursor_style(if name_focused {
+        Style::default().bg(Color::LightCyan).fg(Color::Black)
+    } else {
+        Style::default()
+    });
+    f.render_widget(&wizard.name_editor, chunks[0]);
+
+    // Description field
+    let desc_focused = wizard.description_focus;
+    let desc_border_color = if desc_focused {
+        Color::LightCyan
+    } else {
+        Color::DarkGray
+    };
+    let mode = wizard.description_editor.mode();
+    let mode_indicator = if desc_focused {
+        format!(" [{}] ", mode.indicator())
+    } else {
+        String::new()
+    };
+    wizard.description_editor.textarea.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(desc_border_color))
+            .title(Span::styled(
+                format!(" Description{mode_indicator}"),
+                Style::default().fg(Color::DarkGray),
+            )),
+    );
+    if desc_focused {
+        wizard
+            .description_editor
+            .textarea
+            .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+    }
+    f.render_widget(&wizard.description_editor.textarea, chunks[1]);
+
+    // Footer: error or help text
+    let footer_spans = if let Some(ref err) = wizard.error_message {
+        vec![Span::styled(
+            err.clone(),
+            Style::default().fg(Color::LightRed),
+        )]
+    } else {
+        vec![
+            Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+            Span::styled(" switch field  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
+            Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        ]
+    };
+    let footer = Paragraph::new(Line::from(footer_spans))
+        .alignment(Alignment::Center);
+    f.render_widget(footer, chunks[2]);
 }
 
 fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
@@ -1472,6 +1574,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Enter", Style::default().fg(Color::LightGreen)),
                 Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("n", Style::default().fg(Color::LightGreen)),
+                Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("c", Style::default().fg(Color::LightYellow)),
                 Span::styled(" CEO  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("s", Style::default().fg(Color::LightRed)),
@@ -1915,6 +2019,16 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" back", Style::default().fg(Color::DarkGray)),
                 ]
             }
+        }
+        View::ProjectWizard => {
+            vec![
+                Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                Span::styled(" switch field  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
+                Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
         }
     };
 
