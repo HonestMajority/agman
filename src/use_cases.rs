@@ -1917,7 +1917,6 @@ pub fn create_pm_task(
     project: &str,
     repo_name: &str,
     branch_name: &str,
-    description: &str,
 ) -> Result<Task> {
     tracing::info!(
         project = project,
@@ -1934,7 +1933,7 @@ pub fn create_pm_task(
         config,
         repo_name,
         branch_name,
-        description,
+        "",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         false,

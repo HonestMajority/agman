@@ -12,14 +12,12 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Run the entire flow for a task (used internally, runs in tmux)
-    #[command(hide = true)]
     FlowRun {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
     },
 
     /// Continue a task with follow-up instructions
-    #[command(hide = true)]
     Continue {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
@@ -29,7 +27,6 @@ pub enum Commands {
     },
 
     /// Run a stored command on a task
-    #[command(hide = true)]
     RunCommand {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
@@ -41,7 +38,6 @@ pub enum Commands {
     },
 
     /// Run a stored command's flow for a task (used internally, runs in tmux)
-    #[command(hide = true)]
     CommandFlowRun {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
@@ -53,7 +49,6 @@ pub enum Commands {
     },
 
     /// Initialize agman configuration (creates default flows, prompts, and commands)
-    #[command(hide = true)]
     Init {
         /// Overwrite existing files with defaults
         #[arg(long, default_value_t = false)]
@@ -61,7 +56,6 @@ pub enum Commands {
     },
 
     /// Send a message to an agent's inbox
-    #[command(hide = true)]
     SendMessage {
         /// Target: "ceo" or a project name (for the PM)
         target: String,
@@ -73,7 +67,6 @@ pub enum Commands {
     },
 
     /// Create a new project with a PM
-    #[command(hide = true)]
     CreateProject {
         /// Project name (alphanumeric + hyphens)
         name: String,
@@ -83,57 +76,56 @@ pub enum Commands {
     },
 
     /// List all projects
-    #[command(hide = true)]
     ListProjects,
 
     /// Get detailed status of a project
-    #[command(hide = true)]
     ProjectStatus {
         /// Project name
         name: String,
     },
 
     /// Delete a project and archive all its tasks
-    #[command(hide = true)]
     DeleteProject {
         /// Project name
         name: String,
     },
 
     /// Create a task within a project
-    #[command(hide = true)]
     CreatePmTask {
         /// Project name
         project: String,
         /// Repository name
         repo: String,
-        /// Branch name
-        branch: String,
-        /// Task description
-        description: String,
+        /// Task name (becomes the branch name, e.g. 'fix-login-bug')
+        task_name: String,
     },
 
     /// List tasks belonging to a project
-    #[command(hide = true)]
     ListPmTasks {
         /// Project name
         project: String,
     },
 
     /// Get status and recent log for a task
-    #[command(hide = true)]
     TaskStatus {
         /// Task identifier (repo--branch format)
         task_id: String,
     },
 
     /// Read the agent log for a task
-    #[command(hide = true)]
     TaskLog {
         /// Task identifier (repo--branch format)
         task_id: String,
         /// Number of lines from the end to show
         #[arg(long, default_value = "50")]
         tail: usize,
+    },
+
+    /// Queue feedback on a running task
+    QueueFeedback {
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
+        /// Feedback text to queue
+        feedback: String,
     },
 }

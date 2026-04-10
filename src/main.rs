@@ -78,15 +78,18 @@ fn main() -> Result<()> {
         Some(Commands::CreatePmTask {
             project,
             repo,
-            branch,
-            description,
-        }) => cmd_create_pm_task(&config, &project, &repo, &branch, &description),
+            task_name,
+        }) => cmd_create_pm_task(&config, &project, &repo, &task_name),
 
         Some(Commands::ListPmTasks { project }) => cmd_list_pm_tasks(&config, &project),
 
         Some(Commands::TaskStatus { task_id }) => cmd_task_status(&config, &task_id),
 
         Some(Commands::TaskLog { task_id, tail }) => cmd_task_log(&config, &task_id, tail),
+
+        Some(Commands::QueueFeedback { task_id, feedback }) => {
+            cmd_queue_feedback(&config, &task_id, &feedback)
+        }
 
         None => {
             // No subcommand - launch TUI
@@ -531,10 +534,27 @@ fn cmd_create_pm_task(
     config: &Config,
     project: &str,
     repo: &str,
-    branch: &str,
-    description: &str,
+    task_name: &str,
 ) -> Result<()> {
-    let task = use_cases::create_pm_task(config, project, repo, branch, description)?;
+    // Reject protected branch names
+    if matches!(task_name, "main" | "master" | "develop") {
+        anyhow::bail!(
+            "task-name should describe the task, e.g. 'fix-login-bug', not a base branch"
+        );
+    }
+
+    // Check if branch already exists
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", &format!("refs/heads/{}", task_name)])
+        .output()?;
+    if output.status.success() {
+        anyhow::bail!(
+            "Branch '{}' already exists — pick a unique task name",
+            task_name
+        );
+    }
+
+    let task = use_cases::create_pm_task(config, project, repo, task_name)?;
     let task_id = task.meta.task_id();
 
     let worktree_path = task.meta.primary_repo().worktree_path.clone();
@@ -584,5 +604,13 @@ fn cmd_task_log(config: &Config, task_id: &str, tail: usize) -> Result<()> {
     } else {
         println!("{}", text);
     }
+    Ok(())
+}
+
+fn cmd_queue_feedback(config: &Config, task_id: &str, feedback: &str) -> Result<()> {
+    let task = Task::load_by_id(config, task_id)?;
+    let count = use_cases::queue_feedback(&task, feedback)?;
+    tracing::info!(task_id = %task_id, count, "queued feedback via CLI");
+    println!("Feedback queued for '{}' ({} item(s) in queue)", task_id, count);
     Ok(())
 }
