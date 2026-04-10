@@ -710,6 +710,15 @@ impl App {
             tracing::error!(error = %e, "failed to auto-start CEO session on launch");
         }
 
+        // Auto-start PM sessions for all projects
+        if let Ok(projects) = use_cases::list_projects(&config) {
+            for project in &projects {
+                if let Err(e) = use_cases::start_pm_session(&config, &project.meta.name) {
+                    tracing::error!(project = %project.meta.name, error = %e, "failed to auto-start PM session on launch");
+                }
+            }
+        }
+
         let break_interval = use_cases::load_break_interval(&config);
         let archive_retention_days = use_cases::load_archive_retention(&config);
 
@@ -2532,12 +2541,6 @@ impl App {
                         None
                     };
                     if let Some(name) = project_name {
-                        // Auto-start PM session for this project
-                        if name != "(unassigned)" {
-                            if let Err(e) = use_cases::start_pm_session(&self.config, &name) {
-                                tracing::error!(project = %name, error = %e, "failed to auto-start PM session");
-                            }
-                        }
                         self.current_project = Some(name);
                         self.selected_index = 0;
                         self.refresh_tasks_for_project();

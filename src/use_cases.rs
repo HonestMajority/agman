@@ -1772,6 +1772,12 @@ pub fn fetch_show_prs_data() -> ShowPrsData {
 pub fn create_project(config: &Config, name: &str, description: &str) -> Result<Project> {
     tracing::info!(project = name, "creating project");
     let project = Project::create(config, name, description)?;
+
+    // Eagerly start PM session for the new project
+    if let Err(e) = start_pm_session(config, name) {
+        tracing::error!(project = name, error = %e, "failed to start PM session for new project");
+    }
+
     Ok(project)
 }
 
@@ -1785,7 +1791,6 @@ pub struct ProjectStatusInfo {
     pub project: Project,
     pub total_tasks: usize,
     pub active_tasks: usize,
-    pub pm_running: bool,
 }
 
 /// Get detailed status of a project.
@@ -1796,14 +1801,11 @@ pub fn project_status(config: &Config, name: &str) -> Result<ProjectStatusInfo> 
         .iter()
         .filter(|t| t.meta.status == TaskStatus::Running)
         .count();
-    let pm_session = Config::pm_tmux_session(name);
-    let pm_running = Tmux::session_exists(&pm_session);
 
     Ok(ProjectStatusInfo {
         project,
         total_tasks: tasks.len(),
         active_tasks,
-        pm_running,
     })
 }
 

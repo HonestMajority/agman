@@ -276,7 +276,6 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         .split(inner);
 
     const NAME_WIDTH: usize = 25;
-    const STATUS_WIDTH: usize = 10;
     const TASKS_WIDTH: usize = 8;
     const ACTIVE_WIDTH: usize = 8;
     const COL_GAP: &str = "   ";
@@ -285,11 +284,6 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("  "),
         Span::styled(
             format!("{:<width$}", "PROJECT", width = NAME_WIDTH),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:<width$}", "PM", width = STATUS_WIDTH),
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ),
         Span::raw(COL_GAP),
@@ -313,9 +307,6 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             .copied()
             .unwrap_or((0, 0));
 
-        let pm_session = Config::pm_tmux_session(&project.meta.name);
-        let pm_running = use_cases::agent_session_running(&pm_session);
-
         let is_selected = i == app.selected_project_index;
         let style = if is_selected {
             Style::default().bg(Color::Rgb(40, 40, 60))
@@ -323,19 +314,11 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             Style::default()
         };
 
-        let pm_status = if pm_running { "Running" } else { "Stopped" };
-        let pm_color = if pm_running { Color::LightGreen } else { Color::DarkGray };
-
         let line = Line::from(vec![
             Span::styled(if is_selected { "> " } else { "  " }, Style::default().fg(Color::LightCyan)),
             Span::styled(
                 format!("{:<width$}", project.meta.name, width = NAME_WIDTH),
                 Style::default().fg(Color::White),
-            ),
-            Span::raw(COL_GAP),
-            Span::styled(
-                format!("{:<width$}", pm_status, width = STATUS_WIDTH),
-                Style::default().fg(pm_color),
             ),
             Span::raw(COL_GAP),
             Span::styled(
@@ -365,11 +348,6 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(if is_selected { "> " } else { "  " }, Style::default().fg(Color::LightCyan)),
             Span::styled(
                 format!("{:<width$}", "(unassigned)", width = NAME_WIDTH),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw(COL_GAP),
-            Span::styled(
-                format!("{:<width$}", "—", width = STATUS_WIDTH),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::raw(COL_GAP),

@@ -476,15 +476,9 @@ fn cmd_list_projects(config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<12} {:<8} {:<8}", "NAME", "PM STATUS", "TASKS", "ACTIVE");
-    println!("{}", "-".repeat(52));
+    println!("{:<20} {:<8} {:<8}", "NAME", "TASKS", "ACTIVE");
+    println!("{}", "-".repeat(40));
     for p in &projects {
-        let pm_session = Config::pm_tmux_session(&p.meta.name);
-        let pm_status = if Tmux::session_exists(&pm_session) {
-            "Running"
-        } else {
-            "Stopped"
-        };
         let tasks = use_cases::list_project_tasks(config, &p.meta.name)
             .unwrap_or_default();
         let active = tasks
@@ -492,9 +486,8 @@ fn cmd_list_projects(config: &Config) -> Result<()> {
             .filter(|t| t.meta.status == TaskStatus::Running)
             .count();
         println!(
-            "{:<20} {:<12} {:<8} {:<8}",
+            "{:<20} {:<8} {:<8}",
             p.meta.name,
-            pm_status,
             tasks.len(),
             active
         );
@@ -507,7 +500,6 @@ fn cmd_project_status(config: &Config, name: &str) -> Result<()> {
     println!("Project: {}", status.project.meta.name);
     println!("Description: {}", status.project.meta.description);
     println!("Created: {}", status.project.meta.created_at);
-    println!("PM: {}", if status.pm_running { "Running" } else { "Stopped" });
     println!("Tasks: {} total, {} active", status.total_tasks, status.active_tasks);
 
     let tasks = use_cases::list_project_tasks(config, name)?;
