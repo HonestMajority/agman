@@ -375,6 +375,9 @@ impl Tmux {
             );
         }
 
+        // Give tmux time to process the pasted text before sending Enter
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
         tracing::trace!(session = session_name, "sending Enter to submit message");
         let enter_output = Command::new("tmux")
             .args(["send-keys", "-t", session_name, "Enter"])
@@ -385,6 +388,22 @@ impl Tmux {
             anyhow::bail!(
                 "failed to send Enter to agent session: {}",
                 String::from_utf8_lossy(&enter_output.stderr)
+            );
+        }
+
+        // Send a second Enter as a safety measure — some terminal states absorb the first
+        std::thread::sleep(std::time::Duration::from_millis(80));
+
+        tracing::trace!(session = session_name, "sending second Enter for reliability");
+        let enter2_output = Command::new("tmux")
+            .args(["send-keys", "-t", session_name, "Enter"])
+            .output()
+            .context("failed to send second Enter to agent session")?;
+
+        if !enter2_output.status.success() {
+            anyhow::bail!(
+                "failed to send second Enter to agent session: {}",
+                String::from_utf8_lossy(&enter2_output.stderr)
             );
         }
 
