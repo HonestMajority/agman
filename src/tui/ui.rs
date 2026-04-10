@@ -1765,7 +1765,14 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("m", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("z", Style::default().fg(Color::LightYellow)),
-                Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    if app.archive_count > 0 {
+                        format!(" archive({})  ", app.archive_count)
+                    } else {
+                        " archive  ".to_string()
+                    },
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::styled(",", Style::default().fg(Color::LightYellow)),
                 Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
             ]);
