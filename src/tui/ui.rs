@@ -230,6 +230,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_project_list(f, app, chunks[0]);
             draw_project_delete_confirm(f, app);
         }
+        View::ResearcherList => draw_researcher_list(f, app, chunks[0]),
     }
 
     if output_height > 0 {
@@ -1775,6 +1776,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(",", Style::default().fg(Color::LightYellow)),
                 Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("R", Style::default().fg(Color::LightYellow)),
+                Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
             ]);
             spans.extend(break_hint_spans(app));
             let quit_label = if app.current_project.is_some() { " back" } else { " quit" };
@@ -2160,6 +2163,18 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc", Style::default().fg(Color::LightCyan)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ]
+        }
+        View::ResearcherList => {
+            vec![
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("d", Style::default().fg(Color::LightRed)),
+                Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("q", Style::default().fg(Color::LightCyan)),
+                Span::styled(" back", Style::default().fg(Color::DarkGray)),
             ]
         }
     };
@@ -4043,4 +4058,75 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
             .block(block);
         f.render_widget(text, area);
     }
+}
+
+fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
+    use agman::config::Config;
+    use agman::researcher::ResearcherStatus;
+    use agman::tmux::Tmux;
+
+    let block = Block::default()
+        .title(" Researchers ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    if app.researchers.is_empty() {
+        let text = Paragraph::new("No researchers. Create one with: agman create-researcher <project> <name>")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        f.render_widget(text, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .researchers
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let session_name =
+                Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
+            let (status_str, status_color) = if r.meta.status == ResearcherStatus::Archived {
+                ("archived", Color::DarkGray)
+            } else if Tmux::session_exists(&session_name) {
+                ("running", Color::LightGreen)
+            } else {
+                ("stopped", Color::Yellow)
+            };
+
+            let desc = if r.meta.description.len() > 50 {
+                format!("{}...", &r.meta.description[..47])
+            } else {
+                r.meta.description.clone()
+            };
+
+            let style = if i == app.researcher_list_index {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+
+            let line = Line::from(vec![
+                Span::styled(format!("{:<16}", r.meta.name), style),
+                Span::styled(format!(" {:<14}", r.meta.project), style.fg(Color::Cyan)),
+                Span::styled(
+                    format!(" {:<10}", status_str),
+                    Style::default().fg(status_color),
+                ),
+                Span::styled(format!(" {}", desc), style.fg(Color::DarkGray)),
+            ]);
+
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    f.render_widget(list, area);
 }
