@@ -23,6 +23,8 @@ use agman::git::Git;
 use agman::repo_stats::RepoStats;
 use agman::task::{QueueItem, Task, TaskStatus};
 use agman::tmux::Tmux;
+use agman::inbox;
+use agman::project::Project;
 use agman::use_cases;
 
 use super::ui;
@@ -43,6 +45,7 @@ fn open_url(url: &str) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    ProjectList,
     TaskList,
     Preview,
     DeleteConfirm,
@@ -62,6 +65,8 @@ pub enum View {
     ShowPrs,
     Settings,
     Archive,
+    ProjectWizard,
+    ProjectPicker,
 }
 
 /// Which wizard requested the directory picker.
@@ -327,6 +332,29 @@ pub struct RestartWizard {
     pub task_id: String,
 }
 
+/// What triggered the project picker modal.
+#[derive(Debug, Clone)]
+pub enum ProjectPickerAction {
+    /// Migrate all unassigned tasks to the selected project.
+    MigrateAllUnassigned,
+    /// Move a single task (by task_id) to the selected project.
+    MoveTask(String),
+}
+
+pub struct ProjectPicker {
+    pub projects: Vec<String>,
+    pub selected: usize,
+    pub action: ProjectPickerAction,
+}
+
+pub struct ProjectWizard {
+    pub name_editor: TextArea<'static>,
+    pub description_editor: VimTextArea<'static>,
+    /// false = name field focused, true = description field focused
+    pub description_focus: bool,
+    pub error_message: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewPane {
     Logs,
@@ -338,6 +366,12 @@ struct PrPollResult {
     pr_number: u64,
     action: use_cases::PrPollAction,
     review_count: u64,
+}
+
+struct InboxPollResult {
+    target: String, // "ceo" or project name
+    delivered: usize,
+    errors: Vec<String>,
 }
 
 /// Query a PR's state via `gh pr view`. Returns `(is_merged, review_count)`.
@@ -617,6 +651,21 @@ pub struct App {
     pub archive_list_state: ListState,
     pub archive_preview: Option<String>,
     pub archive_scroll: u16,
+    // Project list (CEO/PM hierarchy)
+    pub projects: Vec<Project>,
+    pub selected_project_index: usize,
+    pub current_project: Option<String>,
+    pub unassigned_task_count: usize,
+    pub project_task_counts: std::collections::HashMap<String, (usize, usize)>, // (total, active)
+    // Project wizard
+    pub project_wizard: Option<ProjectWizard>,
+    // Project picker (for task migration/move)
+    pub project_picker: Option<ProjectPicker>,
+    // Inbox polling
+    pub last_inbox_poll: Instant,
+    inbox_poll_tx: tokio_mpsc::UnboundedSender<Vec<InboxPollResult>>,
+    inbox_poll_rx: tokio_mpsc::UnboundedReceiver<Vec<InboxPollResult>>,
+    inbox_poll_active: bool,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -645,6 +694,7 @@ impl App {
         let (gh_notif_tx, gh_notif_rx) = tokio_mpsc::unbounded_channel();
         let (show_prs_poll_tx, show_prs_poll_rx) = tokio_mpsc::unbounded_channel();
         let (keybase_tx, keybase_rx) = tokio_mpsc::unbounded_channel();
+        let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
         let mut dismissed_notifs = DismissedNotifications::load(&config.dismissed_notifications_path());
         let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
@@ -665,7 +715,7 @@ impl App {
             config,
             tasks,
             selected_index: 0,
-            view: View::TaskList,
+            view: View::ProjectList,
             preview_content: String::new(),
             logs_editor,
             notes_content: String::new(),
@@ -740,6 +790,17 @@ impl App {
             archive_list_state: ListState::default(),
             archive_preview: None,
             archive_scroll: 0,
+            projects: Vec::new(),
+            selected_project_index: 0,
+            current_project: None,
+            unassigned_task_count: 0,
+            project_task_counts: std::collections::HashMap::new(),
+            project_wizard: None,
+            project_picker: None,
+            last_inbox_poll: Instant::now(),
+            inbox_poll_tx,
+            inbox_poll_rx,
+            inbox_poll_active: false,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -788,6 +849,63 @@ impl App {
         self.refresh_tasks();
         if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
             self.selected_index = idx;
+        }
+    }
+
+    pub fn refresh_projects(&mut self) {
+        self.projects = use_cases::list_projects(&self.config).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to list projects");
+            Vec::new()
+        });
+        // Count tasks per project and unassigned
+        let all_tasks = Task::list_all(&self.config);
+        self.project_task_counts.clear();
+        self.unassigned_task_count = 0;
+        for task in &all_tasks {
+            if let Some(ref proj) = task.meta.project {
+                let entry = self.project_task_counts.entry(proj.clone()).or_insert((0, 0));
+                entry.0 += 1;
+                if task.meta.status == TaskStatus::Running {
+                    entry.1 += 1;
+                }
+            } else {
+                self.unassigned_task_count += 1;
+            }
+        }
+        // Clamp selection
+        let total = self.project_list_len();
+        if self.selected_project_index >= total && total > 0 {
+            self.selected_project_index = total - 1;
+        }
+    }
+
+    /// Total entries in the project list (projects + unassigned pseudo-entry).
+    pub fn project_list_len(&self) -> usize {
+        self.projects.len() + if self.unassigned_task_count > 0 { 1 } else { 0 }
+    }
+
+    /// Refresh tasks filtered by current_project.
+    fn refresh_tasks_for_project(&mut self) {
+        let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
+        let all = Task::list_all(&self.config);
+        self.tasks = match &self.current_project {
+            Some(name) if name == "(unassigned)" => {
+                all.into_iter().filter(|t| t.meta.project.is_none()).collect()
+            }
+            Some(name) => {
+                all.into_iter().filter(|t| t.meta.project.as_deref() == Some(name.as_str())).collect()
+            }
+            None => all,
+        };
+        // Restore selection
+        if let Some(ref id) = prev_task_id {
+            if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == *id) {
+                self.selected_index = idx;
+                return;
+            }
+        }
+        if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
+            self.selected_index = self.tasks.len() - 1;
         }
     }
 
@@ -1999,6 +2117,15 @@ impl App {
                 }
             };
 
+            // Set project field if creating within a project scope
+            let mut task = task;
+            if let Some(ref project_name) = self.current_project {
+                if project_name != "(unassigned)" {
+                    task.meta.project = Some(project_name.clone());
+                    let _ = task.save_meta();
+                }
+            }
+
             // Side effects: create tmux session and start flow
             let worktree_path = task.meta.primary_repo().worktree_path.clone();
             self.log_output("  Creating tmux session...".to_string());
@@ -2020,7 +2147,11 @@ impl App {
             // Success - close wizard and refresh
             self.wizard = None;
             self.view = View::TaskList;
-            self.refresh_tasks_and_select(&task_id);
+            if self.current_project.is_some() {
+                self.refresh_tasks_for_project();
+            } else {
+                self.refresh_tasks_and_select(&task_id);
+            }
             self.set_status(format!("Created task: {}", task_id));
         }
 
@@ -2309,6 +2440,7 @@ impl App {
         self.clear_old_status();
 
         match self.view {
+            View::ProjectList => self.handle_project_list_event(event),
             View::TaskList => self.handle_task_list_event(event),
             View::Preview => self.handle_preview_event(event),
             View::DeleteConfirm => self.handle_delete_confirm_event(event),
@@ -2328,13 +2460,148 @@ impl App {
             View::ShowPrs => self.handle_show_prs_event(event),
             View::Settings => self.handle_settings_event(event),
             View::Archive => self.handle_archive_event(event),
+            View::ProjectWizard => self.handle_project_wizard_event(event),
+            View::ProjectPicker => self.handle_project_picker_event(event),
         }
+    }
+
+    fn handle_project_list_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    self.should_quit = true;
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.should_quit = true;
+                }
+                KeyCode::Char('j') => {
+                    let total = self.project_list_len();
+                    if total > 0 {
+                        self.selected_project_index = (self.selected_project_index + 1) % total;
+                    }
+                }
+                KeyCode::Char('k') => {
+                    let total = self.project_list_len();
+                    if total > 0 {
+                        self.selected_project_index = if self.selected_project_index == 0 {
+                            total - 1
+                        } else {
+                            self.selected_project_index - 1
+                        };
+                    }
+                }
+                KeyCode::Char('g') => {
+                    self.selected_project_index = 0;
+                }
+                KeyCode::Char('G') => {
+                    let total = self.project_list_len();
+                    if total > 0 {
+                        self.selected_project_index = total - 1;
+                    }
+                }
+                KeyCode::Enter | KeyCode::Char('l') => {
+                    // Navigate into the selected project's task list
+                    let project_name = if self.selected_project_index < self.projects.len() {
+                        Some(self.projects[self.selected_project_index].meta.name.clone())
+                    } else if self.unassigned_task_count > 0 {
+                        // Last entry is the "(unassigned)" pseudo-project
+                        Some("(unassigned)".to_string())
+                    } else {
+                        None
+                    };
+                    if let Some(name) = project_name {
+                        self.current_project = Some(name);
+                        self.selected_index = 0;
+                        self.refresh_tasks_for_project();
+                        self.view = View::TaskList;
+                    }
+                }
+                KeyCode::Char('c') => {
+                    // Attach to CEO tmux session (lazy-start if needed)
+                    let session = Config::ceo_tmux_session();
+                    if !use_cases::agent_session_running(session) {
+                        match use_cases::start_ceo_session(&self.config) {
+                            Ok(()) => {
+                                tracing::info!("started CEO session");
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "failed to start CEO session");
+                                self.set_status(format!("Failed to start CEO: {e}"));
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    self.attach_session_name = Some(session.to_string());
+                    return Ok(true);
+                }
+                KeyCode::Char('s') => {
+                    // Stop CEO session
+                    let session = Config::ceo_tmux_session();
+                    if use_cases::agent_session_running(session) {
+                        if let Err(e) = use_cases::stop_agent_session(session) {
+                            self.set_status(format!("Failed to stop CEO: {e}"));
+                        } else {
+                            self.set_status("CEO session stopped".to_string());
+                        }
+                    } else {
+                        self.set_status("CEO is not running".to_string());
+                    }
+                }
+                KeyCode::Char('n') => {
+                    let mut name_editor = TextArea::default();
+                    name_editor.set_cursor_line_style(ratatui::style::Style::default());
+                    name_editor.set_placeholder_text("project-name");
+                    self.project_wizard = Some(ProjectWizard {
+                        name_editor,
+                        description_editor: {
+                            let mut ed = VimTextArea::new();
+                            ed.set_insert_mode();
+                            ed
+                        },
+                        description_focus: false,
+                        error_message: None,
+                    });
+                    self.view = View::ProjectWizard;
+                }
+                KeyCode::Char('m') => {
+                    // Migrate all unassigned tasks — only available when (unassigned) is selected
+                    let is_unassigned = self.selected_project_index >= self.projects.len()
+                        && self.unassigned_task_count > 0;
+                    if is_unassigned {
+                        let project_names: Vec<String> = self
+                            .projects
+                            .iter()
+                            .map(|p| p.meta.name.clone())
+                            .collect();
+                        if project_names.is_empty() {
+                            self.set_status("Create a project first with 'n'".to_string());
+                        } else {
+                            self.project_picker = Some(ProjectPicker {
+                                projects: project_names,
+                                selected: 0,
+                                action: ProjectPickerAction::MigrateAllUnassigned,
+                            });
+                            self.view = View::ProjectPicker;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
     }
 
     fn handle_task_list_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
+                    // If in a project scope, go back to project list
+                    if self.current_project.is_some() {
+                        self.current_project = None;
+                        self.refresh_projects();
+                        self.view = View::ProjectList;
+                        return Ok(false);
+                    }
                     self.should_quit = true;
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2428,22 +2695,43 @@ impl App {
                     self.toggle_hold()?;
                 }
                 KeyCode::Char('c') => {
-                    // Toggle review_addressed indicator on selected task (owned PRs only)
-                    let is_owned = self.selected_task().and_then(|t| {
-                        t.meta.linked_pr.as_ref().map(|pr| pr.owned)
-                    }).unwrap_or(false);
-                    if is_owned {
-                        if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                            let new_val = !task.meta.review_addressed;
-                            let _ = use_cases::set_review_addressed(task, new_val);
-                            if new_val {
-                                self.set_status("Marked review addressed".to_string());
-                            } else {
-                                self.set_status("Cleared review indicator".to_string());
+                    if let Some(ref project_name) = self.current_project.clone() {
+                        if project_name != "(unassigned)" {
+                            // Attach to PM tmux session (lazy-start if needed)
+                            let session = Config::pm_tmux_session(project_name);
+                            if !use_cases::agent_session_running(&session) {
+                                match use_cases::start_pm_session(&self.config, project_name) {
+                                    Ok(()) => {
+                                        tracing::info!(project = %project_name, "started PM session");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(project = %project_name, error = %e, "failed to start PM session");
+                                        self.set_status(format!("Failed to start PM: {e}"));
+                                        return Ok(false);
+                                    }
+                                }
                             }
+                            self.attach_session_name = Some(session);
+                            return Ok(true);
                         }
                     } else {
-                        self.set_status("Review tracking only for owned PRs".to_string());
+                        // Original behavior: toggle review_addressed
+                        let is_owned = self.selected_task().and_then(|t| {
+                            t.meta.linked_pr.as_ref().map(|pr| pr.owned)
+                        }).unwrap_or(false);
+                        if is_owned {
+                            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                                let new_val = !task.meta.review_addressed;
+                                let _ = use_cases::set_review_addressed(task, new_val);
+                                if new_val {
+                                    self.set_status("Marked review addressed".to_string());
+                                } else {
+                                    self.set_status("Cleared review indicator".to_string());
+                                }
+                            }
+                        } else {
+                            self.set_status("Review tracking only for owned PRs".to_string());
+                        }
                     }
                 }
                 KeyCode::Char('i') => {
@@ -2480,6 +2768,27 @@ impl App {
                     self.archive_preview = None;
                     self.archive_scroll = 0;
                     self.view = View::Archive;
+                }
+                KeyCode::Char('M') => {
+                    // Move selected task to a different project
+                    if let Some(task) = self.selected_task() {
+                        let task_id = task.meta.task_id();
+                        let project_names: Vec<String> = self
+                            .projects
+                            .iter()
+                            .map(|p| p.meta.name.clone())
+                            .collect();
+                        if project_names.is_empty() {
+                            self.set_status("Create a project first".to_string());
+                        } else {
+                            self.project_picker = Some(ProjectPicker {
+                                projects: project_names,
+                                selected: 0,
+                                action: ProjectPickerAction::MoveTask(task_id),
+                            });
+                            self.view = View::ProjectPicker;
+                        }
+                    }
                 }
                 KeyCode::Char(',') => {
                     self.settings_selected = 0;
@@ -2620,6 +2929,197 @@ impl App {
             score_b.cmp(&score_a)
         });
         matched
+    }
+
+    fn handle_project_wizard_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            // Ctrl+S to submit
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                if let Some(wizard) = &self.project_wizard {
+                    let name = wizard.name_editor.lines().join("").trim().to_string();
+                    let desc = wizard.description_editor.lines_joined();
+                    let desc = desc.trim().to_string();
+
+                    if name.is_empty() {
+                        if let Some(w) = &mut self.project_wizard {
+                            w.error_message = Some("Project name is required".to_string());
+                        }
+                        return Ok(false);
+                    }
+
+                    match use_cases::create_project(&self.config, &name, &desc) {
+                        Ok(_project) => {
+                            tracing::info!(project = %name, "created project via wizard");
+                            self.set_status(format!("Created project: {name}"));
+                            self.project_wizard = None;
+                            self.view = View::ProjectList;
+                            self.refresh_projects();
+                        }
+                        Err(e) => {
+                            tracing::warn!(project = %name, error = %e, "failed to create project");
+                            if let Some(w) = &mut self.project_wizard {
+                                w.error_message = Some(format!("{e}"));
+                            }
+                        }
+                    }
+                }
+                return Ok(false);
+            }
+
+            if let Some(wizard) = &mut self.project_wizard {
+                wizard.error_message = None;
+                let input = Input::from(event.clone());
+
+                // Tab to switch focus between name and description
+                if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
+                    wizard.description_focus = !wizard.description_focus;
+                    if wizard.description_focus {
+                        wizard.description_editor.set_insert_mode();
+                    }
+                    return Ok(false);
+                }
+
+                if wizard.description_focus {
+                    let was_insert = wizard.description_editor.mode() == VimMode::Insert;
+                    wizard.description_editor.input(input.clone());
+                    let is_normal_now = wizard.description_editor.mode() == VimMode::Normal;
+
+                    // Esc in normal mode goes back to name field
+                    if input.key == Key::Esc && !was_insert && is_normal_now {
+                        wizard.description_focus = false;
+                    }
+                } else {
+                    // Name field: Esc cancels wizard
+                    if key.code == KeyCode::Esc {
+                        self.project_wizard = None;
+                        self.view = View::ProjectList;
+                        return Ok(false);
+                    }
+                    // Enter in name field moves to description
+                    if key.code == KeyCode::Enter {
+                        wizard.description_focus = true;
+                        wizard.description_editor.set_insert_mode();
+                        return Ok(false);
+                    }
+                    wizard.name_editor.input(input);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_project_picker_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.should_quit = true;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    let was_migrate_all = self
+                        .project_picker
+                        .as_ref()
+                        .is_some_and(|p| matches!(p.action, ProjectPickerAction::MigrateAllUnassigned));
+                    self.project_picker = None;
+                    self.view = if was_migrate_all {
+                        View::ProjectList
+                    } else {
+                        View::TaskList
+                    };
+                }
+                KeyCode::Char('j') => {
+                    if let Some(picker) = &mut self.project_picker {
+                        if !picker.projects.is_empty() {
+                            picker.selected = (picker.selected + 1) % picker.projects.len();
+                        }
+                    }
+                }
+                KeyCode::Char('k') => {
+                    if let Some(picker) = &mut self.project_picker {
+                        if !picker.projects.is_empty() {
+                            picker.selected = if picker.selected == 0 {
+                                picker.projects.len() - 1
+                            } else {
+                                picker.selected - 1
+                            };
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(picker) = self.project_picker.take() {
+                        if let Some(project_name) = picker.projects.get(picker.selected) {
+                            let project_name = project_name.clone();
+                            match &picker.action {
+                                ProjectPickerAction::MigrateAllUnassigned => {
+                                    let unassigned = use_cases::list_unassigned_tasks(&self.config)
+                                        .unwrap_or_default();
+                                    let task_ids: Vec<String> =
+                                        unassigned.iter().map(|t| t.meta.task_id()).collect();
+                                    match use_cases::migrate_tasks_to_project(
+                                        &self.config,
+                                        &project_name,
+                                        &task_ids,
+                                    ) {
+                                        Ok(count) => {
+                                            tracing::info!(
+                                                project = %project_name,
+                                                count,
+                                                "migrated unassigned tasks"
+                                            );
+                                            self.set_status(format!(
+                                                "Migrated {count} tasks to {project_name}"
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(error = %e, "failed to migrate tasks");
+                                            self.set_status(format!("Migration failed: {e}"));
+                                        }
+                                    }
+                                    self.refresh_projects();
+                                    self.view = View::ProjectList;
+                                }
+                                ProjectPickerAction::MoveTask(task_id) => {
+                                    let task_id = task_id.clone();
+                                    match use_cases::migrate_tasks_to_project(
+                                        &self.config,
+                                        &project_name,
+                                        &[task_id.clone()],
+                                    ) {
+                                        Ok(_) => {
+                                            tracing::info!(
+                                                task_id = %task_id,
+                                                project = %project_name,
+                                                "moved task to project"
+                                            );
+                                            self.set_status(format!(
+                                                "Moved task to {project_name}"
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                task_id = %task_id,
+                                                error = %e,
+                                                "failed to move task"
+                                            );
+                                            self.set_status(format!("Move failed: {e}"));
+                                        }
+                                    }
+                                    self.refresh_projects();
+                                    self.refresh_tasks_for_project();
+                                    self.view = View::TaskList;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
     }
 
     fn handle_archive_event(&mut self, event: Event) -> Result<bool> {
@@ -4419,6 +4919,115 @@ impl App {
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // Inbox polling (CEO & PM message delivery)
+    // -----------------------------------------------------------------------
+
+    fn start_inbox_poll(&mut self) {
+        if self.inbox_poll_active {
+            return;
+        }
+
+        // Collect targets: CEO + all projects that have active sessions
+        let mut targets: Vec<(String, PathBuf, PathBuf, String)> = Vec::new();
+
+        let ceo_session = Config::ceo_tmux_session().to_string();
+        if Tmux::session_exists(&ceo_session) {
+            targets.push((
+                "ceo".to_string(),
+                self.config.ceo_inbox(),
+                self.config.ceo_seq(),
+                ceo_session,
+            ));
+        }
+
+        for project in &self.projects {
+            let pm_session = Config::pm_tmux_session(&project.meta.name);
+            if Tmux::session_exists(&pm_session) {
+                targets.push((
+                    project.meta.name.clone(),
+                    self.config.project_inbox(&project.meta.name),
+                    self.config.project_seq(&project.meta.name),
+                    pm_session,
+                ));
+            }
+        }
+
+        if targets.is_empty() {
+            return;
+        }
+
+        self.inbox_poll_active = true;
+        let tx = self.inbox_poll_tx.clone();
+
+        self.rt.spawn(async move {
+            let results = tokio::task::spawn_blocking(move || {
+                let mut results = Vec::new();
+                for (target, inbox_path, seq_path, session_name) in targets {
+                    let undelivered = match inbox::read_undelivered(&inbox_path, &seq_path) {
+                        Ok(msgs) => msgs,
+                        Err(e) => {
+                            results.push(InboxPollResult {
+                                target,
+                                delivered: 0,
+                                errors: vec![format!("read error: {e}")],
+                            });
+                            continue;
+                        }
+                    };
+
+                    let mut delivered = 0;
+                    let mut errors = Vec::new();
+                    for msg in &undelivered {
+                        match Tmux::inject_message(&session_name, &msg.from, &msg.message) {
+                            Ok(()) => {
+                                if let Err(e) = inbox::mark_delivered(&seq_path, msg.seq) {
+                                    errors.push(format!("mark_delivered error: {e}"));
+                                } else {
+                                    delivered += 1;
+                                }
+                            }
+                            Err(e) => {
+                                errors.push(format!("inject error: {e}"));
+                                break; // Stop on first injection failure
+                            }
+                        }
+                    }
+                    results.push(InboxPollResult {
+                        target,
+                        delivered,
+                        errors,
+                    });
+                }
+                results
+            })
+            .await
+            .unwrap_or_default();
+            let _ = tx.send(results);
+        });
+    }
+
+    fn apply_inbox_poll_results(&mut self) {
+        let results = match self.inbox_poll_rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        self.inbox_poll_active = false;
+
+        for result in &results {
+            if result.delivered > 0 {
+                tracing::info!(
+                    target = %result.target,
+                    delivered = result.delivered,
+                    "delivered inbox messages"
+                );
+            }
+            for err in &result.errors {
+                tracing::warn!(target = %result.target, error = %err, "inbox poll error");
+            }
+        }
+    }
+
     /// Spawn a background task to poll linked PRs for all eligible tasks.
     /// Uses tokio's spawn_blocking to run `gh pr view` calls off the main thread
     /// and sends results back via the channel so the TUI stays responsive.
@@ -4913,8 +5522,10 @@ pub fn run_tui(config: Config) -> Result<()> {
         let mut terminal = Terminal::new(backend)?;
 
         // Reset view state when returning from attach
-        app.view = View::TaskList;
+        app.current_project = None;
+        app.view = View::ProjectList;
         app.should_quit = false;
+        app.refresh_projects();
         app.refresh_tasks();
 
         // Main loop
@@ -4949,10 +5560,16 @@ pub fn run_tui(config: Config) -> Result<()> {
                 }
             }
 
-            // Periodic refresh of task list (every 3 seconds, only in TaskList view)
+            // Periodic refresh (every 3 seconds)
             if last_refresh.elapsed() >= refresh_interval {
-                if app.view == View::TaskList {
-                    app.refresh_tasks();
+                if app.view == View::ProjectList {
+                    app.refresh_projects();
+                } else if app.view == View::TaskList {
+                    if app.current_project.is_some() {
+                        app.refresh_tasks_for_project();
+                    } else {
+                        app.refresh_tasks();
+                    }
                     // Check for stranded queue items on stopped tasks
                     app.process_stranded_queue();
                 }
@@ -4995,6 +5612,15 @@ pub fn run_tui(config: Config) -> Result<()> {
             // Check for completed Keybase poll results (non-blocking)
             app.apply_keybase_poll_results();
 
+            // Poll agent inboxes every 2 seconds (deliver messages via tmux send-keys)
+            if app.last_inbox_poll.elapsed() >= Duration::from_secs(2) {
+                app.start_inbox_poll();
+                app.last_inbox_poll = Instant::now();
+            }
+
+            // Check for completed inbox poll results (non-blocking)
+            app.apply_inbox_poll_results();
+
             // Check for restart signal (written by release.sh when agman is rebuilt)
             #[cfg(unix)]
             {
@@ -5010,7 +5636,7 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Show restart modal when no other modal is active
             if app.restart_pending
-                && matches!(app.view, View::TaskList | View::Preview)
+                && matches!(app.view, View::ProjectList | View::TaskList | View::Preview)
             {
                 app.restart_confirm_index = 0;
                 app.view = View::RestartConfirm;

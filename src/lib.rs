@@ -5,6 +5,8 @@ pub mod config;
 pub mod dismissed_notifications;
 pub mod flow;
 pub mod git;
+pub mod inbox;
+pub mod project;
 pub mod repo_stats;
 pub mod task;
 pub mod tmux;

@@ -59,4 +59,74 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+
+    /// Send a message to an agent's inbox
+    #[command(hide = true)]
+    SendMessage {
+        /// Target: "ceo" or a project name (for the PM)
+        target: String,
+        /// Message text
+        message: String,
+        /// Sender name
+        #[arg(long)]
+        from: Option<String>,
+    },
+
+    /// Create a new project with a PM
+    #[command(hide = true)]
+    CreateProject {
+        /// Project name (alphanumeric + hyphens)
+        name: String,
+        /// Project description
+        #[arg(long)]
+        description: Option<String>,
+    },
+
+    /// List all projects
+    #[command(hide = true)]
+    ListProjects,
+
+    /// Get detailed status of a project
+    #[command(hide = true)]
+    ProjectStatus {
+        /// Project name
+        name: String,
+    },
+
+    /// Create a task within a project
+    #[command(hide = true)]
+    CreatePmTask {
+        /// Project name
+        project: String,
+        /// Repository name
+        repo: String,
+        /// Branch name
+        branch: String,
+        /// Task description
+        description: String,
+    },
+
+    /// List tasks belonging to a project
+    #[command(hide = true)]
+    ListPmTasks {
+        /// Project name
+        project: String,
+    },
+
+    /// Get status and recent log for a task
+    #[command(hide = true)]
+    TaskStatus {
+        /// Task identifier (repo--branch format)
+        task_id: String,
+    },
+
+    /// Read the agent log for a task
+    #[command(hide = true)]
+    TaskLog {
+        /// Task identifier (repo--branch format)
+        task_id: String,
+        /// Number of lines from the end to show
+        #[arg(long, default_value = "50")]
+        tail: usize,
+    },
 }
