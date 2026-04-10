@@ -80,7 +80,8 @@ fn main() -> Result<()> {
             project,
             repo,
             task_name,
-        }) => cmd_create_pm_task(&config, &project, &repo, &task_name),
+            description,
+        }) => cmd_create_pm_task(&config, &project, &repo, &task_name, description),
 
         Some(Commands::ListPmTasks { project }) => cmd_list_pm_tasks(&config, &project),
 
@@ -560,6 +561,7 @@ fn cmd_create_pm_task(
     project: &str,
     repo: &str,
     task_name: &str,
+    description: Option<String>,
 ) -> Result<()> {
     // Reject protected branch names
     if matches!(task_name, "main" | "master" | "develop") {
@@ -579,7 +581,13 @@ fn cmd_create_pm_task(
         );
     }
 
-    let task = use_cases::create_pm_task(config, project, repo, task_name)?;
+    let task = use_cases::create_pm_task(
+        config,
+        project,
+        repo,
+        task_name,
+        description.as_deref().unwrap_or(""),
+    )?;
     let task_id = task.meta.task_id();
 
     let worktree_path = task.meta.primary_repo().worktree_path.clone();

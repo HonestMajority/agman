@@ -101,6 +101,9 @@ pub enum Commands {
         repo: String,
         /// Task name (becomes the branch name, e.g. 'fix-login-bug')
         task_name: String,
+        /// Task description for the TASK.md Goal section
+        #[arg(long, short)]
+        description: Option<String>,
     },
 
     /// List tasks belonging to a project
