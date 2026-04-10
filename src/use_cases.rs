@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use crate::config::Config;
+use crate::flow::{Flow, FlowStep};
 use crate::git::{self, Git};
 use crate::inbox;
 use crate::project::Project;
@@ -2029,6 +2031,62 @@ pub fn agent_session_running(session_name: &str) -> bool {
 // Task query (for CLI commands)
 // ---------------------------------------------------------------------------
 
+/// Format a chrono::Duration into a human-readable string like "2m", "1h 23m".
+fn format_duration(duration: chrono::Duration) -> String {
+    let total_secs = duration.num_seconds().max(0);
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    if hours > 0 {
+        format!("{}h {}m", hours, minutes)
+    } else {
+        format!("{}m", minutes)
+    }
+}
+
+/// Extract the Goal section from a TASK.md file.
+/// Returns None if the file doesn't exist or has no `# Goal` section.
+/// Truncates to the first 5 lines or 500 characters, whichever comes first.
+fn extract_goal_summary(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut lines = content.lines();
+    // Find the "# Goal" heading
+    let mut found = false;
+    for line in lines.by_ref() {
+        if line.trim() == "# Goal" {
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return None;
+    }
+    // Collect lines until the next heading or EOF
+    let mut goal_lines = Vec::new();
+    let mut char_count = 0;
+    for line in lines {
+        if line.starts_with('#') {
+            break;
+        }
+        // Skip leading blank lines
+        if goal_lines.is_empty() && line.trim().is_empty() {
+            continue;
+        }
+        if char_count + line.len() + 1 > 500 {
+            // Line would exceed 500 chars — stop without including partial line
+            break;
+        }
+        char_count += line.len() + 1; // +1 for newline
+        goal_lines.push(line);
+        if goal_lines.len() >= 5 {
+            break;
+        }
+    }
+    if goal_lines.is_empty() {
+        return None;
+    }
+    Some(goal_lines.join("\n"))
+}
+
 /// Get a formatted status string for a task.
 pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
     let (repo, branch) = Config::parse_task_id(task_id)
@@ -2038,7 +2096,44 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
     let mut out = String::new();
     out.push_str(&format!("Task: {}\n", task_id));
     out.push_str(&format!("Status: {}\n", task.meta.status));
-    out.push_str(&format!("Flow: {} (step {})\n", task.meta.flow_name, task.meta.flow_step));
+
+    // Rich flow step display
+    let flow_line = match Flow::load(&config.flow_path(&task.meta.flow_name)) {
+        Ok(flow) => {
+            let total = flow.steps.len();
+            let step = task.meta.flow_step;
+            if let Some(flow_step) = flow.get_step(step) {
+                let agent_name = match flow_step {
+                    FlowStep::Agent(s) => s.agent.clone(),
+                    FlowStep::Loop(l) => {
+                        let agents: Vec<&str> =
+                            l.steps.iter().map(|s| s.agent.as_str()).collect();
+                        format!("loop: {}", agents.join(" → "))
+                    }
+                };
+                format!(
+                    "Flow: {} (step {}/{}: {})\n",
+                    task.meta.flow_name,
+                    step + 1,
+                    total,
+                    agent_name,
+                )
+            } else {
+                format!(
+                    "Flow: {} (step {}/{})\n",
+                    task.meta.flow_name,
+                    step + 1,
+                    total,
+                )
+            }
+        }
+        Err(_) => format!(
+            "Flow: {} (step {})\n",
+            task.meta.flow_name, task.meta.flow_step + 1,
+        ),
+    };
+    out.push_str(&flow_line);
+
     if let Some(ref agent) = task.meta.current_agent {
         out.push_str(&format!("Agent: {}\n", agent));
     }
@@ -2047,6 +2142,17 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
     }
     out.push_str(&format!("Created: {}\n", task.meta.created_at));
     out.push_str(&format!("Updated: {}\n", task.meta.updated_at));
+
+    // Elapsed time for running tasks
+    if task.meta.status == TaskStatus::Running {
+        let elapsed = Utc::now().signed_duration_since(task.meta.updated_at);
+        out.push_str(&format!("Running for: {}\n", format_duration(elapsed)));
+    }
+
+    // Task goal from TASK.md
+    if let Some(goal) = extract_goal_summary(&task.dir.join("TASK.md")) {
+        out.push_str(&format!("\nGoal:\n{}\n", goal));
+    }
 
     // Append last few lines of agent log
     let log_tail = get_task_log_tail(config, task_id, 10)?;

@@ -2681,11 +2681,32 @@ fn use_case_get_task_status_text() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     let _repo = init_test_repo(&tmp, "myrepo");
-    let _task = create_test_task(&config, "myrepo", "feat-status");
+    let task = create_test_task(&config, "myrepo", "feat-status");
+
+    // Write a TASK.md with a Goal section
+    std::fs::write(
+        task.dir.join("TASK.md"),
+        "# Goal\nImplement the widget feature for dashboard\n\n# Plan\n- [ ] step 1\n",
+    )
+    .unwrap();
+
+    // Create a flow YAML matching the test task's flow_name ("new")
+    std::fs::create_dir_all(&config.flows_dir).unwrap();
+    std::fs::write(
+        config.flows_dir.join("new.yaml"),
+        "name: new\nsteps:\n  - agent: planner\n    until: AGENT_DONE\n  - agent: coder\n    until: TASK_COMPLETE\n",
+    )
+    .unwrap();
 
     let text = use_cases::get_task_status_text(&config, "myrepo--feat-status").unwrap();
     assert!(text.contains("myrepo--feat-status"));
     assert!(text.contains("running"));
+    // Rich flow step with total count and agent name
+    assert!(text.contains("step 1/2: planner"));
+    // Elapsed time for running task
+    assert!(text.contains("Running for:"));
+    // Goal from TASK.md
+    assert!(text.contains("Implement the widget feature for dashboard"));
 }
 
 #[test]
