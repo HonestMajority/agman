@@ -156,6 +156,9 @@ pub enum Commands {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
         /// Feedback text to queue
-        feedback: String,
+        feedback: Option<String>,
+        /// Read feedback from a file
+        #[arg(short = 'F', long)]
+        file: Option<std::path::PathBuf>,
     },
 }
