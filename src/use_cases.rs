@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::git::{self, Git};
+use crate::inbox;
+use crate::project::Project;
 use crate::repo_stats::RepoStats;
 use crate::task::{QueueItem, RepoEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
@@ -1731,3 +1733,307 @@ pub fn fetch_show_prs_data() -> ShowPrsData {
         review_requests,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Project management
+// ---------------------------------------------------------------------------
+
+/// Create a new project with the given name and description.
+pub fn create_project(config: &Config, name: &str, description: &str) -> Result<Project> {
+    tracing::info!(project = name, "creating project");
+    let project = Project::create(config, name, description)?;
+    write_default_pm_prompt(config, name)?;
+    Ok(project)
+}
+
+/// List all projects.
+pub fn list_projects(config: &Config) -> Result<Vec<Project>> {
+    Project::list_all(config)
+}
+
+/// Summary info for a project.
+pub struct ProjectStatusInfo {
+    pub project: Project,
+    pub total_tasks: usize,
+    pub active_tasks: usize,
+    pub pm_running: bool,
+}
+
+/// Get detailed status of a project.
+pub fn project_status(config: &Config, name: &str) -> Result<ProjectStatusInfo> {
+    let project = Project::load_by_name(config, name)?;
+    let tasks = list_project_tasks(config, name)?;
+    let active_tasks = tasks
+        .iter()
+        .filter(|t| t.meta.status == TaskStatus::Running)
+        .count();
+    let pm_session = Config::pm_tmux_session(name);
+    let pm_running = Tmux::session_exists(&pm_session);
+
+    Ok(ProjectStatusInfo {
+        project,
+        total_tasks: tasks.len(),
+        active_tasks,
+        pm_running,
+    })
+}
+
+/// List tasks belonging to a project.
+pub fn list_project_tasks(config: &Config, project_name: &str) -> Result<Vec<Task>> {
+    let all = Task::list_all(config);
+    Ok(all
+        .into_iter()
+        .filter(|t| t.meta.project.as_deref() == Some(project_name))
+        .collect())
+}
+
+/// List tasks not assigned to any project.
+pub fn list_unassigned_tasks(config: &Config) -> Result<Vec<Task>> {
+    let all = Task::list_all(config);
+    Ok(all.into_iter().filter(|t| t.meta.project.is_none()).collect())
+}
+
+// ---------------------------------------------------------------------------
+// Task creation with project
+// ---------------------------------------------------------------------------
+
+/// Create a task within a project. Similar to `create_task` but sets the project field.
+pub fn create_pm_task(
+    config: &Config,
+    project: &str,
+    repo_name: &str,
+    branch_name: &str,
+    description: &str,
+) -> Result<Task> {
+    tracing::info!(
+        project = project,
+        repo = repo_name,
+        branch = branch_name,
+        "creating PM task"
+    );
+
+    // Verify project exists
+    let _project = Project::load_by_name(config, project)?;
+
+    // Create the task using the standard create_task function
+    let mut task = create_task(
+        config,
+        repo_name,
+        branch_name,
+        description,
+        "new",
+        WorktreeSource::NewBranch { base_branch: None },
+        false,
+        None,
+    )?;
+
+    // Set the project field
+    task.meta.project = Some(project.to_string());
+    task.save_meta()?;
+
+    Ok(task)
+}
+
+// ---------------------------------------------------------------------------
+// Messaging
+// ---------------------------------------------------------------------------
+
+/// Send a message to an agent's inbox.
+pub fn send_message(config: &Config, target: &str, from: &str, message: &str) -> Result<()> {
+    let inbox_path = if target == "ceo" {
+        config.ceo_inbox()
+    } else {
+        config.project_inbox(target)
+    };
+
+    tracing::info!(target = target, from = from, "sending message");
+    inbox::append_message(&inbox_path, from, message)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Agent session management
+// ---------------------------------------------------------------------------
+
+/// Start the CEO agent session.
+pub fn start_ceo_session(config: &Config) -> Result<()> {
+    let ceo_dir = config.ceo_dir();
+    std::fs::create_dir_all(&ceo_dir).context("failed to create CEO directory")?;
+
+    // Write default system prompt if missing
+    let prompt_path = config.ceo_prompt();
+    if !prompt_path.exists() {
+        write_default_ceo_prompt(config)?;
+    }
+
+    // Check for resume ID
+    let session_id_path = config.ceo_session_id();
+    let resume_id = std::fs::read_to_string(&session_id_path).ok();
+    let resume_ref = resume_id.as_deref().map(|s| s.trim());
+
+    let session_name = Config::ceo_tmux_session();
+    tracing::info!(session = session_name, "starting CEO session");
+    Tmux::create_agent_session(session_name, &prompt_path, resume_ref)?;
+    Ok(())
+}
+
+/// Start a PM agent session for a project.
+pub fn start_pm_session(config: &Config, project_name: &str) -> Result<()> {
+    let project_dir = config.project_dir(project_name);
+    if !project_dir.exists() {
+        anyhow::bail!("project '{}' does not exist", project_name);
+    }
+
+    let prompt_path = config.project_prompt(project_name);
+    if !prompt_path.exists() {
+        write_default_pm_prompt(config, project_name)?;
+    }
+
+    let session_id_path = config.project_session_id(project_name);
+    let resume_id = std::fs::read_to_string(&session_id_path).ok();
+    let resume_ref = resume_id.as_deref().map(|s| s.trim());
+
+    let session_name = Config::pm_tmux_session(project_name);
+    tracing::info!(session = &session_name, project = project_name, "starting PM session");
+    Tmux::create_agent_session(&session_name, &prompt_path, resume_ref)?;
+    Ok(())
+}
+
+/// Stop an agent's tmux session.
+pub fn stop_agent_session(session_name: &str) -> Result<()> {
+    tracing::info!(session = session_name, "stopping agent session");
+    Tmux::kill_session(session_name)
+}
+
+/// Check if an agent's tmux session is running.
+pub fn agent_session_running(session_name: &str) -> bool {
+    Tmux::session_exists(session_name)
+}
+
+// ---------------------------------------------------------------------------
+// Task query (for CLI commands)
+// ---------------------------------------------------------------------------
+
+/// Get a formatted status string for a task.
+pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
+    let (repo, branch) = Config::parse_task_id(task_id)
+        .context(format!("invalid task ID: {}", task_id))?;
+    let task = Task::load(config, &repo, &branch)?;
+
+    let mut out = String::new();
+    out.push_str(&format!("Task: {}\n", task_id));
+    out.push_str(&format!("Status: {}\n", task.meta.status));
+    out.push_str(&format!("Flow: {} (step {})\n", task.meta.flow_name, task.meta.flow_step));
+    if let Some(ref agent) = task.meta.current_agent {
+        out.push_str(&format!("Agent: {}\n", agent));
+    }
+    if let Some(ref project) = task.meta.project {
+        out.push_str(&format!("Project: {}\n", project));
+    }
+    out.push_str(&format!("Created: {}\n", task.meta.created_at));
+    out.push_str(&format!("Updated: {}\n", task.meta.updated_at));
+
+    // Append last few lines of agent log
+    let log_tail = get_task_log_tail(config, task_id, 10)?;
+    if !log_tail.is_empty() {
+        out.push_str("\n--- Recent log ---\n");
+        out.push_str(&log_tail);
+    }
+
+    Ok(out)
+}
+
+/// Read the last N lines of a task's agent.log.
+pub fn get_task_log_tail(config: &Config, task_id: &str, n: usize) -> Result<String> {
+    let (repo, branch) = Config::parse_task_id(task_id)
+        .context(format!("invalid task ID: {}", task_id))?;
+    let task = Task::load(config, &repo, &branch)?;
+    let log_path = task.dir.join("agent.log");
+
+    if !log_path.exists() {
+        return Ok(String::new());
+    }
+
+    let contents = std::fs::read_to_string(&log_path)
+        .with_context(|| format!("failed to read {}", log_path.display()))?;
+
+    let lines: Vec<&str> = contents.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    Ok(lines[start..].join("\n"))
+}
+
+// ---------------------------------------------------------------------------
+// Default system prompts
+// ---------------------------------------------------------------------------
+
+fn write_default_ceo_prompt(config: &Config) -> Result<()> {
+    let prompt_path = config.ceo_prompt();
+    if let Some(parent) = prompt_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&prompt_path, DEFAULT_CEO_PROMPT)?;
+    Ok(())
+}
+
+fn write_default_pm_prompt(config: &Config, project_name: &str) -> Result<()> {
+    let prompt_path = config.project_prompt(project_name);
+    if let Some(parent) = prompt_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let prompt = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
+    std::fs::write(&prompt_path, prompt)?;
+    Ok(())
+}
+
+const DEFAULT_CEO_PROMPT: &str = r#"You are the CEO agent — the strategic orchestrator for agman. You delegate work to Project Managers (PMs), never implement anything yourself.
+
+## Your Role
+- Receive high-level goals and break them into projects
+- Create projects and brief PMs on what needs to be done
+- Monitor project progress and resolve cross-project issues
+- Be concise and action-oriented
+
+## Available Commands (use via Bash tool)
+
+### Project Management
+- `agman create-project <name> --description "<desc>"` — Create a new project with a PM
+- `agman list-projects` — List all projects with PM status and task counts
+- `agman project-status <name>` — Get detailed status of a project
+
+### Communication
+- `agman send-message <project-name> "<message>" --from ceo` — Send a message to a PM
+
+## Behavior Guidelines
+- When given work, create a project and brief the PM immediately
+- Check on project status regularly
+- Escalate blockers to the user
+- Never create tasks directly — only PMs can do that
+- Keep messages to PMs clear and actionable
+"#;
+
+const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for the "{{PROJECT_NAME}}" project in agman. You manage tasks to accomplish your project's goals.
+
+## Your Role
+- Receive goals from the CEO or user and break them into concrete tasks
+- Create and monitor tasks within your project
+- Report progress and issues back to the CEO
+- Bias toward action — spawn tasks immediately rather than asking for permission
+
+## Available Commands (use via Bash tool)
+
+### Task Management
+- `agman create-pm-task {{PROJECT_NAME}} <repo> <branch> "<description>"` — Create a new task
+- `agman list-pm-tasks {{PROJECT_NAME}}` — List your project's tasks
+- `agman task-status <task-id>` — Get task status and recent log
+- `agman task-log <task-id> --tail 100` — Read task's agent log
+
+### Communication
+- `agman send-message ceo "<message>" --from {{PROJECT_NAME}}` — Report to the CEO
+
+## Behavior Guidelines
+- When given work, create tasks immediately — don't ask for permission
+- Monitor task progress and report completion to the CEO
+- If a task fails, analyze the logs and either retry or escalate
+- Never run long commands yourself — always spawn a task for implementation work
+- Keep the CEO informed of significant progress or blockers
+"#;

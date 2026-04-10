@@ -228,4 +228,74 @@ impl Tmux {
             .context("Failed to wipe REVIEW.md")?;
         Ok(())
     }
+
+    /// Create a simple agent tmux session with a single window running an interactive
+    /// `claude` session. Used for CEO and PM agents (no nvim/lazygit/shell windows).
+    pub fn create_agent_session(
+        session_name: &str,
+        system_prompt_path: &Path,
+        resume_id: Option<&str>,
+    ) -> Result<()> {
+        if Self::session_exists(session_name) {
+            tracing::debug!(session = session_name, "agent tmux session already exists");
+            return Ok(());
+        }
+
+        let prompt_path = system_prompt_path
+            .to_str()
+            .context("system prompt path is not valid UTF-8")?;
+
+        tracing::info!(session = session_name, "creating agent tmux session");
+
+        // Create the session with a default shell
+        let output = Command::new("tmux")
+            .args(["new-session", "-d", "-s", session_name])
+            .output()
+            .context("failed to create agent tmux session")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to create agent tmux session: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Build the claude command
+        let mut cmd = format!(
+            "claude --dangerously-skip-permissions --system-prompt {}",
+            prompt_path
+        );
+        if let Some(id) = resume_id {
+            cmd.push_str(&format!(" --resume {}", id));
+        }
+
+        // Send the claude command to start the interactive session
+        Self::send_keys_to_session(session_name, &cmd)?;
+
+        Ok(())
+    }
+
+    /// Send keys to the first (and only) window/pane of a session.
+    pub fn send_keys_to_session(session_name: &str, keys: &str) -> Result<()> {
+        tracing::trace!(session = session_name, "sending keys to agent session");
+        let output = Command::new("tmux")
+            .args(["send-keys", "-t", session_name, keys, "C-m"])
+            .output()
+            .context("failed to send keys to agent session")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to send keys to agent session: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Inject a formatted message into an agent's tmux session.
+    pub fn inject_message(session_name: &str, from: &str, message: &str) -> Result<()> {
+        let formatted = format!("[Message from {}]: {}", from, message);
+        Self::send_keys_to_session(session_name, &formatted)
+    }
 }

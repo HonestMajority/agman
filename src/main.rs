@@ -59,6 +59,33 @@ fn main() -> Result<()> {
             Ok(())
         }
 
+        Some(Commands::SendMessage {
+            target,
+            message,
+            from,
+        }) => cmd_send_message(&config, &target, &message, from.as_deref()),
+
+        Some(Commands::CreateProject { name, description }) => {
+            cmd_create_project(&config, &name, description.as_deref())
+        }
+
+        Some(Commands::ListProjects) => cmd_list_projects(&config),
+
+        Some(Commands::ProjectStatus { name }) => cmd_project_status(&config, &name),
+
+        Some(Commands::CreatePmTask {
+            project,
+            repo,
+            branch,
+            description,
+        }) => cmd_create_pm_task(&config, &project, &repo, &branch, &description),
+
+        Some(Commands::ListPmTasks { project }) => cmd_list_pm_tasks(&config, &project),
+
+        Some(Commands::TaskStatus { task_id }) => cmd_task_status(&config, &task_id),
+
+        Some(Commands::TaskLog { task_id, tail }) => cmd_task_log(&config, &task_id, tail),
+
         None => {
             // No subcommand - launch TUI
             config.ensure_dirs()?;
@@ -414,5 +441,128 @@ fn cmd_command_flow_run(
         task.save_meta()?;
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// CEO & PM command handlers
+// ---------------------------------------------------------------------------
+
+fn cmd_send_message(
+    config: &Config,
+    target: &str,
+    message: &str,
+    from: Option<&str>,
+) -> Result<()> {
+    let sender = from.unwrap_or("unknown");
+    use_cases::send_message(config, target, sender, message)?;
+    println!("Message sent to '{}'", target);
+    Ok(())
+}
+
+fn cmd_create_project(config: &Config, name: &str, description: Option<&str>) -> Result<()> {
+    let desc = description.unwrap_or("");
+    let project = use_cases::create_project(config, name, desc)?;
+    println!("Project '{}' created at {}", project.meta.name, project.dir.display());
+    Ok(())
+}
+
+fn cmd_list_projects(config: &Config) -> Result<()> {
+    let projects = use_cases::list_projects(config)?;
+    if projects.is_empty() {
+        println!("No projects.");
+        return Ok(());
+    }
+
+    println!("{:<20} {:<12} {:<8} {:<8}", "NAME", "PM STATUS", "TASKS", "ACTIVE");
+    println!("{}", "-".repeat(52));
+    for p in &projects {
+        let pm_session = Config::pm_tmux_session(&p.meta.name);
+        let pm_status = if Tmux::session_exists(&pm_session) {
+            "Running"
+        } else {
+            "Stopped"
+        };
+        let tasks = use_cases::list_project_tasks(config, &p.meta.name)
+            .unwrap_or_default();
+        let active = tasks
+            .iter()
+            .filter(|t| t.meta.status == TaskStatus::Running)
+            .count();
+        println!(
+            "{:<20} {:<12} {:<8} {:<8}",
+            p.meta.name,
+            pm_status,
+            tasks.len(),
+            active
+        );
+    }
+    Ok(())
+}
+
+fn cmd_project_status(config: &Config, name: &str) -> Result<()> {
+    let status = use_cases::project_status(config, name)?;
+    println!("Project: {}", status.project.meta.name);
+    println!("Description: {}", status.project.meta.description);
+    println!("Created: {}", status.project.meta.created_at);
+    println!("PM: {}", if status.pm_running { "Running" } else { "Stopped" });
+    println!("Tasks: {} total, {} active", status.total_tasks, status.active_tasks);
+
+    let tasks = use_cases::list_project_tasks(config, name)?;
+    if !tasks.is_empty() {
+        println!("\n{:<30} {:<15}", "TASK", "STATUS");
+        println!("{}", "-".repeat(45));
+        for t in &tasks {
+            println!("{:<30} {:<15}", t.meta.task_id(), t.meta.status);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_create_pm_task(
+    config: &Config,
+    project: &str,
+    repo: &str,
+    branch: &str,
+    description: &str,
+) -> Result<()> {
+    let task = use_cases::create_pm_task(config, project, repo, branch, description)?;
+    println!("Task '{}' created in project '{}'", task.meta.task_id(), project);
+    Ok(())
+}
+
+fn cmd_list_pm_tasks(config: &Config, project: &str) -> Result<()> {
+    let tasks = use_cases::list_project_tasks(config, project)?;
+    if tasks.is_empty() {
+        println!("No tasks in project '{}'.", project);
+        return Ok(());
+    }
+
+    println!("{:<30} {:<15} {:<20}", "TASK", "STATUS", "UPDATED");
+    println!("{}", "-".repeat(65));
+    for t in &tasks {
+        println!(
+            "{:<30} {:<15} {:<20}",
+            t.meta.task_id(),
+            t.meta.status,
+            t.meta.updated_at.format("%Y-%m-%d %H:%M")
+        );
+    }
+    Ok(())
+}
+
+fn cmd_task_status(config: &Config, task_id: &str) -> Result<()> {
+    let text = use_cases::get_task_status_text(config, task_id)?;
+    println!("{}", text);
+    Ok(())
+}
+
+fn cmd_task_log(config: &Config, task_id: &str, tail: usize) -> Result<()> {
+    let text = use_cases::get_task_log_tail(config, task_id, tail)?;
+    if text.is_empty() {
+        println!("(no log output)");
+    } else {
+        println!("{}", text);
+    }
     Ok(())
 }

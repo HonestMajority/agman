@@ -2569,3 +2569,102 @@ fn task_project_field_roundtrips() {
     let loaded = Task::load(&config, "myrepo", "feat-branch").unwrap();
     assert_eq!(loaded.meta.project.as_deref(), Some("my-project"));
 }
+
+// ---------------------------------------------------------------------------
+// Use-case level project tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn use_case_create_project_writes_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let project = use_cases::create_project(&config, "my-proj", "A test project").unwrap();
+    assert_eq!(project.meta.name, "my-proj");
+
+    // PM system prompt should be written
+    let prompt_path = config.project_prompt("my-proj");
+    assert!(prompt_path.exists());
+    let prompt_content = std::fs::read_to_string(&prompt_path).unwrap();
+    assert!(prompt_content.contains("my-proj"));
+}
+
+#[test]
+fn use_case_send_message_to_ceo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    use_cases::send_message(&config, "ceo", "pm-frontend", "Task complete").unwrap();
+
+    let messages = agman::inbox::read_messages(&config.ceo_inbox()).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "pm-frontend");
+    assert_eq!(messages[0].message, "Task complete");
+}
+
+#[test]
+fn use_case_send_message_to_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    // Create the project directory first
+    use_cases::create_project(&config, "frontend", "Frontend project").unwrap();
+
+    use_cases::send_message(&config, "frontend", "ceo", "Please start work").unwrap();
+
+    let messages = agman::inbox::read_messages(&config.project_inbox("frontend")).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "ceo");
+}
+
+#[test]
+fn use_case_list_project_tasks_filters_correctly() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo = init_test_repo(&tmp, "myrepo");
+
+    // Create two tasks, assign one to a project
+    let mut task1 = create_test_task(&config, "myrepo", "feat-a");
+    task1.meta.project = Some("proj-x".to_string());
+    task1.save_meta().unwrap();
+
+    let _task2 = create_test_task(&config, "myrepo", "feat-b");
+
+    let project_tasks = use_cases::list_project_tasks(&config, "proj-x").unwrap();
+    assert_eq!(project_tasks.len(), 1);
+    assert_eq!(project_tasks[0].meta.branch_name, "feat-a");
+
+    let unassigned = use_cases::list_unassigned_tasks(&config).unwrap();
+    assert_eq!(unassigned.len(), 1);
+    assert_eq!(unassigned[0].meta.branch_name, "feat-b");
+}
+
+#[test]
+fn use_case_get_task_log_tail() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo = init_test_repo(&tmp, "myrepo");
+    let task = create_test_task(&config, "myrepo", "feat-log");
+
+    // Write some log lines
+    let log_path = task.dir.join("agent.log");
+    std::fs::write(&log_path, "line1\nline2\nline3\nline4\nline5\n").unwrap();
+
+    let tail = use_cases::get_task_log_tail(&config, "myrepo--feat-log", 3).unwrap();
+    assert_eq!(tail, "line3\nline4\nline5");
+}
+
+#[test]
+fn use_case_get_task_status_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo = init_test_repo(&tmp, "myrepo");
+    let _task = create_test_task(&config, "myrepo", "feat-status");
+
+    let text = use_cases::get_task_status_text(&config, "myrepo--feat-status").unwrap();
+    assert!(text.contains("myrepo--feat-status"));
+    assert!(text.contains("running"));
+}
