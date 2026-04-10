@@ -355,8 +355,39 @@ impl Tmux {
     }
 
     /// Inject a formatted message into an agent's tmux session.
+    ///
+    /// Uses two separate tmux calls: one to send the text literally (no key-name
+    /// interpretation) and a second to send Enter as a distinct key event. This
+    /// ensures interactive Claude Code sessions actually submit the message.
     pub fn inject_message(session_name: &str, from: &str, message: &str) -> Result<()> {
         let formatted = format!("[Message from {}]: {}", from, message);
-        Self::send_keys_to_session(session_name, &formatted)
+
+        tracing::trace!(session = session_name, "injecting message text literally");
+        let text_output = Command::new("tmux")
+            .args(["send-keys", "-t", session_name, "-l", &formatted])
+            .output()
+            .context("failed to send message text to agent session")?;
+
+        if !text_output.status.success() {
+            anyhow::bail!(
+                "failed to send message text to agent session: {}",
+                String::from_utf8_lossy(&text_output.stderr)
+            );
+        }
+
+        tracing::trace!(session = session_name, "sending Enter to submit message");
+        let enter_output = Command::new("tmux")
+            .args(["send-keys", "-t", session_name, "Enter"])
+            .output()
+            .context("failed to send Enter to agent session")?;
+
+        if !enter_output.status.success() {
+            anyhow::bail!(
+                "failed to send Enter to agent session: {}",
+                String::from_utf8_lossy(&enter_output.stderr)
+            );
+        }
+
+        Ok(())
     }
 }
