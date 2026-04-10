@@ -2540,19 +2540,6 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('s') => {
-                    // Stop CEO session
-                    let session = Config::ceo_tmux_session();
-                    if use_cases::agent_session_running(session) {
-                        if let Err(e) = use_cases::stop_agent_session(session) {
-                            self.set_status(format!("Failed to stop CEO: {e}"));
-                        } else {
-                            self.set_status("CEO session stopped".to_string());
-                        }
-                    } else {
-                        self.set_status("CEO is not running".to_string());
-                    }
-                }
                 KeyCode::Char('n') => {
                     let mut name_editor = TextArea::default();
                     name_editor.set_cursor_line_style(ratatui::style::Style::default());

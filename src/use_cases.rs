@@ -1992,12 +1992,6 @@ pub fn open_pm_popup(config: &Config, project_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Stop an agent's tmux session.
-pub fn stop_agent_session(session_name: &str) -> Result<()> {
-    tracing::info!(session = session_name, "stopping agent session");
-    Tmux::kill_session(session_name)
-}
-
 /// Check if an agent's tmux session is running.
 pub fn agent_session_running(session_name: &str) -> bool {
     Tmux::session_exists(session_name)
