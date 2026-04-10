@@ -2098,7 +2098,12 @@ const DEFAULT_CEO_PROMPT: &str = r#"You are the CEO agent — the strategic orch
 - `agman project-status <name>` — Get detailed status of a project
 
 ### Communication
-- `agman send-message <project-name> "<message>" --from ceo` — Send a message to a PM
+- Send a message to a PM (use heredoc to avoid shell escaping issues):
+```
+cat <<'AGMAN_MSG' | agman send-message <project-name> --from ceo
+<message content>
+AGMAN_MSG
+```
 
 ## Behavior Guidelines
 - When given work, create a project and brief the PM immediately
@@ -2125,7 +2130,12 @@ const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for
 - `agman task-log <task-id> --tail 100` — Read task's agent log
 
 ### Communication
-- `agman send-message ceo "<message>" --from {{PROJECT_NAME}}` — Report to the CEO
+- Report to the CEO (use heredoc to avoid shell escaping issues):
+```
+cat <<'AGMAN_MSG' | agman send-message ceo --from {{PROJECT_NAME}}
+<message content>
+AGMAN_MSG
+```
 
 ## Behavior Guidelines
 - When given work, create tasks immediately — don't ask for permission
