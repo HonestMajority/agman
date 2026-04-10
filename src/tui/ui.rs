@@ -147,6 +147,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .split(f.area());
 
     match app.view {
+        View::ProjectList => draw_project_list(f, app, chunks[0]),
         View::TaskList => draw_task_list(f, app, chunks[0]),
         View::Preview => draw_preview(f, app, chunks[0]),
         View::DeleteConfirm => {
@@ -216,6 +217,164 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_status_bar(f, app, chunks[2]);
 }
 
+fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
+    use agman::config::Config;
+    use agman::use_cases;
+
+    let ceo_running = use_cases::agent_session_running(Config::ceo_tmux_session());
+
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(
+                " agman ",
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({} projects) ", app.projects.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                if ceo_running { "CEO: Running " } else { "CEO: Stopped " },
+                Style::default().fg(if ceo_running { Color::LightGreen } else { Color::DarkGray }),
+            ),
+        ]))
+        .title(clock_title(app))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::LightCyan));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Split into header + list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
+    const NAME_WIDTH: usize = 25;
+    const STATUS_WIDTH: usize = 10;
+    const TASKS_WIDTH: usize = 8;
+    const ACTIVE_WIDTH: usize = 8;
+    const COL_GAP: &str = "   ";
+
+    let header = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{:<width$}", "PROJECT", width = NAME_WIDTH),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "PM", width = STATUS_WIDTH),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "TASKS", width = TASKS_WIDTH),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "ACTIVE", width = ACTIVE_WIDTH),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(header), chunks[0]);
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    for (i, project) in app.projects.iter().enumerate() {
+        let (total, active) = app.project_task_counts
+            .get(&project.meta.name)
+            .copied()
+            .unwrap_or((0, 0));
+
+        let pm_session = Config::pm_tmux_session(&project.meta.name);
+        let pm_running = use_cases::agent_session_running(&pm_session);
+
+        let is_selected = i == app.selected_project_index;
+        let style = if is_selected {
+            Style::default().bg(Color::Rgb(40, 40, 60))
+        } else {
+            Style::default()
+        };
+
+        let pm_status = if pm_running { "Running" } else { "Stopped" };
+        let pm_color = if pm_running { Color::LightGreen } else { Color::DarkGray };
+
+        let line = Line::from(vec![
+            Span::styled(if is_selected { "> " } else { "  " }, Style::default().fg(Color::LightCyan)),
+            Span::styled(
+                format!("{:<width$}", project.meta.name, width = NAME_WIDTH),
+                Style::default().fg(Color::White),
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:<width$}", pm_status, width = STATUS_WIDTH),
+                Style::default().fg(pm_color),
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:<width$}", total, width = TASKS_WIDTH),
+                Style::default().fg(Color::White),
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:<width$}", active, width = ACTIVE_WIDTH),
+                Style::default().fg(if active > 0 { Color::LightGreen } else { Color::DarkGray }),
+            ),
+        ]);
+        items.push(ListItem::new(line).style(style));
+    }
+
+    // Add "(unassigned)" pseudo-entry if there are unassigned tasks
+    if app.unassigned_task_count > 0 {
+        let idx = app.projects.len();
+        let is_selected = idx == app.selected_project_index;
+        let style = if is_selected {
+            Style::default().bg(Color::Rgb(40, 40, 60))
+        } else {
+            Style::default()
+        };
+
+        let line = Line::from(vec![
+            Span::styled(if is_selected { "> " } else { "  " }, Style::default().fg(Color::LightCyan)),
+            Span::styled(
+                format!("{:<width$}", "(unassigned)", width = NAME_WIDTH),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:<width$}", "—", width = STATUS_WIDTH),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:<width$}", app.unassigned_task_count, width = TASKS_WIDTH),
+                Style::default().fg(Color::White),
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:<width$}", "", width = ACTIVE_WIDTH),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+        items.push(ListItem::new(line).style(style));
+    }
+
+    if items.is_empty() {
+        let msg = Paragraph::new("No projects. Press 'c' to start CEO, or create a project via CLI.")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        f.render_widget(msg, chunks[1]);
+    } else {
+        let list = List::new(items);
+        f.render_widget(list, chunks[1]);
+    }
+}
+
 fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     // Count tasks by status
     let running_count = app
@@ -236,10 +395,15 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     let stopped_count = app.tasks.len() - running_count - input_needed_count - on_hold_count;
 
     // Create the outer block first
+    let title_label = if let Some(ref project) = app.current_project {
+        format!(" Tasks — {} ", project)
+    } else {
+        " agman ".to_string()
+    };
     let block = Block::default()
         .title(Line::from(vec![
             Span::styled(
-                " agman ",
+                title_label,
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD),
@@ -1302,6 +1466,23 @@ fn break_hint_spans(app: &App) -> Vec<Span<'static>> {
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.view {
+        View::ProjectList => {
+            let mut spans = vec![
+                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("c", Style::default().fg(Color::LightYellow)),
+                Span::styled(" CEO  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("s", Style::default().fg(Color::LightRed)),
+                Span::styled(" stop CEO  ", Style::default().fg(Color::DarkGray)),
+            ];
+            spans.extend([
+                Span::styled("q", Style::default().fg(Color::LightCyan)),
+                Span::styled(" quit", Style::default().fg(Color::DarkGray)),
+            ]);
+            spans
+        }
         View::TaskList => {
             let mut spans = vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
@@ -1311,6 +1492,13 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("v", Style::default().fg(Color::LightGreen)),
                 Span::styled(" review  ", Style::default().fg(Color::DarkGray)),
             ];
+            // Show PM chat hint when in a project scope
+            if app.current_project.as_deref().is_some_and(|p| p != "(unassigned)") {
+                spans.extend([
+                    Span::styled("c", Style::default().fg(Color::LightYellow)),
+                    Span::styled(" PM  ", Style::default().fg(Color::DarkGray)),
+                ]);
+            }
             if let Some(task) = app.selected_task() {
                 // State-conditional hints
                 if task.meta.status == TaskStatus::InputNeeded {
@@ -1371,9 +1559,10 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
             ]);
             spans.extend(break_hint_spans(app));
+            let quit_label = if app.current_project.is_some() { " back" } else { " quit" };
             spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
-                Span::styled(" quit", Style::default().fg(Color::DarkGray)),
+                Span::styled(quit_label, Style::default().fg(Color::DarkGray)),
             ]);
             spans
         }
