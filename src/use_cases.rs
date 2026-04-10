@@ -2166,6 +2166,11 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
     out.push_str(&format!("Task: {}\n", task_id));
     out.push_str(&format!("Status: {}\n", task.meta.status));
 
+    if let Some(archived_at) = &task.meta.archived_at {
+        let suffix = if task.meta.saved { " (saved)" } else { "" };
+        out.push_str(&format!("Archived: {}{}\n", archived_at, suffix));
+    }
+
     // Rich flow step display
     let flow_line = match Flow::load(&config.flow_path(&task.meta.flow_name)) {
         Ok(flow) => {
