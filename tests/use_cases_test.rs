@@ -2715,3 +2715,29 @@ fn use_case_migrate_tasks_to_project() {
     let unassigned = use_cases::list_unassigned_tasks(&config).unwrap();
     assert_eq!(unassigned.len(), 0);
 }
+
+#[test]
+fn delete_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo = init_test_repo(&tmp, "myrepo");
+
+    // Create a project
+    let project = helpers::create_test_project(&config, "backend");
+    assert!(project.dir.exists());
+
+    // Create a task assigned to that project
+    let mut task = create_test_task(&config, "myrepo", "feat-a");
+    task.meta.project = Some("backend".to_string());
+    task.save_meta().unwrap();
+
+    // Delete the project
+    use_cases::delete_project(&config, "backend").unwrap();
+
+    // Project directory should be gone
+    assert!(!config.project_dir("backend").exists());
+
+    // Task should now be archived
+    let reloaded = agman::task::Task::load_by_id(&config, &task.meta.task_id()).unwrap();
+    assert!(reloaded.meta.archived_at.is_some());
+}

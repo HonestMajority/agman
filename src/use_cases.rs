@@ -1822,6 +1822,45 @@ pub fn list_unassigned_tasks(config: &Config) -> Result<Vec<Task>> {
     Ok(all.into_iter().filter(|t| t.meta.project.is_none()).collect())
 }
 
+/// Delete a project: archive all its tasks, kill PM session, remove project directory.
+pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
+    // Verify the project exists
+    let _project = Project::load_by_name(config, project_name)?;
+
+    // Archive all non-archived tasks
+    let tasks = list_project_tasks(config, project_name)?;
+    let mut archived_count = 0;
+    for mut task in tasks {
+        if task.meta.archived_at.is_some() {
+            continue;
+        }
+        // Kill tmux sessions for repos (best-effort)
+        if task.meta.has_repos() {
+            for repo in &task.meta.repos {
+                let _ = Tmux::kill_session(&repo.tmux_session);
+            }
+        }
+        // Kill multi-repo parent session if applicable
+        if task.meta.is_multi_repo() {
+            let parent_session =
+                Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+            let _ = Tmux::kill_session(&parent_session);
+        }
+        archive_task(config, &mut task, false)?;
+        archived_count += 1;
+    }
+
+    // Kill PM tmux session (best-effort)
+    let _ = Tmux::kill_session(&Config::pm_tmux_session(project_name));
+
+    // Remove project directory
+    std::fs::remove_dir_all(config.project_dir(project_name))?;
+
+    tracing::info!(project = %project_name, archived_count, "deleted project");
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Task migration
 // ---------------------------------------------------------------------------

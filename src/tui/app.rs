@@ -67,6 +67,7 @@ pub enum View {
     Archive,
     ProjectWizard,
     ProjectPicker,
+    ProjectDeleteConfirm,
 }
 
 /// Which wizard requested the directory picker.
@@ -661,6 +662,8 @@ pub struct App {
     pub project_wizard: Option<ProjectWizard>,
     // Project picker (for task migration/move)
     pub project_picker: Option<ProjectPicker>,
+    // Project deletion
+    pub project_to_delete: Option<String>,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<Vec<InboxPollResult>>,
@@ -802,6 +805,7 @@ impl App {
             project_task_counts: std::collections::HashMap::new(),
             project_wizard: None,
             project_picker: None,
+            project_to_delete: None,
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -2479,6 +2483,7 @@ impl App {
             View::Archive => self.handle_archive_event(event),
             View::ProjectWizard => self.handle_project_wizard_event(event),
             View::ProjectPicker => self.handle_project_picker_event(event),
+            View::ProjectDeleteConfirm => self.handle_project_delete_confirm_event(event),
         }
     }
 
@@ -2588,6 +2593,47 @@ impl App {
                             self.view = View::ProjectPicker;
                         }
                     }
+                }
+                KeyCode::Char('d') => {
+                    // Delete project — only for real projects, not "(unassigned)"
+                    if self.selected_project_index < self.projects.len() {
+                        let name = self.projects[self.selected_project_index].meta.name.clone();
+                        self.project_to_delete = Some(name);
+                        self.view = View::ProjectDeleteConfirm;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_project_delete_confirm_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            match key.code {
+                KeyCode::Enter => {
+                    if let Some(name) = self.project_to_delete.take() {
+                        match use_cases::delete_project(&self.config, &name) {
+                            Ok(()) => {
+                                self.refresh_projects();
+                                if self.selected_project_index >= self.project_list_len()
+                                    && self.project_list_len() > 0
+                                {
+                                    self.selected_project_index = self.project_list_len() - 1;
+                                }
+                                self.set_status(format!("Deleted project '{}'", name));
+                            }
+                            Err(e) => {
+                                tracing::error!(project = %name, error = %e, "failed to delete project");
+                                self.set_status(format!("Delete failed: {e}"));
+                            }
+                        }
+                    }
+                    self.view = View::ProjectList;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.project_to_delete = None;
+                    self.view = View::ProjectList;
                 }
                 _ => {}
             }
