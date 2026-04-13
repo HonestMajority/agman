@@ -2116,9 +2116,14 @@ pub fn start_ceo_session(config: &Config) -> Result<()> {
     let resume_id = std::fs::read_to_string(&session_id_path).ok();
     let resume_ref = resume_id.as_deref().map(|s| s.trim());
 
+    let (token, chat_id) = load_telegram_config(config);
+    let telegram_enabled = token.as_deref().is_some_and(|t| !t.is_empty())
+        && chat_id.as_deref().is_some_and(|c| !c.is_empty());
+    let prompt = build_ceo_prompt(telegram_enabled);
+
     let session_name = Config::ceo_tmux_session();
-    tracing::info!(session = session_name, "starting CEO session");
-    Tmux::create_agent_session(session_name, DEFAULT_CEO_PROMPT, resume_ref, None)?;
+    tracing::info!(session = session_name, telegram_enabled, "starting CEO session");
+    Tmux::create_agent_session(session_name, &prompt, resume_ref, None)?;
     Ok(())
 }
 
@@ -2529,6 +2534,32 @@ AGMAN_MSG
 - Never create tasks directly — only PMs can do that
 - Keep messages to PMs clear and actionable
 "#;
+
+fn build_ceo_prompt(telegram_enabled: bool) -> String {
+    if !telegram_enabled {
+        return DEFAULT_CEO_PROMPT.to_string();
+    }
+
+    let telegram_section = r#"
+
+## Telegram
+
+Telegram is connected and active — you can send and receive messages from the user via Telegram.
+
+**Critical rules for Telegram messages:**
+- Messages tagged `[Message from telegram]` come from the user on their phone. They **cannot** see your tmux chat — the only way to respond is via the Telegram send command.
+- You **MUST** reply via Telegram whenever you receive a `[Message from telegram]`. Use:
+```
+cat <<'AGMAN_MSG' | agman send-message telegram --from ceo
+<your reply>
+AGMAN_MSG
+```
+- **Reply to Telegram first**, then take any follow-up actions (create projects, brief PMs, etc.). The user is waiting on their phone.
+- Keep Telegram replies concise — this is a mobile chat, not a report.
+"#;
+
+    format!("{}{}", DEFAULT_CEO_PROMPT, telegram_section)
+}
 
 const DEFAULT_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for project "{{PROJECT_NAME}}", named "{{RESEARCHER_NAME}}".
 

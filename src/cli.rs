@@ -59,7 +59,7 @@ pub enum Commands {
 
     /// Send a message to an agent's inbox
     SendMessage {
-        /// Target: "ceo" or a project name (for the PM)
+        /// Target: "ceo", "telegram", "researcher:<project>--<name>", or a project name (for the PM)
         target: String,
         /// Message text (can also be provided via stdin or --file)
         message: Option<String>,
