@@ -999,11 +999,15 @@ impl App {
         if self.selected_project_index >= total && total > 0 {
             self.selected_project_index = total - 1;
         }
-        // Also refresh researchers
-        self.researchers = use_cases::list_researchers(&self.config, None).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to list researchers");
-            Vec::new()
-        });
+    }
+
+    /// Refresh the researcher list, filtered by `current_project` if set.
+    pub fn refresh_researchers(&mut self) {
+        self.researchers = use_cases::list_researchers(&self.config, self.current_project.as_deref())
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to list researchers");
+                Vec::new()
+            });
         if self.researcher_list_index >= self.researchers.len() && !self.researchers.is_empty() {
             self.researcher_list_index = self.researchers.len() - 1;
         }
@@ -2993,9 +2997,19 @@ impl App {
                     }
                 }
                 KeyCode::Char('w') => {
-                    self.researcher_list_index = 0;
-                    self.refresh_projects(); // also refreshes researchers
-                    self.view = View::ResearcherList;
+                    let project_name = if self.selected_project_index < self.projects.len() {
+                        Some(self.projects[self.selected_project_index].meta.name.clone())
+                    } else {
+                        None // "(unassigned)" pseudo-project — no researchers to show
+                    };
+                    if let Some(name) = project_name {
+                        self.current_project = Some(name);
+                        self.researcher_list_index = 0;
+                        self.refresh_researchers();
+                        self.view = View::ResearcherList;
+                    } else {
+                        self.set_status("No researchers for unassigned tasks".to_string());
+                    }
                 }
                 _ => {}
             }
@@ -3007,7 +3021,9 @@ impl App {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
-                    self.view = View::TaskList;
+                    self.current_project = None;
+                    self.refresh_projects();
+                    self.view = View::ProjectList;
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.should_quit = true;
@@ -3039,7 +3055,7 @@ impl App {
                                         session = &session_name,
                                         "resumed researcher session"
                                     );
-                                    self.refresh_projects();
+                                    self.refresh_researchers();
                                 }
                                 Err(e) => {
                                     self.set_status(format!("Failed to resume: {e}"));
@@ -3091,7 +3107,7 @@ impl App {
                         match use_cases::archive_researcher(&self.config, &project, &name) {
                             Ok(()) => {
                                 self.set_status(format!("Archived researcher '{name}'"));
-                                self.refresh_projects();
+                                self.refresh_researchers();
                                 if self.researcher_list_index >= self.researchers.len()
                                     && !self.researchers.is_empty()
                                 {
@@ -3440,7 +3456,7 @@ impl App {
                             self.set_status(format!("Created researcher: {name}"));
                             self.researcher_wizard = None;
                             self.view = View::ResearcherList;
-                            self.refresh_projects();
+                            self.refresh_researchers();
                         }
                         Err(e) => {
                             tracing::warn!(project = %project, name = %name, error = %e, "failed to create researcher");
@@ -5447,7 +5463,7 @@ impl App {
                     let mut delivered = 0;
                     let mut errors = Vec::new();
                     'msg_loop: for msg in &undelivered {
-                        let formatted_snippet = format!("[Message from {}]:", msg.from);
+                        let formatted_snippet = format!("[msg:{}:{}]", msg.from, msg.seq);
 
                         for attempt in 0..MAX_RETRIES {
                             // Check if text was already pasted (from a prior failed attempt or prior poll cycle)
@@ -5471,7 +5487,7 @@ impl App {
                                 }
                             } else {
                                 // Full injection
-                                if let Err(e) = Tmux::inject_message(&session_name, &msg.from, &msg.message) {
+                                if let Err(e) = Tmux::inject_message(&session_name, &msg.from, &msg.message, msg.seq) {
                                     tracing::warn!(
                                         target = &target, seq = msg.seq, attempt = attempt, error = %e,
                                         "inject_message failed"
@@ -6130,6 +6146,8 @@ pub fn run_tui(config: Config) -> Result<()> {
             if last_refresh.elapsed() >= refresh_interval {
                 if app.view == View::ProjectList {
                     app.refresh_projects();
+                } else if app.view == View::ResearcherList {
+                    app.refresh_researchers();
                 } else if app.view == View::TaskList {
                     if app.current_project.is_some() {
                         app.refresh_tasks_for_project();

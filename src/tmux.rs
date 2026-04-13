@@ -378,8 +378,12 @@ impl Tmux {
     /// Uses two separate tmux calls: one to send the text literally (no key-name
     /// interpretation) and a second to send Enter as a distinct key event. This
     /// ensures interactive Claude Code sessions actually submit the message.
-    pub fn inject_message(session_name: &str, from: &str, message: &str) -> Result<()> {
-        let formatted = format!("[Message from {}]: {}", from, message);
+    ///
+    /// The `seq` parameter is the unique message sequence number, used to build
+    /// a delivery tag (`[msg:{from}:{seq}]`) so each message can be uniquely
+    /// identified in the scrollback for verification.
+    pub fn inject_message(session_name: &str, from: &str, message: &str, seq: u64) -> Result<()> {
+        let formatted = format!("[msg:{}:{}] [Message from {}]: {}", from, seq, from, message);
 
         tracing::trace!(session = session_name, "injecting message text literally");
         let text_output = Command::new("tmux")
