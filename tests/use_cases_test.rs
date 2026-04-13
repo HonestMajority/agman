@@ -3106,6 +3106,45 @@ fn use_case_send_message_to_researcher() {
 }
 
 // ---------------------------------------------------------------------------
+// CEO-level researchers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn use_case_create_ceo_researcher() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    // No project directory created — CEO researchers don't need one
+
+    let researcher = use_cases::create_researcher(
+        &config,
+        "ceo",
+        "my-researcher",
+        "research question",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert!(researcher.dir.join("meta.json").exists());
+    assert_eq!(researcher.meta.name, "my-researcher");
+    assert_eq!(researcher.meta.project, "ceo");
+    assert_eq!(researcher.meta.description, "research question");
+    assert_eq!(
+        researcher.meta.status,
+        agman::researcher::ResearcherStatus::Running
+    );
+
+    // Verify that the research description was written to the inbox
+    let inbox_path = config.researcher_inbox("ceo", "my-researcher");
+    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "user");
+    assert_eq!(messages[0].message, "research question");
+}
+
+// ---------------------------------------------------------------------------
 // Agent handoff
 // ---------------------------------------------------------------------------
 

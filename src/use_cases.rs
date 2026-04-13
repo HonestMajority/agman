@@ -2350,10 +2350,12 @@ pub fn create_researcher(
     branch: Option<String>,
     task_id: Option<String>,
 ) -> Result<Researcher> {
-    // Validate project exists
-    let project_dir = config.project_dir(project);
-    if !project_dir.exists() {
-        anyhow::bail!("project '{}' does not exist", project);
+    // Validate project exists (skip for CEO-level researchers)
+    if project != "ceo" {
+        let project_dir = config.project_dir(project);
+        if !project_dir.exists() {
+            anyhow::bail!("project '{}' does not exist", project);
+        }
     }
 
     tracing::info!(project = project, name = name, "creating researcher");
@@ -2395,7 +2397,12 @@ pub fn start_researcher_session(config: &Config, project: &str, name: &str) -> R
         (None, Some(uuid))
     };
 
-    let mut prompt = DEFAULT_RESEARCHER_PROMPT_TEMPLATE
+    let template = if project == "ceo" {
+        DEFAULT_CEO_RESEARCHER_PROMPT_TEMPLATE
+    } else {
+        DEFAULT_RESEARCHER_PROMPT_TEMPLATE
+    };
+    let mut prompt = template
         .replace("{{PROJECT_NAME}}", project)
         .replace("{{RESEARCHER_NAME}}", name);
 
@@ -2930,6 +2937,23 @@ Messages from the PM appear in your tmux session tagged `[Message from {{PROJECT
 **ALL** findings and responses must go through send-message:
 ```
 cat <<'AGMAN_MSG' | agman send-message {{PROJECT_NAME}} --from "researcher:{{PROJECT_NAME}}--{{RESEARCHER_NAME}}"
+<your findings>
+AGMAN_MSG
+```
+
+Keep reports concise and actionable. When you've completed your research, summarize key findings in a single message.
+
+"#;
+
+const DEFAULT_CEO_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for the CEO, named "{{RESEARCHER_NAME}}".
+
+Your role is to explore, analyze, and answer questions. You are NOT here to make code changes — only to investigate and report findings.
+
+Messages from the CEO appear in your tmux session tagged `[Message from ceo]:`. The CEO **cannot** see your tmux session — you MUST reply using `agman send-message`. Never just type a response in tmux expecting the CEO to see it.
+
+**ALL** findings and responses must go through send-message:
+```
+cat <<'AGMAN_MSG' | agman send-message ceo --from "researcher:ceo--{{RESEARCHER_NAME}}"
 <your findings>
 AGMAN_MSG
 ```

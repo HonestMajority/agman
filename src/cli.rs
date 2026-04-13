@@ -167,12 +167,13 @@ pub enum Commands {
         file: Option<std::path::PathBuf>,
     },
 
-    /// Create a researcher within a project
+    /// Create a researcher (defaults to CEO-level when --project is omitted)
     CreateResearcher {
-        /// Project name
-        project: String,
         /// Researcher name (alphanumeric + hyphens)
         name: String,
+        /// Project name (defaults to "ceo" for CEO-level researchers)
+        #[arg(long)]
+        project: Option<String>,
         /// Repository name (for working directory context)
         #[arg(long)]
         repo: Option<String>,
@@ -190,15 +191,20 @@ pub enum Commands {
     /// List researchers
     ListResearchers {
         /// Filter by project name
+        #[arg(long)]
         project: Option<String>,
+        /// Show only CEO-level researchers
+        #[arg(long)]
+        ceo: bool,
     },
 
-    /// Archive a researcher (kill session, preserve history)
+    /// Archive a researcher (defaults to CEO-level when --project is omitted)
     ArchiveResearcher {
-        /// Project name
-        project: String,
         /// Researcher name
         name: String,
+        /// Project name (defaults to "ceo" for CEO-level researchers)
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// Respawn an agent with a fresh session (CEO, PM, or researcher)

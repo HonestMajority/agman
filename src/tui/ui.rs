@@ -2006,6 +2006,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("c", Style::default().fg(Color::LightYellow)),
                 Span::styled(" CEO chat  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("w", Style::default().fg(Color::LightYellow)),
+                Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
             ];
             // Show migrate hint when (unassigned) is selected
             let is_unassigned = app.selected_project_index >= app.projects.len()
@@ -4512,7 +4514,9 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
     use agman::researcher::ResearcherStatus;
     use agman::tmux::Tmux;
 
-    let title_text = if let Some(ref project) = app.current_project {
+    let title_text = if app.current_project.as_deref() == Some("ceo") {
+        " CEO Researchers ".to_string()
+    } else if let Some(ref project) = app.current_project {
         format!(" Researchers — {} ", project)
     } else {
         " Researchers ".to_string()
@@ -4534,7 +4538,12 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(Color::Cyan));
 
     if app.researchers.is_empty() {
-        let text = Paragraph::new("No researchers. Create one with: agman create-researcher <project> <name>")
+        let empty_msg = if app.current_project.as_deref() == Some("ceo") {
+            "No CEO researchers. Press 'n' to create one."
+        } else {
+            "No researchers. Press 'n' to create one."
+        };
+        let text = Paragraph::new(empty_msg)
             .alignment(Alignment::Center)
             .style(Style::default().fg(Color::DarkGray))
             .block(block);
