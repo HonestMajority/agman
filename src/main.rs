@@ -1018,23 +1018,14 @@ fn cmd_respawn_agent(config: &Config, target: &str, force: bool, timeout: u64) -
 }
 
 fn cmd_restart() -> Result<()> {
-    let session = Config::tui_tmux_session();
+    let signal_file = dirs::home_dir()
+        .context("could not determine home directory")?
+        .join(".agman/.force-restart-tui");
 
-    if Tmux::session_exists(session) {
-        tracing::info!(session = session, "killing existing TUI tmux session");
-        Tmux::kill_session(session)?;
-    }
+    std::fs::write(&signal_file, "")
+        .with_context(|| format!("failed to write signal file {}", signal_file.display()))?;
 
-    tracing::info!(session = session, "creating new TUI tmux session");
-    let status = std::process::Command::new("tmux")
-        .args(["new-session", "-d", "-s", session, "agman"])
-        .status()
-        .context("failed to run tmux")?;
-
-    if !status.success() {
-        anyhow::bail!("tmux new-session exited with status {}", status);
-    }
-
-    println!("TUI restarted in tmux session '{session}'.");
+    tracing::info!("wrote .force-restart-tui signal file");
+    println!("Restart signal sent. The TUI will restart momentarily.");
     Ok(())
 }

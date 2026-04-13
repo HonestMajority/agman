@@ -247,9 +247,6 @@ impl Config {
         format!("agman-pm-{name}")
     }
 
-    pub fn tui_tmux_session() -> &'static str {
-        "agman-tui"
-    }
 
     pub fn telegram_dir(&self) -> PathBuf {
         self.base_dir.join("telegram")
