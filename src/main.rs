@@ -89,7 +89,9 @@ fn main() -> Result<()> {
             description,
         }) => cmd_create_pm_task(&config, &project, &repo, &task_name, description),
 
-        Some(Commands::ListPmTasks { project }) => cmd_list_pm_tasks(&config, &project),
+        Some(Commands::ListPmTasks { project, status }) => {
+            cmd_list_pm_tasks(&config, &project, status)
+        }
 
         Some(Commands::Status) => cmd_status(&config),
 
@@ -671,8 +673,19 @@ fn cmd_create_pm_task(
     Ok(())
 }
 
-fn cmd_list_pm_tasks(config: &Config, project: &str) -> Result<()> {
-    let tasks = use_cases::list_project_tasks(config, project)?;
+fn cmd_list_pm_tasks(
+    config: &Config,
+    project: &str,
+    status: Option<cli::StatusFilter>,
+) -> Result<()> {
+    let mut tasks = use_cases::list_project_tasks(config, project)?;
+
+    if let Some(filter) = status {
+        let target = filter.to_task_status();
+        tracing::debug!(project, %target, "filtering tasks by status");
+        tasks.retain(|t| t.meta.status == target);
+    }
+
     if tasks.is_empty() {
         println!("No tasks in project '{}'.", project);
         return Ok(());
