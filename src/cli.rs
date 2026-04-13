@@ -200,6 +200,18 @@ pub enum Commands {
         /// Researcher name
         name: String,
     },
+
+    /// Respawn an agent with a fresh session (CEO, PM, or researcher)
+    RespawnAgent {
+        /// Target: "ceo", a project name (for the PM), or "researcher:<project>--<name>"
+        target: String,
+        /// Skip graceful handoff — kill and restart immediately
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        /// Handoff timeout in seconds (default 120)
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

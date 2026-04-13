@@ -689,6 +689,10 @@ pub struct App {
     inbox_poll_tx: tokio_mpsc::UnboundedSender<Vec<InboxPollResult>>,
     inbox_poll_rx: tokio_mpsc::UnboundedReceiver<Vec<InboxPollResult>>,
     inbox_poll_active: bool,
+    // Agent respawn
+    pub respawn_in_progress: Option<String>,
+    respawn_tx: tokio_mpsc::UnboundedSender<Result<String, String>>,
+    respawn_rx: tokio_mpsc::UnboundedReceiver<Result<String, String>>,
     // Telegram bot cancel flag (None when env vars absent)
     telegram_cancel: Option<Arc<AtomicBool>>,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
@@ -720,6 +724,7 @@ impl App {
         let (show_prs_poll_tx, show_prs_poll_rx) = tokio_mpsc::unbounded_channel();
         let (keybase_tx, keybase_rx) = tokio_mpsc::unbounded_channel();
         let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
+        let (respawn_tx, respawn_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
         let mut dismissed_notifs = DismissedNotifications::load(&config.dismissed_notifications_path());
         let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
@@ -870,6 +875,9 @@ impl App {
             inbox_poll_tx,
             inbox_poll_rx,
             inbox_poll_active: false,
+            respawn_in_progress: None,
+            respawn_tx,
+            respawn_rx,
             telegram_cancel,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
@@ -2729,6 +2737,27 @@ impl App {
                         self.start_show_prs_poll();
                     }
                 }
+                KeyCode::Char('e') => {
+                    // Respawn CEO agent
+                    if self.respawn_in_progress.is_none() {
+                        self.respawn_in_progress = Some("ceo".to_string());
+                        self.set_status("respawning ceo...".to_string());
+                        let tx = self.respawn_tx.clone();
+                        let config = self.config.clone();
+                        self.rt.spawn(async move {
+                            let result = tokio::task::spawn_blocking(move || {
+                                use_cases::respawn_agent(&config, "ceo", false, 120)
+                            })
+                            .await
+                            .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
+                            let msg = match result {
+                                Ok(()) => Ok("ceo".to_string()),
+                                Err(e) => Err(format!("{e}")),
+                            };
+                            let _ = tx.send(msg);
+                        });
+                    }
+                }
                 KeyCode::Char(',') => {
                     self.settings_selected = 0;
                     self.view = View::Settings;
@@ -2917,6 +2946,30 @@ impl App {
                     self.archive_scroll = 0;
                     self.view = View::Archive;
                 }
+                KeyCode::Char('e') => {
+                    // Respawn PM for current project
+                    if let Some(ref project_name) = self.current_project.clone() {
+                        if project_name != "(unassigned)" && self.respawn_in_progress.is_none() {
+                            let target = project_name.clone();
+                            self.respawn_in_progress = Some(target.clone());
+                            self.set_status(format!("respawning {target}..."));
+                            let tx = self.respawn_tx.clone();
+                            let config = self.config.clone();
+                            self.rt.spawn(async move {
+                                let result = tokio::task::spawn_blocking(move || {
+                                    use_cases::respawn_agent(&config, &target, false, 120)
+                                })
+                                .await
+                                .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
+                                let msg = match result {
+                                    Ok(()) => Ok("pm".to_string()),
+                                    Err(e) => Err(format!("{e}")),
+                                };
+                                let _ = tx.send(msg);
+                            });
+                        }
+                    }
+                }
                 KeyCode::Char('w') => {
                     self.researcher_list_index = 0;
                     self.refresh_projects(); // also refreshes researchers
@@ -3026,6 +3079,32 @@ impl App {
                             Err(e) => {
                                 self.set_status(format!("Failed to archive: {e}"));
                             }
+                        }
+                    }
+                }
+                KeyCode::Char('e') => {
+                    // Respawn selected researcher
+                    if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
+                        if self.respawn_in_progress.is_none() {
+                            let project = researcher.meta.project.clone();
+                            let name = researcher.meta.name.clone();
+                            let target = format!("researcher:{project}--{name}");
+                            self.respawn_in_progress = Some(target.clone());
+                            self.set_status(format!("respawning {target}..."));
+                            let tx = self.respawn_tx.clone();
+                            let config = self.config.clone();
+                            self.rt.spawn(async move {
+                                let result = tokio::task::spawn_blocking(move || {
+                                    use_cases::respawn_agent(&config, &target, false, 120)
+                                })
+                                .await
+                                .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
+                                let msg = match result {
+                                    Ok(()) => Ok("researcher".to_string()),
+                                    Err(e) => Err(format!("{e}")),
+                                };
+                                let _ = tx.send(msg);
+                            });
                         }
                     }
                 }
@@ -5443,6 +5522,24 @@ impl App {
         }
     }
 
+    fn apply_respawn_results(&mut self) {
+        let result = match self.respawn_rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let target = self.respawn_in_progress.take().unwrap_or_default();
+        match result {
+            Ok(_) => {
+                tracing::info!(target = %target, "agent respawned successfully");
+                self.set_status(format!("respawned {target}"));
+            }
+            Err(e) => {
+                tracing::error!(target = %target, error = %e, "failed to respawn agent");
+                self.set_status(format!("respawn failed: {e}"));
+            }
+        }
+    }
+
     /// Spawn a background task to poll linked PRs for all eligible tasks.
     /// Uses tokio's spawn_blocking to run `gh pr view` calls off the main thread
     /// and sends results back via the channel so the TUI stays responsive.
@@ -6035,6 +6132,9 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed inbox poll results (non-blocking)
             app.apply_inbox_poll_results();
+
+            // Check for completed respawn results (non-blocking)
+            app.apply_respawn_results();
 
             // Check for restart signal (written by release.sh when agman is rebuilt)
             #[cfg(unix)]

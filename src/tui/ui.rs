@@ -1793,6 +1793,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 ]);
             }
             spans.extend([
+                Span::styled("e", Style::default().fg(Color::LightMagenta)),
+                Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("o", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
             ]);
@@ -1872,6 +1874,12 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("d", Style::default().fg(Color::LightRed)),
                     Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
+                ]);
+            }
+            if app.current_project.as_deref().is_some_and(|p| p != "(unassigned)") {
+                spans.extend([
+                    Span::styled("e", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
             spans.extend([
@@ -2292,7 +2300,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 " attach  "
             };
-            vec![
+            let mut spans = vec![
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
@@ -2301,9 +2309,18 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(enter_label, Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightRed)),
                 Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
+            ];
+            if app.researchers.get(app.researcher_list_index).is_some() {
+                spans.extend([
+                    Span::styled("e", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
+                ]);
+            }
+            spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
-            ]
+            ]);
+            spans
         }
     };
 

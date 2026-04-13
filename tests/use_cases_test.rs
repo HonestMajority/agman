@@ -3080,3 +3080,63 @@ fn use_case_send_message_to_researcher() {
     assert!(contents.contains("Please check the error logs"));
     assert!(contents.contains("myproj"));
 }
+
+// ---------------------------------------------------------------------------
+// Agent handoff
+// ---------------------------------------------------------------------------
+
+#[test]
+fn request_handoff_appends_inbox_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    // Create CEO dir and inbox
+    let ceo_dir = config.ceo_dir();
+    std::fs::create_dir_all(&ceo_dir).unwrap();
+    let inbox_path = config.ceo_inbox();
+
+    // Request handoff
+    use_cases::request_handoff(&inbox_path, "system").unwrap();
+
+    // Verify inbox contains the handoff request
+    let contents = std::fs::read_to_string(&inbox_path).unwrap();
+    assert!(contents.contains("[HANDOFF REQUEST]"));
+    assert!(contents.contains("HANDOFF_COMPLETE"));
+    assert!(contents.contains("system"));
+}
+
+#[test]
+fn handoff_file_mechanics() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    // Create CEO dir with a fake session-id
+    let ceo_dir = config.ceo_dir();
+    std::fs::create_dir_all(&ceo_dir).unwrap();
+    let session_id_path = config.ceo_session_id();
+    std::fs::write(&session_id_path, "fake-session-id-123").unwrap();
+
+    // Write a handoff.md as if the agent wrote it
+    let handoff_path = ceo_dir.join("handoff.md");
+    std::fs::write(
+        &handoff_path,
+        "# Handoff Summary\n\nCurrently monitoring project alpha.\nPending: review task-42 results.\n",
+    )
+    .unwrap();
+
+    // Verify we can read the handoff content
+    let content = std::fs::read_to_string(&handoff_path).unwrap();
+    assert!(content.contains("project alpha"));
+    assert!(content.contains("task-42"));
+
+    // Verify session-id exists then delete it (simulating respawn cleanup)
+    assert!(session_id_path.exists());
+    std::fs::remove_file(&session_id_path).unwrap();
+    assert!(!session_id_path.exists());
+
+    // Verify handoff cleanup
+    std::fs::remove_file(&handoff_path).unwrap();
+    assert!(!handoff_path.exists());
+}

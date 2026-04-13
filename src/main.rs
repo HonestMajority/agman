@@ -124,6 +124,10 @@ fn main() -> Result<()> {
             cmd_archive_researcher(&config, &project, &name)
         }
 
+        Some(Commands::RespawnAgent { target, force, timeout }) => {
+            cmd_respawn_agent(&config, &target, force, timeout)
+        }
+
         None => {
             // No subcommand - launch TUI
             config.ensure_dirs()?;
@@ -961,5 +965,12 @@ fn cmd_list_researchers(config: &Config, project: Option<&str>) -> Result<()> {
 fn cmd_archive_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
     use_cases::archive_researcher(config, project, name)?;
     println!("Researcher '{name}' in project '{project}' archived.");
+    Ok(())
+}
+
+fn cmd_respawn_agent(config: &Config, target: &str, force: bool, timeout: u64) -> Result<()> {
+    println!("Respawning agent '{}'{}...", target, if force { " (force)" } else { "" });
+    use_cases::respawn_agent(config, target, force, timeout)?;
+    println!("Agent '{}' respawned successfully.", target);
     Ok(())
 }

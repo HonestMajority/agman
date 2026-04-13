@@ -43,6 +43,7 @@ pub enum StopCondition {
     AgentDone,
     TaskComplete,
     InputNeeded,
+    HandoffComplete,
 }
 
 impl std::fmt::Display for StopCondition {
@@ -51,6 +52,7 @@ impl std::fmt::Display for StopCondition {
             StopCondition::AgentDone => write!(f, "AGENT_DONE"),
             StopCondition::TaskComplete => write!(f, "TASK_COMPLETE"),
             StopCondition::InputNeeded => write!(f, "INPUT_NEEDED"),
+            StopCondition::HandoffComplete => write!(f, "HANDOFF_COMPLETE"),
         }
     }
 }
@@ -64,6 +66,8 @@ impl StopCondition {
             Some(StopCondition::TaskComplete)
         } else if output.contains("INPUT_NEEDED") {
             Some(StopCondition::InputNeeded)
+        } else if output.contains("HANDOFF_COMPLETE") {
+            Some(StopCondition::HandoffComplete)
         } else {
             None
         }
