@@ -2721,7 +2721,7 @@ impl App {
                         let name = self.projects[self.selected_project_index].meta.name.clone();
                         match use_cases::toggle_project_hold(&self.config, &name) {
                             Ok(()) => {
-                                // Check new state after toggle
+                                // In-memory state is still pre-toggle (refresh hasn't happened yet)
                                 let was_held = self.projects[self.selected_project_index].meta.held;
                                 let msg = if was_held {
                                     format!("Resumed: {name}")

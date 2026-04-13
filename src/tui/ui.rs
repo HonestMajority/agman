@@ -420,6 +420,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(header), chunks[0]);
 
     // Build list items — partition into active and held projects
+    // Render order matches navigation order: active → held → unassigned
     let mut items: Vec<ListItem> = Vec::new();
     let held_count = app.projects.iter().filter(|p| p.meta.held).count();
 
@@ -431,7 +432,30 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         items.push(render_project_row(app, project, i, false, project_width, desc_width));
     }
 
-    // Add "(unassigned)" pseudo-entry if there are unassigned tasks
+    // Render on-hold section header and held projects
+    if held_count > 0 {
+        let label = format!("── On Hold ({}) ", held_count);
+        let fill = (inner.width as usize).saturating_sub(label.len());
+        let header_line = Line::from(vec![
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Rgb(180, 140, 60))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+        ]);
+        items.push(ListItem::new(header_line));
+        items.push(ListItem::new(Line::from("")));
+
+        for (i, project) in app.projects.iter().enumerate() {
+            if project.meta.held {
+                items.push(render_project_row(app, project, i, true, project_width, desc_width));
+            }
+        }
+    }
+
+    // Add "(unassigned)" pseudo-entry after held projects (matches navigation order)
     if app.unassigned_task_count > 0 {
         let idx = app.projects.len();
         let is_selected = idx == app.selected_project_index;
@@ -463,29 +487,6 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]);
         items.push(ListItem::new(vec![line, Line::from("")]).style(style));
-    }
-
-    // Render on-hold section header and held projects
-    if held_count > 0 {
-        let label = format!("── On Hold ({}) ", held_count);
-        let fill = (inner.width as usize).saturating_sub(label.len());
-        let header_line = Line::from(vec![
-            Span::styled(
-                label,
-                Style::default()
-                    .fg(Color::Rgb(180, 140, 60))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
-        ]);
-        items.push(ListItem::new(header_line));
-        items.push(ListItem::new(Line::from("")));
-
-        for (i, project) in app.projects.iter().enumerate() {
-            if project.meta.held {
-                items.push(render_project_row(app, project, i, true, project_width, desc_width));
-            }
-        }
     }
 
     let list = List::new(items);
