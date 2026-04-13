@@ -2709,6 +2709,21 @@ impl App {
                         }
                     }
                 }
+                KeyCode::Char('i') => {
+                    self.selected_notif_index = 0;
+                    self.view = View::Notifications;
+                }
+                KeyCode::Char('p') => {
+                    self.show_prs_selected = 0;
+                    self.view = View::ShowPrs;
+                    if !self.show_prs_first_poll_done && !self.show_prs_poll_active {
+                        self.start_show_prs_poll();
+                    }
+                }
+                KeyCode::Char(',') => {
+                    self.settings_selected = 0;
+                    self.view = View::Settings;
+                }
                 _ => {}
             }
         }
@@ -2885,17 +2900,6 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('i') => {
-                    self.selected_notif_index = 0;
-                    self.view = View::Notifications;
-                }
-                KeyCode::Char('p') => {
-                    self.show_prs_selected = 0;
-                    self.view = View::ShowPrs;
-                    if !self.show_prs_first_poll_done && !self.show_prs_poll_active {
-                        self.start_show_prs_poll();
-                    }
-                }
                 KeyCode::Char('z') => {
                     self.archive_tasks = use_cases::list_archived_tasks(&self.config);
                     self.archive_search = Self::create_plain_editor();
@@ -2903,10 +2907,6 @@ impl App {
                     self.archive_preview = None;
                     self.archive_scroll = 0;
                     self.view = View::Archive;
-                }
-                KeyCode::Char(',') => {
-                    self.settings_selected = 0;
-                    self.view = View::Settings;
                 }
                 KeyCode::Char('R') => {
                     self.researcher_list_index = 0;

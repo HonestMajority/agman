@@ -1793,6 +1793,22 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("o", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
             ]);
+            let unread_count = app.notifications.iter().filter(|n| n.unread).count();
+            let inbox_label = if unread_count > 0 {
+                format!(" inbox({})  ", unread_count)
+            } else if !app.gh_notif_first_poll_done {
+                " inbox(...)  ".to_string()
+            } else {
+                " inbox  ".to_string()
+            };
+            spans.extend([
+                Span::styled("i", Style::default().fg(Color::LightYellow)),
+                Span::styled(inbox_label, Style::default().fg(Color::DarkGray)),
+                Span::styled("p", Style::default().fg(Color::LightYellow)),
+                Span::styled(" prs  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(",", Style::default().fg(Color::LightYellow)),
+                Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
+            ]);
             spans.extend(break_hint_spans(app));
             spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
@@ -1855,23 +1871,9 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
-            let unread_count = app.notifications.iter().filter(|n| n.unread).count();
-            let inbox_label = if unread_count > 0 {
-                format!(" inbox({})  ", unread_count)
-            } else if !app.gh_notif_first_poll_done {
-                " inbox(...)  ".to_string()
-            } else {
-                " inbox  ".to_string()
-            };
             spans.extend([
-                Span::styled("i", Style::default().fg(Color::LightYellow)),
-                Span::styled(inbox_label, Style::default().fg(Color::DarkGray)),
-                Span::styled("p", Style::default().fg(Color::LightYellow)),
-                Span::styled(" prs  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("z", Style::default().fg(Color::LightYellow)),
                 Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(",", Style::default().fg(Color::LightYellow)),
-                Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("R", Style::default().fg(Color::LightYellow)),
                 Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
             ]);
