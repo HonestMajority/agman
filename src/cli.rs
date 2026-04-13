@@ -207,7 +207,7 @@ pub enum Commands {
         project: Option<String>,
     },
 
-    /// Respawn an agent with a fresh session (CEO, PM, or researcher)
+    /// Respawn a Claude AI chat session (kill and restart the agent in tmux). The TUI keeps running.
     RespawnAgent {
         /// Target: "ceo", a project name (for the PM), or "researcher:<project>--<name>"
         target: String,
@@ -218,6 +218,8 @@ pub enum Commands {
         #[arg(long, default_value_t = 120)]
         timeout: u64,
     },
+    /// Restart the agman TUI binary itself to pick up a new version. Chat sessions are unaffected.
+    Restart,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

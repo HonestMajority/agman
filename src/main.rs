@@ -133,6 +133,8 @@ fn main() -> Result<()> {
             cmd_respawn_agent(&config, &target, force, timeout)
         }
 
+        Some(Commands::Restart) => cmd_restart(),
+
         None => {
             // No subcommand - launch TUI
             config.ensure_dirs()?;
@@ -1012,5 +1014,15 @@ fn cmd_respawn_agent(config: &Config, target: &str, force: bool, timeout: u64) -
     println!("Respawning agent '{}'{}...", target, if force { " (force)" } else { "" });
     use_cases::respawn_agent(config, target, force, timeout)?;
     println!("Agent '{}' respawned successfully.", target);
+    Ok(())
+}
+
+fn cmd_restart() -> Result<()> {
+    let signal_path = dirs::home_dir()
+        .expect("could not determine home directory")
+        .join(".agman/.restart-tui");
+    std::fs::File::create(&signal_path)?;
+    tracing::info!("restart signal file written");
+    println!("Restart signal sent — TUI will prompt to restart.");
     Ok(())
 }
