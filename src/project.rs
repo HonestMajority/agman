@@ -11,6 +11,8 @@ pub struct ProjectMeta {
     pub name: String,
     pub description: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub held: bool,
 }
 
 /// A loaded project with its directory path.
@@ -37,6 +39,7 @@ impl Project {
             name: name.to_string(),
             description: description.to_string(),
             created_at: Utc::now(),
+            held: false,
         };
 
         let project = Self { meta, dir };
