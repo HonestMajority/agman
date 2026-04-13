@@ -6401,7 +6401,7 @@ pub fn run_tui(config: Config) -> Result<()> {
                     if let Err(e) = inbox::append_message(
                         &ceo_inbox,
                         "system",
-                        "A new agman version has been installed. To pick up the new binary, respawn yourself and any PMs. Use: agman respawn-agent ceo, then agman respawn-agent <project> for each PM.",
+                        "A new agman version has been installed. Use `agman restart` to restart the TUI and pick up the new binary.",
                     ) {
                         tracing::warn!(error = %e, "failed to notify CEO about new version");
                     } else {
