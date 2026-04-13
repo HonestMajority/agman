@@ -1861,13 +1861,32 @@ pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
         archived_count += 1;
     }
 
+    // Archive all non-archived researchers
+    let researchers = Researcher::list_for_project(config, project_name)?;
+    let mut researcher_archived_count = 0;
+    for researcher in &researchers {
+        if researcher.meta.status == crate::researcher::ResearcherStatus::Archived {
+            continue;
+        }
+        if let Err(e) = archive_researcher(config, &researcher.meta.project, &researcher.meta.name) {
+            tracing::warn!(
+                project = %project_name,
+                researcher = %researcher.meta.name,
+                error = %e,
+                "failed to archive researcher during project deletion"
+            );
+        } else {
+            researcher_archived_count += 1;
+        }
+    }
+
     // Kill PM tmux session (best-effort)
     let _ = Tmux::kill_session(&Config::pm_tmux_session(project_name));
 
     // Remove project directory
     std::fs::remove_dir_all(config.project_dir(project_name))?;
 
-    tracing::info!(project = %project_name, archived_count, "deleted project");
+    tracing::info!(project = %project_name, archived_count, researcher_archived_count, "deleted project");
 
     Ok(())
 }
@@ -2243,6 +2262,19 @@ pub fn archive_researcher(config: &Config, project: &str, name: &str) -> Result<
     researcher.meta.status = crate::researcher::ResearcherStatus::Archived;
     researcher.save_meta()?;
     tracing::info!(project = project, name = name, "researcher archived");
+    Ok(())
+}
+
+/// Resume an archived researcher: start a new tmux session (with --resume) and flip status to Running.
+pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
+    start_researcher_session(config, project, name)?;
+
+    let dir = config.researcher_dir(project, name);
+    let mut researcher = Researcher::load(dir)?;
+    researcher.meta.status = crate::researcher::ResearcherStatus::Running;
+    researcher.save_meta()?;
+
+    tracing::info!(project = project, name = name, "researcher resumed");
     Ok(())
 }
 

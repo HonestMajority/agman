@@ -8,6 +8,7 @@ use ratatui::{
 };
 
 use agman::command::StoredCommand;
+use agman::researcher::ResearcherStatus;
 use agman::task::{QueueItem, TaskStatus};
 
 use std::time::Duration;
@@ -2268,13 +2269,24 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             ]
         }
         View::ResearcherList | View::ResearcherWizard => {
+            let enter_label = if app
+                .researchers
+                .get(app.researcher_list_index)
+                .is_some_and(|r| {
+                    r.meta.status == ResearcherStatus::Archived
+                })
+            {
+                " resume  "
+            } else {
+                " attach  "
+            };
             vec![
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(enter_label, Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightRed)),
                 Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),

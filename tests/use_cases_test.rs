@@ -2752,6 +2752,13 @@ fn delete_project() {
     task.meta.project = Some("backend".to_string());
     task.save_meta().unwrap();
 
+    // Create a researcher assigned to that project
+    let researcher = helpers::create_test_researcher(&config, "backend", "explore-auth");
+    assert_eq!(
+        researcher.meta.status,
+        agman::researcher::ResearcherStatus::Running
+    );
+
     // Delete the project
     use_cases::delete_project(&config, "backend").unwrap();
 
@@ -2761,6 +2768,15 @@ fn delete_project() {
     // Task should now be archived
     let reloaded = agman::task::Task::load_by_id(&config, &task.meta.task_id()).unwrap();
     assert!(reloaded.meta.archived_at.is_some());
+
+    // Researcher should now be archived
+    let reloaded_researcher =
+        agman::researcher::Researcher::load(config.researcher_dir("backend", "explore-auth"))
+            .unwrap();
+    assert_eq!(
+        reloaded_researcher.meta.status,
+        agman::researcher::ResearcherStatus::Archived
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 use agman::config::Config;
 use agman::project::Project;
+use agman::researcher::Researcher;
 use agman::task::{Task, TaskMeta};
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -102,4 +103,11 @@ pub fn create_test_task(config: &Config, repo_name: &str, branch_name: &str) -> 
 pub fn create_test_project(config: &Config, name: &str) -> Project {
     config.ensure_dirs().unwrap();
     Project::create(config, name, &format!("Test project {name}")).unwrap()
+}
+
+/// Create a minimal Researcher for testing.
+#[allow(dead_code)]
+pub fn create_test_researcher(config: &Config, project: &str, name: &str) -> Researcher {
+    config.ensure_dirs().unwrap();
+    Researcher::create(config, project, name, "test description", None, None, None).unwrap()
 }

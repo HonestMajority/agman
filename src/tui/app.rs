@@ -2927,26 +2927,39 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    // Attach to researcher tmux session
+                    // Attach to researcher tmux session, resuming archived ones
                     if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
-                        let session_name = Config::researcher_tmux_session(
-                            &researcher.meta.project,
-                            &researcher.meta.name,
-                        );
-                        if Tmux::session_exists(&session_name) {
-                            match Tmux::popup_attach(&session_name) {
+                        let project = researcher.meta.project.clone();
+                        let name = researcher.meta.name.clone();
+                        let session_name = Config::researcher_tmux_session(&project, &name);
+
+                        if !Tmux::session_exists(&session_name) {
+                            // Session not running — resume it (works for both archived and crashed running sessions)
+                            match use_cases::resume_researcher(&self.config, &project, &name) {
                                 Ok(()) => {
                                     tracing::info!(
                                         session = &session_name,
-                                        "attached to researcher session"
+                                        "resumed researcher session"
                                     );
+                                    self.refresh_projects();
                                 }
                                 Err(e) => {
-                                    self.set_status(format!("Failed to attach: {e}"));
+                                    self.set_status(format!("Failed to resume: {e}"));
+                                    return Ok(false);
                                 }
                             }
-                        } else {
-                            self.set_status("Researcher session not running".to_string());
+                        }
+
+                        match Tmux::popup_attach(&session_name) {
+                            Ok(()) => {
+                                tracing::info!(
+                                    session = &session_name,
+                                    "attached to researcher session"
+                                );
+                            }
+                            Err(e) => {
+                                self.set_status(format!("Failed to attach: {e}"));
+                            }
                         }
                     }
                 }
