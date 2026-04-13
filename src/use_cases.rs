@@ -2719,43 +2719,116 @@ pub struct ChatPollResult {
 
 /// Collect names of inboxes with unread chat messages (CEO + all projects).
 pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
-    let last_seen = ChatLastSeen::load(&config.chat_last_seen_path());
+    let last_seen_path = config.chat_last_seen_path();
+    let last_seen = ChatLastSeen::load(&last_seen_path);
+    tracing::debug!(path = %last_seen_path.display(), contents = ?last_seen, "loaded chat_last_seen");
     let mut unread_names: Vec<String> = Vec::new();
 
     // CEO inbox
     let ceo_inbox = config.ceo_inbox();
-    if let Ok(messages) = inbox::read_messages(&ceo_inbox) {
-        if let Some(last) = messages.last() {
-            let seen = last_seen.get("ceo");
-            if last.seq > seen {
-                unread_names.push("CEO".to_string());
+    let ceo_exists = ceo_inbox.exists();
+    match inbox::read_messages(&ceo_inbox) {
+        Ok(messages) => {
+            let message_count = messages.len();
+            if let Some(last) = messages.last() {
+                let seen = last_seen.get("ceo");
+                tracing::debug!(
+                    path = %ceo_inbox.display(),
+                    exists = ceo_exists,
+                    message_count,
+                    last_seq = last.seq,
+                    seen_seq = seen,
+                    inbox_key = "ceo",
+                    "CEO inbox check"
+                );
+                if last.seq > seen {
+                    unread_names.push("CEO".to_string());
+                }
+            } else {
+                tracing::debug!(
+                    path = %ceo_inbox.display(),
+                    exists = ceo_exists,
+                    message_count = 0,
+                    inbox_key = "ceo",
+                    "CEO inbox empty"
+                );
             }
+        }
+        Err(e) => {
+            tracing::debug!(
+                path = %ceo_inbox.display(),
+                exists = ceo_exists,
+                error = %e,
+                inbox_key = "ceo",
+                "CEO inbox read error"
+            );
         }
     }
 
     // Project inboxes
-    if let Ok(entries) = std::fs::read_dir(config.projects_dir()) {
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let project_name = match entry.file_name().into_string() {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-            let inbox_path = config.project_inbox(&project_name);
-            if let Ok(messages) = inbox::read_messages(&inbox_path) {
-                if let Some(last) = messages.last() {
-                    let key = format!("project:{}", project_name);
-                    let seen = last_seen.get(&key);
-                    if last.seq > seen {
-                        unread_names.push(project_name);
+    let projects_dir = config.projects_dir();
+    match std::fs::read_dir(&projects_dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                let project_name = match entry.file_name().into_string() {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+                let inbox_path = config.project_inbox(&project_name);
+                let inbox_key = format!("project:{}", project_name);
+                let inbox_exists = inbox_path.exists();
+                match inbox::read_messages(&inbox_path) {
+                    Ok(messages) => {
+                        let message_count = messages.len();
+                        if let Some(last) = messages.last() {
+                            let seen = last_seen.get(&inbox_key);
+                            tracing::debug!(
+                                path = %inbox_path.display(),
+                                exists = inbox_exists,
+                                message_count,
+                                last_seq = last.seq,
+                                seen_seq = seen,
+                                %inbox_key,
+                                "project inbox check"
+                            );
+                            if last.seq > seen {
+                                unread_names.push(project_name);
+                            }
+                        } else {
+                            tracing::debug!(
+                                path = %inbox_path.display(),
+                                exists = inbox_exists,
+                                message_count = 0,
+                                %inbox_key,
+                                "project inbox empty"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            path = %inbox_path.display(),
+                            exists = inbox_exists,
+                            error = %e,
+                            %inbox_key,
+                            "project inbox read error"
+                        );
                     }
                 }
             }
         }
+        Err(e) => {
+            tracing::debug!(
+                path = %projects_dir.display(),
+                error = %e,
+                "projects dir read error"
+            );
+        }
     }
 
+    tracing::debug!(?unread_names, "chat poll result");
     ChatPollResult { unread_names }
 }
 
