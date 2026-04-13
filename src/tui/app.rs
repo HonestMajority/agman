@@ -641,7 +641,7 @@ pub struct App {
     pub keybase_first_poll_done: bool,
     pub keybase_available: bool,
     // Chat unread polling
-    pub chat_unread_count: usize,
+    pub chat_unread_names: Vec<String>,
     pub last_chat_poll: Instant,
     chat_poll_tx: tokio_mpsc::UnboundedSender<use_cases::ChatPollResult>,
     chat_poll_rx: tokio_mpsc::UnboundedReceiver<use_cases::ChatPollResult>,
@@ -844,7 +844,7 @@ impl App {
             keybase_poll_active: false,
             keybase_first_poll_done: false,
             keybase_available: true,
-            chat_unread_count: 0,
+            chat_unread_names: vec![],
             last_chat_poll: Instant::now() - Duration::from_secs(3),
             chat_poll_tx,
             chat_poll_rx,
@@ -6033,7 +6033,7 @@ impl App {
                 use_cases::count_unread_chat_messages(&config)
             })
             .await
-            .unwrap_or_else(|_| use_cases::ChatPollResult { unread_count: 0 });
+            .unwrap_or_else(|_| use_cases::ChatPollResult { unread_names: vec![] });
             let _ = tx.send(result);
         });
     }
@@ -6045,8 +6045,8 @@ impl App {
             Err(_) => return,
         };
         self.chat_poll_active = false;
-        self.chat_unread_count = result.unread_count;
-        tracing::debug!(unread = result.unread_count, "applied chat poll results");
+        self.chat_unread_names = result.unread_names.clone();
+        tracing::debug!(names = ?result.unread_names, "applied chat poll results");
     }
 
     fn execute_restart_wizard(&mut self) -> Result<()> {

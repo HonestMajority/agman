@@ -2714,13 +2714,13 @@ impl ChatLastSeen {
 }
 
 pub struct ChatPollResult {
-    pub unread_count: usize,
+    pub unread_names: Vec<String>,
 }
 
-/// Count total unread chat messages across all inboxes (CEO + all projects).
+/// Collect names of inboxes with unread chat messages (CEO + all projects).
 pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
     let last_seen = ChatLastSeen::load(&config.chat_last_seen_path());
-    let mut total: usize = 0;
+    let mut unread_names: Vec<String> = Vec::new();
 
     // CEO inbox
     let ceo_inbox = config.ceo_inbox();
@@ -2728,7 +2728,7 @@ pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
         if let Some(last) = messages.last() {
             let seen = last_seen.get("ceo");
             if last.seq > seen {
-                total += (last.seq - seen) as usize;
+                unread_names.push("CEO".to_string());
             }
         }
     }
@@ -2749,16 +2749,14 @@ pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
                     let key = format!("project:{}", project_name);
                     let seen = last_seen.get(&key);
                     if last.seq > seen {
-                        total += (last.seq - seen) as usize;
+                        unread_names.push(project_name);
                     }
                 }
             }
         }
     }
 
-    ChatPollResult {
-        unread_count: total,
-    }
+    ChatPollResult { unread_names }
 }
 
 /// Mark a chat inbox as read by recording the current max seq in chat_last_seen.json.
