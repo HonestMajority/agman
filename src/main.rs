@@ -95,6 +95,10 @@ fn main() -> Result<()> {
 
         Some(Commands::TaskLog { task_id, tail }) => cmd_task_log(&config, &task_id, tail),
 
+        Some(Commands::TaskCurrentPlan { task_id }) => {
+            cmd_task_current_plan(&config, &task_id)
+        }
+
         Some(Commands::QueueFeedback { task_id, feedback }) => {
             cmd_queue_feedback(&config, &task_id, &feedback)
         }
@@ -667,6 +671,16 @@ fn cmd_list_pm_tasks(config: &Config, project: &str) -> Result<()> {
 fn cmd_task_status(config: &Config, task_id: &str) -> Result<()> {
     let text = use_cases::get_task_status_text(config, task_id)?;
     println!("{}", text);
+    Ok(())
+}
+
+fn cmd_task_current_plan(config: &Config, task_id: &str) -> Result<()> {
+    let text = use_cases::get_task_current_plan(config, task_id)?;
+    if text.is_empty() {
+        println!("(no plan)");
+    } else {
+        println!("{}", text);
+    }
     Ok(())
 }
 
