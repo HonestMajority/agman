@@ -107,6 +107,23 @@ fn main() -> Result<()> {
             cmd_queue_feedback(&config, &task_id, &feedback)
         }
 
+        Some(Commands::CreateResearcher {
+            project,
+            name,
+            repo,
+            branch,
+            task,
+            description,
+        }) => cmd_create_researcher(&config, &project, &name, repo, branch, task, description),
+
+        Some(Commands::ListResearchers { project }) => {
+            cmd_list_researchers(&config, project.as_deref())
+        }
+
+        Some(Commands::ArchiveResearcher { project, name }) => {
+            cmd_archive_researcher(&config, &project, &name)
+        }
+
         None => {
             // No subcommand - launch TUI
             config.ensure_dirs()?;
@@ -848,5 +865,76 @@ fn cmd_queue_feedback(config: &Config, task_id: &str, feedback: &str) -> Result<
     let count = use_cases::queue_feedback(&task, feedback)?;
     tracing::info!(task_id = %task_id, count, "queued feedback via CLI");
     println!("Feedback queued for '{}' ({} item(s) in queue)", task_id, count);
+    Ok(())
+}
+
+fn cmd_create_researcher(
+    config: &Config,
+    project: &str,
+    name: &str,
+    repo: Option<String>,
+    branch: Option<String>,
+    task: Option<String>,
+    description: Option<String>,
+) -> Result<()> {
+    let desc = description.as_deref().unwrap_or("");
+    let researcher = use_cases::create_researcher(
+        config,
+        project,
+        name,
+        desc,
+        repo,
+        branch,
+        task,
+    )?;
+    use_cases::start_researcher_session(config, project, name)?;
+    println!(
+        "Researcher '{}' created for project '{}' (tmux: {})",
+        researcher.meta.name,
+        researcher.meta.project,
+        Config::researcher_tmux_session(project, name),
+    );
+    Ok(())
+}
+
+fn cmd_list_researchers(config: &Config, project: Option<&str>) -> Result<()> {
+    let researchers = use_cases::list_researchers(config, project)?;
+    if researchers.is_empty() {
+        println!("No researchers.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<20} {:<20} {:<10} {:<24} {}",
+        "NAME", "PROJECT", "STATUS", "CREATED", "DESCRIPTION"
+    );
+    println!("{}", "-".repeat(90));
+    for r in &researchers {
+        let session_name =
+            Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
+        let status = if r.meta.status == agman::researcher::ResearcherStatus::Archived {
+            "archived"
+        } else if Tmux::session_exists(&session_name) {
+            "running"
+        } else {
+            "stopped"
+        };
+        let created = r.meta.created_at.format("%Y-%m-%d %H:%M");
+        let desc = if r.meta.description.len() > 40 {
+            format!("{}...", &r.meta.description[..37])
+        } else {
+            r.meta.description.clone()
+        };
+        println!(
+            "{:<20} {:<20} {:<10} {:<24} {}",
+            r.meta.name, r.meta.project, status, created, desc
+        );
+    }
+    Ok(())
+}
+
+fn cmd_archive_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
+    use_cases::archive_researcher(config, project, name)?;
+    println!("Researcher '{name}' in project '{project}' archived.");
     Ok(())
 }

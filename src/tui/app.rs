@@ -27,6 +27,7 @@ use agman::task::{QueueItem, Task, TaskStatus};
 use agman::tmux::Tmux;
 use agman::inbox;
 use agman::project::Project;
+use agman::researcher::Researcher;
 use agman::use_cases;
 
 use super::ui;
@@ -70,6 +71,7 @@ pub enum View {
     ProjectWizard,
     ProjectPicker,
     ProjectDeleteConfirm,
+    ResearcherList,
 }
 
 /// Which wizard requested the directory picker.
@@ -667,6 +669,9 @@ pub struct App {
     pub project_picker: Option<ProjectPicker>,
     // Project deletion
     pub project_to_delete: Option<String>,
+    // Researchers
+    pub researchers: Vec<Researcher>,
+    pub researcher_list_index: usize,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<Vec<InboxPollResult>>,
@@ -834,6 +839,8 @@ impl App {
             project_wizard: None,
             project_picker: None,
             project_to_delete: None,
+            researchers: Vec::new(),
+            researcher_list_index: 0,
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -916,6 +923,14 @@ impl App {
         let total = self.project_list_len();
         if self.selected_project_index >= total && total > 0 {
             self.selected_project_index = total - 1;
+        }
+        // Also refresh researchers
+        self.researchers = use_cases::list_researchers(&self.config, None).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to list researchers");
+            Vec::new()
+        });
+        if self.researcher_list_index >= self.researchers.len() && !self.researchers.is_empty() {
+            self.researcher_list_index = self.researchers.len() - 1;
         }
     }
 
@@ -2517,6 +2532,7 @@ impl App {
             View::ProjectWizard => self.handle_project_wizard_event(event),
             View::ProjectPicker => self.handle_project_picker_event(event),
             View::ProjectDeleteConfirm => self.handle_project_delete_confirm_event(event),
+            View::ResearcherList => self.handle_researcher_list_event(event),
         }
     }
 
@@ -2864,6 +2880,83 @@ impl App {
                 KeyCode::Char(',') => {
                     self.settings_selected = 0;
                     self.view = View::Settings;
+                }
+                KeyCode::Char('R') => {
+                    self.researcher_list_index = 0;
+                    self.refresh_projects(); // also refreshes researchers
+                    self.view = View::ResearcherList;
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_researcher_list_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    self.view = View::TaskList;
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.should_quit = true;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if !self.researchers.is_empty()
+                        && self.researcher_list_index < self.researchers.len() - 1
+                    {
+                        self.researcher_list_index += 1;
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if self.researcher_list_index > 0 {
+                        self.researcher_list_index -= 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    // Attach to researcher tmux session
+                    if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
+                        let session_name = Config::researcher_tmux_session(
+                            &researcher.meta.project,
+                            &researcher.meta.name,
+                        );
+                        if Tmux::session_exists(&session_name) {
+                            match Tmux::popup_attach(&session_name) {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        session = &session_name,
+                                        "attached to researcher session"
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_status(format!("Failed to attach: {e}"));
+                                }
+                            }
+                        } else {
+                            self.set_status("Researcher session not running".to_string());
+                        }
+                    }
+                }
+                KeyCode::Char('d') => {
+                    // Archive selected researcher
+                    if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
+                        let project = researcher.meta.project.clone();
+                        let name = researcher.meta.name.clone();
+                        match use_cases::archive_researcher(&self.config, &project, &name) {
+                            Ok(()) => {
+                                self.set_status(format!("Archived researcher '{name}'"));
+                                self.refresh_projects();
+                                if self.researcher_list_index >= self.researchers.len()
+                                    && !self.researchers.is_empty()
+                                {
+                                    self.researcher_list_index = self.researchers.len() - 1;
+                                }
+                            }
+                            Err(e) => {
+                                self.set_status(format!("Failed to archive: {e}"));
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -5020,6 +5113,19 @@ impl App {
                     self.config.project_inbox(&project.meta.name),
                     self.config.project_seq(&project.meta.name),
                     pm_session,
+                ));
+            }
+        }
+
+        // Researchers
+        for researcher in &self.researchers {
+            let session_name = Config::researcher_tmux_session(&researcher.meta.project, &researcher.meta.name);
+            if Tmux::session_exists(&session_name) {
+                targets.push((
+                    format!("researcher:{}--{}", researcher.meta.project, researcher.meta.name),
+                    self.config.researcher_inbox(&researcher.meta.project, &researcher.meta.name),
+                    self.config.researcher_seq(&researcher.meta.project, &researcher.meta.name),
+                    session_name,
                 ));
             }
         }

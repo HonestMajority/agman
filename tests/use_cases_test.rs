@@ -2896,3 +2896,110 @@ steps:
     assert_eq!(result.projects[0].archived_count, 1);
     assert_eq!(result.archived_unassigned, 1);
 }
+
+// ---------------------------------------------------------------------------
+// Researcher management
+// ---------------------------------------------------------------------------
+
+#[test]
+fn use_case_create_researcher() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "myproj");
+
+    let researcher = use_cases::create_researcher(
+        &config,
+        "myproj",
+        "code-explorer",
+        "Investigate API patterns",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert!(researcher.dir.join("meta.json").exists());
+    assert_eq!(researcher.meta.name, "code-explorer");
+    assert_eq!(researcher.meta.project, "myproj");
+    assert_eq!(researcher.meta.description, "Investigate API patterns");
+    assert_eq!(
+        researcher.meta.status,
+        agman::researcher::ResearcherStatus::Running
+    );
+    assert!(researcher.meta.repo.is_none());
+    assert!(researcher.meta.branch.is_none());
+    assert!(researcher.meta.task_id.is_none());
+}
+
+#[test]
+fn use_case_list_researchers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _proj1 = create_test_project(&config, "proj1");
+    let _proj2 = create_test_project(&config, "proj2");
+
+    use_cases::create_researcher(&config, "proj1", "r1", "desc1", None, None, None).unwrap();
+    use_cases::create_researcher(&config, "proj1", "r2", "desc2", None, None, None).unwrap();
+    use_cases::create_researcher(&config, "proj2", "r3", "desc3", None, None, None).unwrap();
+
+    // List all
+    let all = use_cases::list_researchers(&config, None).unwrap();
+    assert_eq!(all.len(), 3);
+
+    // List by project
+    let proj1_only = use_cases::list_researchers(&config, Some("proj1")).unwrap();
+    assert_eq!(proj1_only.len(), 2);
+    assert!(proj1_only.iter().all(|r| r.meta.project == "proj1"));
+
+    let proj2_only = use_cases::list_researchers(&config, Some("proj2")).unwrap();
+    assert_eq!(proj2_only.len(), 1);
+    assert_eq!(proj2_only[0].meta.name, "r3");
+}
+
+#[test]
+fn use_case_archive_researcher() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "myproj");
+
+    use_cases::create_researcher(&config, "myproj", "temp-research", "quick look", None, None, None)
+        .unwrap();
+
+    use_cases::archive_researcher(&config, "myproj", "temp-research").unwrap();
+
+    // Reload and check status
+    let dir = config.researcher_dir("myproj", "temp-research");
+    let researcher = agman::researcher::Researcher::load(dir).unwrap();
+    assert_eq!(
+        researcher.meta.status,
+        agman::researcher::ResearcherStatus::Archived
+    );
+}
+
+#[test]
+fn use_case_send_message_to_researcher() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "myproj");
+
+    use_cases::create_researcher(&config, "myproj", "investigator", "check logs", None, None, None)
+        .unwrap();
+
+    use_cases::send_message(
+        &config,
+        "researcher:myproj--investigator",
+        "myproj",
+        "Please check the error logs",
+    )
+    .unwrap();
+
+    // Verify inbox has the message
+    let inbox_path = config.researcher_inbox("myproj", "investigator");
+    let contents = std::fs::read_to_string(&inbox_path).unwrap();
+    assert!(contents.contains("Please check the error logs"));
+    assert!(contents.contains("myproj"));
+}

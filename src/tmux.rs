@@ -235,6 +235,7 @@ impl Tmux {
         session_name: &str,
         system_prompt: &str,
         resume_id: Option<&str>,
+        work_dir: Option<&Path>,
     ) -> Result<()> {
         if Self::session_exists(session_name) {
             tracing::debug!(session = session_name, "agent tmux session already exists");
@@ -244,8 +245,14 @@ impl Tmux {
         tracing::info!(session = session_name, "creating agent tmux session");
 
         // Create the session with a default shell
+        let mut args = vec!["new-session", "-d", "-s", session_name];
+        let work_dir_str;
+        if let Some(dir) = work_dir {
+            work_dir_str = dir.to_string_lossy().to_string();
+            args.extend(["-c", &work_dir_str]);
+        }
         let output = Command::new("tmux")
-            .args(["new-session", "-d", "-s", session_name])
+            .args(&args)
             .output()
             .context("failed to create agent tmux session")?;
 

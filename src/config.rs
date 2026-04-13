@@ -94,6 +94,8 @@ impl Config {
         std::fs::create_dir_all(&self.commands_dir)
             .context("Failed to create commands directory")?;
         std::fs::create_dir_all(&self.notes_dir).context("Failed to create notes directory")?;
+        std::fs::create_dir_all(&self.researchers_dir())
+            .context("Failed to create researchers directory")?;
         Ok(())
     }
 
@@ -253,6 +255,32 @@ impl Config {
 
     pub fn whisper_model_path(&self) -> PathBuf {
         self.base_dir.join("whisper").join("ggml-base.bin")
+    }
+
+    // --- Researcher paths ---
+
+    pub fn researchers_dir(&self) -> PathBuf {
+        self.base_dir.join("researchers")
+    }
+
+    pub fn researcher_dir(&self, project: &str, name: &str) -> PathBuf {
+        self.researchers_dir().join(format!("{project}--{name}"))
+    }
+
+    pub fn researcher_inbox(&self, project: &str, name: &str) -> PathBuf {
+        self.researcher_dir(project, name).join("inbox.jsonl")
+    }
+
+    pub fn researcher_seq(&self, project: &str, name: &str) -> PathBuf {
+        self.researcher_dir(project, name).join("inbox.seq")
+    }
+
+    pub fn researcher_session_id(&self, project: &str, name: &str) -> PathBuf {
+        self.researcher_dir(project, name).join("session-id")
+    }
+
+    pub fn researcher_tmux_session(project: &str, name: &str) -> String {
+        format!("agman-researcher-{project}--{name}")
     }
 
     pub fn init_default_files(&self, force: bool) -> Result<()> {
