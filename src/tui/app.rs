@@ -672,7 +672,8 @@ pub struct App {
     pub selected_project_index: usize,
     pub current_project: Option<String>,
     pub unassigned_task_count: usize,
-    pub project_task_counts: std::collections::HashMap<String, (usize, usize)>, // (total, active)
+    pub unassigned_unseen_stopped_count: usize,
+    pub project_task_counts: std::collections::HashMap<String, (usize, usize, usize)>, // (total, active, unseen_stopped)
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
     pub researcher_wizard: Option<ResearcherWizard>,
@@ -857,6 +858,7 @@ impl App {
             selected_project_index: 0,
             current_project: None,
             unassigned_task_count: 0,
+            unassigned_unseen_stopped_count: 0,
             project_task_counts: std::collections::HashMap::new(),
             project_wizard: None,
             researcher_wizard: None,
@@ -954,15 +956,22 @@ impl App {
         let all_tasks = Task::list_all(&self.config);
         self.project_task_counts.clear();
         self.unassigned_task_count = 0;
+        self.unassigned_unseen_stopped_count = 0;
         for task in &all_tasks {
             if let Some(ref proj) = task.meta.project {
-                let entry = self.project_task_counts.entry(proj.clone()).or_insert((0, 0));
+                let entry = self.project_task_counts.entry(proj.clone()).or_insert((0, 0, 0));
                 entry.0 += 1;
                 if task.meta.status == TaskStatus::Running {
                     entry.1 += 1;
                 }
+                if !task.meta.seen && task.meta.status == TaskStatus::Stopped {
+                    entry.2 += 1;
+                }
             } else {
                 self.unassigned_task_count += 1;
+                if !task.meta.seen && task.meta.status == TaskStatus::Stopped {
+                    self.unassigned_unseen_stopped_count += 1;
+                }
             }
         }
         // Clamp selection

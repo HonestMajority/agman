@@ -279,7 +279,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     const COL_GAP: &str = "    ";
 
     let header = Line::from(vec![
-        Span::raw("   "),
+        Span::raw("     "),
         Span::styled(
             format!("{:<width$}", "PROJECT", width = NAME_WIDTH),
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -300,10 +300,10 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     let mut items: Vec<ListItem> = Vec::new();
 
     for (i, project) in app.projects.iter().enumerate() {
-        let (total, active) = app.project_task_counts
+        let (total, active, unseen_stopped) = app.project_task_counts
             .get(&project.meta.name)
             .copied()
-            .unwrap_or((0, 0));
+            .unwrap_or((0, 0, 0));
 
         let is_selected = i == app.selected_project_index;
         let style = if is_selected {
@@ -313,6 +313,10 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let line = Line::from(vec![
+            Span::styled(
+                if unseen_stopped > 0 { "● " } else { "  " },
+                Style::default().fg(Color::Rgb(100, 200, 220)),
+            ),
             Span::styled(if is_selected { ">  " } else { "   " }, Style::default().fg(Color::LightCyan)),
             Span::styled(
                 format!("{:<width$}", project.meta.name, width = NAME_WIDTH),
@@ -343,6 +347,10 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let line = Line::from(vec![
+            Span::styled(
+                if app.unassigned_unseen_stopped_count > 0 { "● " } else { "  " },
+                Style::default().fg(Color::Rgb(100, 200, 220)),
+            ),
             Span::styled(if is_selected { ">  " } else { "   " }, Style::default().fg(Color::LightCyan)),
             Span::styled(
                 format!("{:<width$}", "(unassigned)", width = NAME_WIDTH),
