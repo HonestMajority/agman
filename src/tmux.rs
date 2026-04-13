@@ -429,10 +429,10 @@ impl Tmux {
         Ok(())
     }
 
-    /// Capture the visible content of a tmux pane for delivery verification.
+    /// Capture the content of a tmux pane including scrollback history for delivery verification.
     pub fn capture_pane(session_name: &str) -> Result<String> {
         let output = Command::new("tmux")
-            .args(["capture-pane", "-p", "-t", session_name])
+            .args(["capture-pane", "-p", "-S", "-500", "-t", session_name])
             .output()
             .context("failed to capture tmux pane")?;
 
