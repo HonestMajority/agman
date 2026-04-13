@@ -103,8 +103,8 @@ fn main() -> Result<()> {
             cmd_task_current_plan(&config, &task_id)
         }
 
-        Some(Commands::QueueFeedback { task_id, feedback }) => {
-            cmd_queue_feedback(&config, &task_id, &feedback)
+        Some(Commands::QueueFeedback { task_id, feedback, file }) => {
+            cmd_queue_feedback(&config, &task_id, feedback.as_deref(), file.as_deref())
         }
 
         Some(Commands::CreateResearcher {
@@ -860,11 +860,36 @@ fn cmd_status(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn cmd_queue_feedback(config: &Config, task_id: &str, feedback: &str) -> Result<()> {
+fn cmd_queue_feedback(
+    config: &Config,
+    task_id: &str,
+    feedback: Option<&str>,
+    file: Option<&std::path::Path>,
+) -> Result<()> {
+    use std::io::{IsTerminal, Read as _};
+
+    let resolved = if let Some(path) = file {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read feedback file: {}", path.display()))?
+    } else if let Some(msg) = feedback {
+        msg.to_string()
+    } else if !std::io::stdin().is_terminal() {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("Failed to read feedback from stdin")?;
+        buf
+    } else {
+        anyhow::bail!("No feedback provided. Pass as argument, --file, or pipe via stdin.");
+    };
+
     let task = Task::load_by_id(config, task_id)?;
-    let count = use_cases::queue_feedback(&task, feedback)?;
+    let count = use_cases::queue_feedback(&task, resolved.trim_end())?;
     tracing::info!(task_id = %task_id, count, "queued feedback via CLI");
-    println!("Feedback queued for '{}' ({} item(s) in queue)", task_id, count);
+    println!(
+        "Feedback queued for '{}' ({} item(s) in queue)",
+        task_id, count
+    );
     Ok(())
 }
 
