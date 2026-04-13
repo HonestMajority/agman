@@ -5,6 +5,10 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 
+fn default_now() -> DateTime<Utc> {
+    Utc::now()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ResearcherStatus {
@@ -19,6 +23,8 @@ pub struct ResearcherMeta {
     pub project: String,
     pub description: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default = "default_now")]
+    pub updated_at: DateTime<Utc>,
     pub status: ResearcherStatus,
     pub repo: Option<String>,
     pub branch: Option<String>,
@@ -58,13 +64,14 @@ impl Researcher {
             project: project.to_string(),
             description: description.to_string(),
             created_at: Utc::now(),
+            updated_at: Utc::now(),
             status: ResearcherStatus::Running,
             repo,
             branch,
             task_id,
         };
 
-        let researcher = Self { meta, dir };
+        let mut researcher = Self { meta, dir };
         researcher.save_meta()?;
         Ok(researcher)
     }
@@ -108,7 +115,7 @@ impl Researcher {
             };
             status_ord(&a.meta.status)
                 .cmp(&status_ord(&b.meta.status))
-                .then_with(|| a.meta.name.cmp(&b.meta.name))
+                .then_with(|| b.meta.updated_at.cmp(&a.meta.updated_at))
         });
         Ok(researchers)
     }
@@ -122,8 +129,9 @@ impl Researcher {
             .collect())
     }
 
-    /// Write meta.json to disk.
-    pub fn save_meta(&self) -> Result<()> {
+    /// Write meta.json to disk. Stamps `updated_at` before writing.
+    pub fn save_meta(&mut self) -> Result<()> {
+        self.meta.updated_at = Utc::now();
         let meta_path = self.dir.join("meta.json");
         let contents = serde_json::to_string_pretty(&self.meta)
             .context("failed to serialize researcher meta")?;
