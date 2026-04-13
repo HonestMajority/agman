@@ -2086,17 +2086,32 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             }
         }
         View::Settings => {
-            let mut spans = vec![
-                Span::styled("h/l", Style::default().fg(Color::LightCyan)),
-                Span::styled(" adjust  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-            ];
-            spans.extend([
-                Span::styled("q", Style::default().fg(Color::LightCyan)),
-                Span::styled(" back", Style::default().fg(Color::DarkGray)),
-            ]);
-            spans
+            if app.settings_editing {
+                vec![
+                    Span::styled("Enter", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" save  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                ]
+            } else {
+                let mut spans = vec![
+                    Span::styled("h/l", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" adjust  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                ];
+                if app.settings_selected >= 2 {
+                    spans.extend([
+                        Span::styled("Enter", Style::default().fg(Color::LightCyan)),
+                        Span::styled(" edit  ", Style::default().fg(Color::DarkGray)),
+                    ]);
+                }
+                spans.extend([
+                    Span::styled("q", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                ]);
+                spans
+            }
         }
         View::Archive => {
             if app.archive_preview.is_some() {
@@ -3780,7 +3795,7 @@ fn draw_archive_preview(f: &mut Frame, app: &mut App) {
     f.render_widget(paragraph, area);
 }
 
-fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
+fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
     let break_mins = app.break_interval.as_secs() / 60;
     let retention_days = app.archive_retention_days;
 
@@ -3788,6 +3803,30 @@ fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
 
     let break_display = format!("  Break interval      \u{25C0}  {} min  \u{25B6}", break_mins);
     let retention_display = format!("  Archive retention   \u{25C0}  {} days \u{25B6}", retention_days);
+
+    // Telegram token display: mask all but last 4 chars
+    let token_text: String = app.telegram_token_editor.lines().join("");
+    let token_display = if token_text.is_empty() {
+        "(not set)".to_string()
+    } else if token_text.len() <= 4 {
+        token_text.clone()
+    } else {
+        format!("{}{}", "\u{2022}".repeat(token_text.len() - 4), &token_text[token_text.len() - 4..])
+    };
+
+    let chat_id_text: String = app.telegram_chat_id_editor.lines().join("");
+    let chat_id_display = if chat_id_text.is_empty() {
+        "(not set)".to_string()
+    } else {
+        chat_id_text.clone()
+    };
+
+    // If editing a telegram field, we render the TextArea separately
+    let editing_token = app.settings_editing && app.settings_selected == 2;
+    let editing_chat_id = app.settings_editing && app.settings_selected == 3;
+
+    let token_row_text = format!("  Telegram bot token  {}", if editing_token { "" } else { &token_display });
+    let chat_id_row_text = format!("  Telegram chat ID    {}", if editing_chat_id { "" } else { &chat_id_display });
 
     let items = vec![
         ListItem::new(Line::from(vec![
@@ -3800,17 +3839,60 @@ fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("    (h/l to adjust, 7\u{2013}365 days)", Style::default().fg(Color::DarkGray)),
         ]))
         .style(if app.settings_selected == 1 { selected_style } else { Style::default() }),
+        ListItem::new(Line::from(vec![
+            Span::styled(&token_row_text, Style::default().fg(Color::White)),
+            if !editing_token {
+                Span::styled("    (Enter to edit)", Style::default().fg(Color::DarkGray))
+            } else {
+                Span::raw("")
+            },
+        ]))
+        .style(if app.settings_selected == 2 { selected_style } else { Style::default() }),
+        ListItem::new(Line::from(vec![
+            Span::styled(&chat_id_row_text, Style::default().fg(Color::White)),
+            if !editing_chat_id {
+                Span::styled("    (Enter to edit)", Style::default().fg(Color::DarkGray))
+            } else {
+                Span::raw("")
+            },
+        ]))
+        .style(if app.settings_selected == 3 { selected_style } else { Style::default() }),
     ];
 
-    let list = List::new(items).block(
-        Block::default()
-            .title(" Settings ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title_bottom(clock_title(app)),
-    );
+    let block = Block::default()
+        .title(" Settings ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title_bottom(clock_title(app));
 
-    f.render_widget(list, area);
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+
+    // Render the list items (each is 1 row high)
+    let list = List::new(items);
+    f.render_widget(list, inner_area);
+
+    // Overlay TextArea widget when editing a telegram field
+    if editing_token || editing_chat_id {
+        let row_index = if editing_token { 2 } else { 3 };
+        // The label prefix is 22 chars ("  Telegram bot token  " / "  Telegram chat ID    ")
+        let label_width = 22u16;
+        if inner_area.height > row_index && inner_area.width > label_width {
+            let editor_area = Rect {
+                x: inner_area.x + label_width,
+                y: inner_area.y + row_index,
+                width: inner_area.width.saturating_sub(label_width),
+                height: 1,
+            };
+            let editor = if editing_token {
+                &mut app.telegram_token_editor
+            } else {
+                &mut app.telegram_chat_id_editor
+            };
+            editor.set_cursor_line_style(Style::default().bg(Color::Rgb(40, 40, 50)));
+            f.render_widget(&*editor, editor_area);
+        }
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

@@ -648,7 +648,10 @@ pub struct App {
     pub last_break_reset: Instant,
     // Settings view
     pub settings_selected: usize,
+    pub settings_editing: bool,
     pub archive_retention_days: u64,
+    pub telegram_token_editor: TextArea<'static>,
+    pub telegram_chat_id_editor: TextArea<'static>,
     // Archive view
     pub archive_count: usize,
     pub archive_tasks: Vec<(Task, String)>,
@@ -729,18 +732,27 @@ impl App {
             }
         }
 
-        // Start Telegram bot if env vars are present
-        let telegram_cancel = match (
-            std::env::var("TELEGRAM_BOT_TOKEN"),
-            std::env::var("TELEGRAM_CHAT_ID"),
-        ) {
-            (Ok(token), Ok(chat_id)) => {
+        // Start Telegram bot if settings are configured
+        let (tg_token, tg_chat_id) = use_cases::load_telegram_config(&config);
+        let telegram_cancel = match (&tg_token, &tg_chat_id) {
+            (Some(token), Some(chat_id)) if !token.is_empty() && !chat_id.is_empty() => {
                 let cancel = Arc::new(AtomicBool::new(false));
-                agman::telegram::start(&config, token, chat_id, Arc::clone(&cancel));
+                agman::telegram::start(&config, token.clone(), chat_id.clone(), Arc::clone(&cancel));
                 Some(cancel)
             }
             _ => None,
         };
+
+        let mut telegram_token_editor = Self::create_plain_editor();
+        if let Some(ref token) = tg_token {
+            telegram_token_editor = TextArea::new(vec![token.clone()]);
+            telegram_token_editor.set_cursor_line_style(ratatui::style::Style::default());
+        }
+        let mut telegram_chat_id_editor = Self::create_plain_editor();
+        if let Some(ref chat_id) = tg_chat_id {
+            telegram_chat_id_editor = TextArea::new(vec![chat_id.clone()]);
+            telegram_chat_id_editor.set_cursor_line_style(ratatui::style::Style::default());
+        }
 
         let break_interval = use_cases::load_break_interval(&config);
         let archive_retention_days = use_cases::load_archive_retention(&config);
@@ -823,7 +835,10 @@ impl App {
             break_interval,
             last_break_reset,
             settings_selected: 0,
+            settings_editing: false,
             archive_retention_days,
+            telegram_token_editor,
+            telegram_chat_id_editor,
             archive_count: 0,
             archive_tasks: Vec::new(),
             archive_search: Self::create_plain_editor(),
@@ -872,7 +887,32 @@ impl App {
         editor
     }
 
+    fn restart_telegram_bot(&mut self) {
+        // Stop existing bot if running
+        if let Some(ref cancel) = self.telegram_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.telegram_cancel = None;
 
+        // Start new bot if both settings are configured
+        let (token, chat_id) = use_cases::load_telegram_config(&self.config);
+        match (token, chat_id) {
+            (Some(token), Some(chat_id)) if !token.is_empty() && !chat_id.is_empty() => {
+                let cancel = Arc::new(AtomicBool::new(false));
+                agman::telegram::start(
+                    &self.config,
+                    token,
+                    chat_id,
+                    Arc::clone(&cancel),
+                );
+                self.telegram_cancel = Some(cancel);
+                tracing::info!("telegram bot restarted with new settings");
+            }
+            _ => {
+                tracing::info!("telegram bot disabled (token or chat_id not set)");
+            }
+        }
+    }
 
     pub fn refresh_tasks(&mut self) {
         let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
@@ -2966,6 +3006,44 @@ impl App {
 
     fn handle_settings_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
+            // When editing a text field, route keys to the TextArea
+            if self.settings_editing {
+                match key.code {
+                    KeyCode::Enter => {
+                        // Save the edited value
+                        let token_text: String = self.telegram_token_editor.lines().join("");
+                        let chat_id_text: String = self.telegram_chat_id_editor.lines().join("");
+                        let token = if token_text.is_empty() { None } else { Some(token_text) };
+                        let chat_id = if chat_id_text.is_empty() { None } else { Some(chat_id_text) };
+                        if let Err(e) = use_cases::save_telegram_config(&self.config, token, chat_id) {
+                            tracing::error!(error = %e, "failed to save telegram config");
+                            self.set_status(format!("Failed to save: {e}"));
+                        } else {
+                            self.set_status("Telegram settings saved".to_string());
+                            self.restart_telegram_bot();
+                        }
+                        self.settings_editing = false;
+                    }
+                    KeyCode::Esc => {
+                        // Discard edit, restore from config
+                        let (token, chat_id) = use_cases::load_telegram_config(&self.config);
+                        self.telegram_token_editor = TextArea::new(vec![token.unwrap_or_default()]);
+                        self.telegram_token_editor.set_cursor_line_style(ratatui::style::Style::default());
+                        self.telegram_chat_id_editor = TextArea::new(vec![chat_id.unwrap_or_default()]);
+                        self.telegram_chat_id_editor.set_cursor_line_style(ratatui::style::Style::default());
+                        self.settings_editing = false;
+                    }
+                    _ => {
+                        match self.settings_selected {
+                            2 => { self.telegram_token_editor.input(event); }
+                            3 => { self.telegram_chat_id_editor.input(event); }
+                            _ => {}
+                        }
+                    }
+                }
+                return Ok(false);
+            }
+
             match key.code {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.should_quit = true;
@@ -2974,13 +3052,27 @@ impl App {
                     self.view = View::TaskList;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    if self.settings_selected < 1 {
+                    if self.settings_selected < 3 {
                         self.settings_selected += 1;
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     if self.settings_selected > 0 {
                         self.settings_selected -= 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    // Enter editing mode for text fields
+                    if self.settings_selected == 2 || self.settings_selected == 3 {
+                        self.settings_editing = true;
+                        // Move cursor to end of current value
+                        let editor = if self.settings_selected == 2 {
+                            &mut self.telegram_token_editor
+                        } else {
+                            &mut self.telegram_chat_id_editor
+                        };
+                        let line_len = editor.lines().first().map(|l| l.len()).unwrap_or(0);
+                        editor.move_cursor(tui_textarea::CursorMove::Jump(0, line_len as u16));
                     }
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
