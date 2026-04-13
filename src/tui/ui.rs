@@ -4389,20 +4389,22 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         for (orig_idx, r) in *members {
             let is_selected = *orig_idx == app.researcher_list_index;
 
-            let session_name = Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
-            let (status_str, status_color) = if r.meta.status == ResearcherStatus::Archived {
-                ("archived", Color::DarkGray)
-            } else if Tmux::session_exists(&session_name) {
-                ("running", Color::LightGreen)
-            } else {
-                ("stopped", Color::Yellow)
-            };
+            // Derive status from group metadata — no redundant tmux check
+            let status_str = group_name.to_lowercase();
+            let status_color = *group_color;
 
             // Truncate name if needed
             let display_name = if r.meta.name.len() > name_width {
                 format!("{}…", &r.meta.name[..name_width.saturating_sub(1)])
             } else {
                 r.meta.name.clone()
+            };
+
+            // Truncate project if needed
+            let display_project = if r.meta.project.len() > project_width {
+                format!("{}…", &r.meta.project[..project_width.saturating_sub(1)])
+            } else {
+                r.meta.project.clone()
             };
 
             // Truncate description
@@ -4432,7 +4434,7 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::raw(COL_GAP),
                 Span::styled(
-                    format!("{:<width$}", r.meta.project, width = project_width),
+                    format!("{:<width$}", display_project, width = project_width),
                     if is_selected {
                         Style::default()
                             .fg(Color::White)
