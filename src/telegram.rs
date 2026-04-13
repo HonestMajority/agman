@@ -272,7 +272,7 @@ fn handle_voice(ctx: &BotCtx, file_id: &str) {
     match transcribe_audio(&ctx.whisper_model, &audio_data) {
         Some(text) if !text.is_empty() => {
             tracing::info!(text_len = text.len(), "telegram: transcribed voice message");
-            tg_send(ctx, &format!("[voice] {text}"));
+            tg_send(ctx, &format!("🎤 {text}"));
             if let Err(e) = inbox::append_message(&ctx.ceo_inbox, "telegram", &text) {
                 tracing::warn!(error = %e, "telegram: failed to write transcription to CEO inbox");
             }
