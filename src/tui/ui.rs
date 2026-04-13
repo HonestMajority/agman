@@ -267,6 +267,63 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Check for empty state first
+    let has_projects = !app.projects.is_empty() || app.unassigned_task_count > 0;
+    if !has_projects {
+        let msg = Paragraph::new("No projects. Press 'c' to start CEO, or create a project via CLI.")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        f.render_widget(msg, inner);
+        return;
+    }
+
+    // Split inner area into header and list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
+    // Column constants
+    const TASKS_WIDTH: usize = 6;
+    const ACTIVE_WIDTH: usize = 7;
+    const COL_GAP: &str = "    ";
+    const MIN_PROJECT_WIDTH: usize = 10;
+    const MAX_PROJECT_WIDTH: usize = 25;
+
+    // Calculate dynamic PROJECT column width
+    let mut max_name_len = app
+        .projects
+        .iter()
+        .map(|p| p.meta.name.len())
+        .max()
+        .unwrap_or(MIN_PROJECT_WIDTH);
+    if app.unassigned_task_count > 0 {
+        max_name_len = max_name_len.max("(unassigned)".len());
+    }
+    let project_width = max_name_len.max(MIN_PROJECT_WIDTH).min(MAX_PROJECT_WIDTH);
+
+    // Calculate description width
+    // Layout: 4 (leading) + project_width + 4 (gap) + TASKS + 4 (gap) + ACTIVE + 4 (gap)
+    let fixed_width = 4 + project_width + 4 + TASKS_WIDTH + 4 + ACTIVE_WIDTH + 4;
+    let desc_width = (inner.width as usize).saturating_sub(fixed_width);
+
+    // Render header row
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let header = Line::from(vec![
+        Span::raw("    "),
+        Span::styled(format!("{:<width$}", "PROJECT", width = project_width), header_style),
+        Span::raw(COL_GAP),
+        Span::styled(format!("{:>width$}", "TASKS", width = TASKS_WIDTH), header_style),
+        Span::raw(COL_GAP),
+        Span::styled(format!("{:>width$}", "ACTIVE", width = ACTIVE_WIDTH), header_style),
+        Span::raw(COL_GAP),
+        Span::styled("DESCRIPTION", header_style),
+    ]);
+    f.render_widget(Paragraph::new(header), chunks[0]);
+
+    // Build list items
     let mut items: Vec<ListItem> = Vec::new();
 
     for (i, project) in app.projects.iter().enumerate() {
@@ -282,8 +339,43 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             Style::default()
         };
 
-        // Line 1: cursor + name + badge
-        let mut header_spans = vec![
+        // Truncate project name if needed
+        let name_display = if project.meta.name.len() > project_width {
+            format!("{}…", &project.meta.name[..project_width - 1])
+        } else {
+            format!("{:<width$}", &project.meta.name, width = project_width)
+        };
+
+        // Active count styling
+        let active_style = if active > 0 {
+            Style::default().fg(Color::LightGreen)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        // Description
+        let desc_span = if desc_width == 0 {
+            Span::raw("")
+        } else if project.meta.description.is_empty() {
+            Span::styled(
+                "No description",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            )
+        } else if project.meta.description.len() > desc_width {
+            Span::styled(
+                format!("{}…", &project.meta.description[..desc_width.saturating_sub(1)]),
+                Style::default().fg(Color::DarkGray),
+            )
+        } else {
+            Span::styled(
+                &project.meta.description,
+                Style::default().fg(Color::DarkGray),
+            )
+        };
+
+        let data_line = Line::from(vec![
             Span::styled(
                 if unseen_stopped > 0 { "● " } else { "  " },
                 Style::default().fg(Color::Rgb(100, 200, 220)),
@@ -293,53 +385,27 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::LightCyan),
             ),
             Span::styled(
-                &project.meta.name,
+                name_display,
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             ),
-        ];
-        if active > 0 {
-            header_spans.push(Span::styled(
-                format!(" ({} tasks, ", total),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:>width$}", total, width = TASKS_WIDTH),
                 Style::default().fg(Color::DarkGray),
-            ));
-            header_spans.push(Span::styled(
-                format!("{}", active),
-                Style::default().fg(Color::LightGreen),
-            ));
-            header_spans.push(Span::styled(
-                " active)",
-                Style::default().fg(Color::DarkGray),
-            ));
-        } else {
-            header_spans.push(Span::styled(
-                format!(" ({} tasks, 0 active)", total),
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
-        let header_line = Line::from(header_spans);
-
-        // Line 2: description
-        let max_desc_width = inner.width.saturating_sub(5) as usize;
-        let desc_line = if project.meta.description.is_empty() {
-            Line::from(Span::styled(
-                "     No description",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            ))
-        } else {
-            let desc = if project.meta.description.len() > max_desc_width {
-                format!("     {}…", &project.meta.description[..max_desc_width.saturating_sub(1)])
-            } else {
-                format!("     {}", &project.meta.description)
-            };
-            Line::from(Span::styled(desc, Style::default().fg(Color::DarkGray)))
-        };
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:>width$}", active, width = ACTIVE_WIDTH),
+                active_style,
+            ),
+            Span::raw(COL_GAP),
+            desc_span,
+        ]);
 
         items.push(
-            ListItem::new(vec![header_line, desc_line, Line::from("")]).style(style),
+            ListItem::new(vec![data_line, Line::from("")]).style(style),
         );
     }
 
@@ -353,6 +419,8 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             Style::default()
         };
 
+        let name_display = format!("{:<width$}", "(unassigned)", width = project_width);
+
         let line = Line::from(vec![
             Span::styled(
                 if app.unassigned_unseen_stopped_count > 0 { "● " } else { "  " },
@@ -363,26 +431,20 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::LightCyan),
             ),
             Span::styled(
-                "(unassigned)",
+                name_display,
                 Style::default().fg(Color::DarkGray),
             ),
+            Span::raw(COL_GAP),
             Span::styled(
-                format!(" ({} tasks)", app.unassigned_task_count),
+                format!("{:>width$}", app.unassigned_task_count, width = TASKS_WIDTH),
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
         items.push(ListItem::new(vec![line, Line::from("")]).style(style));
     }
 
-    if items.is_empty() {
-        let msg = Paragraph::new("No projects. Press 'c' to start CEO, or create a project via CLI.")
-            .style(Style::default().fg(Color::DarkGray))
-            .alignment(Alignment::Center);
-        f.render_widget(msg, inner);
-    } else {
-        let list = List::new(items);
-        f.render_widget(list, inner);
-    }
+    let list = List::new(items);
+    f.render_widget(list, chunks[1]);
 }
 
 fn draw_project_wizard(f: &mut Frame, app: &mut App) {
