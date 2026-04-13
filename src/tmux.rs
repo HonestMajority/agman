@@ -235,6 +235,7 @@ impl Tmux {
         session_name: &str,
         system_prompt: &str,
         resume_id: Option<&str>,
+        session_id: Option<&str>,
         work_dir: Option<&Path>,
     ) -> Result<()> {
         if Self::session_exists(session_name) {
@@ -264,7 +265,7 @@ impl Tmux {
         }
 
         // Build and send the claude command
-        let cmd = Self::build_claude_command(system_prompt, resume_id);
+        let cmd = Self::build_claude_command(system_prompt, resume_id, session_id);
         Self::send_keys_to_session(session_name, &cmd)?;
 
         Ok(())
@@ -276,7 +277,7 @@ impl Tmux {
         system_prompt: &str,
         resume_id: Option<&str>,
     ) -> Result<()> {
-        let cmd = Self::build_claude_command(system_prompt, resume_id);
+        let cmd = Self::build_claude_command(system_prompt, resume_id, None);
 
         tracing::info!("opening claude popup");
 
@@ -330,15 +331,26 @@ impl Tmux {
     }
 
     /// Build a `claude` CLI command string with system prompt and optional resume.
-    fn build_claude_command(system_prompt: &str, resume_id: Option<&str>) -> String {
-        // Shell-escape the prompt by using single quotes with inner escaping
-        let escaped_prompt = system_prompt.replace('\'', "'\\''");
-        let mut cmd = format!(
-            "claude --dangerously-skip-permissions --system-prompt '{}'",
-            escaped_prompt
-        );
+    ///
+    /// When `resume_id` is `Some`, emits `--resume <id>` WITHOUT `--system-prompt`
+    /// (the resumed session already has all context). When `resume_id` is `None`,
+    /// emits `--system-prompt` as before, and optionally `--session-id` to pin the
+    /// session for future resumption.
+    fn build_claude_command(
+        system_prompt: &str,
+        resume_id: Option<&str>,
+        session_id: Option<&str>,
+    ) -> String {
+        let mut cmd = String::from("claude --dangerously-skip-permissions");
         if let Some(id) = resume_id {
             cmd.push_str(&format!(" --resume {}", id));
+        } else {
+            // Shell-escape the prompt by using single quotes with inner escaping
+            let escaped_prompt = system_prompt.replace('\'', "'\\''");
+            cmd.push_str(&format!(" --system-prompt '{}'", escaped_prompt));
+            if let Some(id) = session_id {
+                cmd.push_str(&format!(" --session-id {}", id));
+            }
         }
         cmd
     }

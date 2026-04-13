@@ -2126,7 +2126,7 @@ pub fn start_ceo_session(config: &Config) -> Result<()> {
 
     let session_name = Config::ceo_tmux_session();
     tracing::info!(session = session_name, telegram_enabled, "starting CEO session");
-    Tmux::create_agent_session(session_name, &prompt, resume_ref, None)?;
+    Tmux::create_agent_session(session_name, &prompt, resume_ref, None, None)?;
     Ok(())
 }
 
@@ -2153,7 +2153,7 @@ pub fn start_pm_session(config: &Config, project_name: &str) -> Result<()> {
     let prompt = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
     let session_name = Config::pm_tmux_session(project_name);
     tracing::info!(session = &session_name, project = project_name, "starting PM session");
-    Tmux::create_agent_session(&session_name, &prompt, resume_ref, None)?;
+    Tmux::create_agent_session(&session_name, &prompt, resume_ref, None, None)?;
     Ok(())
 }
 
@@ -2212,8 +2212,24 @@ pub fn start_researcher_session(config: &Config, project: &str, name: &str) -> R
     let researcher = Researcher::load(dir)?;
 
     let session_id_path = config.researcher_session_id(project, name);
-    let resume_id = std::fs::read_to_string(&session_id_path).ok();
-    let resume_ref = resume_id.as_deref().map(|s| s.trim());
+    let existing_session_id = std::fs::read_to_string(&session_id_path).ok();
+    let existing_session_id_trimmed = existing_session_id.as_deref().map(|s| s.trim().to_string());
+
+    // Decide fresh-creation vs resume based on whether a session-id file exists
+    let (resume_id, new_session_id) = if let Some(ref id) = existing_session_id_trimmed {
+        // Resume: pass the existing session ID as resume_id
+        (Some(id.as_str()), None)
+    } else {
+        // Fresh creation: generate a UUID and persist it for future resumes
+        let uuid = uuid::Uuid::new_v4().to_string();
+        if let Some(parent) = session_id_path.parent() {
+            std::fs::create_dir_all(parent).context("failed to create researcher dir")?;
+        }
+        std::fs::write(&session_id_path, &uuid)
+            .context("failed to write researcher session-id")?;
+        tracing::info!(project = project, name = name, session_id = %uuid, "generated new researcher session ID");
+        (None, Some(uuid))
+    };
 
     let mut prompt = DEFAULT_RESEARCHER_PROMPT_TEMPLATE
         .replace("{{PROJECT_NAME}}", project)
@@ -2231,7 +2247,13 @@ pub fn start_researcher_session(config: &Config, project: &str, name: &str) -> R
 
     let session_name = Config::researcher_tmux_session(project, name);
     tracing::info!(session = &session_name, project = project, name = name, "starting researcher session");
-    Tmux::create_agent_session(&session_name, &prompt, resume_ref, work_dir.as_deref())?;
+    Tmux::create_agent_session(
+        &session_name,
+        &prompt,
+        resume_id,
+        new_session_id.as_deref(),
+        work_dir.as_deref(),
+    )?;
 
     Ok(())
 }
