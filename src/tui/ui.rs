@@ -1792,6 +1792,9 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             spans.extend([
                 Span::styled("o", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
+            ]);
+            spans.extend(break_hint_spans(app));
+            spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" quit", Style::default().fg(Color::DarkGray)),
             ]);
@@ -1872,7 +1875,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("R", Style::default().fg(Color::LightYellow)),
                 Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
             ]);
-            spans.extend(break_hint_spans(app));
             let quit_label = if app.current_project.is_some() { " back" } else { " quit" };
             spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),

@@ -2692,6 +2692,11 @@ impl App {
                         self.view = View::ProjectDeleteConfirm;
                     }
                 }
+                KeyCode::Char('b') => {
+                    self.last_break_reset = Instant::now();
+                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
+                    tracing::info!("break timer reset");
+                }
                 KeyCode::Char('o') => {
                     match NotesView::new(self.config.notes_dir.clone()) {
                         Ok(nv) => {
@@ -2890,11 +2895,6 @@ impl App {
                     if !self.show_prs_first_poll_done && !self.show_prs_poll_active {
                         self.start_show_prs_poll();
                     }
-                }
-                KeyCode::Char('b') => {
-                    self.last_break_reset = Instant::now();
-                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
-                    tracing::info!("break timer reset");
                 }
                 KeyCode::Char('z') => {
                     self.archive_tasks = use_cases::list_archived_tasks(&self.config);
