@@ -707,7 +707,7 @@ pub struct App {
     pub respawn_confirm_return_view: View,
     // Telegram bot cancel flag (None when env vars absent)
     telegram_cancel: Option<Arc<AtomicBool>>,
-    // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
+    // Sleep inhibition (macOS: caffeinate -s for system sleep assertion only)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
 }
@@ -903,7 +903,7 @@ impl App {
             telegram_cancel,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
-                .arg("-dis")
+                .arg("-s")
                 .spawn()
                 .ok(),
         })
