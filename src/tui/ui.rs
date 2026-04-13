@@ -247,11 +247,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
-    use agman::config::Config;
-    use agman::use_cases;
-
-    let ceo_running = use_cases::agent_session_running(Config::ceo_tmux_session());
-
     let block = Block::default()
         .title(Line::from(vec![
             Span::styled(
@@ -263,10 +258,6 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 format!("({} projects) ", app.projects.len()),
                 Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                if ceo_running { "CEO: Running " } else { "CEO: Stopped " },
-                Style::default().fg(if ceo_running { Color::LightGreen } else { Color::DarkGray }),
             ),
         ]))
         .title(clock_title(app))
