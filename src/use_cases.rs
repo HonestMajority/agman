@@ -2970,6 +2970,10 @@ AGMAN_MSG
 - Never run long commands yourself — always spawn a task for implementation work
 - Keep the CEO informed of significant progress or blockers
 
+## Reactive Behavior
+- **Relay completions to the CEO**: When you receive a notification that a task has completed, failed, or needs input, report the status back to the CEO via `send-message`. Include the task name, outcome, and any relevant details (e.g., PR link, error summary).
+- **Do NOT poll**: Never proactively check task statuses or poll researchers. Wait for incoming notifications and messages, then react. Your behavior should be entirely event-driven.
+
 ## Message Routing
 
 Messages from other agents appear in your tmux session tagged `[Message from <sender>]:`. The sender **cannot** see your tmux session — you MUST reply using `agman send-message`. Never just type a response in tmux.
