@@ -342,8 +342,6 @@ pub struct RestartWizard {
 pub enum ProjectPickerAction {
     /// Migrate all unassigned tasks to the selected project.
     MigrateAllUnassigned,
-    /// Move a single task (by task_id) to the selected project.
-    MoveTask(String),
 }
 
 pub struct ProjectPicker {
@@ -653,7 +651,6 @@ pub struct App {
     pub telegram_token_editor: TextArea<'static>,
     pub telegram_chat_id_editor: TextArea<'static>,
     // Archive view
-    pub archive_count: usize,
     pub archive_tasks: Vec<(Task, String)>,
     pub archive_search: TextArea<'static>,
     pub archive_selected: usize,
@@ -839,7 +836,6 @@ impl App {
             archive_retention_days,
             telegram_token_editor,
             telegram_chat_id_editor,
-            archive_count: 0,
             archive_tasks: Vec::new(),
             archive_search: Self::create_plain_editor(),
             archive_selected: 0,
@@ -917,7 +913,6 @@ impl App {
     pub fn refresh_tasks(&mut self) {
         let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
         self.tasks = Task::list_all(&self.config);
-        self.archive_count = Task::list_archived(&self.config).len();
         if let Some(ref id) = prev_task_id {
             if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == *id) {
                 self.selected_index = idx;
@@ -932,7 +927,6 @@ impl App {
     /// Refresh the task list and restore selection to the task with the given ID.
     /// If the task is no longer present, selection falls back to a valid index.
     fn refresh_tasks_and_select(&mut self, task_id: &str) {
-        self.archive_count = Task::list_archived(&self.config).len();
         self.refresh_tasks_for_project();
         if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
             self.selected_index = idx;
@@ -2896,27 +2890,6 @@ impl App {
                     self.archive_scroll = 0;
                     self.view = View::Archive;
                 }
-                KeyCode::Char('M') => {
-                    // Move selected task to a different project
-                    if let Some(task) = self.selected_task() {
-                        let task_id = task.meta.task_id();
-                        let project_names: Vec<String> = self
-                            .projects
-                            .iter()
-                            .map(|p| p.meta.name.clone())
-                            .collect();
-                        if project_names.is_empty() {
-                            self.set_status("Create a project first".to_string());
-                        } else {
-                            self.project_picker = Some(ProjectPicker {
-                                projects: project_names,
-                                selected: 0,
-                                action: ProjectPickerAction::MoveTask(task_id),
-                            });
-                            self.view = View::ProjectPicker;
-                        }
-                    }
-                }
                 KeyCode::Char(',') => {
                     self.settings_selected = 0;
                     self.view = View::Settings;
@@ -3337,36 +3310,6 @@ impl App {
                                     }
                                     self.refresh_projects();
                                     self.view = View::ProjectList;
-                                }
-                                ProjectPickerAction::MoveTask(task_id) => {
-                                    let task_id = task_id.clone();
-                                    match use_cases::migrate_tasks_to_project(
-                                        &self.config,
-                                        &project_name,
-                                        &[task_id.clone()],
-                                    ) {
-                                        Ok(_) => {
-                                            tracing::info!(
-                                                task_id = %task_id,
-                                                project = %project_name,
-                                                "moved task to project"
-                                            );
-                                            self.set_status(format!(
-                                                "Moved task to {project_name}"
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                task_id = %task_id,
-                                                error = %e,
-                                                "failed to move task"
-                                            );
-                                            self.set_status(format!("Move failed: {e}"));
-                                        }
-                                    }
-                                    self.refresh_projects();
-                                    self.refresh_tasks_for_project();
-                                    self.view = View::TaskList;
                                 }
                             }
                         }

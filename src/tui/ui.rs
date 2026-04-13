@@ -480,7 +480,6 @@ fn draw_project_picker(f: &mut Frame, app: &mut App) {
 
     let title = match &picker.action {
         super::app::ProjectPickerAction::MigrateAllUnassigned => "Migrate All Unassigned Tasks To",
-        super::app::ProjectPickerAction::MoveTask(_) => "Move Task To Project",
     };
 
     let area = centered_rect(40, 50, f.area());
@@ -1746,8 +1745,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("d", Style::default().fg(Color::LightRed)),
                     Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("M", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" move  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
             let unread_count = app.notifications.iter().filter(|n| n.unread).count();
@@ -1766,14 +1763,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("m", Style::default().fg(Color::LightYellow)),
                 Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("z", Style::default().fg(Color::LightYellow)),
-                Span::styled(
-                    if app.archive_count > 0 {
-                        format!(" archive({})  ", app.archive_count)
-                    } else {
-                        " archive  ".to_string()
-                    },
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(",", Style::default().fg(Color::LightYellow)),
                 Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("R", Style::default().fg(Color::LightYellow)),
