@@ -2110,27 +2110,31 @@ pub fn send_message(config: &Config, target: &str, from: &str, message: &str) ->
 // ---------------------------------------------------------------------------
 
 /// Append a handoff request message to an agent's inbox.
-pub fn request_handoff(inbox_path: &Path, from: &str) -> Result<()> {
-    let message = "[HANDOFF REQUEST] Write a summary of your current state and context to handoff.md in your state directory, then output HANDOFF_COMPLETE.";
-    inbox::append_message(inbox_path, from, message)?;
+pub fn request_handoff(inbox_path: &Path, from: &str, state_dir: &Path) -> Result<()> {
+    let message = format!(
+        "[HANDOFF REQUEST] Your session is being replaced. Before it ends, write a summary of your current state to {}/handoff.md. Include: current objectives, recent actions, pending items, and important context. No other action needed — just write the file.",
+        state_dir.display()
+    );
+    inbox::append_message(inbox_path, from, &message)?;
     Ok(())
 }
 
-/// Poll for handoff completion by checking tmux pane output for `HANDOFF_COMPLETE`.
+/// Poll for handoff completion by watching for `handoff.md` to appear and stabilize.
 /// Returns `Some(content)` if `handoff.md` was written, `None` on timeout with no content.
 pub fn wait_for_handoff(
-    session_name: &str,
+    target: &str,
     handoff_path: &Path,
     timeout_secs: u64,
 ) -> Result<Option<String>> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
     let poll_interval = std::time::Duration::from_secs(2);
+    let mut last_size: Option<u64> = None;
 
     loop {
         if start.elapsed() >= timeout {
             tracing::warn!(
-                session = session_name,
+                target = target,
                 "handoff timed out after {}s",
                 timeout_secs
             );
@@ -2138,7 +2142,7 @@ pub fn wait_for_handoff(
             if handoff_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(handoff_path) {
                     if !content.trim().is_empty() {
-                        tracing::info!(session = session_name, "using partial handoff.md after timeout");
+                        tracing::info!(target = target, "using partial handoff.md after timeout");
                         return Ok(Some(content));
                     }
                 }
@@ -2146,21 +2150,22 @@ pub fn wait_for_handoff(
             return Ok(None);
         }
 
-        // Check pane output for HANDOFF_COMPLETE
-        if let Ok(pane_output) = Tmux::capture_pane(session_name) {
-            if pane_output.contains("HANDOFF_COMPLETE") {
-                // Read the handoff file
-                if handoff_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(handoff_path) {
-                        if !content.trim().is_empty() {
-                            tracing::info!(session = session_name, "handoff complete");
-                            return Ok(Some(content));
+        // Check if handoff.md exists and is non-empty
+        if let Ok(meta) = std::fs::metadata(handoff_path) {
+            let size = meta.len();
+            if size > 0 {
+                if let Some(prev) = last_size {
+                    if prev == size {
+                        // File size stable across two polls — read and return
+                        if let Ok(content) = std::fs::read_to_string(handoff_path) {
+                            if !content.trim().is_empty() {
+                                tracing::info!(target = target, "handoff complete");
+                                return Ok(Some(content));
+                            }
                         }
                     }
                 }
-                // HANDOFF_COMPLETE seen but no file — return None
-                tracing::warn!(session = session_name, "HANDOFF_COMPLETE seen but no handoff.md");
-                return Ok(None);
+                last_size = Some(size);
             }
         }
 
@@ -2213,8 +2218,8 @@ pub fn respawn_agent(
     // Graceful handoff if not forced and session is running
     if !force && Tmux::session_exists(&session_name) {
         tracing::info!(target = target, "requesting graceful handoff");
-        request_handoff(&inbox_path, "system")?;
-        handoff_content = wait_for_handoff(&session_name, &handoff_path, timeout_secs)?;
+        request_handoff(&inbox_path, "system", &state_dir)?;
+        handoff_content = wait_for_handoff(target, &handoff_path, timeout_secs)?;
     }
 
     // Kill old session
@@ -2237,7 +2242,7 @@ pub fn respawn_agent(
 
     // Inject handoff content to new session
     if let Some(content) = handoff_content {
-        let message = format!("[HANDOFF FROM PREVIOUS SESSION]\n{content}");
+        let message = format!("[HANDOFF FROM PREVIOUS SESSION] The following is a context summary from your predecessor session. Integrate this into your understanding and continue where they left off.\n\n{content}");
         inbox::append_message(&inbox_path, "system", &message)?;
         tracing::info!(target = target, "injected handoff context to new session");
     }
@@ -2706,9 +2711,6 @@ AGMAN_MSG
 - Never create tasks directly — only PMs can do that
 - Keep messages to PMs clear and actionable
 
-## Session Handoff
-- When you receive a message containing `[HANDOFF REQUEST]`, write a summary of your current state and context to `handoff.md` in your state directory (`~/.agman/ceo/handoff.md`). Include: current objectives, recent actions, pending items, and important context that would be lost. Then output `HANDOFF_COMPLETE`.
-- When you receive a message containing `[HANDOFF FROM PREVIOUS SESSION]`, treat it as context from your predecessor session — integrate it into your understanding and continue the work.
 "#;
 
 fn build_ceo_prompt(telegram_enabled: bool) -> String {
@@ -2752,9 +2754,6 @@ Keep reports concise and actionable. When you've completed your research, summar
 
 Always respond to the PM via `agman send-message` — never just type a response in your tmux session, as the PM will not see it.
 
-## Session Handoff
-- When you receive a message containing `[HANDOFF REQUEST]`, write a summary of your current state and context to `handoff.md` in your state directory (`~/.agman/researchers/{{PROJECT_NAME}}--{{RESEARCHER_NAME}}/handoff.md`). Include: current objectives, recent actions, pending items, and important context that would be lost. Then output `HANDOFF_COMPLETE`.
-- When you receive a message containing `[HANDOFF FROM PREVIOUS SESSION]`, treat it as context from your predecessor session — integrate it into your understanding and continue the work.
 "#;
 
 const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for the "{{PROJECT_NAME}}" project in agman. You manage tasks to accomplish your project's goals.
@@ -2790,7 +2789,4 @@ AGMAN_MSG
 - Never run long commands yourself — always spawn a task for implementation work
 - Keep the CEO informed of significant progress or blockers
 
-## Session Handoff
-- When you receive a message containing `[HANDOFF REQUEST]`, write a summary of your current state and context to `handoff.md` in your state directory (`~/.agman/projects/{{PROJECT_NAME}}/handoff.md`). Include: current objectives, recent actions, pending items, and important context that would be lost. Then output `HANDOFF_COMPLETE`.
-- When you receive a message containing `[HANDOFF FROM PREVIOUS SESSION]`, treat it as context from your predecessor session — integrate it into your understanding and continue the work.
 "#;
