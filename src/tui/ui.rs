@@ -133,6 +133,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::ProjectPicker
             | View::ProjectDeleteConfirm
             | View::ResearcherWizard
+            | View::RespawnConfirm
     );
 
     // Determine output pane height based on content (hide during modals)
@@ -243,6 +244,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::ResearcherWizard => {
             draw_researcher_list(f, app, chunks[0]);
             draw_researcher_wizard(f, app);
+        }
+        View::RespawnConfirm => {
+            // Draw the underlying view behind the modal
+            match app.respawn_confirm_return_view {
+                View::ProjectList => draw_project_list(f, app, chunks[0]),
+                _ => draw_task_list(f, app, chunks[0]),
+            }
+            draw_respawn_confirm(f, app);
         }
     }
 
@@ -1720,6 +1729,93 @@ fn draw_restart_confirm(f: &mut Frame, app: &App) {
     f.render_widget(popup, area);
 }
 
+fn draw_respawn_confirm(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 35, f.area());
+
+    f.render_widget(Clear, area);
+
+    let sel = app.respawn_confirm_index;
+
+    let option0_style = if sel == 0 {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(30, 40, 60))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let option1_style = if sel == 1 {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(30, 40, 60))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    let prefix0 = if sel == 0 { "▸ " } else { "  " };
+    let prefix1 = if sel == 1 { "▸ " } else { "  " };
+
+    let (title, text) = if app.respawn_confirm_is_ceo {
+        (
+            " Respawn CEO ",
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("{prefix0}CEO only"),
+                    option0_style,
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("{prefix1}CEO + all PMs"),
+                    option1_style,
+                )),
+            ],
+        )
+    } else {
+        let target = app
+            .respawn_confirm_target
+            .as_deref()
+            .unwrap_or("unknown");
+        (
+            " Respawn PM ",
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("  Respawn PM for '{target}'?"),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("{prefix0}Respawn"),
+                    option0_style,
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("{prefix1}Cancel"),
+                    option1_style,
+                )),
+            ],
+        )
+    };
+
+    let popup = Paragraph::new(text).block(
+        Block::default()
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightMagenta)),
+    );
+
+    f.render_widget(popup, area);
+}
+
 fn draw_restart_wizard(f: &mut Frame, app: &mut App) {
     let wizard = match &app.restart_wizard {
         Some(w) => w,
@@ -2432,6 +2528,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]
         }
+        View::RespawnConfirm => vec![],
         View::ResearcherList | View::ResearcherWizard => {
             let enter_label = if app
                 .researchers
@@ -2454,12 +2551,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("d", Style::default().fg(Color::LightRed)),
                 Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
             ];
-            if app.researchers.get(app.researcher_list_index).is_some() {
-                spans.extend([
-                    Span::styled("e", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
-                ]);
-            }
             spans.extend([
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),

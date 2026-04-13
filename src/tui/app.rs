@@ -73,6 +73,7 @@ pub enum View {
     ProjectDeleteConfirm,
     ResearcherList,
     ResearcherWizard,
+    RespawnConfirm,
 }
 
 /// Which wizard requested the directory picker.
@@ -699,6 +700,11 @@ pub struct App {
     pub respawn_in_progress: Option<String>,
     respawn_tx: tokio_mpsc::UnboundedSender<Result<String, String>>,
     respawn_rx: tokio_mpsc::UnboundedReceiver<Result<String, String>>,
+    // Respawn confirmation dialog
+    pub respawn_confirm_target: Option<String>,
+    pub respawn_confirm_index: usize,
+    pub respawn_confirm_is_ceo: bool,
+    pub respawn_confirm_return_view: View,
     // Telegram bot cancel flag (None when env vars absent)
     telegram_cancel: Option<Arc<AtomicBool>>,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
@@ -890,6 +896,10 @@ impl App {
             respawn_in_progress: None,
             respawn_tx,
             respawn_rx,
+            respawn_confirm_target: None,
+            respawn_confirm_index: 0,
+            respawn_confirm_is_ceo: false,
+            respawn_confirm_return_view: View::ProjectList,
             telegram_cancel,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
@@ -2615,6 +2625,7 @@ impl App {
             View::ProjectDeleteConfirm => self.handle_project_delete_confirm_event(event),
             View::ResearcherList => self.handle_researcher_list_event(event),
             View::ResearcherWizard => self.handle_researcher_wizard_event(event),
+            View::RespawnConfirm => self.handle_respawn_confirm_event(event),
         }
     }
 
@@ -2784,24 +2795,13 @@ impl App {
                     }
                 }
                 KeyCode::Char('e') => {
-                    // Respawn CEO agent
+                    // Show respawn confirmation for CEO
                     if self.respawn_in_progress.is_none() {
-                        self.respawn_in_progress = Some("ceo".to_string());
-                        self.set_status("respawning ceo...".to_string());
-                        let tx = self.respawn_tx.clone();
-                        let config = self.config.clone();
-                        self.rt.spawn(async move {
-                            let result = tokio::task::spawn_blocking(move || {
-                                use_cases::respawn_agent(&config, "ceo", false, 120)
-                            })
-                            .await
-                            .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
-                            let msg = match result {
-                                Ok(()) => Ok("ceo".to_string()),
-                                Err(e) => Err(format!("{e}")),
-                            };
-                            let _ = tx.send(msg);
-                        });
+                        self.respawn_confirm_target = Some("ceo".to_string());
+                        self.respawn_confirm_index = 0;
+                        self.respawn_confirm_is_ceo = true;
+                        self.respawn_confirm_return_view = View::ProjectList;
+                        self.view = View::RespawnConfirm;
                     }
                 }
                 KeyCode::Char(',') => {
@@ -2999,26 +2999,14 @@ impl App {
                     self.view = View::Archive;
                 }
                 KeyCode::Char('e') => {
-                    // Respawn PM for current project
+                    // Show respawn confirmation for PM
                     if let Some(ref project_name) = self.current_project.clone() {
                         if project_name != "(unassigned)" && self.respawn_in_progress.is_none() {
-                            let target = project_name.clone();
-                            self.respawn_in_progress = Some(target.clone());
-                            self.set_status(format!("respawning {target}..."));
-                            let tx = self.respawn_tx.clone();
-                            let config = self.config.clone();
-                            self.rt.spawn(async move {
-                                let result = tokio::task::spawn_blocking(move || {
-                                    use_cases::respawn_agent(&config, &target, false, 120)
-                                })
-                                .await
-                                .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
-                                let msg = match result {
-                                    Ok(()) => Ok("pm".to_string()),
-                                    Err(e) => Err(format!("{e}")),
-                                };
-                                let _ = tx.send(msg);
-                            });
+                            self.respawn_confirm_target = Some(project_name.clone());
+                            self.respawn_confirm_index = 0;
+                            self.respawn_confirm_is_ceo = false;
+                            self.respawn_confirm_return_view = View::TaskList;
+                            self.view = View::RespawnConfirm;
                         }
                     }
                 }
@@ -3143,32 +3131,6 @@ impl App {
                             Err(e) => {
                                 self.set_status(format!("Failed to archive: {e}"));
                             }
-                        }
-                    }
-                }
-                KeyCode::Char('e') => {
-                    // Respawn selected researcher
-                    if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
-                        if self.respawn_in_progress.is_none() {
-                            let project = researcher.meta.project.clone();
-                            let name = researcher.meta.name.clone();
-                            let target = format!("researcher:{project}--{name}");
-                            self.respawn_in_progress = Some(target.clone());
-                            self.set_status(format!("respawning {target}..."));
-                            let tx = self.respawn_tx.clone();
-                            let config = self.config.clone();
-                            self.rt.spawn(async move {
-                                let result = tokio::task::spawn_blocking(move || {
-                                    use_cases::respawn_agent(&config, &target, false, 120)
-                                })
-                                .await
-                                .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
-                                let msg = match result {
-                                    Ok(()) => Ok("researcher".to_string()),
-                                    Err(e) => Err(format!("{e}")),
-                                };
-                                let _ = tx.send(msg);
-                            });
                         }
                     }
                 }
@@ -4140,6 +4102,142 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
                     self.set_status("Restart available — press q to quit and restart".to_string());
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_respawn_confirm_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.respawn_confirm_index = (self.respawn_confirm_index + 1) % 2;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.respawn_confirm_index = if self.respawn_confirm_index == 0 { 1 } else { 0 };
+                }
+                KeyCode::Enter => {
+                    if self.respawn_confirm_is_ceo {
+                        match self.respawn_confirm_index {
+                            0 => {
+                                // CEO only
+                                let target = "ceo".to_string();
+                                tracing::info!(target = %target, "respawn confirmed: ceo only");
+                                self.respawn_in_progress = Some(target.clone());
+                                self.set_status("respawning ceo...".to_string());
+                                let tx = self.respawn_tx.clone();
+                                let config = self.config.clone();
+                                self.rt.spawn(async move {
+                                    let result = tokio::task::spawn_blocking(move || {
+                                        use_cases::respawn_agent(&config, "ceo", false, 120)
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
+                                    let msg = match result {
+                                        Ok(()) => Ok("ceo".to_string()),
+                                        Err(e) => Err(format!("{e}")),
+                                    };
+                                    let _ = tx.send(msg);
+                                });
+                            }
+                            1 => {
+                                // CEO + all PMs
+                                let project_names: Vec<String> = self
+                                    .projects
+                                    .iter()
+                                    .map(|p| p.meta.name.clone())
+                                    .collect();
+                                let pm_count = project_names.len();
+                                tracing::info!(pm_count = pm_count, "respawn confirmed: ceo + all pms");
+                                self.respawn_in_progress = Some("ceo+pms".to_string());
+                                self.set_status("respawning ceo + all pms...".to_string());
+                                let tx = self.respawn_tx.clone();
+                                let config = self.config.clone();
+                                self.rt.spawn(async move {
+                                    // Respawn CEO first
+                                    let ceo_result = tokio::task::spawn_blocking({
+                                        let config = config.clone();
+                                        move || use_cases::respawn_agent(&config, "ceo", false, 120)
+                                    })
+                                    .await
+                                    .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
+
+                                    if let Err(e) = ceo_result {
+                                        let _ = tx.send(Err(format!("ceo respawn failed: {e}")));
+                                        return;
+                                    }
+
+                                    // Respawn all PMs concurrently
+                                    let mut handles = Vec::new();
+                                    for name in &project_names {
+                                        let config = config.clone();
+                                        let name = name.clone();
+                                        handles.push(tokio::task::spawn_blocking(move || {
+                                            use_cases::respawn_agent(&config, &name, false, 120)
+                                        }));
+                                    }
+
+                                    let mut failures = Vec::new();
+                                    for (i, handle) in handles.into_iter().enumerate() {
+                                        match handle.await {
+                                            Ok(Ok(())) => {}
+                                            Ok(Err(e)) => failures.push(format!("{}: {e}", project_names[i])),
+                                            Err(e) => failures.push(format!("{}: {e}", project_names[i])),
+                                        }
+                                    }
+
+                                    if failures.is_empty() {
+                                        let _ = tx.send(Ok(format!("ceo+pms:{pm_count}")));
+                                    } else {
+                                        let _ = tx.send(Err(format!(
+                                            "some respawns failed: {}",
+                                            failures.join(", ")
+                                        )));
+                                    }
+                                });
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        // PM confirmation
+                        match self.respawn_confirm_index {
+                            0 => {
+                                // Respawn
+                                if let Some(ref target) = self.respawn_confirm_target {
+                                    let target = target.clone();
+                                    tracing::info!(target = %target, "respawn confirmed: pm");
+                                    self.respawn_in_progress = Some(target.clone());
+                                    self.set_status(format!("respawning {target}..."));
+                                    let tx = self.respawn_tx.clone();
+                                    let config = self.config.clone();
+                                    self.rt.spawn(async move {
+                                        let result = tokio::task::spawn_blocking(move || {
+                                            use_cases::respawn_agent(&config, &target, false, 120)
+                                        })
+                                        .await
+                                        .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
+                                        let msg = match result {
+                                            Ok(()) => Ok("pm".to_string()),
+                                            Err(e) => Err(format!("{e}")),
+                                        };
+                                        let _ = tx.send(msg);
+                                    });
+                                }
+                            }
+                            1 => {
+                                // Cancel — just return to previous view
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.view = self.respawn_confirm_return_view;
+                    self.respawn_confirm_target = None;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.view = self.respawn_confirm_return_view;
+                    self.respawn_confirm_target = None;
                 }
                 _ => {}
             }
@@ -5626,6 +5724,11 @@ impl App {
         };
         let target = self.respawn_in_progress.take().unwrap_or_default();
         match result {
+            Ok(msg) if msg.starts_with("ceo+pms:") => {
+                let pm_count = msg.strip_prefix("ceo+pms:").unwrap_or("0");
+                tracing::info!(target = %target, pm_count = %pm_count, "ceo + all pms respawned successfully");
+                self.set_status(format!("respawned ceo + {pm_count} pms"));
+            }
             Ok(_) => {
                 tracing::info!(target = %target, "agent respawned successfully");
                 self.set_status(format!("respawned {target}"));
