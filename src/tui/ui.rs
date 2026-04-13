@@ -285,10 +285,10 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     const NAME_WIDTH: usize = 25;
     const TASKS_WIDTH: usize = 8;
     const ACTIVE_WIDTH: usize = 8;
-    const COL_GAP: &str = "   ";
+    const COL_GAP: &str = "    ";
 
     let header = Line::from(vec![
-        Span::raw("  "),
+        Span::raw("   "),
         Span::styled(
             format!("{:<width$}", "PROJECT", width = NAME_WIDTH),
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -322,7 +322,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let line = Line::from(vec![
-            Span::styled(if is_selected { "> " } else { "  " }, Style::default().fg(Color::LightCyan)),
+            Span::styled(if is_selected { ">  " } else { "   " }, Style::default().fg(Color::LightCyan)),
             Span::styled(
                 format!("{:<width$}", project.meta.name, width = NAME_WIDTH),
                 Style::default().fg(Color::White),
@@ -352,7 +352,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let line = Line::from(vec![
-            Span::styled(if is_selected { "> " } else { "  " }, Style::default().fg(Color::LightCyan)),
+            Span::styled(if is_selected { ">  " } else { "   " }, Style::default().fg(Color::LightCyan)),
             Span::styled(
                 format!("{:<width$}", "(unassigned)", width = NAME_WIDTH),
                 Style::default().fg(Color::DarkGray),
@@ -683,7 +683,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     const MIN_AGENT_WIDTH: usize = 6; // width of "AGENT" header + 1
     const MAX_AGENT_WIDTH: usize = 25;
     const UPDATED_WIDTH: usize = 10;
-    const COL_GAP: &str = "   "; // 3 spaces between columns
+    const COL_GAP: &str = "    "; // 4 spaces between columns
 
     // Scan tasks for longest repo name (multi-repo tasks get [M] prefix)
     let max_repo_len = app
@@ -742,17 +742,17 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .min(MAX_AGENT_WIDTH);
 
     // Compute fixed width from actual components:
-    // icon(1) + padding(3) + col_gaps(5*3=15) + repo + pr + status + agent + updated
-    let fixed_cols_width = (1 + 3 + 15 + repo_width + PR_WIDTH + STATUS_WIDTH + agent_width + UPDATED_WIDTH) as u16;
+    // icon(1) + padding(4) + col_gaps(5*4=20) + repo + pr + status + agent + updated
+    let fixed_cols_width = (1 + 4 + 20 + repo_width + PR_WIDTH + STATUS_WIDTH + agent_width + UPDATED_WIDTH) as u16;
 
     let available_width = inner.width.saturating_sub(fixed_cols_width) as usize;
 
     // Cap branch width to available space
     let branch_width = branch_width.min(available_width.max(MIN_BRANCH_WIDTH));
 
-    // Render header - columns: icon(1) + space(2) + repo + gap + branch + gap + status + gap + agent + gap + updated
+    // Render header - columns: icon(1) + space(3) + repo + gap + branch + gap + status + gap + agent + gap + updated
     let header = Line::from(vec![
-        Span::raw("    "),
+        Span::raw("     "),
         Span::styled(
             format!("{:<width$}", "REPO", width = repo_width),
             Style::default()
@@ -823,6 +823,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
                 ]);
                 items.push(ListItem::new(header_line));
+                items.push(ListItem::new(Line::from("")));
                 shown_running_header = true;
             }
             TaskStatus::InputNeeded if !shown_input_needed_header && input_needed_count > 0 => {
@@ -841,6 +842,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
                 ]);
                 items.push(ListItem::new(header_line));
+                items.push(ListItem::new(Line::from("")));
                 shown_input_needed_header = true;
             }
             TaskStatus::Stopped if !shown_stopped_header && stopped_count > 0 => {
@@ -859,6 +861,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
                 ]);
                 items.push(ListItem::new(header_line));
+                items.push(ListItem::new(Line::from("")));
                 shown_stopped_header = true;
             }
             TaskStatus::OnHold if !shown_on_hold_header && on_hold_count > 0 => {
@@ -877,6 +880,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
                 ]);
                 items.push(ListItem::new(header_line));
+                items.push(ListItem::new(Line::from("")));
                 shown_on_hold_header = true;
             }
             _ => {}
@@ -960,7 +964,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         let line = Line::from(vec![
             Span::raw(" "),
             Span::styled(status_icon, Style::default().fg(status_color)),
-            Span::raw("  "),
+            Span::raw("   "),
             Span::styled(
                 format!("{:<width$}", display_repo, width = repo_width),
                 if task_index == app.selected_index {
@@ -4271,6 +4275,8 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    const COL_GAP: &str = "    "; // 4 spaces between columns
+
     let items: Vec<ListItem> = app
         .researchers
         .iter()
@@ -4292,7 +4298,8 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
                 r.meta.description.clone()
             };
 
-            let style = if i == app.researcher_list_index {
+            let is_selected = i == app.researcher_list_index;
+            let style = if is_selected {
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD)
@@ -4301,13 +4308,20 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let line = Line::from(vec![
-                Span::styled(format!("{:<16}", r.meta.name), style),
-                Span::styled(format!(" {:<14}", r.meta.project), style.fg(Color::Cyan)),
                 Span::styled(
-                    format!(" {:<10}", status_str),
+                    if is_selected { ">  " } else { "   " },
+                    Style::default().fg(Color::LightCyan),
+                ),
+                Span::styled(format!("{:<16}", r.meta.name), style),
+                Span::raw(COL_GAP),
+                Span::styled(format!("{:<14}", r.meta.project), style.fg(Color::Cyan)),
+                Span::raw(COL_GAP),
+                Span::styled(
+                    format!("{:<10}", status_str),
                     Style::default().fg(status_color),
                 ),
-                Span::styled(format!(" {}", desc), style.fg(Color::DarkGray)),
+                Span::raw(COL_GAP),
+                Span::styled(desc, style.fg(Color::DarkGray)),
             ]);
 
             ListItem::new(line)
