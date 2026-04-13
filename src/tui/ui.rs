@@ -265,7 +265,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             spans.push(Span::styled(format!(" {} ", name), chat_style));
         }
         let line = Line::from(spans);
-        f.render_widget(Paragraph::new(line), chunks[3]);
+        f.render_widget(Paragraph::new(line).alignment(Alignment::Right), chunks[3]);
     }
 }
 
