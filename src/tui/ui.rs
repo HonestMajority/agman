@@ -1790,6 +1790,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 ]);
             }
             spans.extend([
+                Span::styled("o", Style::default().fg(Color::LightYellow)),
+                Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("q", Style::default().fg(Color::LightCyan)),
                 Span::styled(" quit", Style::default().fg(Color::DarkGray)),
             ]);
@@ -1863,8 +1865,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(inbox_label, Style::default().fg(Color::DarkGray)),
                 Span::styled("p", Style::default().fg(Color::LightYellow)),
                 Span::styled(" prs  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("m", Style::default().fg(Color::LightYellow)),
-                Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("z", Style::default().fg(Color::LightYellow)),
                 Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(",", Style::default().fg(Color::LightYellow)),

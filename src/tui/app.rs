@@ -2692,6 +2692,18 @@ impl App {
                         self.view = View::ProjectDeleteConfirm;
                     }
                 }
+                KeyCode::Char('o') => {
+                    match NotesView::new(self.config.notes_dir.clone()) {
+                        Ok(nv) => {
+                            tracing::info!("opening notes view");
+                            self.notes_view = Some(nv);
+                            self.view = View::Notes;
+                        }
+                        Err(e) => {
+                            self.set_status(format!("Failed to open notes: {e}"));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -2877,17 +2889,6 @@ impl App {
                     self.view = View::ShowPrs;
                     if !self.show_prs_first_poll_done && !self.show_prs_poll_active {
                         self.start_show_prs_poll();
-                    }
-                }
-                KeyCode::Char('m') => {
-                    match NotesView::new(self.config.notes_dir.clone()) {
-                        Ok(nv) => {
-                            self.notes_view = Some(nv);
-                            self.view = View::Notes;
-                        }
-                        Err(e) => {
-                            self.set_status(format!("Failed to open notes: {e}"));
-                        }
                     }
                 }
                 KeyCode::Char('b') => {
