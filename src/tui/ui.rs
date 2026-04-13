@@ -4261,7 +4261,18 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
     use agman::tmux::Tmux;
 
     let block = Block::default()
-        .title(" Researchers ")
+        .title(Line::from(vec![
+            Span::styled(
+                " Researchers ",
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({}) ", app.researchers.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
@@ -4274,31 +4285,146 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    const COL_GAP: &str = "    "; // 4 spaces between columns
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    let items: Vec<ListItem> = app
+    // Split inner area into header and list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
+    // Dynamic column widths
+    const MIN_NAME_WIDTH: usize = 4;
+    const MAX_NAME_WIDTH: usize = 20;
+    const MIN_PROJECT_WIDTH: usize = 7;
+    const MAX_PROJECT_WIDTH: usize = 20;
+    const STATUS_WIDTH: usize = 10;
+    const COL_GAP: &str = "   ";
+
+    let name_width = app
         .researchers
         .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let session_name =
-                Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
-            let (status_str, status_color) = if r.meta.status == ResearcherStatus::Archived {
-                ("archived", Color::DarkGray)
-            } else if Tmux::session_exists(&session_name) {
-                ("running", Color::LightGreen)
+        .map(|r| r.meta.name.len())
+        .max()
+        .unwrap_or(MIN_NAME_WIDTH)
+        .max(MIN_NAME_WIDTH)
+        .min(MAX_NAME_WIDTH);
+
+    let project_width = app
+        .researchers
+        .iter()
+        .map(|r| r.meta.project.len())
+        .max()
+        .unwrap_or(MIN_PROJECT_WIDTH)
+        .max(MIN_PROJECT_WIDTH)
+        .min(MAX_PROJECT_WIDTH);
+
+    // leading_padding(4: " " + icon + "  ") + 3 col_gaps(9) + name + project + status
+    let fixed_width = 4 + 9 + name_width + project_width + STATUS_WIDTH;
+    let desc_width = (inner.width as usize).saturating_sub(fixed_width);
+
+    // Render header row
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let header = Line::from(vec![
+        Span::raw("    "),
+        Span::styled(format!("{:<width$}", "NAME", width = name_width), header_style),
+        Span::raw(COL_GAP),
+        Span::styled(format!("{:<width$}", "PROJECT", width = project_width), header_style),
+        Span::raw(COL_GAP),
+        Span::styled(format!("{:<width$}", "STATUS", width = STATUS_WIDTH), header_style),
+        Span::raw(COL_GAP),
+        Span::styled("DESCRIPTION", header_style),
+    ]);
+    f.render_widget(Paragraph::new(header), chunks[0]);
+
+    // Partition researchers into 3 groups by effective status
+    let mut running: Vec<(usize, &agman::researcher::Researcher)> = Vec::new();
+    let mut stopped: Vec<(usize, &agman::researcher::Researcher)> = Vec::new();
+    let mut archived: Vec<(usize, &agman::researcher::Researcher)> = Vec::new();
+
+    for (i, r) in app.researchers.iter().enumerate() {
+        if r.meta.status == ResearcherStatus::Archived {
+            archived.push((i, r));
+        } else {
+            let session_name = Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
+            if Tmux::session_exists(&session_name) {
+                running.push((i, r));
             } else {
-                ("stopped", Color::Yellow)
+                stopped.push((i, r));
+            }
+        }
+    }
+
+    // Build items with section headers and separators
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut researcher_index: usize = 0;
+    let mut groups_shown: usize = 0;
+
+    let groups: Vec<(&str, &str, Color, &[(usize, &agman::researcher::Researcher)])> = vec![
+        ("Running", "●", Color::LightGreen, &running),
+        ("Stopped", "○", Color::Yellow, &stopped),
+        ("Archived", "○", Color::DarkGray, &archived),
+    ];
+
+    for (group_name, icon, group_color, members) in &groups {
+        if members.is_empty() {
+            continue;
+        }
+
+        // Blank separator between groups
+        if groups_shown > 0 {
+            items.push(ListItem::new(Line::from("")));
+        }
+
+        // Section header
+        let label = format!("── {} ({}) ", group_name, members.len());
+        let fill = (inner.width as usize).saturating_sub(label.len());
+        let header_line = Line::from(vec![
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(*group_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+        ]);
+        items.push(ListItem::new(header_line));
+        groups_shown += 1;
+
+        for (orig_idx, r) in *members {
+            let is_selected = *orig_idx == app.researcher_list_index;
+
+            // Derive status from group metadata — no redundant tmux check
+            let status_str = group_name.to_lowercase();
+            let status_color = *group_color;
+
+            // Truncate name if needed
+            let display_name = if r.meta.name.len() > name_width {
+                format!("{}…", &r.meta.name[..name_width.saturating_sub(1)])
+            } else {
+                r.meta.name.clone()
             };
 
-            let desc = if r.meta.description.len() > 50 {
-                format!("{}...", &r.meta.description[..47])
+            // Truncate project if needed
+            let display_project = if r.meta.project.len() > project_width {
+                format!("{}…", &r.meta.project[..project_width.saturating_sub(1)])
+            } else {
+                r.meta.project.clone()
+            };
+
+            // Truncate description
+            let desc = if desc_width == 0 {
+                String::new()
+            } else if r.meta.description.len() > desc_width {
+                format!("{}…", &r.meta.description[..desc_width.saturating_sub(1)])
             } else {
                 r.meta.description.clone()
             };
 
-            let is_selected = i == app.researcher_list_index;
-            let style = if is_selected {
+            let text_style = if is_selected {
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD)
@@ -4307,31 +4433,45 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let line = Line::from(vec![
+                Span::raw(" "),
+                Span::styled(*icon, Style::default().fg(status_color)),
+                Span::raw("  "),
                 Span::styled(
-                    if is_selected { ">  " } else { "   " },
-                    Style::default().fg(Color::LightCyan),
+                    format!("{:<width$}", display_name, width = name_width),
+                    text_style,
                 ),
-                Span::styled(format!("{:<16}", r.meta.name), style),
-                Span::raw(COL_GAP),
-                Span::styled(format!("{:<14}", r.meta.project), style.fg(Color::Cyan)),
                 Span::raw(COL_GAP),
                 Span::styled(
-                    format!("{:<10}", status_str),
+                    format!("{:<width$}", display_project, width = project_width),
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Cyan)
+                    },
+                ),
+                Span::raw(COL_GAP),
+                Span::styled(
+                    format!("{:<width$}", status_str, width = STATUS_WIDTH),
                     Style::default().fg(status_color),
                 ),
                 Span::raw(COL_GAP),
-                Span::styled(desc, style.fg(Color::DarkGray)),
+                Span::styled(desc, Style::default().fg(Color::DarkGray)),
             ]);
 
-            ListItem::new(line)
-        })
-        .collect();
+            let row_style = if is_selected {
+                Style::default().bg(Color::Rgb(40, 40, 50))
+            } else {
+                Style::default()
+            };
 
-    let list = List::new(items).block(block).highlight_style(
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    );
+            items.push(ListItem::new(line).style(row_style));
+            researcher_index += 1;
+        }
+    }
 
-    f.render_widget(list, area);
+    let _ = researcher_index; // suppress unused warning
+    let list = List::new(items);
+    f.render_widget(list, chunks[1]);
 }
