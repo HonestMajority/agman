@@ -1012,6 +1012,28 @@ pub fn save_archive_retention(config: &Config, days: u64) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Telegram Config
+// ---------------------------------------------------------------------------
+
+/// Load the Telegram bot token and chat ID from config.
+pub fn load_telegram_config(config: &Config) -> (Option<String>, Option<String>) {
+    let cf = crate::config::load_config_file(&config.base_dir);
+    (cf.telegram_bot_token, cf.telegram_chat_id)
+}
+
+/// Save the Telegram bot token and chat ID to config, preserving other config fields.
+pub fn save_telegram_config(
+    config: &Config,
+    token: Option<String>,
+    chat_id: Option<String>,
+) -> Result<()> {
+    let mut cf = crate::config::load_config_file(&config.base_dir);
+    cf.telegram_bot_token = token;
+    cf.telegram_chat_id = chat_id;
+    crate::config::save_config_file(&config.base_dir, &cf)
+}
+
+// ---------------------------------------------------------------------------
 // GitHub Notifications
 // ---------------------------------------------------------------------------
 

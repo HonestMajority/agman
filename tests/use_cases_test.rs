@@ -1540,11 +1540,51 @@ fn save_and_load_config_file_roundtrip() {
         repos_dir: Some("/tmp/my-repos".to_string()),
         break_interval_mins: None,
         archive_retention_days: None,
+        telegram_bot_token: None,
+        telegram_chat_id: None,
     };
     agman::config::save_config_file(&base_dir, &cf).unwrap();
 
     let loaded = agman::config::load_config_file(&base_dir);
     assert_eq!(loaded.repos_dir.unwrap(), "/tmp/my-repos");
+}
+
+// ---------------------------------------------------------------------------
+// Telegram Config
+// ---------------------------------------------------------------------------
+
+#[test]
+fn load_telegram_config_defaults() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let (token, chat_id) = agman::use_cases::load_telegram_config(&config);
+    assert!(token.is_none());
+    assert!(chat_id.is_none());
+}
+
+#[test]
+fn save_and_load_telegram_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    // Save break interval first to verify it's preserved
+    agman::use_cases::save_break_interval(&config, 42).unwrap();
+
+    agman::use_cases::save_telegram_config(
+        &config,
+        Some("bot123:ABC".to_string()),
+        Some("-100999".to_string()),
+    )
+    .unwrap();
+
+    let (token, chat_id) = agman::use_cases::load_telegram_config(&config);
+    assert_eq!(token.unwrap(), "bot123:ABC");
+    assert_eq!(chat_id.unwrap(), "-100999");
+
+    // Verify other config fields are preserved
+    let mins = agman::use_cases::load_break_interval(&config).as_secs() / 60;
+    assert_eq!(mins, 42);
 }
 
 // ---------------------------------------------------------------------------
