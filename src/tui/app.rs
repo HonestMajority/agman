@@ -972,6 +972,8 @@ impl App {
             tracing::warn!(error = %e, "failed to list projects");
             Vec::new()
         });
+        // Sort held projects to the bottom (stable sort preserves alphabetical order within groups)
+        self.projects.sort_by_key(|p| p.meta.held);
         // Count tasks per project and unassigned
         let all_tasks = Task::list_all(&self.config);
         self.project_task_counts.clear();
@@ -2727,6 +2729,30 @@ impl App {
                         let name = self.projects[self.selected_project_index].meta.name.clone();
                         self.project_to_delete = Some(name);
                         self.view = View::ProjectDeleteConfirm;
+                    }
+                }
+                KeyCode::Char('h') => {
+                    // Toggle hold — only for real projects, not "(unassigned)"
+                    if self.selected_project_index < self.projects.len() {
+                        let name = self.projects[self.selected_project_index].meta.name.clone();
+                        match use_cases::toggle_project_hold(&self.config, &name) {
+                            Ok(()) => {
+                                // In-memory state is still pre-toggle (refresh hasn't happened yet)
+                                let was_held = self.projects[self.selected_project_index].meta.held;
+                                let msg = if was_held {
+                                    format!("Resumed: {name}")
+                                } else {
+                                    format!("On hold: {name}")
+                                };
+                                tracing::info!(project = %name, "toggled project hold");
+                                self.refresh_projects();
+                                self.set_status(msg);
+                            }
+                            Err(e) => {
+                                tracing::error!(project = %name, error = %e, "failed to toggle project hold");
+                                self.set_status(format!("Failed to toggle hold: {e}"));
+                            }
+                        }
                     }
                 }
                 KeyCode::Char('b') => {
@@ -5462,6 +5488,39 @@ impl App {
 
                     let mut delivered = 0;
                     let mut errors = Vec::new();
+
+                    // Check if the session's Claude prompt is ready before attempting delivery
+                    match Tmux::is_session_ready(&session_name) {
+                        Ok(false) => {
+                            tracing::debug!(
+                                target_name = &target,
+                                session = &session_name,
+                                "session not ready, skipping delivery this cycle"
+                            );
+                            results.push(InboxPollResult {
+                                target,
+                                delivered: 0,
+                                errors: vec![],
+                            });
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                target_name = &target,
+                                session = &session_name,
+                                error = %e,
+                                "session readiness check failed, skipping"
+                            );
+                            results.push(InboxPollResult {
+                                target,
+                                delivered: 0,
+                                errors: vec![],
+                            });
+                            continue;
+                        }
+                        Ok(true) => {}
+                    }
+
                     'msg_loop: for msg in &undelivered {
                         let formatted_snippet = format!("[msg:{}:{}]", msg.from, msg.seq);
 

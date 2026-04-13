@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Clean initial content written to REVIEW.md
 pub const REVIEW_MD_INITIAL: &str = "# Code Review\n\n(Review in progress...)\n";
@@ -375,9 +376,11 @@ impl Tmux {
 
     /// Inject a formatted message into an agent's tmux session.
     ///
-    /// Uses two separate tmux calls: one to send the text literally (no key-name
-    /// interpretation) and a second to send Enter as a distinct key event. This
-    /// ensures interactive Claude Code sessions actually submit the message.
+    /// Uses `tmux load-buffer -` (stdin pipe) + `paste-buffer -p` (bracket paste
+    /// mode) to paste the message as a single block. This preserves newlines in
+    /// multiline messages — bracket paste wraps the content in escape sequences
+    /// that prevent the terminal from interpreting newlines as Enter presses.
+    /// A separate Enter key event is then sent to submit the message.
     ///
     /// The `seq` parameter is the unique message sequence number, used to build
     /// a delivery tag (`[msg:{from}:{seq}]`) so each message can be uniquely
@@ -385,16 +388,45 @@ impl Tmux {
     pub fn inject_message(session_name: &str, from: &str, message: &str, seq: u64) -> Result<()> {
         let formatted = format!("[msg:{}:{}] [Message from {}]: {}", from, seq, from, message);
 
-        tracing::trace!(session = session_name, "injecting message text literally");
-        let text_output = Command::new("tmux")
-            .args(["send-keys", "-t", session_name, "-l", &formatted])
-            .output()
-            .context("failed to send message text to agent session")?;
+        // Load message into tmux paste buffer via stdin (avoids shell escaping issues)
+        tracing::trace!(session = session_name, "loading message into tmux buffer");
+        let mut load_child = Command::new("tmux")
+            .args(["load-buffer", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to spawn tmux load-buffer")?;
 
-        if !text_output.status.success() {
+        load_child
+            .stdin
+            .take()
+            .expect("stdin was piped")
+            .write_all(formatted.as_bytes())
+            .context("failed to write message to tmux load-buffer stdin")?;
+
+        let load_output = load_child
+            .wait_with_output()
+            .context("failed to wait for tmux load-buffer")?;
+
+        if !load_output.status.success() {
             anyhow::bail!(
-                "failed to send message text to agent session: {}",
-                String::from_utf8_lossy(&text_output.stderr)
+                "tmux load-buffer failed: {}",
+                String::from_utf8_lossy(&load_output.stderr)
+            );
+        }
+
+        // Paste buffer into target session with bracket paste mode
+        tracing::trace!(session = session_name, "pasting buffer with bracket paste mode");
+        let paste_output = Command::new("tmux")
+            .args(["paste-buffer", "-p", "-t", session_name])
+            .output()
+            .context("failed to paste buffer into agent session")?;
+
+        if !paste_output.status.success() {
+            anyhow::bail!(
+                "tmux paste-buffer failed: {}",
+                String::from_utf8_lossy(&paste_output.stderr)
             );
         }
 
@@ -466,5 +498,25 @@ impl Tmux {
         }
 
         Ok(())
+    }
+
+    /// Non-blocking check whether a tmux session has Claude Code's input prompt visible.
+    ///
+    /// Performs a single `capture_pane` call and checks the last few non-empty lines
+    /// for Claude Code's prompt indicator (`>` or `❯` at the start of a line).
+    /// Returns `true` if the prompt is detected, `false` otherwise.
+    pub fn is_session_ready(session_name: &str) -> Result<bool> {
+        let content = Self::capture_pane(session_name)?;
+        let ready = content
+            .lines()
+            .rev()
+            .filter(|line| !line.trim().is_empty())
+            .take(5)
+            .any(|line| {
+                let trimmed = line.trim_start();
+                trimmed.starts_with("> ") || trimmed.starts_with('❯') || trimmed == ">"
+            });
+        tracing::debug!(session = session_name, ready, "session readiness check");
+        Ok(ready)
     }
 }
