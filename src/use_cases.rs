@@ -2971,8 +2971,8 @@ AGMAN_MSG
 - Keep the CEO informed of significant progress or blockers
 
 ## Reactive Behavior
-- **Relay completions to the CEO**: When you receive a notification that a task has completed, failed, or needs input, report the status back to the CEO via `send-message`. Include the task name, outcome, and any relevant details (e.g., PR link, error summary).
-- **Do NOT poll**: Never proactively check task statuses or poll researchers. Wait for incoming notifications and messages, then react. Your behavior should be entirely event-driven.
+- **Relay completions — only for CEO-initiated work**: When you receive a notification that a task or researcher has completed, failed, or needs input, check whether this work originated from a CEO directive. If the CEO asked you to do this work, report the result back to the CEO via `send-message` — include the task name, outcome, and relevant details (e.g., PR link, error summary). If you initiated the work yourself (e.g., routine maintenance, self-directed improvements), do NOT report back to the CEO.
+- **Do NOT poll**: Never proactively check task statuses or poll researchers. Tasks and researchers notify you when they finish — wait for those notifications. Your behavior is entirely event-driven: receive a message, then act.
 
 ## Message Routing
 
