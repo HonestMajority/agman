@@ -6246,17 +6246,18 @@ fn branch_search_score(branch: &str, terms: &[&str]) -> i64 {
 }
 
 pub fn run_tui(config: Config) -> Result<()> {
-    // Remove any stale restart signal file left over from a previous build.
+    // Remove any stale restart signal files left over from a previous run.
     // This prevents a "double restart" if the TUI missed the signal (e.g. it
     // crashed or was not running when release.sh created the file).
     #[cfg(unix)]
     {
-        let restart_signal = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".agman/.restart-tui");
-        if restart_signal.exists() {
-            tracing::info!("removing stale .restart-tui signal file at startup");
-            let _ = std::fs::remove_file(&restart_signal);
+        let base = dirs::home_dir().unwrap_or_default().join(".agman");
+        for name in [".restart-tui", ".force-restart-tui"] {
+            let path = base.join(name);
+            if path.exists() {
+                tracing::info!(file = name, "removing stale restart signal file at startup");
+                let _ = std::fs::remove_file(&path);
+            }
         }
     }
 
@@ -6385,6 +6386,19 @@ pub fn run_tui(config: Config) -> Result<()> {
             // Check for completed respawn results (non-blocking)
             app.apply_respawn_results();
 
+            // Check for force-restart signal (written by `agman restart` CLI command)
+            #[cfg(unix)]
+            {
+                let force_restart_signal = dirs::home_dir()
+                    .unwrap_or_default()
+                    .join(".agman/.force-restart-tui");
+                if force_restart_signal.exists() {
+                    tracing::info!("detected .force-restart-tui signal file, restarting immediately");
+                    let _ = std::fs::remove_file(&force_restart_signal);
+                    app.should_restart = true;
+                }
+            }
+
             // Check for restart signal (written by release.sh when agman is rebuilt)
             #[cfg(unix)]
             {
@@ -6401,7 +6415,7 @@ pub fn run_tui(config: Config) -> Result<()> {
                     if let Err(e) = inbox::append_message(
                         &ceo_inbox,
                         "system",
-                        "A new agman version has been installed. To pick up the new binary, respawn yourself and any PMs. Use: agman respawn-agent ceo, then agman respawn-agent <project> for each PM.",
+                        "A new agman version has been installed. Use `agman restart` to restart the TUI and pick up the new binary.",
                     ) {
                         tracing::warn!(error = %e, "failed to notify CEO about new version");
                     } else {
