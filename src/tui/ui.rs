@@ -100,18 +100,6 @@ fn clock_title(app: &App) -> Line<'static> {
         vec![]
     };
 
-    let chat_spans = if app.chat_unread_count > 0 {
-        vec![Span::styled(
-            format!(" CHAT {} ", app.chat_unread_count),
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(100, 200, 100))
-                .add_modifier(Modifier::BOLD),
-        )]
-    } else {
-        vec![]
-    };
-
     let clock_span = Span::styled(
         format!(" {} ", Local::now().format("%H:%M")),
         Style::default().fg(Color::DarkGray),
@@ -120,7 +108,6 @@ fn clock_title(app: &App) -> Line<'static> {
     let mut spans = break_spans;
     spans.extend(notif_spans);
     spans.extend(keybase_spans);
-    spans.extend(chat_spans);
     spans.push(clock_span);
 
     Line::from(spans).alignment(Alignment::Right)
@@ -155,12 +142,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         (app.output_log.len() as u16 + 2).min(8) // 2 for borders, max 8 lines
     };
 
+    let chat_height: u16 = if app.chat_unread_names.is_empty() {
+        0
+    } else {
+        1
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(10),
             Constraint::Length(output_height),
             Constraint::Length(3),
+            Constraint::Length(chat_height),
         ])
         .split(f.area());
 
@@ -257,6 +251,22 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     draw_status_bar(f, app, chunks[2]);
+
+    if chat_height > 0 {
+        let chat_style = Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(100, 200, 100))
+            .add_modifier(Modifier::BOLD);
+        let mut spans: Vec<Span> = Vec::new();
+        for (i, name) in app.chat_unread_names.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" "));
+            }
+            spans.push(Span::styled(format!(" {} ", name), chat_style));
+        }
+        let line = Line::from(spans);
+        f.render_widget(Paragraph::new(line), chunks[3]);
+    }
 }
 
 fn render_project_row<'a>(

@@ -3188,18 +3188,20 @@ fn chat_unread_count_and_mark_read() {
         agman::inbox::append_message(&project_inbox, "ceo", &format!("task {}", i)).unwrap();
     }
 
-    // Count unread — should be 5 total
+    // Count unread — should have CEO and test-project
     let result = use_cases::count_unread_chat_messages(&config);
-    assert_eq!(result.unread_count, 5);
+    assert!(result.unread_names.contains(&"CEO".to_string()));
+    assert!(result.unread_names.contains(&"test-project".to_string()));
+    assert_eq!(result.unread_names.len(), 2);
 
     // Mark CEO inbox as read
     use_cases::mark_chat_read(&config, "ceo", &ceo_inbox).unwrap();
     let result = use_cases::count_unread_chat_messages(&config);
-    assert_eq!(result.unread_count, 2);
+    assert_eq!(result.unread_names, vec!["test-project".to_string()]);
 
     // Mark project inbox as read
     let project_key = format!("project:{}", project_name);
     use_cases::mark_chat_read(&config, &project_key, &project_inbox).unwrap();
     let result = use_cases::count_unread_chat_messages(&config);
-    assert_eq!(result.unread_count, 0);
+    assert!(result.unread_names.is_empty());
 }
