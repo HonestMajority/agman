@@ -793,6 +793,39 @@ fn format_status_breakdown(tasks: &[use_cases::TaskSummary]) -> String {
         .join(", ")
 }
 
+fn format_task_line(t: &use_cases::TaskSummary) {
+    let step_str = match t.total_steps {
+        Some(total) => format!("step {}/{}", t.flow_step, total),
+        None => format!("step {}", t.flow_step),
+    };
+    let agent_str = match &t.current_agent {
+        Some(agent) => format!(" ({})", agent),
+        None => String::new(),
+    };
+    let time_str = format_relative_time(t.updated_at);
+    let status_str = if t.queued_count > 0 {
+        format!("{} (+{})", t.status, t.queued_count)
+    } else {
+        format!("{}", t.status)
+    };
+    println!(
+        "  {:<40} {:<14} {}{:<20} {}",
+        t.task_id,
+        status_str,
+        step_str,
+        agent_str,
+        time_str
+    );
+}
+
+fn format_researchers_line(researchers: &[use_cases::ResearcherSummary]) -> String {
+    researchers
+        .iter()
+        .map(|r| format!("{} ({})", r.name, r.status))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn cmd_status(config: &Config) -> Result<()> {
     let status = use_cases::aggregated_status(config)?;
 
@@ -816,23 +849,10 @@ fn cmd_status(config: &Config) -> Result<()> {
             archived_suffix
         );
         for t in &group.tasks {
-            let step_str = match t.total_steps {
-                Some(total) => format!("step {}/{}", t.flow_step, total),
-                None => format!("step {}", t.flow_step),
-            };
-            let agent_str = match &t.current_agent {
-                Some(agent) => format!(" ({})", agent),
-                None => String::new(),
-            };
-            let time_str = format_relative_time(t.updated_at);
-            println!(
-                "  {:<40} {:<14} {}{:<20} {}",
-                t.task_id,
-                format!("{}", t.status),
-                step_str,
-                agent_str,
-                time_str
-            );
+            format_task_line(t);
+        }
+        if !group.researchers.is_empty() {
+            println!("  Researchers: {}", format_researchers_line(&group.researchers));
         }
     }
 
@@ -846,24 +866,13 @@ fn cmd_status(config: &Config) -> Result<()> {
         };
         println!("Unassigned ({} {}{})", status.unassigned.len(), task_word, archived_suffix);
         for t in &status.unassigned {
-            let step_str = match t.total_steps {
-                Some(total) => format!("step {}/{}", t.flow_step, total),
-                None => format!("step {}", t.flow_step),
-            };
-            let agent_str = match &t.current_agent {
-                Some(agent) => format!(" ({})", agent),
-                None => String::new(),
-            };
-            let time_str = format_relative_time(t.updated_at);
-            println!(
-                "  {:<40} {:<14} {}{:<20} {}",
-                t.task_id,
-                format!("{}", t.status),
-                step_str,
-                agent_str,
-                time_str
-            );
+            format_task_line(t);
         }
+    }
+
+    if !status.ceo_researchers.is_empty() {
+        println!();
+        println!("CEO researchers: {}", format_researchers_line(&status.ceo_researchers));
     }
 
     Ok(())
