@@ -420,6 +420,21 @@ pub fn resume_from_hold(task: &mut Task) -> Result<()> {
     Ok(())
 }
 
+/// Toggle hold status on a project.
+pub fn toggle_project_hold(config: &Config, project_name: &str) -> Result<()> {
+    let mut project = Project::load_by_name(config, project_name)?;
+    let old_held = project.meta.held;
+    project.meta.held = !old_held;
+    project.save_meta()?;
+    tracing::info!(
+        project = %project_name,
+        old_held = old_held,
+        new_held = project.meta.held,
+        "toggled project hold"
+    );
+    Ok(())
+}
+
 /// Resume a task after the user has answered questions: set status back to Running.
 ///
 /// This is the pure business logic behind `App::resume_after_answering()`.

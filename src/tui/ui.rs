@@ -246,6 +246,102 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_status_bar(f, app, chunks[2]);
 }
 
+fn render_project_row<'a>(
+    app: &'a App,
+    project: &'a agman::project::Project,
+    i: usize,
+    is_held: bool,
+    project_width: usize,
+    desc_width: usize,
+) -> ListItem<'a> {
+    const TASKS_WIDTH: usize = 6;
+    const ACTIVE_WIDTH: usize = 7;
+    const COL_GAP: &str = "    ";
+
+    let (total, active, unseen_stopped) = app
+        .project_task_counts
+        .get(&project.meta.name)
+        .copied()
+        .unwrap_or((0, 0, 0));
+
+    let is_selected = i == app.selected_project_index;
+    let style = if is_selected {
+        Style::default().bg(Color::Rgb(40, 40, 60))
+    } else {
+        Style::default()
+    };
+
+    let name_display = if project.meta.name.len() > project_width {
+        format!("{}…", &project.meta.name[..project_width - 1])
+    } else {
+        format!("{:<width$}", &project.meta.name, width = project_width)
+    };
+
+    let name_style = if is_held {
+        Style::default().fg(Color::Gray)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    let active_style = if active > 0 {
+        Style::default().fg(Color::LightGreen)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let desc_span = if desc_width == 0 {
+        Span::raw("")
+    } else if project.meta.description.is_empty() {
+        Span::styled(
+            "No description",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        )
+    } else if project.meta.description.len() > desc_width {
+        Span::styled(
+            format!(
+                "{}…",
+                &project.meta.description[..desc_width.saturating_sub(1)]
+            ),
+            Style::default().fg(Color::DarkGray),
+        )
+    } else {
+        Span::styled(
+            project.meta.description.as_str(),
+            Style::default().fg(Color::DarkGray),
+        )
+    };
+
+    let data_line = Line::from(vec![
+        Span::styled(
+            if unseen_stopped > 0 { "● " } else { "  " },
+            Style::default().fg(Color::Rgb(100, 200, 220)),
+        ),
+        Span::styled(
+            if is_selected { "> " } else { "  " },
+            Style::default().fg(Color::LightCyan),
+        ),
+        Span::styled(name_display, name_style),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:>width$}", total, width = TASKS_WIDTH),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:>width$}", active, width = ACTIVE_WIDTH),
+            active_style,
+        ),
+        Span::raw(COL_GAP),
+        desc_span,
+    ]);
+
+    ListItem::new(vec![data_line, Line::from("")]).style(style)
+}
+
 fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(Line::from(vec![
@@ -323,90 +419,16 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(header), chunks[0]);
 
-    // Build list items
+    // Build list items — partition into active and held projects
     let mut items: Vec<ListItem> = Vec::new();
+    let held_count = app.projects.iter().filter(|p| p.meta.held).count();
 
+    // Render active (non-held) projects
     for (i, project) in app.projects.iter().enumerate() {
-        let (total, active, unseen_stopped) = app.project_task_counts
-            .get(&project.meta.name)
-            .copied()
-            .unwrap_or((0, 0, 0));
-
-        let is_selected = i == app.selected_project_index;
-        let style = if is_selected {
-            Style::default().bg(Color::Rgb(40, 40, 60))
-        } else {
-            Style::default()
-        };
-
-        // Truncate project name if needed
-        let name_display = if project.meta.name.len() > project_width {
-            format!("{}…", &project.meta.name[..project_width - 1])
-        } else {
-            format!("{:<width$}", &project.meta.name, width = project_width)
-        };
-
-        // Active count styling
-        let active_style = if active > 0 {
-            Style::default().fg(Color::LightGreen)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-
-        // Description
-        let desc_span = if desc_width == 0 {
-            Span::raw("")
-        } else if project.meta.description.is_empty() {
-            Span::styled(
-                "No description",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            )
-        } else if project.meta.description.len() > desc_width {
-            Span::styled(
-                format!("{}…", &project.meta.description[..desc_width.saturating_sub(1)]),
-                Style::default().fg(Color::DarkGray),
-            )
-        } else {
-            Span::styled(
-                &project.meta.description,
-                Style::default().fg(Color::DarkGray),
-            )
-        };
-
-        let data_line = Line::from(vec![
-            Span::styled(
-                if unseen_stopped > 0 { "● " } else { "  " },
-                Style::default().fg(Color::Rgb(100, 200, 220)),
-            ),
-            Span::styled(
-                if is_selected { "> " } else { "  " },
-                Style::default().fg(Color::LightCyan),
-            ),
-            Span::styled(
-                name_display,
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(COL_GAP),
-            Span::styled(
-                format!("{:>width$}", total, width = TASKS_WIDTH),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw(COL_GAP),
-            Span::styled(
-                format!("{:>width$}", active, width = ACTIVE_WIDTH),
-                active_style,
-            ),
-            Span::raw(COL_GAP),
-            desc_span,
-        ]);
-
-        items.push(
-            ListItem::new(vec![data_line, Line::from("")]).style(style),
-        );
+        if project.meta.held {
+            break; // held projects are sorted to the end
+        }
+        items.push(render_project_row(app, project, i, false, project_width, desc_width));
     }
 
     // Add "(unassigned)" pseudo-entry if there are unassigned tasks
@@ -441,6 +463,29 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]);
         items.push(ListItem::new(vec![line, Line::from("")]).style(style));
+    }
+
+    // Render on-hold section header and held projects
+    if held_count > 0 {
+        let label = format!("── On Hold ({}) ", held_count);
+        let fill = (inner.width as usize).saturating_sub(label.len());
+        let header_line = Line::from(vec![
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Rgb(180, 140, 60))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+        ]);
+        items.push(ListItem::new(header_line));
+        items.push(ListItem::new(Line::from("")));
+
+        for (i, project) in app.projects.iter().enumerate() {
+            if project.meta.held {
+                items.push(render_project_row(app, project, i, true, project_width, desc_width));
+            }
+        }
     }
 
     let list = List::new(items);
@@ -1851,11 +1896,20 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" migrate  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
-            // Show delete hint when a real project is selected
+            // Show delete and hold hints when a real project is selected
             if app.selected_project_index < app.projects.len() {
                 spans.extend([
                     Span::styled("d", Style::default().fg(Color::LightRed)),
                     Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
+                ]);
+                let hold_label = if app.projects[app.selected_project_index].meta.held {
+                    " unhold  "
+                } else {
+                    " hold  "
+                };
+                spans.extend([
+                    Span::styled("h", Style::default().fg(Color::LightYellow)),
+                    Span::styled(hold_label, Style::default().fg(Color::DarkGray)),
                 ]);
             }
             spans.extend([

@@ -1,6 +1,7 @@
 mod helpers;
 
 use agman::git::parse_github_owner_repo;
+use agman::project::Project;
 use agman::repo_stats::RepoStats;
 use agman::task::{QueueItem, Task, TaskStatus};
 use agman::use_cases::{self, GithubItemKind, PrPollAction, WorktreeSource};
@@ -788,6 +789,29 @@ fn put_on_hold() {
     // Persisted to disk
     let loaded = Task::load(&config, "repo", "branch").unwrap();
     assert_eq!(loaded.meta.status, TaskStatus::OnHold);
+}
+
+// ---------------------------------------------------------------------------
+// Toggle project hold
+// ---------------------------------------------------------------------------
+
+#[test]
+fn toggle_project_hold() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    // Create a project
+    Project::create(&config, "myproject", "A test project").unwrap();
+
+    // Toggle hold on — should set held = true
+    use_cases::toggle_project_hold(&config, "myproject").unwrap();
+    let loaded = Project::load_by_name(&config, "myproject").unwrap();
+    assert!(loaded.meta.held);
+
+    // Toggle hold off — should set held = false
+    use_cases::toggle_project_hold(&config, "myproject").unwrap();
+    let loaded = Project::load_by_name(&config, "myproject").unwrap();
+    assert!(!loaded.meta.held);
 }
 
 // ---------------------------------------------------------------------------
