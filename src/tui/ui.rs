@@ -100,6 +100,18 @@ fn clock_title(app: &App) -> Line<'static> {
         vec![]
     };
 
+    let chat_spans = if app.chat_unread_count > 0 {
+        vec![Span::styled(
+            format!(" CHAT {} ", app.chat_unread_count),
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(100, 200, 100))
+                .add_modifier(Modifier::BOLD),
+        )]
+    } else {
+        vec![]
+    };
+
     let clock_span = Span::styled(
         format!(" {} ", Local::now().format("%H:%M")),
         Style::default().fg(Color::DarkGray),
@@ -108,6 +120,7 @@ fn clock_title(app: &App) -> Line<'static> {
     let mut spans = break_spans;
     spans.extend(notif_spans);
     spans.extend(keybase_spans);
+    spans.extend(chat_spans);
     spans.push(clock_span);
 
     Line::from(spans).alignment(Alignment::Right)

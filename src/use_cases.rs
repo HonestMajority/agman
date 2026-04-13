@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -2665,6 +2665,102 @@ pub fn get_task_log_tail(config: &Config, task_id: &str, n: usize) -> Result<Str
     let lines: Vec<&str> = contents.lines().collect();
     let start = lines.len().saturating_sub(n);
     Ok(lines[start..].join("\n"))
+}
+
+// ---------------------------------------------------------------------------
+// Chat unread tracking
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChatLastSeen(pub std::collections::HashMap<String, u64>);
+
+impl ChatLastSeen {
+    pub fn load(path: &Path) -> Self {
+        let data = match std::fs::read_to_string(path) {
+            Ok(d) => d,
+            Err(_) => return Self::default(),
+        };
+        serde_json::from_str(&data).unwrap_or_default()
+    }
+
+    pub fn save(&self, path: &Path) {
+        if let Ok(data) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, data);
+        }
+    }
+
+    pub fn get(&self, key: &str) -> u64 {
+        self.0.get(key).copied().unwrap_or(0)
+    }
+
+    pub fn set(&mut self, key: String, seq: u64) {
+        self.0.insert(key, seq);
+    }
+}
+
+pub struct ChatPollResult {
+    pub unread_count: usize,
+}
+
+/// Count total unread chat messages across all inboxes (CEO + all projects).
+pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
+    let last_seen = ChatLastSeen::load(&config.chat_last_seen_path());
+    let mut total: usize = 0;
+
+    // CEO inbox
+    let ceo_inbox = config.ceo_inbox();
+    if let Ok(messages) = inbox::read_messages(&ceo_inbox) {
+        if let Some(last) = messages.last() {
+            let seen = last_seen.get("ceo");
+            if last.seq > seen {
+                total += (last.seq - seen) as usize;
+            }
+        }
+    }
+
+    // Project inboxes
+    if let Ok(entries) = std::fs::read_dir(config.projects_dir()) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let project_name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let inbox_path = config.project_inbox(&project_name);
+            if let Ok(messages) = inbox::read_messages(&inbox_path) {
+                if let Some(last) = messages.last() {
+                    let key = format!("project:{}", project_name);
+                    let seen = last_seen.get(&key);
+                    if last.seq > seen {
+                        total += (last.seq - seen) as usize;
+                    }
+                }
+            }
+        }
+    }
+
+    ChatPollResult {
+        unread_count: total,
+    }
+}
+
+/// Mark a chat inbox as read by recording the current max seq in chat_last_seen.json.
+pub fn mark_chat_read(config: &Config, inbox_key: &str, inbox_path: &Path) -> Result<()> {
+    let messages = match inbox::read_messages(inbox_path) {
+        Ok(m) => m,
+        Err(_) => return Ok(()), // inbox doesn't exist, no-op
+    };
+
+    if let Some(last) = messages.last() {
+        let path = config.chat_last_seen_path();
+        let mut last_seen = ChatLastSeen::load(&path);
+        last_seen.set(inbox_key.to_string(), last.seq);
+        last_seen.save(&path);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

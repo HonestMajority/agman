@@ -193,6 +193,10 @@ impl Config {
         self.base_dir.join("dismissed_notifications.json")
     }
 
+    pub fn chat_last_seen_path(&self) -> PathBuf {
+        self.base_dir.join("chat_last_seen.json")
+    }
+
     pub fn break_state_path(&self) -> PathBuf {
         self.base_dir.join("last_break_reset")
     }

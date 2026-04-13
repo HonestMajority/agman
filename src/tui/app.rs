@@ -640,6 +640,12 @@ pub struct App {
     keybase_poll_active: bool,
     pub keybase_first_poll_done: bool,
     pub keybase_available: bool,
+    // Chat unread polling
+    pub chat_unread_count: usize,
+    pub last_chat_poll: Instant,
+    chat_poll_tx: tokio_mpsc::UnboundedSender<use_cases::ChatPollResult>,
+    chat_poll_rx: tokio_mpsc::UnboundedReceiver<use_cases::ChatPollResult>,
+    chat_poll_active: bool,
     // Notes view
     pub notes_view: Option<NotesView>,
     // Show PRs (GitHub Issues & PRs for current user)
@@ -725,6 +731,7 @@ impl App {
         let (keybase_tx, keybase_rx) = tokio_mpsc::unbounded_channel();
         let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
         let (respawn_tx, respawn_rx) = tokio_mpsc::unbounded_channel();
+        let (chat_poll_tx, chat_poll_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
         let mut dismissed_notifs = DismissedNotifications::load(&config.dismissed_notifications_path());
         let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
@@ -837,6 +844,11 @@ impl App {
             keybase_poll_active: false,
             keybase_first_poll_done: false,
             keybase_available: true,
+            chat_unread_count: 0,
+            last_chat_poll: Instant::now() - Duration::from_secs(3),
+            chat_poll_tx,
+            chat_poll_rx,
+            chat_poll_active: false,
             notes_view: None,
             show_prs_data: Default::default(),
             show_prs_selected: 0,
@@ -2660,6 +2672,10 @@ impl App {
                     match use_cases::open_ceo_popup(&self.config) {
                         Ok(()) => {
                             tracing::info!("opened CEO popup");
+                            if let Err(e) = use_cases::mark_chat_read(&self.config, "ceo", &self.config.ceo_inbox()) {
+                                tracing::error!(error = %e, "failed to mark CEO chat as read");
+                            }
+                            self.last_chat_poll = Instant::now() - Duration::from_secs(10);
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "failed to open CEO popup");
@@ -2915,6 +2931,12 @@ impl App {
                             match use_cases::open_pm_popup(&self.config, project_name) {
                                 Ok(()) => {
                                     tracing::info!(project = %project_name, "opened PM popup");
+                                    let inbox_key = format!("project:{}", project_name);
+                                    let inbox_path = self.config.project_inbox(project_name);
+                                    if let Err(e) = use_cases::mark_chat_read(&self.config, &inbox_key, &inbox_path) {
+                                        tracing::error!(project = %project_name, error = %e, "failed to mark PM chat as read");
+                                    }
+                                    self.last_chat_poll = Instant::now() - Duration::from_secs(10);
                                 }
                                 Err(e) => {
                                     tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
@@ -5936,6 +5958,38 @@ impl App {
         tracing::debug!(unread_dm = result.dm_unread_count, unread_channel = result.channel_unread_count, "applied keybase poll results");
     }
 
+    /// Spawn a background task to poll chat unread messages.
+    fn start_chat_poll(&mut self) {
+        if self.chat_poll_active {
+            return;
+        }
+
+        self.chat_poll_active = true;
+        let tx = self.chat_poll_tx.clone();
+        let config = self.config.clone();
+
+        tracing::debug!("starting chat unread poll");
+        self.rt.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                use_cases::count_unread_chat_messages(&config)
+            })
+            .await
+            .unwrap_or_else(|_| use_cases::ChatPollResult { unread_count: 0 });
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Check for completed chat poll results (non-blocking) and apply.
+    fn apply_chat_poll_results(&mut self) {
+        let result = match self.chat_poll_rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        self.chat_poll_active = false;
+        self.chat_unread_count = result.unread_count;
+        tracing::debug!(unread = result.unread_count, "applied chat poll results");
+    }
+
     fn execute_restart_wizard(&mut self) -> Result<()> {
         let (task_id, selected_step_index) = match &self.restart_wizard {
             Some(w) => (w.task_id.clone(), w.selected_step_index),
@@ -6141,6 +6195,15 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed Keybase poll results (non-blocking)
             app.apply_keybase_poll_results();
+
+            // Poll chat unreads every 5 seconds (local filesystem)
+            if app.last_chat_poll.elapsed() >= Duration::from_secs(5) {
+                app.start_chat_poll();
+                app.last_chat_poll = Instant::now();
+            }
+
+            // Check for completed chat poll results (non-blocking)
+            app.apply_chat_poll_results();
 
             // Poll agent inboxes every 2 seconds (deliver messages via tmux send-keys)
             if app.last_inbox_poll.elapsed() >= Duration::from_secs(2) {

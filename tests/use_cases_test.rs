@@ -3140,3 +3140,42 @@ fn handoff_file_mechanics() {
     std::fs::remove_file(&handoff_path).unwrap();
     assert!(!handoff_path.exists());
 }
+
+// ---------------------------------------------------------------------------
+// Chat unread count and mark read
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chat_unread_count_and_mark_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    // Create CEO inbox with 3 messages
+    let ceo_inbox = config.ceo_inbox();
+    for i in 0..3 {
+        agman::inbox::append_message(&ceo_inbox, "user", &format!("msg {}", i)).unwrap();
+    }
+
+    // Create a project inbox with 2 messages
+    let project_name = "test-project";
+    let project_inbox = config.project_inbox(project_name);
+    std::fs::create_dir_all(config.project_dir(project_name)).unwrap();
+    for i in 0..2 {
+        agman::inbox::append_message(&project_inbox, "ceo", &format!("task {}", i)).unwrap();
+    }
+
+    // Count unread — should be 5 total
+    let result = use_cases::count_unread_chat_messages(&config);
+    assert_eq!(result.unread_count, 5);
+
+    // Mark CEO inbox as read
+    use_cases::mark_chat_read(&config, "ceo", &ceo_inbox).unwrap();
+    let result = use_cases::count_unread_chat_messages(&config);
+    assert_eq!(result.unread_count, 2);
+
+    // Mark project inbox as read
+    let project_key = format!("project:{}", project_name);
+    use_cases::mark_chat_read(&config, &project_key, &project_inbox).unwrap();
+    let result = use_cases::count_unread_chat_messages(&config);
+    assert_eq!(result.unread_count, 0);
+}
