@@ -4343,10 +4343,15 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
     use agman::researcher::ResearcherStatus;
     use agman::tmux::Tmux;
 
+    let title_text = if let Some(ref project) = app.current_project {
+        format!(" Researchers — {} ", project)
+    } else {
+        " Researchers ".to_string()
+    };
     let block = Block::default()
         .title(Line::from(vec![
             Span::styled(
-                " Researchers ",
+                title_text,
                 Style::default()
                     .fg(Color::LightCyan)
                     .add_modifier(Modifier::BOLD),
