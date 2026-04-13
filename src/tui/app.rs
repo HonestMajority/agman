@@ -5340,14 +5340,10 @@ impl App {
                         let formatted_snippet = format!("[Message from {}]:", msg.from);
 
                         for attempt in 0..MAX_RETRIES {
-                            // Check if text was already pasted (from a prior failed attempt)
-                            let already_pasted = if attempt > 0 {
-                                Tmux::capture_pane(&session_name)
-                                    .map(|content| content.contains(&formatted_snippet))
-                                    .unwrap_or(false)
-                            } else {
-                                false
-                            };
+                            // Check if text was already pasted (from a prior failed attempt or prior poll cycle)
+                            let already_pasted = Tmux::capture_pane(&session_name)
+                                .map(|content| content.contains(&formatted_snippet))
+                                .unwrap_or(false);
 
                             if already_pasted {
                                 // Text is visible but Enter may not have registered — retry just Enter
