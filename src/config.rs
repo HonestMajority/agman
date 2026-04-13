@@ -239,6 +239,22 @@ impl Config {
         format!("agman-pm-{name}")
     }
 
+    pub fn telegram_dir(&self) -> PathBuf {
+        self.base_dir.join("telegram")
+    }
+
+    pub fn telegram_outbox(&self) -> PathBuf {
+        self.telegram_dir().join("outbox.jsonl")
+    }
+
+    pub fn telegram_outbox_seq(&self) -> PathBuf {
+        self.telegram_dir().join("outbox.seq")
+    }
+
+    pub fn whisper_model_path(&self) -> PathBuf {
+        self.base_dir.join("whisper").join("ggml-base.bin")
+    }
+
     pub fn init_default_files(&self, force: bool) -> Result<()> {
         self.ensure_dirs()?;
 

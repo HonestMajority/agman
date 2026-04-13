@@ -6,6 +6,8 @@ use ratatui::crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -670,6 +672,8 @@ pub struct App {
     inbox_poll_tx: tokio_mpsc::UnboundedSender<Vec<InboxPollResult>>,
     inbox_poll_rx: tokio_mpsc::UnboundedReceiver<Vec<InboxPollResult>>,
     inbox_poll_active: bool,
+    // Telegram bot cancel flag (None when env vars absent)
+    telegram_cancel: Option<Arc<AtomicBool>>,
     // Sleep inhibition (macOS: caffeinate -dis for idle, display, and system sleep assertions)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -719,6 +723,19 @@ impl App {
                 }
             }
         }
+
+        // Start Telegram bot if env vars are present
+        let telegram_cancel = match (
+            std::env::var("TELEGRAM_BOT_TOKEN"),
+            std::env::var("TELEGRAM_CHAT_ID"),
+        ) {
+            (Ok(token), Ok(chat_id)) => {
+                let cancel = Arc::new(AtomicBool::new(false));
+                agman::telegram::start(&config, token, chat_id, Arc::clone(&cancel));
+                Some(cancel)
+            }
+            _ => None,
+        };
 
         let break_interval = use_cases::load_break_interval(&config);
         let archive_retention_days = use_cases::load_archive_retention(&config);
@@ -821,6 +838,7 @@ impl App {
             inbox_poll_tx,
             inbox_poll_rx,
             inbox_poll_active: false,
+            telegram_cancel,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-dis")
@@ -5709,6 +5727,11 @@ pub fn run_tui(config: Config) -> Result<()> {
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;
+
+        // Signal Telegram bot to stop
+        if let Some(ref cancel) = app.telegram_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
 
         // If user confirmed restart, exec the new binary
         #[cfg(unix)]
