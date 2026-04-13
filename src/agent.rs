@@ -400,6 +400,13 @@ impl AgentRunner {
                 println!("Flow complete - no more steps");
                 task.update_status(TaskStatus::Stopped)?;
 
+                // Notify the owning PM that the flow completed
+                if let Some(ref project) = task.meta.project {
+                    if let Err(e) = crate::use_cases::send_message(&self.config, project, &task.meta.task_id(), "Flow complete") {
+                        tracing::warn!(task_id = %task.meta.task_id(), error = %e, "failed to notify PM");
+                    }
+                }
+
                 // Check for queued feedback and process it
                 if let Some(result) = self.process_queued_feedback(task)? {
                     return Ok(result);
@@ -422,6 +429,13 @@ impl AgentRunner {
                             println!("Task marked complete by agent");
                             task.update_status(TaskStatus::Stopped)?;
 
+                            // Notify the owning PM that the task completed
+                            if let Some(ref project) = task.meta.project {
+                                if let Err(e) = crate::use_cases::send_message(&self.config, project, &task.meta.task_id(), "Task complete") {
+                                    tracing::warn!(task_id = %task.meta.task_id(), error = %e, "failed to notify PM");
+                                }
+                            }
+
                             // Check for queued feedback and process it
                             if let Some(result) = self.process_queued_feedback(task)? {
                                 return Ok(result);
@@ -432,6 +446,14 @@ impl AgentRunner {
                         Some(StopCondition::InputNeeded) => {
                             println!("Agent needs user input - pausing for answers");
                             task.update_status(TaskStatus::InputNeeded)?;
+
+                            // Notify the owning PM that input is needed
+                            if let Some(ref project) = task.meta.project {
+                                if let Err(e) = crate::use_cases::send_message(&self.config, project, &task.meta.task_id(), "Task needs input") {
+                                    tracing::warn!(task_id = %task.meta.task_id(), error = %e, "failed to notify PM");
+                                }
+                            }
+
                             // Do NOT advance the flow step — re-run same agent after user answers
                             return Ok(StopCondition::InputNeeded);
                         }
