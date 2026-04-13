@@ -2908,7 +2908,7 @@ impl App {
                     self.archive_scroll = 0;
                     self.view = View::Archive;
                 }
-                KeyCode::Char('R') => {
+                KeyCode::Char('w') => {
                     self.researcher_list_index = 0;
                     self.refresh_projects(); // also refreshes researchers
                     self.view = View::ResearcherList;

@@ -267,4 +267,4 @@ let task = create_test_task(&config, "repo", "branch");  // Minimal task
 
 5. **Feedback loop**: `continue` flow uses refiner to synthesize feedback into fresh TASK.md, avoiding context accumulation
 
-6. **Status bar hints rule**: Every user-facing key binding in a view must have a corresponding hint in `draw_status_bar()` in `ui.rs`. Hints must only be shown when the action is applicable — e.g., "stop" only appears for running tasks, "answer" only for input-needed tasks. When adding a new key binding, always add the hint. When removing a binding, remove the hint.
+6. **Status bar hints rule**: Every user-facing key binding in a view must have a corresponding hint in `draw_status_bar()` in `ui.rs`. Hints must only be shown when the action is applicable — e.g., "stop" only appears for running tasks, "answer" only for input-needed tasks. When adding a new key binding, always add the hint. When removing a binding, remove the hint. In the main navigation views (ProjectList, TaskList, ResearcherList), all key binding hints must use lowercase letters only — no capitals, no modifier key combinations. Other views (editors, wizards, Notes) are exempt from this rule.

@@ -1766,7 +1766,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             let mut spans = vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled("enter", Style::default().fg(Color::LightGreen)),
                 Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
@@ -1874,7 +1874,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             spans.extend([
                 Span::styled("z", Style::default().fg(Color::LightYellow)),
                 Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("R", Style::default().fg(Color::LightYellow)),
+                Span::styled("w", Style::default().fg(Color::LightYellow)),
                 Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
             ]);
             let quit_label = if app.current_project.is_some() { " back" } else { " quit" };
@@ -2294,7 +2294,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled("enter", Style::default().fg(Color::LightGreen)),
                 Span::styled(enter_label, Style::default().fg(Color::DarkGray)),
                 Span::styled("d", Style::default().fg(Color::LightRed)),
                 Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
