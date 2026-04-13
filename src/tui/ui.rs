@@ -1848,7 +1848,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("d", Style::default().fg(Color::LightRed)),
                     Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("m", Style::default().fg(Color::LightMagenta)),
+                    Span::styled("M", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" move  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
@@ -1878,7 +1878,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::styled(",", Style::default().fg(Color::LightYellow)),
                 Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("r", Style::default().fg(Color::LightYellow)),
+                Span::styled("R", Style::default().fg(Color::LightYellow)),
                 Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
             ]);
             spans.extend(break_hint_spans(app));
@@ -2159,7 +2159,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 let mut spans = vec![
                     Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                     Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+                    Span::styled("J/K", Style::default().fg(Color::LightCyan)),
                     Span::styled(" reorder  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("l", Style::default().fg(Color::LightGreen)),
                     Span::styled(" open  ", Style::default().fg(Color::DarkGray)),
@@ -2167,7 +2167,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" back  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("a", Style::default().fg(Color::LightGreen)),
                     Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("a", Style::default().fg(Color::LightGreen)),
+                    Span::styled("A", Style::default().fg(Color::LightGreen)),
                     Span::styled(" dir  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("d", Style::default().fg(Color::LightRed)),
                     Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
