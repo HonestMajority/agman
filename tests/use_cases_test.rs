@@ -3097,12 +3097,12 @@ fn request_handoff_appends_inbox_message() {
     let inbox_path = config.ceo_inbox();
 
     // Request handoff
-    use_cases::request_handoff(&inbox_path, "system").unwrap();
+    use_cases::request_handoff(&inbox_path, "system", &ceo_dir).unwrap();
 
-    // Verify inbox contains the handoff request
+    // Verify inbox contains the handoff request with state_dir path
     let contents = std::fs::read_to_string(&inbox_path).unwrap();
     assert!(contents.contains("[HANDOFF REQUEST]"));
-    assert!(contents.contains("HANDOFF_COMPLETE"));
+    assert!(contents.contains(&ceo_dir.display().to_string()));
     assert!(contents.contains("system"));
 }
 

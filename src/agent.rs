@@ -451,11 +451,6 @@ impl AgentRunner {
                                 );
                             }
                         }
-                        Some(StopCondition::HandoffComplete) => {
-                            // Handoff complete — not used in flow progression, treat like AgentDone
-                            println!("Handoff complete - advancing to next step");
-                            task.advance_flow_step()?;
-                        }
                         None => {
                             // No stop condition - agent will be run again
                             println!("No stop condition from agent - running again");
