@@ -2946,6 +2946,27 @@ fn use_case_create_researcher() {
     assert!(researcher.meta.repo.is_none());
     assert!(researcher.meta.branch.is_none());
     assert!(researcher.meta.task_id.is_none());
+
+    // Verify that the research description was written to the inbox
+    let inbox_path = config.researcher_inbox("myproj", "code-explorer");
+    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "user");
+    assert_eq!(messages[0].message, "Investigate API patterns");
+}
+
+#[test]
+fn use_case_create_researcher_empty_description_no_inbox() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "myproj");
+
+    use_cases::create_researcher(&config, "myproj", "quiet-one", "", None, None, None).unwrap();
+
+    // No inbox file should be created for empty description
+    let inbox_path = config.researcher_inbox("myproj", "quiet-one");
+    assert!(!inbox_path.exists());
 }
 
 #[test]

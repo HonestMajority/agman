@@ -2163,7 +2163,17 @@ pub fn create_researcher(
     }
 
     tracing::info!(project = project, name = name, "creating researcher");
-    Researcher::create(config, project, name, description, repo, branch, task_id)
+    let researcher = Researcher::create(config, project, name, description, repo, branch, task_id)?;
+
+    // Write the research description to the inbox so the TUI poller delivers it
+    // to the tmux session once Claude Code is ready (instead of direct injection).
+    if !description.is_empty() {
+        let inbox_path = config.researcher_inbox(project, name);
+        crate::inbox::append_message(&inbox_path, "user", description)?;
+        tracing::debug!(project = project, name = name, "queued research description to inbox");
+    }
+
+    Ok(researcher)
 }
 
 /// Start a researcher's Claude Code tmux session.
@@ -2192,14 +2202,6 @@ pub fn start_researcher_session(config: &Config, project: &str, name: &str) -> R
     let session_name = Config::researcher_tmux_session(project, name);
     tracing::info!(session = &session_name, project = project, name = name, "starting researcher session");
     Tmux::create_agent_session(&session_name, &prompt, resume_ref, work_dir.as_deref())?;
-
-    // For new sessions (not resumed), send the research description as the initial
-    // user message so claude starts working immediately instead of waiting for input.
-    if resume_ref.is_none() && !researcher.meta.description.is_empty() {
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        Tmux::send_keys_to_session(&session_name, &researcher.meta.description)?;
-        tracing::debug!(session = &session_name, "injected initial research description");
-    }
 
     Ok(())
 }

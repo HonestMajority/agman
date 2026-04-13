@@ -5281,6 +5281,9 @@ impl App {
 
         self.rt.spawn(async move {
             let results = tokio::task::spawn_blocking(move || {
+                const MAX_RETRIES: usize = 3;
+                const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
                 let mut results = Vec::new();
                 for (target, inbox_path, seq_path, session_name) in targets {
                     let undelivered = match inbox::read_undelivered(&inbox_path, &seq_path) {
@@ -5297,20 +5300,72 @@ impl App {
 
                     let mut delivered = 0;
                     let mut errors = Vec::new();
-                    for msg in &undelivered {
-                        match Tmux::inject_message(&session_name, &msg.from, &msg.message) {
-                            Ok(()) => {
+                    'msg_loop: for msg in &undelivered {
+                        let formatted_snippet = format!("[Message from {}]:", msg.from);
+
+                        for attempt in 0..MAX_RETRIES {
+                            // Check if text was already pasted (from a prior failed attempt)
+                            let already_pasted = if attempt > 0 {
+                                Tmux::capture_pane(&session_name)
+                                    .map(|content| content.contains(&formatted_snippet))
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            };
+
+                            if already_pasted {
+                                // Text is visible but Enter may not have registered — retry just Enter
+                                tracing::debug!(
+                                    target = &target, seq = msg.seq, attempt = attempt,
+                                    "message text already in pane, retrying Enter"
+                                );
+                                if let Err(e) = Tmux::send_enter(&session_name) {
+                                    tracing::warn!(
+                                        target = &target, seq = msg.seq, error = %e,
+                                        "failed to send Enter retry"
+                                    );
+                                    std::thread::sleep(RETRY_DELAY);
+                                    continue;
+                                }
+                            } else {
+                                // Full injection
+                                if let Err(e) = Tmux::inject_message(&session_name, &msg.from, &msg.message) {
+                                    tracing::warn!(
+                                        target = &target, seq = msg.seq, attempt = attempt, error = %e,
+                                        "inject_message failed"
+                                    );
+                                    std::thread::sleep(RETRY_DELAY);
+                                    continue;
+                                }
+                            }
+
+                            // Verify delivery: check that the message text appears in the pane
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                            let verified = Tmux::capture_pane(&session_name)
+                                .map(|content| content.contains(&formatted_snippet))
+                                .unwrap_or(false);
+
+                            if verified {
                                 if let Err(e) = inbox::mark_delivered(&seq_path, msg.seq) {
                                     errors.push(format!("mark_delivered error: {e}"));
                                 } else {
                                     delivered += 1;
                                 }
+                                continue 'msg_loop;
                             }
-                            Err(e) => {
-                                errors.push(format!("inject error: {e}"));
-                                break; // Stop on first injection failure
-                            }
+
+                            tracing::debug!(
+                                target = &target, seq = msg.seq, attempt = attempt,
+                                "delivery verification failed, retrying"
+                            );
+                            std::thread::sleep(RETRY_DELAY);
                         }
+
+                        // All retries exhausted — don't mark as delivered, will retry next poll
+                        errors.push(format!(
+                            "delivery failed after {} attempts for seq {}", MAX_RETRIES, msg.seq
+                        ));
+                        break; // Stop processing further messages for this target
                     }
                     results.push(InboxPollResult {
                         target,
