@@ -893,12 +893,38 @@ fn cmd_queue_feedback(
     };
 
     let task = Task::load_by_id(config, task_id)?;
-    let count = use_cases::queue_feedback(&task, resolved.trim_end())?;
-    tracing::info!(task_id = %task_id, count, "queued feedback via CLI");
-    println!(
-        "Feedback queued for '{}' ({} item(s) in queue)",
-        task_id, count
-    );
+    let feedback = resolved.trim_end();
+
+    if task.meta.status == TaskStatus::Running {
+        let count = use_cases::queue_feedback(&task, feedback)?;
+        tracing::info!(task_id = %task_id, count, "queued feedback via CLI");
+        println!(
+            "Feedback queued for '{}' ({} item(s) in queue)",
+            task_id, count
+        );
+    } else {
+        use_cases::write_immediate_feedback(&task, feedback)?;
+        tracing::info!(task_id = %task_id, "wrote immediate feedback and triggering continue via CLI");
+        println!("Feedback written for '{}', starting continue...", task_id);
+
+        let output = std::process::Command::new("agman")
+            .args(["continue", task_id])
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                println!("Continue started for '{}'", task_id);
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                eprintln!("Continue failed for '{}': {}", task_id, stderr.trim());
+            }
+            Err(e) => {
+                eprintln!("Failed to spawn continue for '{}': {}", task_id, e);
+            }
+        }
+    }
+
     Ok(())
 }
 
