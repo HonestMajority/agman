@@ -5425,7 +5425,7 @@ impl App {
                     let mut delivered = 0;
                     let mut errors = Vec::new();
                     'msg_loop: for msg in &undelivered {
-                        let formatted_snippet = format!("[Message from {}]:", msg.from);
+                        let formatted_snippet = format!("[msg:{}:{}]", msg.from, msg.seq);
 
                         for attempt in 0..MAX_RETRIES {
                             // Check if text was already pasted (from a prior failed attempt or prior poll cycle)
@@ -5449,7 +5449,7 @@ impl App {
                                 }
                             } else {
                                 // Full injection
-                                if let Err(e) = Tmux::inject_message(&session_name, &msg.from, &msg.message) {
+                                if let Err(e) = Tmux::inject_message(&session_name, &msg.from, &msg.message, msg.seq) {
                                     tracing::warn!(
                                         target = &target, seq = msg.seq, attempt = attempt, error = %e,
                                         "inject_message failed"
