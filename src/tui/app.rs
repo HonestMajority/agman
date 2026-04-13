@@ -5488,6 +5488,39 @@ impl App {
 
                     let mut delivered = 0;
                     let mut errors = Vec::new();
+
+                    // Check if the session's Claude prompt is ready before attempting delivery
+                    match Tmux::is_session_ready(&session_name) {
+                        Ok(false) => {
+                            tracing::debug!(
+                                target_name = &target,
+                                session = &session_name,
+                                "session not ready, skipping delivery this cycle"
+                            );
+                            results.push(InboxPollResult {
+                                target,
+                                delivered: 0,
+                                errors: vec![],
+                            });
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                target_name = &target,
+                                session = &session_name,
+                                error = %e,
+                                "session readiness check failed, skipping"
+                            );
+                            results.push(InboxPollResult {
+                                target,
+                                delivered: 0,
+                                errors: vec![],
+                            });
+                            continue;
+                        }
+                        Ok(true) => {}
+                    }
+
                     'msg_loop: for msg in &undelivered {
                         let formatted_snippet = format!("[msg:{}:{}]", msg.from, msg.seq);
 
