@@ -2804,6 +2804,12 @@ impl App {
                         self.view = View::RespawnConfirm;
                     }
                 }
+                KeyCode::Char('w') => {
+                    self.current_project = Some("ceo".to_string());
+                    self.researcher_list_index = 0;
+                    self.refresh_researchers();
+                    self.view = View::ResearcherList;
+                }
                 KeyCode::Char(',') => {
                     self.settings_selected = 0;
                     self.view = View::Settings;

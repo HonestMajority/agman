@@ -108,20 +108,25 @@ fn main() -> Result<()> {
         }
 
         Some(Commands::CreateResearcher {
-            project,
             name,
+            project,
             repo,
             branch,
             task,
             description,
-        }) => cmd_create_researcher(&config, &project, &name, repo, branch, task, description),
-
-        Some(Commands::ListResearchers { project }) => {
-            cmd_list_researchers(&config, project.as_deref())
+        }) => {
+            let project = project.as_deref().unwrap_or("ceo");
+            cmd_create_researcher(&config, project, &name, repo, branch, task, description)
         }
 
-        Some(Commands::ArchiveResearcher { project, name }) => {
-            cmd_archive_researcher(&config, &project, &name)
+        Some(Commands::ListResearchers { project, ceo }) => {
+            let filter = if ceo { Some("ceo") } else { project.as_deref() };
+            cmd_list_researchers(&config, filter)
+        }
+
+        Some(Commands::ArchiveResearcher { name, project }) => {
+            let project = project.as_deref().unwrap_or("ceo");
+            cmd_archive_researcher(&config, project, &name)
         }
 
         Some(Commands::RespawnAgent { target, force, timeout }) => {
