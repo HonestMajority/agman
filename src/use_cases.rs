@@ -2893,6 +2893,12 @@ AGMAN_MSG
 - Never create tasks directly — only PMs can do that
 - Keep messages to PMs clear and actionable
 
+## Upgrades
+- You may receive system messages informing you that a new agman version has been installed.
+- When you receive such a message, respawn yourself to pick up the new binary: `agman respawn-agent ceo`
+- After respawning, respawn each active PM so they also pick up the new version. List projects with `agman list-projects`, then run `agman respawn-agent <project>` for each one.
+- The respawn mechanism handles graceful handoff automatically — your context and instructions carry over.
+
 "#;
 
 fn build_ceo_prompt(telegram_enabled: bool) -> String {

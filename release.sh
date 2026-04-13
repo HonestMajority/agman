@@ -35,6 +35,9 @@ fi
 # if init fails (the restarted TUI will run its own init anyway).
 touch "$HOME/.agman/.restart-tui"
 
+# Notify the CEO agent about the new version so it can respawn itself and PMs
+agman send-message ceo --from system "A new agman version has been installed. To pick up the new binary, respawn yourself and any PMs. Use: agman respawn-agent ceo, then agman respawn-agent <project> for each PM." 2>/dev/null || true
+
 # Reinitialize agman config files
 echo "Running agman init --force..."
 agman init --force
