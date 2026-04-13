@@ -72,6 +72,7 @@ pub enum View {
     ProjectPicker,
     ProjectDeleteConfirm,
     ResearcherList,
+    ResearcherWizard,
 }
 
 /// Which wizard requested the directory picker.
@@ -358,6 +359,15 @@ pub struct ProjectWizard {
     /// false = name field focused, true = description field focused
     pub description_focus: bool,
     pub error_message: Option<String>,
+}
+
+pub struct ResearcherWizard {
+    pub name_editor: TextArea<'static>,
+    pub description_editor: VimTextArea<'static>,
+    /// false = name field focused, true = description field focused
+    pub description_focus: bool,
+    pub error_message: Option<String>,
+    pub project: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -668,6 +678,7 @@ pub struct App {
     pub project_task_counts: std::collections::HashMap<String, (usize, usize)>, // (total, active)
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
+    pub researcher_wizard: Option<ResearcherWizard>,
     // Project picker (for task migration/move)
     pub project_picker: Option<ProjectPicker>,
     // Project deletion
@@ -852,6 +863,7 @@ impl App {
             unassigned_task_count: 0,
             project_task_counts: std::collections::HashMap::new(),
             project_wizard: None,
+            researcher_wizard: None,
             project_picker: None,
             project_to_delete: None,
             researchers: Vec::new(),
@@ -2573,6 +2585,7 @@ impl App {
             View::ProjectPicker => self.handle_project_picker_event(event),
             View::ProjectDeleteConfirm => self.handle_project_delete_confirm_event(event),
             View::ResearcherList => self.handle_researcher_list_event(event),
+            View::ResearcherWizard => self.handle_researcher_wizard_event(event),
         }
     }
 
@@ -2954,28 +2967,63 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    // Attach to researcher tmux session
+                    // Attach to researcher tmux session, resuming archived ones
                     if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
-                        let session_name = Config::researcher_tmux_session(
-                            &researcher.meta.project,
-                            &researcher.meta.name,
-                        );
-                        if Tmux::session_exists(&session_name) {
-                            match Tmux::popup_attach(&session_name) {
+                        let project = researcher.meta.project.clone();
+                        let name = researcher.meta.name.clone();
+                        let session_name = Config::researcher_tmux_session(&project, &name);
+
+                        if !Tmux::session_exists(&session_name) {
+                            // Session not running — resume it (works for both archived and crashed running sessions)
+                            match use_cases::resume_researcher(&self.config, &project, &name) {
                                 Ok(()) => {
                                     tracing::info!(
                                         session = &session_name,
-                                        "attached to researcher session"
+                                        "resumed researcher session"
                                     );
+                                    self.refresh_projects();
                                 }
                                 Err(e) => {
-                                    self.set_status(format!("Failed to attach: {e}"));
+                                    self.set_status(format!("Failed to resume: {e}"));
+                                    return Ok(false);
                                 }
                             }
-                        } else {
-                            self.set_status("Researcher session not running".to_string());
+                        }
+
+                        match Tmux::popup_attach(&session_name) {
+                            Ok(()) => {
+                                tracing::info!(
+                                    session = &session_name,
+                                    "attached to researcher session"
+                                );
+                            }
+                            Err(e) => {
+                                self.set_status(format!("Failed to attach: {e}"));
+                            }
                         }
                     }
+                }
+                KeyCode::Char('n') => {
+                    // Create new researcher
+                    let project = if let Some(ref p) = self.current_project {
+                        p.clone()
+                    } else if let Some(first) = self.projects.first() {
+                        first.meta.name.clone()
+                    } else {
+                        self.set_status("No project available".to_string());
+                        return Ok(false);
+                    };
+                    tracing::info!(project = %project, "opening researcher wizard");
+                    let mut name_editor = TextArea::default();
+                    name_editor.set_cursor_line_style(ratatui::style::Style::default());
+                    self.researcher_wizard = Some(ResearcherWizard {
+                        name_editor,
+                        description_editor: VimTextArea::new(),
+                        description_focus: false,
+                        error_message: None,
+                        project,
+                    });
+                    self.view = View::ResearcherWizard;
                 }
                 KeyCode::Char('d') => {
                     // Archive selected researcher
@@ -3254,6 +3302,100 @@ impl App {
                     if key.code == KeyCode::Esc {
                         self.project_wizard = None;
                         self.view = View::ProjectList;
+                        return Ok(false);
+                    }
+                    // Enter in name field moves to description
+                    if key.code == KeyCode::Enter {
+                        wizard.description_focus = true;
+                        wizard.description_editor.set_insert_mode();
+                        return Ok(false);
+                    }
+                    wizard.name_editor.input(input);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_researcher_wizard_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            // Ctrl+S to submit
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                if let Some(wizard) = &self.researcher_wizard {
+                    let name = wizard.name_editor.lines().join("").trim().to_string();
+                    let desc = wizard.description_editor.lines_joined();
+                    let desc = desc.trim().to_string();
+                    let project = wizard.project.clone();
+
+                    if name.is_empty() {
+                        if let Some(w) = &mut self.researcher_wizard {
+                            w.error_message = Some("Researcher name is required".to_string());
+                        }
+                        return Ok(false);
+                    }
+
+                    match use_cases::create_researcher(
+                        &self.config, &project, &name, &desc, None, None, None,
+                    ) {
+                        Ok(_researcher) => {
+                            tracing::info!(project = %project, name = %name, "created researcher via wizard");
+                            // Start the session
+                            if let Err(e) =
+                                use_cases::start_researcher_session(&self.config, &project, &name)
+                            {
+                                tracing::warn!(
+                                    project = %project, name = %name, error = %e,
+                                    "failed to start researcher session"
+                                );
+                            }
+                            self.set_status(format!("Created researcher: {name}"));
+                            self.researcher_wizard = None;
+                            self.view = View::ResearcherList;
+                            self.refresh_projects();
+                        }
+                        Err(e) => {
+                            tracing::warn!(project = %project, name = %name, error = %e, "failed to create researcher");
+                            if let Some(w) = &mut self.researcher_wizard {
+                                w.error_message = Some(format!("{e}"));
+                            }
+                        }
+                    }
+                }
+                return Ok(false);
+            }
+
+            if let Some(wizard) = &mut self.researcher_wizard {
+                wizard.error_message = None;
+                let input = Input::from(event.clone());
+
+                // Tab to switch focus between name and description
+                if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
+                    wizard.description_focus = !wizard.description_focus;
+                    if wizard.description_focus {
+                        wizard.description_editor.set_insert_mode();
+                    }
+                    return Ok(false);
+                }
+
+                if wizard.description_focus {
+                    let was_insert = wizard.description_editor.mode() == VimMode::Insert;
+                    wizard.description_editor.input(input.clone());
+                    let is_normal_now = wizard.description_editor.mode() == VimMode::Normal;
+
+                    // Esc in normal mode goes back to name field
+                    if input.key == Key::Esc && !was_insert && is_normal_now {
+                        wizard.description_focus = false;
+                    }
+                } else {
+                    // Name field: Esc cancels wizard
+                    if key.code == KeyCode::Esc {
+                        self.researcher_wizard = None;
+                        self.view = View::ResearcherList;
                         return Ok(false);
                     }
                     // Enter in name field moves to description
@@ -5231,6 +5373,9 @@ impl App {
 
         self.rt.spawn(async move {
             let results = tokio::task::spawn_blocking(move || {
+                const MAX_RETRIES: usize = 3;
+                const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
                 let mut results = Vec::new();
                 for (target, inbox_path, seq_path, session_name) in targets {
                     let undelivered = match inbox::read_undelivered(&inbox_path, &seq_path) {
@@ -5247,20 +5392,72 @@ impl App {
 
                     let mut delivered = 0;
                     let mut errors = Vec::new();
-                    for msg in &undelivered {
-                        match Tmux::inject_message(&session_name, &msg.from, &msg.message) {
-                            Ok(()) => {
+                    'msg_loop: for msg in &undelivered {
+                        let formatted_snippet = format!("[Message from {}]:", msg.from);
+
+                        for attempt in 0..MAX_RETRIES {
+                            // Check if text was already pasted (from a prior failed attempt)
+                            let already_pasted = if attempt > 0 {
+                                Tmux::capture_pane(&session_name)
+                                    .map(|content| content.contains(&formatted_snippet))
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            };
+
+                            if already_pasted {
+                                // Text is visible but Enter may not have registered — retry just Enter
+                                tracing::debug!(
+                                    target = &target, seq = msg.seq, attempt = attempt,
+                                    "message text already in pane, retrying Enter"
+                                );
+                                if let Err(e) = Tmux::send_enter(&session_name) {
+                                    tracing::warn!(
+                                        target = &target, seq = msg.seq, error = %e,
+                                        "failed to send Enter retry"
+                                    );
+                                    std::thread::sleep(RETRY_DELAY);
+                                    continue;
+                                }
+                            } else {
+                                // Full injection
+                                if let Err(e) = Tmux::inject_message(&session_name, &msg.from, &msg.message) {
+                                    tracing::warn!(
+                                        target = &target, seq = msg.seq, attempt = attempt, error = %e,
+                                        "inject_message failed"
+                                    );
+                                    std::thread::sleep(RETRY_DELAY);
+                                    continue;
+                                }
+                            }
+
+                            // Verify delivery: check that the message text appears in the pane
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                            let verified = Tmux::capture_pane(&session_name)
+                                .map(|content| content.contains(&formatted_snippet))
+                                .unwrap_or(false);
+
+                            if verified {
                                 if let Err(e) = inbox::mark_delivered(&seq_path, msg.seq) {
                                     errors.push(format!("mark_delivered error: {e}"));
                                 } else {
                                     delivered += 1;
                                 }
+                                continue 'msg_loop;
                             }
-                            Err(e) => {
-                                errors.push(format!("inject error: {e}"));
-                                break; // Stop on first injection failure
-                            }
+
+                            tracing::debug!(
+                                target = &target, seq = msg.seq, attempt = attempt,
+                                "delivery verification failed, retrying"
+                            );
+                            std::thread::sleep(RETRY_DELAY);
                         }
+
+                        // All retries exhausted — don't mark as delivered, will retry next poll
+                        errors.push(format!(
+                            "delivery failed after {} attempts for seq {}", MAX_RETRIES, msg.seq
+                        ));
+                        break; // Stop processing further messages for this target
                     }
                     results.push(InboxPollResult {
                         target,

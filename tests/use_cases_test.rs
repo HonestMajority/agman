@@ -2792,6 +2792,13 @@ fn delete_project() {
     task.meta.project = Some("backend".to_string());
     task.save_meta().unwrap();
 
+    // Create a researcher assigned to that project
+    let researcher = helpers::create_test_researcher(&config, "backend", "explore-auth");
+    assert_eq!(
+        researcher.meta.status,
+        agman::researcher::ResearcherStatus::Running
+    );
+
     // Delete the project
     use_cases::delete_project(&config, "backend").unwrap();
 
@@ -2801,6 +2808,15 @@ fn delete_project() {
     // Task should now be archived
     let reloaded = agman::task::Task::load_by_id(&config, &task.meta.task_id()).unwrap();
     assert!(reloaded.meta.archived_at.is_some());
+
+    // Researcher should now be archived
+    let reloaded_researcher =
+        agman::researcher::Researcher::load(config.researcher_dir("backend", "explore-auth"))
+            .unwrap();
+    assert_eq!(
+        reloaded_researcher.meta.status,
+        agman::researcher::ResearcherStatus::Archived
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2970,6 +2986,27 @@ fn use_case_create_researcher() {
     assert!(researcher.meta.repo.is_none());
     assert!(researcher.meta.branch.is_none());
     assert!(researcher.meta.task_id.is_none());
+
+    // Verify that the research description was written to the inbox
+    let inbox_path = config.researcher_inbox("myproj", "code-explorer");
+    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "user");
+    assert_eq!(messages[0].message, "Investigate API patterns");
+}
+
+#[test]
+fn use_case_create_researcher_empty_description_no_inbox() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "myproj");
+
+    use_cases::create_researcher(&config, "myproj", "quiet-one", "", None, None, None).unwrap();
+
+    // No inbox file should be created for empty description
+    let inbox_path = config.researcher_inbox("myproj", "quiet-one");
+    assert!(!inbox_path.exists());
 }
 
 #[test]

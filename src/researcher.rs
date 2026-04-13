@@ -101,7 +101,15 @@ impl Researcher {
                 }
             }
         }
-        researchers.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
+        researchers.sort_by(|a, b| {
+            let status_ord = |s: &ResearcherStatus| match s {
+                ResearcherStatus::Running => 0,
+                ResearcherStatus::Archived => 1,
+            };
+            status_ord(&a.meta.status)
+                .cmp(&status_ord(&b.meta.status))
+                .then_with(|| a.meta.name.cmp(&b.meta.name))
+        });
         Ok(researchers)
     }
 

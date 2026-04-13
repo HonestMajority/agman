@@ -416,4 +416,39 @@ impl Tmux {
 
         Ok(())
     }
+
+    /// Capture the visible content of a tmux pane for delivery verification.
+    pub fn capture_pane(session_name: &str) -> Result<String> {
+        let output = Command::new("tmux")
+            .args(["capture-pane", "-p", "-t", session_name])
+            .output()
+            .context("failed to capture tmux pane")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to capture tmux pane: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Send just an Enter key press to a session (for retry when text was pasted
+    /// but Enter didn't register).
+    pub fn send_enter(session_name: &str) -> Result<()> {
+        let output = Command::new("tmux")
+            .args(["send-keys", "-t", session_name, "Enter"])
+            .output()
+            .context("failed to send Enter to agent session")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to send Enter to agent session: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
 }
