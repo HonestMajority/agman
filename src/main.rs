@@ -76,6 +76,8 @@ fn main() -> Result<()> {
 
         Some(Commands::DeleteProject { name }) => cmd_delete_project(&config, &name),
 
+        Some(Commands::StopTask { task_id }) => cmd_stop_task(&config, &task_id),
+
         Some(Commands::ArchiveTask { task_id, save }) => {
             cmd_archive_task(&config, &task_id, save)
         }
@@ -561,6 +563,36 @@ fn cmd_project_status(config: &Config, name: &str) -> Result<()> {
 fn cmd_delete_project(config: &Config, name: &str) -> Result<()> {
     use_cases::delete_project(config, name)?;
     println!("Project '{}' deleted. All tasks have been archived.", name);
+    Ok(())
+}
+
+fn cmd_stop_task(config: &Config, task_id: &str) -> Result<()> {
+    let mut task = Task::load_by_id(config, task_id)?;
+
+    // Send Ctrl+C to tmux sessions (best-effort)
+    for repo in &task.meta.repos {
+        if Tmux::session_exists(&repo.tmux_session) {
+            if let Err(e) = Tmux::send_ctrl_c_to_window(&repo.tmux_session, "agman") {
+                tracing::warn!(task_id = %task.meta.task_id(), error = %e, "failed to interrupt tmux session");
+            }
+        }
+    }
+    if task.meta.is_multi_repo() && task.meta.repos.is_empty() {
+        let parent_session =
+            Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+        if Tmux::session_exists(&parent_session) {
+            if let Err(e) = Tmux::send_ctrl_c_to_window(&parent_session, "agman") {
+                tracing::warn!(task_id = %task.meta.task_id(), error = %e, "failed to interrupt parent tmux session");
+            }
+        }
+    }
+
+    let display_id = task.meta.task_id();
+    use_cases::stop_task(&mut task)?;
+
+    tracing::info!(task_id = %display_id, "stopped task via CLI");
+    println!("Task '{}' stopped.", display_id);
+
     Ok(())
 }
 

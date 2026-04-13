@@ -93,6 +93,12 @@ pub enum Commands {
         name: String,
     },
 
+    /// Stop a running task
+    StopTask {
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
+    },
+
     /// Archive a task (remove worktrees, keep directory and branches)
     ArchiveTask {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
