@@ -11,7 +11,7 @@ use crate::git::{self, Git};
 use crate::inbox;
 use crate::project::Project;
 use crate::repo_stats::RepoStats;
-use crate::researcher::Researcher;
+use crate::researcher::{Researcher, ResearcherStatus};
 use crate::task::{QueueItem, RepoEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
 
@@ -1943,6 +1943,15 @@ pub struct TaskSummary {
     pub total_steps: Option<usize>,
     pub current_agent: Option<String>,
     pub updated_at: DateTime<Utc>,
+    pub queued_count: usize,
+}
+
+/// Summary of a researcher for the aggregated status view.
+pub struct ResearcherSummary {
+    pub name: String,
+    pub project: String,
+    pub status: String,
+    pub description: String,
 }
 
 /// A group of tasks belonging to a project.
@@ -1950,6 +1959,8 @@ pub struct ProjectGroup {
     pub name: String,
     pub tasks: Vec<TaskSummary>,
     pub archived_count: usize,
+    pub researchers: Vec<ResearcherSummary>,
+    pub held: bool,
 }
 
 /// Aggregated status across all projects and tasks.
@@ -1957,6 +1968,7 @@ pub struct AggregatedStatus {
     pub projects: Vec<ProjectGroup>,
     pub unassigned: Vec<TaskSummary>,
     pub archived_unassigned: usize,
+    pub ceo_researchers: Vec<ResearcherSummary>,
 }
 
 fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
@@ -1971,7 +1983,34 @@ fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
         total_steps,
         current_agent: task.meta.current_agent.clone(),
         updated_at: task.meta.updated_at,
+        queued_count: task.queued_item_count(),
     }
+}
+
+/// Build researcher summaries for a given project, filtering out archived ones.
+fn load_researcher_summaries(config: &Config, project: &str) -> Vec<ResearcherSummary> {
+    let researchers = match Researcher::list_for_project(config, project) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    researchers
+        .into_iter()
+        .filter(|r| r.meta.status != ResearcherStatus::Archived)
+        .map(|r| {
+            let session = Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
+            let status = if Tmux::session_exists(&session) {
+                "running"
+            } else {
+                "stopped"
+            };
+            ResearcherSummary {
+                name: r.meta.name,
+                project: r.meta.project,
+                status: status.to_string(),
+                description: r.meta.description,
+            }
+        })
+        .collect()
 }
 
 /// Get aggregated status across all projects and their tasks.
@@ -1983,8 +2022,19 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
     let mut project_groups = Vec::new();
 
     for project in &projects {
+        if project.meta.held {
+            continue;
+        }
+
         let tasks = list_project_tasks(config, &project.meta.name)?;
         let summaries: Vec<TaskSummary> = tasks.iter().map(|t| task_to_summary(config, t)).collect();
+        let researchers = load_researcher_summaries(config, &project.meta.name);
+
+        // Skip projects with no active tasks and no active researchers
+        if summaries.is_empty() && researchers.is_empty() {
+            continue;
+        }
+
         let archived_count = archived
             .iter()
             .filter(|t| t.meta.project.as_deref() == Some(&project.meta.name))
@@ -1993,6 +2043,8 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
             name: project.meta.name.clone(),
             tasks: summaries,
             archived_count,
+            researchers,
+            held: project.meta.held,
         });
     }
 
@@ -2007,10 +2059,13 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
         .filter(|t| t.meta.project.is_none())
         .count();
 
+    let ceo_researchers = load_researcher_summaries(config, "ceo");
+
     Ok(AggregatedStatus {
         projects: project_groups,
         unassigned,
         archived_unassigned,
+        ceo_researchers,
     })
 }
 
@@ -2636,6 +2691,30 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
     if task.meta.status == TaskStatus::Running {
         let elapsed = Utc::now().signed_duration_since(task.meta.updated_at);
         out.push_str(&format!("Running for: {}\n", format_duration(elapsed)));
+    }
+
+    // Queue info
+    let queue = task.read_queue();
+    if queue.is_empty() {
+        out.push_str("Queue: empty\n");
+    } else {
+        out.push_str(&format!("Queue: {} item{}\n", queue.len(), if queue.len() == 1 { "" } else { "s" }));
+        for item in &queue {
+            match item {
+                QueueItem::Feedback { text } => {
+                    let truncated = if text.len() > 50 {
+                        format!("{}...", &text[..50])
+                    } else {
+                        text.clone()
+                    };
+                    out.push_str(&format!("  [feedback] {}\n", truncated));
+                }
+                QueueItem::Command { command_id, branch } => {
+                    let branch_str = branch.as_deref().map(|b| format!(" ({})", b)).unwrap_or_default();
+                    out.push_str(&format!("  [cmd] {}{}\n", command_id, branch_str));
+                }
+            }
+        }
     }
 
     // Task goal from TASK.md
