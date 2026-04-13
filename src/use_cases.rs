@@ -2900,6 +2900,16 @@ AGMAN_MSG
 - Never create tasks directly — only PMs can do that
 - Keep messages to PMs clear and actionable
 
+## System Messages
+- Messages tagged `[Message from system]:` are automated system-level notifications from agman itself — not from a PM, researcher, or the user.
+- Act on system messages autonomously. They do not require user confirmation — use your judgment on whether and how to respond.
+- No reply command is needed — system messages are one-way notifications. Just take the appropriate action.
+
+## Upgrades
+- When you receive a system message about a new agman version being installed, respawn yourself to pick up the new binary: `agman respawn-agent ceo`
+- After respawning, respawn each active PM so they also pick up the new version. List projects with `agman list-projects`, then run `agman respawn-agent <project>` for each one.
+- The respawn mechanism handles graceful handoff automatically — your context and instructions carry over.
+
 "#;
 
 fn build_ceo_prompt(telegram_enabled: bool) -> String {

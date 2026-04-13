@@ -6395,6 +6395,18 @@ pub fn run_tui(config: Config) -> Result<()> {
                     tracing::info!("detected .restart-tui signal file, deferring to restart modal");
                     let _ = std::fs::remove_file(&restart_signal);
                     app.restart_pending = true;
+
+                    // Notify CEO agent about the new version
+                    let ceo_inbox = app.config.ceo_inbox();
+                    if let Err(e) = inbox::append_message(
+                        &ceo_inbox,
+                        "system",
+                        "A new agman version has been installed. To pick up the new binary, respawn yourself and any PMs. Use: agman respawn-agent ceo, then agman respawn-agent <project> for each PM.",
+                    ) {
+                        tracing::warn!(error = %e, "failed to notify CEO about new version");
+                    } else {
+                        tracing::info!("notified CEO about new agman version via inbox");
+                    }
                 }
             }
 
