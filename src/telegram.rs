@@ -231,8 +231,35 @@ fn tg_send(ctx: &BotCtx, text: &str) -> bool {
 // Voice message handling
 // ---------------------------------------------------------------------------
 
+/// Check whether `ffmpeg` and `whisper-cli` are available on PATH.
+/// Returns a list of missing binary names (empty if all present).
+fn check_voice_dependencies() -> Vec<&'static str> {
+    use std::process::Command;
+    let mut missing = Vec::new();
+    for bin in ["ffmpeg", "whisper-cli"] {
+        match Command::new(bin).arg("-version").output() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push(bin),
+            _ => {}
+        }
+    }
+    missing
+}
+
 /// Process an incoming voice message: download, transcribe locally, forward to CEO.
 fn handle_voice(ctx: &BotCtx, file_id: &str) {
+    let missing = check_voice_dependencies();
+    if !missing.is_empty() {
+        tracing::warn!(missing = ?missing, "telegram: voice dependencies not found");
+        tg_send(
+            ctx,
+            &format!(
+                "Voice transcription requires ffmpeg and whisper-cli. Missing: {}. Install with: `brew install ffmpeg whisper-cpp`",
+                missing.join(", ")
+            ),
+        );
+        return;
+    }
+
     let Some(audio_data) = download_voice(&ctx.agent, &ctx.base, &ctx.file_base, file_id) else {
         tg_send(ctx, "Failed to download voice message.");
         return;
@@ -373,7 +400,11 @@ fn transcribe_audio(model_path: &str, audio_data: &[u8]) -> Option<String> {
             return None;
         }
         Err(e) => {
-            tracing::warn!(error = %e, "telegram: ffmpeg spawn error");
+            if e.kind() == std::io::ErrorKind::NotFound {
+                tracing::warn!("telegram: ffmpeg not found on PATH");
+            } else {
+                tracing::warn!(error = %e, "telegram: ffmpeg spawn error");
+            }
             return None;
         }
         _ => {}
@@ -405,7 +436,11 @@ fn transcribe_audio(model_path: &str, audio_data: &[u8]) -> Option<String> {
             None
         }
         Err(e) => {
-            tracing::warn!(error = %e, "telegram: whisper-cli spawn error");
+            if e.kind() == std::io::ErrorKind::NotFound {
+                tracing::warn!("telegram: whisper-cli not found on PATH");
+            } else {
+                tracing::warn!(error = %e, "telegram: whisper-cli spawn error");
+            }
             None
         }
     }
