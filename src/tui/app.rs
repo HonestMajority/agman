@@ -72,6 +72,7 @@ pub enum View {
     ProjectPicker,
     ProjectDeleteConfirm,
     ResearcherList,
+    ResearcherWizard,
 }
 
 /// Which wizard requested the directory picker.
@@ -358,6 +359,15 @@ pub struct ProjectWizard {
     /// false = name field focused, true = description field focused
     pub description_focus: bool,
     pub error_message: Option<String>,
+}
+
+pub struct ResearcherWizard {
+    pub name_editor: TextArea<'static>,
+    pub description_editor: VimTextArea<'static>,
+    /// false = name field focused, true = description field focused
+    pub description_focus: bool,
+    pub error_message: Option<String>,
+    pub project: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -665,6 +675,7 @@ pub struct App {
     pub project_task_counts: std::collections::HashMap<String, (usize, usize)>, // (total, active)
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
+    pub researcher_wizard: Option<ResearcherWizard>,
     // Project picker (for task migration/move)
     pub project_picker: Option<ProjectPicker>,
     // Project deletion
@@ -837,6 +848,7 @@ impl App {
             unassigned_task_count: 0,
             project_task_counts: std::collections::HashMap::new(),
             project_wizard: None,
+            researcher_wizard: None,
             project_picker: None,
             project_to_delete: None,
             researchers: Vec::new(),
@@ -2533,6 +2545,7 @@ impl App {
             View::ProjectPicker => self.handle_project_picker_event(event),
             View::ProjectDeleteConfirm => self.handle_project_delete_confirm_event(event),
             View::ResearcherList => self.handle_researcher_list_event(event),
+            View::ResearcherWizard => self.handle_researcher_wizard_event(event),
         }
     }
 
@@ -2937,6 +2950,28 @@ impl App {
                         }
                     }
                 }
+                KeyCode::Char('n') => {
+                    // Create new researcher
+                    let project = if let Some(ref p) = self.current_project {
+                        p.clone()
+                    } else if let Some(first) = self.projects.first() {
+                        first.meta.name.clone()
+                    } else {
+                        self.set_status("No project available".to_string());
+                        return Ok(false);
+                    };
+                    tracing::info!(project = %project, "opening researcher wizard");
+                    let mut name_editor = TextArea::default();
+                    name_editor.set_cursor_line_style(ratatui::style::Style::default());
+                    self.researcher_wizard = Some(ResearcherWizard {
+                        name_editor,
+                        description_editor: VimTextArea::new(),
+                        description_focus: false,
+                        error_message: None,
+                        project,
+                    });
+                    self.view = View::ResearcherWizard;
+                }
                 KeyCode::Char('d') => {
                     // Archive selected researcher
                     if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
@@ -3162,6 +3197,100 @@ impl App {
                     if key.code == KeyCode::Esc {
                         self.project_wizard = None;
                         self.view = View::ProjectList;
+                        return Ok(false);
+                    }
+                    // Enter in name field moves to description
+                    if key.code == KeyCode::Enter {
+                        wizard.description_focus = true;
+                        wizard.description_editor.set_insert_mode();
+                        return Ok(false);
+                    }
+                    wizard.name_editor.input(input);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_researcher_wizard_event(&mut self, event: Event) -> Result<bool> {
+        if let Event::Key(key) = event {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                self.should_quit = true;
+                return Ok(false);
+            }
+
+            // Ctrl+S to submit
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                if let Some(wizard) = &self.researcher_wizard {
+                    let name = wizard.name_editor.lines().join("").trim().to_string();
+                    let desc = wizard.description_editor.lines_joined();
+                    let desc = desc.trim().to_string();
+                    let project = wizard.project.clone();
+
+                    if name.is_empty() {
+                        if let Some(w) = &mut self.researcher_wizard {
+                            w.error_message = Some("Researcher name is required".to_string());
+                        }
+                        return Ok(false);
+                    }
+
+                    match use_cases::create_researcher(
+                        &self.config, &project, &name, &desc, None, None, None,
+                    ) {
+                        Ok(_researcher) => {
+                            tracing::info!(project = %project, name = %name, "created researcher via wizard");
+                            // Start the session
+                            if let Err(e) =
+                                use_cases::start_researcher_session(&self.config, &project, &name)
+                            {
+                                tracing::warn!(
+                                    project = %project, name = %name, error = %e,
+                                    "failed to start researcher session"
+                                );
+                            }
+                            self.set_status(format!("Created researcher: {name}"));
+                            self.researcher_wizard = None;
+                            self.view = View::ResearcherList;
+                            self.refresh_projects();
+                        }
+                        Err(e) => {
+                            tracing::warn!(project = %project, name = %name, error = %e, "failed to create researcher");
+                            if let Some(w) = &mut self.researcher_wizard {
+                                w.error_message = Some(format!("{e}"));
+                            }
+                        }
+                    }
+                }
+                return Ok(false);
+            }
+
+            if let Some(wizard) = &mut self.researcher_wizard {
+                wizard.error_message = None;
+                let input = Input::from(event.clone());
+
+                // Tab to switch focus between name and description
+                if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
+                    wizard.description_focus = !wizard.description_focus;
+                    if wizard.description_focus {
+                        wizard.description_editor.set_insert_mode();
+                    }
+                    return Ok(false);
+                }
+
+                if wizard.description_focus {
+                    let was_insert = wizard.description_editor.mode() == VimMode::Insert;
+                    wizard.description_editor.input(input.clone());
+                    let is_normal_now = wizard.description_editor.mode() == VimMode::Normal;
+
+                    // Esc in normal mode goes back to name field
+                    if input.key == Key::Esc && !was_insert && is_normal_now {
+                        wizard.description_focus = false;
+                    }
+                } else {
+                    // Name field: Esc cancels wizard
+                    if key.code == KeyCode::Esc {
+                        self.researcher_wizard = None;
+                        self.view = View::ResearcherList;
                         return Ok(false);
                     }
                     // Enter in name field moves to description
