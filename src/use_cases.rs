@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -2243,7 +2243,7 @@ pub fn wait_for_handoff(
     }
 }
 
-/// Respawn an agent (CEO, PM, or researcher) with a fresh session.
+/// Respawn an agent (CEO or PM) with a fresh session.
 /// If `force` is false and the session is running, performs a graceful handoff first.
 pub fn respawn_agent(
     config: &Config,
@@ -2251,6 +2251,11 @@ pub fn respawn_agent(
     force: bool,
     timeout_secs: u64,
 ) -> Result<()> {
+    if target.starts_with("researcher:") {
+        tracing::info!(target = target, "rejected researcher respawn attempt");
+        bail!("Respawning researchers is not supported. Create a new researcher instead.");
+    }
+
     // Parse target to determine agent type and resolve paths
     let (state_dir, session_name, inbox_path, session_id_path) = if target == "ceo" {
         (
@@ -2258,14 +2263,6 @@ pub fn respawn_agent(
             Config::ceo_tmux_session().to_string(),
             config.ceo_inbox(),
             config.ceo_session_id(),
-        )
-    } else if let Some(researcher_id) = target.strip_prefix("researcher:") {
-        let (project, name) = parse_researcher_id(researcher_id)?;
-        (
-            config.researcher_dir(project, name),
-            Config::researcher_tmux_session(project, name),
-            config.researcher_inbox(project, name),
-            config.researcher_session_id(project, name),
         )
     } else {
         // PM for a project
@@ -2303,9 +2300,6 @@ pub fn respawn_agent(
     // Start new session
     if target == "ceo" {
         start_ceo_session(config)?;
-    } else if let Some(researcher_id) = target.strip_prefix("researcher:") {
-        let (project, name) = parse_researcher_id(researcher_id)?;
-        start_researcher_session(config, project, name)?;
     } else {
         start_pm_session(config, target)?;
     }

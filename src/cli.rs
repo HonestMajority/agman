@@ -207,9 +207,9 @@ pub enum Commands {
         project: Option<String>,
     },
 
-    /// Respawn a Claude AI chat session (kill and restart the agent in tmux). The TUI keeps running.
+    /// Respawn an agent with a fresh session (CEO or PM)
     RespawnAgent {
-        /// Target: "ceo", a project name (for the PM), or "researcher:<project>--<name>"
+        /// Target: "ceo" or a project name (for the PM)
         target: String,
         /// Skip graceful handoff — kill and restart immediately
         #[arg(long, default_value_t = false)]
