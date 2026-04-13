@@ -1,13 +1,14 @@
 //! Minimal Telegram bot integration for the CEO agent.
 //!
-//! When `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` env vars are set, a
-//! background thread bridges plain-text messages between the user's Telegram
-//! chat and the CEO tmux session via the existing inbox/outbox JSONL files.
+//! When `telegram_bot_token` and `telegram_chat_id` are configured in the
+//! settings UI (stored in `config.toml`), a background thread bridges
+//! plain-text messages between the user's Telegram chat and the CEO tmux
+//! session via the existing inbox/outbox JSONL files.
 //!
 //! Voice messages are transcribed locally via `whisper-cli` and forwarded as
 //! text. The whisper GGML model is auto-downloaded on first use.
 //!
-//! If the env vars are absent the feature is completely dormant.
+//! If not configured, the feature is completely dormant.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -75,6 +76,11 @@ fn run_bot(
     telegram_outbox_seq: PathBuf,
     whisper_model: String,
 ) {
+    if token.trim().is_empty() || chat_id.trim().is_empty() {
+        tracing::warn!("telegram bot not started: token or chat_id is empty");
+        return;
+    }
+
     tracing::info!(chat_id = %chat_id, token_len = token.len(), "telegram bot starting");
 
     let ctx = BotCtx {
@@ -131,6 +137,7 @@ fn poll_updates(ctx: &BotCtx, offset: &mut i64) {
             continue;
         };
         if msg_chat_id.to_string() != ctx.chat_id {
+            tracing::warn!(msg_chat_id = msg_chat_id, expected = %ctx.chat_id, "telegram: rejected message from unauthorized chat_id");
             continue;
         }
 

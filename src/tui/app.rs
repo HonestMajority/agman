@@ -2692,6 +2692,38 @@ impl App {
                         self.view = View::ProjectDeleteConfirm;
                     }
                 }
+                KeyCode::Char('b') => {
+                    self.last_break_reset = Instant::now();
+                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
+                    tracing::info!("break timer reset");
+                }
+                KeyCode::Char('o') => {
+                    match NotesView::new(self.config.notes_dir.clone()) {
+                        Ok(nv) => {
+                            tracing::info!("opening notes view");
+                            self.notes_view = Some(nv);
+                            self.view = View::Notes;
+                        }
+                        Err(e) => {
+                            self.set_status(format!("Failed to open notes: {e}"));
+                        }
+                    }
+                }
+                KeyCode::Char('i') => {
+                    self.selected_notif_index = 0;
+                    self.view = View::Notifications;
+                }
+                KeyCode::Char('p') => {
+                    self.show_prs_selected = 0;
+                    self.view = View::ShowPrs;
+                    if !self.show_prs_first_poll_done && !self.show_prs_poll_active {
+                        self.start_show_prs_poll();
+                    }
+                }
+                KeyCode::Char(',') => {
+                    self.settings_selected = 0;
+                    self.view = View::Settings;
+                }
                 _ => {}
             }
         }
@@ -2868,33 +2900,6 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('i') => {
-                    self.selected_notif_index = 0;
-                    self.view = View::Notifications;
-                }
-                KeyCode::Char('p') => {
-                    self.show_prs_selected = 0;
-                    self.view = View::ShowPrs;
-                    if !self.show_prs_first_poll_done && !self.show_prs_poll_active {
-                        self.start_show_prs_poll();
-                    }
-                }
-                KeyCode::Char('m') => {
-                    match NotesView::new(self.config.notes_dir.clone()) {
-                        Ok(nv) => {
-                            self.notes_view = Some(nv);
-                            self.view = View::Notes;
-                        }
-                        Err(e) => {
-                            self.set_status(format!("Failed to open notes: {e}"));
-                        }
-                    }
-                }
-                KeyCode::Char('b') => {
-                    self.last_break_reset = Instant::now();
-                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
-                    tracing::info!("break timer reset");
-                }
                 KeyCode::Char('z') => {
                     self.archive_tasks = use_cases::list_archived_tasks(&self.config);
                     self.archive_search = Self::create_plain_editor();
@@ -2902,10 +2907,6 @@ impl App {
                     self.archive_preview = None;
                     self.archive_scroll = 0;
                     self.view = View::Archive;
-                }
-                KeyCode::Char(',') => {
-                    self.settings_selected = 0;
-                    self.view = View::Settings;
                 }
                 KeyCode::Char('R') => {
                     self.researcher_list_index = 0;
