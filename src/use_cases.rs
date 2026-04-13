@@ -2702,8 +2702,8 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
         for item in &queue {
             match item {
                 QueueItem::Feedback { text } => {
-                    let truncated = if text.len() > 50 {
-                        format!("{}...", &text[..50])
+                    let truncated = if text.chars().count() > 50 {
+                        format!("{}...", text.chars().take(50).collect::<String>())
                     } else {
                         text.clone()
                     };
