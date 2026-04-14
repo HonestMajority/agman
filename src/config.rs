@@ -9,6 +9,13 @@ fn sanitize_branch_for_id(branch: &str) -> String {
     branch.replace('/', "-")
 }
 
+/// Sanitize a branch name for use in tmux session names.
+/// Replaces characters that tmux interprets as target syntax separators:
+/// `.` (pane separator), `:` (window separator), `/` (path separator).
+fn sanitize_for_tmux(branch: &str) -> String {
+    branch.replace('/', "-").replace('.', "_").replace(':', "_")
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub base_dir: PathBuf,
@@ -168,9 +175,9 @@ impl Config {
     }
 
     /// Get tmux session name: (<repo>)__<branch>
-    /// Sanitizes `/` in branch names to `-` to avoid issues with tmux target syntax.
+    /// Sanitizes tmux-special characters in branch names: `/` → `-`, `.` → `_`, `:` → `_`.
     pub fn tmux_session_name(repo_name: &str, branch_name: &str) -> String {
-        format!("({})__{}", repo_name, sanitize_branch_for_id(branch_name))
+        format!("({})__{}", repo_name, sanitize_for_tmux(branch_name))
     }
 
     pub fn flow_path(&self, flow_name: &str) -> PathBuf {

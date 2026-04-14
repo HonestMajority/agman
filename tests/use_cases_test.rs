@@ -3244,3 +3244,12 @@ fn chat_unread_count_and_mark_read() {
     let result = use_cases::count_unread_chat_messages(&config);
     assert!(result.unread_names.is_empty());
 }
+
+#[test]
+fn dotted_branch_name_gets_sanitized_tmux_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "myrepo", "bump-0.6.18");
+
+    assert_eq!(task.meta.repos[0].tmux_session, "(myrepo)__bump-0_6_18");
+}
