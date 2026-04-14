@@ -1020,12 +1020,12 @@ fn cmd_respawn_agent(config: &Config, target: &str, force: bool, timeout: u64) -
 fn cmd_restart() -> Result<()> {
     let signal_file = dirs::home_dir()
         .context("could not determine home directory")?
-        .join(".agman/.force-restart-tui");
+        .join(".agman/.agman-restart");
 
     std::fs::write(&signal_file, "")
         .with_context(|| format!("failed to write signal file {}", signal_file.display()))?;
 
-    tracing::info!("wrote .force-restart-tui signal file");
+    tracing::info!("wrote .agman-restart signal file");
     println!("Restart signal sent. The TUI will restart momentarily.");
     Ok(())
 }
