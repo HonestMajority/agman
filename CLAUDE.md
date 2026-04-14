@@ -131,7 +131,7 @@ src/
 - `i` - Inbox (notifications), `p` - PRs, `m` - Notes
 - `b` - Break timer reset
 - `,` - Settings
-- `q/Esc` - Quit
+- `Ctrl+C` - Quit
 
 ### Preview
 - `Tab` - Switch pane (logs/notes)

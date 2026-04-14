@@ -2632,9 +2632,6 @@ impl App {
     fn handle_project_list_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    self.should_quit = true;
-                }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.should_quit = true;
                 }
@@ -2857,14 +2854,11 @@ impl App {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
-                    // If in a project scope, go back to project list
                     if self.current_project.is_some() {
                         self.current_project = None;
                         self.refresh_projects();
                         self.view = View::ProjectList;
-                        return Ok(false);
                     }
-                    self.should_quit = true;
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.should_quit = true;
@@ -4102,12 +4096,12 @@ impl App {
                     } else {
                         // "Later"
                         self.view = View::TaskList;
-                        self.set_status("Restart available — press q to quit and restart".to_string());
+                        self.set_status("Restart available — press Ctrl+C to quit and restart".to_string());
                     }
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
-                    self.set_status("Restart available — press q to quit and restart".to_string());
+                    self.set_status("Restart available — press Ctrl+C to quit and restart".to_string());
                 }
                 _ => {}
             }
