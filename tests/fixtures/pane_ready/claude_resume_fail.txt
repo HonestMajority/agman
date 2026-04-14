@@ -1,8 +1,0 @@
-claude --dangerously-skip-permissions --resume abc123
- nordbjorn@Nordbjorns-MacBook-Pro  ~/repos/agman   main  claude --dangerously-skip-permissions --resume abc123
-Error: Session abc123 not found or has expired.
- nordbjorn@Nordbjorns-MacBook-Pro  ~/repos/agman   main  $
-
-
-
-
