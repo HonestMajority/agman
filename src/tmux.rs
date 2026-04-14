@@ -504,8 +504,15 @@ impl Tmux {
         Ok(())
     }
 
-    /// Check if Claude (or node) is the foreground process in the tmux session.
-    pub fn is_claude_running(session_name: &str) -> Result<bool> {
+    /// Check whether claude (or anything that isn't a shell) is the foreground
+    /// process in the tmux session.
+    ///
+    /// We do not match on claude's own process name because Claude Code sets its
+    /// `process.title` to the version string (e.g. `"2.1.107"`), which changes
+    /// every release. Instead, we use the inverse: the pane was launched into a
+    /// shell, and when claude runs it takes over the foreground. So "ready" ≡
+    /// "foreground is not a known shell".
+    pub fn is_claude_running(session_name: &str) -> Result<(bool, String)> {
         let output = Command::new("tmux")
             .args(["display-message", "-p", "-t", session_name, "#{pane_current_command}"])
             .output()
@@ -519,22 +526,19 @@ impl Tmux {
         }
 
         let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(cmd == "claude" || cmd == "node")
+        const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "csh", "tcsh"];
+        let is_shell = cmd.is_empty() || SHELLS.contains(&cmd.as_str());
+        tracing::debug!(session = session_name, cmd = %cmd, is_shell, "session readiness check");
+        Ok((!is_shell, cmd))
     }
 
     /// Check whether a tmux session is ready to receive a message.
     ///
-    /// Pure process check: returns true iff `claude` (or its `node` runtime) is
-    /// the foreground command in the pane. Does not inspect pane content, so it
-    /// cannot be poisoned by message text. Delivery reliability is ensured by
-    /// the snippet-verification loop in the caller, not by UI scraping here.
-    pub fn is_session_ready(session_name: &str) -> Result<bool> {
-        let is_running = Self::is_claude_running(session_name)?;
-        tracing::debug!(
-            session = session_name,
-            is_running,
-            "session readiness check",
-        );
-        Ok(is_running)
+    /// Uses a shell denylist: returns true when the foreground process is NOT a
+    /// known shell. Does not inspect pane content, so it cannot be poisoned by
+    /// message text. Delivery reliability is ensured by the snippet-verification
+    /// loop in the caller, not by UI scraping here.
+    pub fn is_session_ready(session_name: &str) -> Result<(bool, String)> {
+        Self::is_claude_running(session_name)
     }
 }
