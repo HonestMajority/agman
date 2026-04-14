@@ -2719,8 +2719,11 @@ fn use_case_send_message_to_project() {
     use_cases::send_message(&config, "frontend", "ceo", "Please start work").unwrap();
 
     let messages = agman::inbox::read_messages(&config.project_inbox("frontend")).unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].from, "ceo");
+    assert_eq!(messages[0].message, "Frontend project");
+    assert_eq!(messages[1].from, "ceo");
+    assert_eq!(messages[1].message, "Please start work");
 }
 
 #[test]
