@@ -1816,6 +1816,12 @@ pub fn create_project(config: &Config, name: &str, description: &str) -> Result<
     tracing::info!(project = name, "creating project");
     let project = Project::create(config, name, description)?;
 
+    if !description.is_empty() {
+        let inbox_path = config.project_inbox(name);
+        crate::inbox::append_message(&inbox_path, "ceo", description)?;
+        tracing::debug!(project = name, "queued initial directive to project inbox");
+    }
+
     // Eagerly start PM session for the new project
     if let Err(e) = start_pm_session(config, name) {
         tracing::error!(project = name, error = %e, "failed to start PM session for new project");

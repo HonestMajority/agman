@@ -2671,6 +2671,26 @@ fn use_case_create_project() {
 
     // Project directory and meta should exist
     assert!(config.project_dir("my-proj").join("meta.json").exists());
+
+    // Initial directive should be in the project inbox
+    let messages = agman::inbox::read_messages(&config.project_inbox("my-proj")).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "ceo");
+    assert_eq!(messages[0].message, "A test project");
+}
+
+#[test]
+fn use_case_create_project_empty_description() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let project = use_cases::create_project(&config, "empty-proj", "").unwrap();
+    assert_eq!(project.meta.name, "empty-proj");
+
+    // No inbox file should be created for empty description
+    let messages = agman::inbox::read_messages(&config.project_inbox("empty-proj")).unwrap();
+    assert_eq!(messages.len(), 0);
 }
 
 #[test]
@@ -2699,8 +2719,11 @@ fn use_case_send_message_to_project() {
     use_cases::send_message(&config, "frontend", "ceo", "Please start work").unwrap();
 
     let messages = agman::inbox::read_messages(&config.project_inbox("frontend")).unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].from, "ceo");
+    assert_eq!(messages[0].message, "Frontend project");
+    assert_eq!(messages[1].from, "ceo");
+    assert_eq!(messages[1].message, "Please start work");
 }
 
 #[test]
