@@ -3,6 +3,12 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadinessStatus {
+    Ready,
+    NotReady { reason: &'static str },
+}
+
 /// Clean initial content written to REVIEW.md
 pub const REVIEW_MD_INITIAL: &str = "# Code Review\n\n(Review in progress...)\n";
 
@@ -567,7 +573,7 @@ impl Tmux {
     ///
     /// `past_modal`: true if this session has previously been seen with an input
     /// prompt, allowing us to skip content checks entirely.
-    pub fn is_session_ready(session_name: &str, past_modal: bool) -> Result<bool> {
+    pub fn is_session_ready(session_name: &str, past_modal: bool) -> Result<ReadinessStatus> {
         let is_running = Self::is_claude_running(session_name)?;
         if !is_running {
             tracing::debug!(
@@ -578,7 +584,9 @@ impl Tmux {
                 reason = "process not running",
                 "session readiness check",
             );
-            return Ok(false);
+            return Ok(ReadinessStatus::NotReady {
+                reason: "process not running",
+            });
         }
 
         if !past_modal {
@@ -594,7 +602,9 @@ impl Tmux {
                     reason = "startup modal active",
                     "session readiness check",
                 );
-                return Ok(false);
+                return Ok(ReadinessStatus::NotReady {
+                    reason: "startup modal active",
+                });
             }
             let has_prompt = has_input_prompt(&content);
             if !has_prompt {
@@ -608,7 +618,9 @@ impl Tmux {
                     reason = "no input prompt yet (startup race)",
                     "session readiness check",
                 );
-                return Ok(false);
+                return Ok(ReadinessStatus::NotReady {
+                    reason: "no input prompt yet (startup race)",
+                });
             }
         }
 
@@ -619,6 +631,6 @@ impl Tmux {
             ready = true,
             "session readiness check",
         );
-        Ok(true)
+        Ok(ReadinessStatus::Ready)
     }
 }

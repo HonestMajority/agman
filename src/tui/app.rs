@@ -24,7 +24,7 @@ use agman::flow::Flow;
 use agman::git::Git;
 use agman::repo_stats::RepoStats;
 use agman::task::{QueueItem, Task, TaskStatus};
-use agman::tmux::Tmux;
+use agman::tmux::{ReadinessStatus, Tmux};
 use agman::inbox;
 use agman::project::Project;
 use agman::researcher::Researcher;
@@ -387,6 +387,12 @@ struct InboxPollResult {
     errors: Vec<String>,
 }
 
+struct InboxPollOutput {
+    results: Vec<InboxPollResult>,
+    sessions_past_modal: std::collections::HashSet<String>,
+    stuck_skip_counts: std::collections::HashMap<(String, u64), u32>,
+}
+
 /// Query a PR's state via `gh pr view`. Returns `(is_merged, review_count)`.
 /// Returns `None` on any error so polling gracefully skips failures.
 fn query_pr_state(worktree_path: &std::path::Path, pr_number: u64) -> Option<(bool, u64)> {
@@ -689,9 +695,11 @@ pub struct App {
     pub researcher_list_index: usize,
     // Inbox polling
     pub last_inbox_poll: Instant,
-    inbox_poll_tx: tokio_mpsc::UnboundedSender<Vec<InboxPollResult>>,
-    inbox_poll_rx: tokio_mpsc::UnboundedReceiver<Vec<InboxPollResult>>,
+    inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
+    inbox_poll_rx: tokio_mpsc::UnboundedReceiver<InboxPollOutput>,
     inbox_poll_active: bool,
+    sessions_past_modal: std::collections::HashSet<String>,
+    stuck_skip_counts: std::collections::HashMap<(String, u64), u32>,
     // Agent respawn
     pub respawn_in_progress: Option<String>,
     respawn_tx: tokio_mpsc::UnboundedSender<Result<String, String>>,
@@ -887,6 +895,8 @@ impl App {
             inbox_poll_tx,
             inbox_poll_rx,
             inbox_poll_active: false,
+            sessions_past_modal: std::collections::HashSet::new(),
+            stuck_skip_counts: std::collections::HashMap::new(),
             respawn_in_progress: None,
             respawn_tx,
             respawn_rx,
@@ -5528,11 +5538,14 @@ impl App {
 
         self.inbox_poll_active = true;
         let tx = self.inbox_poll_tx.clone();
+        let mut sessions_past_modal = self.sessions_past_modal.clone();
+        let mut stuck_skip_counts = self.stuck_skip_counts.clone();
 
         self.rt.spawn(async move {
-            let results = tokio::task::spawn_blocking(move || {
+            let output = tokio::task::spawn_blocking(move || {
                 const MAX_RETRIES: usize = 3;
                 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+                const STUCK_WARN_THRESHOLD: u32 = 10;
 
                 let mut results = Vec::new();
                 for (target, inbox_path, seq_path, session_name) in targets {
@@ -5548,18 +5561,100 @@ impl App {
                         }
                     };
 
+                    if undelivered.is_empty() {
+                        results.push(InboxPollResult {
+                            target,
+                            delivered: 0,
+                            errors: vec![],
+                        });
+                        continue;
+                    }
+
                     let mut delivered = 0;
                     let mut errors = Vec::new();
 
-                    // Check if the session's Claude prompt is ready before attempting delivery
-                    // TODO: pass sessions_past_modal state once channel payload is expanded (Phase 3-5)
-                    match Tmux::is_session_ready(&session_name, false) {
-                        Ok(false) => {
+                    // Decision 5: already-pasted rescue BEFORE readiness gate
+                    let first_msg = &undelivered[0];
+                    let first_snippet = format!("[msg:{}:{}]", first_msg.from, first_msg.seq);
+                    let already_pasted = Tmux::capture_pane(&session_name)
+                        .map(|content| content.contains(&first_snippet))
+                        .unwrap_or(false);
+
+                    if already_pasted {
+                        tracing::info!(
+                            target_name = &target,
+                            session = &session_name,
+                            seq = first_msg.seq,
+                            "already-pasted rescue: message visible in pane, sending Enter"
+                        );
+                        let _ = Tmux::send_enter(&session_name);
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        let verified = Tmux::capture_pane(&session_name)
+                            .map(|content| content.contains(&first_snippet))
+                            .unwrap_or(false);
+                        if verified {
+                            if let Err(e) = inbox::mark_delivered(&seq_path, first_msg.seq) {
+                                errors.push(format!("mark_delivered error: {e}"));
+                            } else {
+                                delivered += 1;
+                            }
+                        }
+                        // Even if rescue handled one message, skip to next target this cycle
+                        // (subsequent messages will be delivered in future poll cycles)
+                        stuck_skip_counts.remove(&(target.clone(), first_msg.seq));
+                        results.push(InboxPollResult {
+                            target,
+                            delivered,
+                            errors,
+                        });
+                        continue;
+                    }
+
+                    // Readiness gate
+                    let past_modal = sessions_past_modal.contains(&session_name);
+                    match Tmux::is_session_ready(&session_name, past_modal) {
+                        Ok(ReadinessStatus::NotReady { reason }) => {
+                            let visible_tail: String = Tmux::capture_pane_visible(&session_name)
+                                .map(|content| {
+                                    content.lines()
+                                        .filter(|l| !l.trim().is_empty())
+                                        .collect::<Vec<_>>()
+                                        .into_iter()
+                                        .rev()
+                                        .take(5)
+                                        .collect::<Vec<_>>()
+                                        .into_iter()
+                                        .rev()
+                                        .collect::<Vec<_>>()
+                                        .join(" | ")
+                                })
+                                .unwrap_or_default();
                             tracing::info!(
                                 target_name = &target,
                                 session = &session_name,
+                                reason,
+                                pane_tail = &visible_tail,
                                 "session not ready, skipping delivery this cycle"
                             );
+
+                            // Stuck-cycle counter
+                            let counter = stuck_skip_counts
+                                .entry((target.clone(), first_msg.seq))
+                                .or_insert(0);
+                            *counter += 1;
+                            if *counter >= STUCK_WARN_THRESHOLD {
+                                tracing::warn!(
+                                    target_name = &target,
+                                    session = &session_name,
+                                    seq = first_msg.seq,
+                                    consecutive_skips = *counter,
+                                    pane_tail = &visible_tail,
+                                    "message delivery stuck: session not ready for {} consecutive cycles",
+                                    *counter
+                                );
+                                *counter = 0;
+                            }
+
                             results.push(InboxPollResult {
                                 target,
                                 delivered: 0,
@@ -5581,20 +5676,24 @@ impl App {
                             });
                             continue;
                         }
-                        Ok(true) => {}
+                        Ok(ReadinessStatus::Ready) => {
+                            if !past_modal {
+                                sessions_past_modal.insert(session_name.clone());
+                            }
+                            // Clear any stuck counter for this target+seq since we're now ready
+                            stuck_skip_counts.remove(&(target.clone(), first_msg.seq));
+                        }
                     }
 
                     'msg_loop: for msg in &undelivered {
                         let formatted_snippet = format!("[msg:{}:{}]", msg.from, msg.seq);
 
                         for attempt in 0..MAX_RETRIES {
-                            // Check if text was already pasted (from a prior failed attempt or prior poll cycle)
                             let already_pasted = Tmux::capture_pane(&session_name)
                                 .map(|content| content.contains(&formatted_snippet))
                                 .unwrap_or(false);
 
                             if already_pasted {
-                                // Text is visible but Enter may not have registered — retry just Enter
                                 tracing::debug!(
                                     target = &target, seq = msg.seq, attempt = attempt,
                                     "message text already in pane, retrying Enter"
@@ -5608,7 +5707,6 @@ impl App {
                                     continue;
                                 }
                             } else {
-                                // Full injection
                                 if let Err(e) = Tmux::inject_message(&session_name, &msg.from, &msg.message, msg.seq) {
                                     tracing::warn!(
                                         target = &target, seq = msg.seq, attempt = attempt, error = %e,
@@ -5619,7 +5717,6 @@ impl App {
                                 }
                             }
 
-                            // Verify delivery: check that the message text appears in the pane
                             std::thread::sleep(std::time::Duration::from_millis(200));
                             let verified = Tmux::capture_pane(&session_name)
                                 .map(|content| content.contains(&formatted_snippet))
@@ -5641,11 +5738,10 @@ impl App {
                             std::thread::sleep(RETRY_DELAY);
                         }
 
-                        // All retries exhausted — don't mark as delivered, will retry next poll
                         errors.push(format!(
                             "delivery failed after {} attempts for seq {}", MAX_RETRIES, msg.seq
                         ));
-                        break; // Stop processing further messages for this target
+                        break;
                     }
                     results.push(InboxPollResult {
                         target,
@@ -5653,22 +5749,33 @@ impl App {
                         errors,
                     });
                 }
-                results
+                InboxPollOutput {
+                    results,
+                    sessions_past_modal,
+                    stuck_skip_counts,
+                }
             })
             .await
-            .unwrap_or_default();
-            let _ = tx.send(results);
+            .unwrap_or_else(|_| InboxPollOutput {
+                results: Vec::new(),
+                sessions_past_modal: std::collections::HashSet::new(),
+                stuck_skip_counts: std::collections::HashMap::new(),
+            });
+            let _ = tx.send(output);
         });
     }
 
     fn apply_inbox_poll_results(&mut self) {
-        let results = match self.inbox_poll_rx.try_recv() {
+        let output = match self.inbox_poll_rx.try_recv() {
             Ok(r) => r,
             Err(_) => return,
         };
         self.inbox_poll_active = false;
 
-        for result in &results {
+        self.sessions_past_modal.extend(output.sessions_past_modal);
+        self.stuck_skip_counts = output.stuck_skip_counts;
+
+        for result in &output.results {
             if result.delivered > 0 {
                 tracing::info!(
                     target = %result.target,
