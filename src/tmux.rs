@@ -302,14 +302,6 @@ impl Tmux {
         let cmd = Self::build_claude_command(system_prompt, resume_id, session_id);
         Self::send_keys_to_session(session_name, &cmd)?;
 
-        // One-shot SIGWINCH nudge: gives Claude/Ink a resize event to commit its
-        // first full render while no popup is attached yet.
-        std::thread::sleep(std::time::Duration::from_millis(800));
-        let _ = Command::new("tmux")
-            .args(["resize-window", "-t", session_name, "-x", "200", "-y", "50"])
-            .output();
-        tracing::debug!(session = session_name, "sent one-shot SIGWINCH nudge after session creation");
-
         Ok(())
     }
 
