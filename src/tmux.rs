@@ -37,6 +37,10 @@ impl Tmux {
             .args([
                 "new-session",
                 "-d",
+                "-x",
+                "200",
+                "-y",
+                "50",
                 "-s",
                 session_name,
                 "-c",
@@ -247,7 +251,7 @@ impl Tmux {
         tracing::info!(session = session_name, "creating agent tmux session");
 
         // Create the session with a default shell
-        let mut args = vec!["new-session", "-d", "-s", session_name];
+        let mut args = vec!["new-session", "-d", "-x", "200", "-y", "50", "-s", session_name];
         let work_dir_str;
         if let Some(dir) = work_dir {
             work_dir_str = dir.to_string_lossy().to_string();
