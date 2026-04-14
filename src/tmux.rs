@@ -6,33 +6,25 @@ use std::process::{Command, Stdio};
 /// Clean initial content written to REVIEW.md
 pub const REVIEW_MD_INITIAL: &str = "# Code Review\n\n(Review in progress...)\n";
 
-pub fn pane_shows_claude_ready(content: &str) -> bool {
-    let tail: Vec<&str> = content
+pub fn has_startup_modal(content: &str) -> bool {
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .take(15)
+        .any(|l| l.contains("trust this folder") || l.contains("Is this a project you created"))
+}
+
+pub fn has_input_prompt(content: &str) -> bool {
+    content
         .lines()
         .rev()
         .filter(|l| !l.trim().is_empty())
         .take(40)
-        .collect();
-
-    let has_claude_chrome = tail.iter().any(|l| {
-        l.contains("bypass permissions")
-            || l.contains("-- INSERT --")
-            || l.contains("Claude Code v")
-    });
-
-    let has_input_prompt = tail.iter().any(|l| {
-        let t = l.trim_start();
-        t.starts_with("> ") || t == ">" || t.starts_with('❯')
-            || t.starts_with("│ >") || t.starts_with("│ ❯")
-    });
-
-    let modal_menu_active = tail.iter().any(|l| {
-        l.contains("trust this folder")
-            || l.contains("Is this a project you created")
-            || l.contains("Enter to confirm · Esc to cancel")
-    });
-
-    has_claude_chrome && has_input_prompt && !modal_menu_active
+        .any(|l| {
+            let t = l.trim_start();
+            t.starts_with("> ") || t == ">" || t.starts_with('❯')
+                || t.starts_with("│ >") || t.starts_with("│ ❯")
+        })
 }
 
 pub struct Tmux;
@@ -533,45 +525,100 @@ impl Tmux {
         Ok(())
     }
 
-    /// Non-blocking check whether a tmux session has Claude Code ready for input.
+    /// Check if Claude (or node) is the foreground process in the tmux session.
+    pub fn is_claude_running(session_name: &str) -> Result<bool> {
+        let output = Command::new("tmux")
+            .args(["display-message", "-p", "-t", session_name, "#{pane_current_command}"])
+            .output()
+            .context("failed to query pane_current_command")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to query pane_current_command: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(cmd == "claude" || cmd == "node")
+    }
+
+    /// Capture only the visible pane content (no scrollback).
+    pub fn capture_pane_visible(session_name: &str) -> Result<String> {
+        let output = Command::new("tmux")
+            .args(["capture-pane", "-p", "-t", session_name])
+            .output()
+            .context("failed to capture visible tmux pane")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to capture visible tmux pane: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Check whether a tmux session has Claude Code ready for input.
     ///
-    /// Checks the last 40 non-empty lines for Claude chrome, input prompt, and modal menus.
-    pub fn is_session_ready(session_name: &str) -> Result<bool> {
-        let content = Self::capture_pane(session_name)?;
+    /// Uses process detection + visible-pane content (no scrollback) to avoid
+    /// poisoning by message content quoting UI phrases.
+    ///
+    /// `past_modal`: true if this session has previously been seen with an input
+    /// prompt, allowing us to skip content checks entirely.
+    pub fn is_session_ready(session_name: &str, past_modal: bool) -> Result<bool> {
+        let is_running = Self::is_claude_running(session_name)?;
+        if !is_running {
+            tracing::debug!(
+                session = session_name,
+                past_modal,
+                is_running,
+                ready = false,
+                reason = "process not running",
+                "session readiness check",
+            );
+            return Ok(false);
+        }
 
-        let tail: Vec<&str> = content
-            .lines()
-            .rev()
-            .filter(|l| !l.trim().is_empty())
-            .take(40)
-            .collect();
-
-        let has_claude_chrome = tail.iter().any(|l| {
-            l.contains("bypass permissions")
-                || l.contains("-- INSERT --")
-                || l.contains("Claude Code v")
-        });
-        let has_input_prompt = tail.iter().any(|l| {
-            let t = l.trim_start();
-            t.starts_with("> ") || t == ">" || t.starts_with('❯')
-                || t.starts_with("│ >") || t.starts_with("│ ❯")
-        });
-        let modal_menu_active = tail.iter().any(|l| {
-            l.contains("trust this folder")
-                || l.contains("Is this a project you created")
-                || l.contains("Enter to confirm · Esc to cancel")
-        });
-
-        let ready = has_claude_chrome && has_input_prompt && !modal_menu_active;
+        if !past_modal {
+            let content = Self::capture_pane_visible(session_name)?;
+            let modal_active = has_startup_modal(&content);
+            if modal_active {
+                tracing::debug!(
+                    session = session_name,
+                    past_modal,
+                    is_running,
+                    modal_active,
+                    ready = false,
+                    reason = "startup modal active",
+                    "session readiness check",
+                );
+                return Ok(false);
+            }
+            let has_prompt = has_input_prompt(&content);
+            if !has_prompt {
+                tracing::debug!(
+                    session = session_name,
+                    past_modal,
+                    is_running,
+                    modal_active,
+                    has_prompt,
+                    ready = false,
+                    reason = "no input prompt yet (startup race)",
+                    "session readiness check",
+                );
+                return Ok(false);
+            }
+        }
 
         tracing::debug!(
             session = session_name,
-            has_claude_chrome,
-            has_input_prompt,
-            modal_menu_active,
-            ready,
+            past_modal,
+            is_running,
+            ready = true,
             "session readiness check",
         );
-        Ok(ready)
+        Ok(true)
     }
 }

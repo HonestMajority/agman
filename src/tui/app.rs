@@ -5552,9 +5552,10 @@ impl App {
                     let mut errors = Vec::new();
 
                     // Check if the session's Claude prompt is ready before attempting delivery
-                    match Tmux::is_session_ready(&session_name) {
+                    // TODO: pass sessions_past_modal state once channel payload is expanded (Phase 3-5)
+                    match Tmux::is_session_ready(&session_name, false) {
                         Ok(false) => {
-                            tracing::debug!(
+                            tracing::info!(
                                 target_name = &target,
                                 session = &session_name,
                                 "session not ready, skipping delivery this cycle"

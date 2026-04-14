@@ -1,5 +1,5 @@
 claude --dangerously-skip-permissions --system-prompt 'you are a test agent'
- nordbjorn@Nordbjorns-MacBook-Pro  /tmp  claude --dangerously-skip-permissions --system-prompt 'you are a test agent'
+ nordbjorn@Nordbjorns-MacBook-Pro  /tmp  claude --dangerously-skip-permissions --system-prompt 'you are a test agent'
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Accessing workspace:
@@ -17,34 +17,3 @@ claude --dangerously-skip-permissions --system-prompt 'you are a test agent'
    2. No, exit
 
  Enter to confirm · Esc to cancel
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
