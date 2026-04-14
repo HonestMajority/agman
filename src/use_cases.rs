@@ -2451,16 +2451,9 @@ pub fn start_researcher_session(config: &Config, project: &str, name: &str) -> R
     } else {
         DEFAULT_RESEARCHER_PROMPT_TEMPLATE
     };
-    let mut prompt = template
+    let prompt = template
         .replace("{{PROJECT_NAME}}", project)
         .replace("{{RESEARCHER_NAME}}", name);
-
-    if !researcher.meta.description.is_empty() {
-        prompt.push_str(&format!(
-            "\nYour research question: {}",
-            researcher.meta.description
-        ));
-    }
 
     // Resolve working directory
     let work_dir = resolve_researcher_work_dir(config, &researcher);
