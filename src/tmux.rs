@@ -6,6 +6,35 @@ use std::process::{Command, Stdio};
 /// Clean initial content written to REVIEW.md
 pub const REVIEW_MD_INITIAL: &str = "# Code Review\n\n(Review in progress...)\n";
 
+pub fn pane_shows_claude_ready(content: &str) -> bool {
+    let tail: Vec<&str> = content
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .take(40)
+        .collect();
+
+    let has_claude_chrome = tail.iter().any(|l| {
+        l.contains("bypass permissions")
+            || l.contains("-- INSERT --")
+            || l.contains("Claude Code v")
+    });
+
+    let has_input_prompt = tail.iter().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("> ") || t == ">" || t.starts_with('❯')
+            || t.starts_with("│ >") || t.starts_with("│ ❯")
+    });
+
+    let modal_menu_active = tail.iter().any(|l| {
+        l.contains("trust this folder")
+            || l.contains("Is this a project you created")
+            || l.contains("Enter to confirm · Esc to cancel")
+    });
+
+    has_claude_chrome && has_input_prompt && !modal_menu_active
+}
+
 pub struct Tmux;
 
 impl Tmux {
@@ -504,23 +533,50 @@ impl Tmux {
         Ok(())
     }
 
-    /// Non-blocking check whether a tmux session has Claude Code's input prompt visible.
+    /// Non-blocking check whether a tmux session has Claude Code ready for input.
     ///
-    /// Performs a single `capture_pane` call and checks the last few non-empty lines
-    /// for Claude Code's prompt indicator (`>` or `❯` at the start of a line).
-    /// Returns `true` if the prompt is detected, `false` otherwise.
+    /// Issues a SIGWINCH nudge (resize-window) to force a re-render, then checks
+    /// the last 40 non-empty lines for Claude chrome, input prompt, and modal menus.
     pub fn is_session_ready(session_name: &str) -> Result<bool> {
+        let _ = Command::new("tmux")
+            .args(["resize-window", "-t", session_name, "-x", "200", "-y", "50"])
+            .output();
+
         let content = Self::capture_pane(session_name)?;
-        let ready = content
+
+        let tail: Vec<&str> = content
             .lines()
             .rev()
-            .filter(|line| !line.trim().is_empty())
-            .take(5)
-            .any(|line| {
-                let trimmed = line.trim_start();
-                trimmed.starts_with("> ") || trimmed.starts_with('❯') || trimmed == ">"
-            });
-        tracing::debug!(session = session_name, ready, "session readiness check");
+            .filter(|l| !l.trim().is_empty())
+            .take(40)
+            .collect();
+
+        let has_claude_chrome = tail.iter().any(|l| {
+            l.contains("bypass permissions")
+                || l.contains("-- INSERT --")
+                || l.contains("Claude Code v")
+        });
+        let has_input_prompt = tail.iter().any(|l| {
+            let t = l.trim_start();
+            t.starts_with("> ") || t == ">" || t.starts_with('❯')
+                || t.starts_with("│ >") || t.starts_with("│ ❯")
+        });
+        let modal_menu_active = tail.iter().any(|l| {
+            l.contains("trust this folder")
+                || l.contains("Is this a project you created")
+                || l.contains("Enter to confirm · Esc to cancel")
+        });
+
+        let ready = has_claude_chrome && has_input_prompt && !modal_menu_active;
+
+        tracing::debug!(
+            session = session_name,
+            has_claude_chrome,
+            has_input_prompt,
+            modal_menu_active,
+            ready,
+            "session readiness check",
+        );
         Ok(ready)
     }
 }
