@@ -2965,6 +2965,7 @@ AGMAN_MSG
 - Escalate blockers to the user
 - Never create tasks directly — only PMs can do that
 - Keep messages to PMs clear and actionable
+- **PMs own all process decisions.** Your job is to brief PMs with intent, scope, and relevant code/technical context — then get out of their way. Do NOT tell PMs how to structure tasks, sequence work, organize their backlog, coordinate with other in-flight PRs/tasks, or handle tracking artifacts (placeholder tasks, GitHub issues, notes, etc.). Those are PM decisions. If you catch yourself writing "you should ___" or "make sure to ___" about process, delete it. Only override this when the user explicitly tells you to be prescriptive on process.
 
 ## System Messages
 - Messages tagged `[Message from system]:` are automated system-level notifications from agman itself — not from a PM, researcher, or the user.
