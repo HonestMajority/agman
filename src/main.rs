@@ -15,6 +15,44 @@ use agman::use_cases;
 use cli::{Cli, Commands};
 use tui::run_tui;
 
+fn resolve_text_arg(
+    value: Option<&str>,
+    file: Option<&std::path::Path>,
+    field_name: &str,
+) -> Result<String> {
+    use std::io::{IsTerminal, Read as _};
+
+    if let Some(path) = file {
+        return std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {field_name} file: {}", path.display()));
+    }
+
+    if let Some(val) = value {
+        if val == "-" {
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .with_context(|| format!("Failed to read {field_name} from stdin"))?;
+            return Ok(buf);
+        }
+        if let Some(path) = val.strip_prefix('@') {
+            return std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read {field_name} from file: {path}"));
+        }
+        return Ok(val.to_string());
+    }
+
+    if !std::io::stdin().is_terminal() {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .with_context(|| format!("Failed to read {field_name} from stdin"))?;
+        return Ok(buf);
+    }
+
+    anyhow::bail!("No {field_name} provided. Pass as argument, --file, or pipe via stdin.");
+}
+
 fn main() -> Result<()> {
     // Setup better panic handling
     better_panic::install();
@@ -504,22 +542,7 @@ fn cmd_send_message(
     file: Option<&std::path::Path>,
     from: Option<&str>,
 ) -> Result<()> {
-    use std::io::{IsTerminal, Read as _};
-
-    let resolved = if let Some(path) = file {
-        std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read message file: {}", path.display()))?
-    } else if let Some(msg) = message {
-        msg.to_string()
-    } else if !std::io::stdin().is_terminal() {
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)
-            .context("Failed to read message from stdin")?;
-        buf
-    } else {
-        anyhow::bail!("No message provided. Pass as argument, --file, or pipe via stdin.");
-    };
-
+    let resolved = resolve_text_arg(message, file, "message")?;
     let sender = from.unwrap_or("unknown");
     use_cases::send_message(config, target, sender, resolved.trim_end())?;
     println!("Message sent to '{}'", target);
@@ -678,12 +701,17 @@ fn cmd_create_pm_task(
         );
     }
 
+    let desc = match description {
+        Some(d) => resolve_text_arg(Some(&d), None, "description")?,
+        None => String::new(),
+    };
+
     let task = use_cases::create_pm_task(
         config,
         project,
         repo,
         task_name,
-        description.as_deref().unwrap_or(""),
+        &desc,
     )?;
     let task_id = task.meta.task_id();
 
@@ -886,23 +914,7 @@ fn cmd_queue_feedback(
     feedback: Option<&str>,
     file: Option<&std::path::Path>,
 ) -> Result<()> {
-    use std::io::{IsTerminal, Read as _};
-
-    let resolved = if let Some(path) = file {
-        std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read feedback file: {}", path.display()))?
-    } else if let Some(msg) = feedback {
-        msg.to_string()
-    } else if !std::io::stdin().is_terminal() {
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("Failed to read feedback from stdin")?;
-        buf
-    } else {
-        anyhow::bail!("No feedback provided. Pass as argument, --file, or pipe via stdin.");
-    };
-
+    let resolved = resolve_text_arg(feedback, file, "feedback")?;
     let task = Task::load_by_id(config, task_id)?;
     let feedback = resolved.trim_end();
 
@@ -948,12 +960,15 @@ fn cmd_create_researcher(
     task: Option<String>,
     description: Option<String>,
 ) -> Result<()> {
-    let desc = description.as_deref().unwrap_or("");
+    let desc = match description {
+        Some(d) => resolve_text_arg(Some(&d), None, "description")?,
+        None => String::new(),
+    };
     let researcher = use_cases::create_researcher(
         config,
         project,
         name,
-        desc,
+        &desc,
         repo,
         branch,
         task,
@@ -1028,4 +1043,42 @@ fn cmd_restart() -> Result<()> {
     tracing::info!("wrote .agman-restart signal file");
     println!("Restart signal sent. The TUI will restart momentarily.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_text_arg_literal() {
+        let result = resolve_text_arg(Some("hello world"), None, "test").unwrap();
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn resolve_text_arg_at_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("input.md");
+        std::fs::write(&file, "file contents\nline two\n").unwrap();
+
+        let arg = format!("@{}", file.display());
+        let result = resolve_text_arg(Some(&arg), None, "test").unwrap();
+        assert_eq!(result, "file contents\nline two\n");
+    }
+
+    #[test]
+    fn resolve_text_arg_file_param_takes_priority() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("priority.txt");
+        std::fs::write(&file, "from file param").unwrap();
+
+        let result = resolve_text_arg(Some("ignored"), Some(file.as_path()), "test").unwrap();
+        assert_eq!(result, "from file param");
+    }
+
+    #[test]
+    fn resolve_text_arg_at_path_missing_file() {
+        let result = resolve_text_arg(Some("@/nonexistent/path.md"), None, "test");
+        assert!(result.is_err());
+    }
 }
