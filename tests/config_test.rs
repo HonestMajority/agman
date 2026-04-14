@@ -75,6 +75,30 @@ fn config_tmux_session_name() {
 }
 
 #[test]
+fn config_tmux_session_name_with_dots() {
+    assert_eq!(
+        Config::tmux_session_name("repo", "chore-job-0.6.18"),
+        "(repo)__chore-job-0_6_18"
+    );
+}
+
+#[test]
+fn config_tmux_session_name_with_slash_and_dots() {
+    assert_eq!(
+        Config::tmux_session_name("repo", "feat/v1.2.3"),
+        "(repo)__feat-v1_2_3"
+    );
+}
+
+#[test]
+fn config_tmux_session_name_with_colon() {
+    assert_eq!(
+        Config::tmux_session_name("repo", "fix:colon"),
+        "(repo)__fix_colon"
+    );
+}
+
+#[test]
 fn config_ensure_dirs() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
