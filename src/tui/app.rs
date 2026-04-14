@@ -59,7 +59,6 @@ pub enum View {
     Queue,
     RebaseBranchPicker,
     ReviewWizard,
-    RestartConfirm,
     RestartWizard,
     DirectoryPicker,
     SessionPicker,
@@ -605,9 +604,6 @@ pub struct App {
     pub archive_mode_index: usize,
     // Restart task wizard
     pub restart_wizard: Option<RestartWizard>,
-    // Restart modal state (binary restart)
-    pub restart_pending: bool,
-    pub restart_confirm_index: usize,
     pub should_restart: bool,
     // PR polling
     pub last_pr_poll: Instant,
@@ -822,8 +818,6 @@ impl App {
             rebase_branch_search: Self::create_plain_editor(),
             archive_mode_index: 0,
             restart_wizard: None,
-            restart_pending: false,
-            restart_confirm_index: 0,
             should_restart: false,
             last_pr_poll: Instant::now(),
             pr_poll_tx,
@@ -2611,7 +2605,6 @@ impl App {
             View::Queue => self.handle_queue_event(event),
             View::RebaseBranchPicker => self.handle_rebase_branch_picker_event(event),
             View::ReviewWizard => self.handle_review_wizard_event(event),
-            View::RestartConfirm => self.handle_restart_confirm_event(event),
             View::RestartWizard => self.handle_restart_wizard_event(event),
             View::DirectoryPicker => self.handle_directory_picker_event(event),
             View::SessionPicker => self.handle_session_picker_event(event),
@@ -4073,35 +4066,6 @@ impl App {
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
-                }
-                _ => {}
-            }
-        }
-        Ok(false)
-    }
-
-    fn handle_restart_confirm_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.restart_confirm_index = (self.restart_confirm_index + 1) % 2;
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.restart_confirm_index = if self.restart_confirm_index == 0 { 1 } else { 0 };
-                }
-                KeyCode::Enter => {
-                    if self.restart_confirm_index == 0 {
-                        // "Restart now"
-                        self.should_restart = true;
-                    } else {
-                        // "Later"
-                        self.view = View::TaskList;
-                        self.set_status("Restart available — press Ctrl+C to quit and restart".to_string());
-                    }
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.view = View::TaskList;
-                    self.set_status("Restart available — press Ctrl+C to quit and restart".to_string());
                 }
                 _ => {}
             }
@@ -6246,7 +6210,7 @@ pub fn run_tui(config: Config) -> Result<()> {
     #[cfg(unix)]
     {
         let base = dirs::home_dir().unwrap_or_default().join(".agman");
-        for name in [".restart-tui", ".force-restart-tui"] {
+        for name in [".agman-restart"] {
             let path = base.join(name);
             if path.exists() {
                 tracing::info!(file = name, "removing stale restart signal file at startup");
@@ -6300,9 +6264,10 @@ pub fn run_tui(config: Config) -> Result<()> {
                     break;
                 }
 
-                if app.should_quit || app.should_restart {
-                    break;
-                }
+            }
+
+            if app.should_quit || app.should_restart {
+                break;
             }
 
             // Periodic refresh (every 3 seconds)
@@ -6380,51 +6345,18 @@ pub fn run_tui(config: Config) -> Result<()> {
             // Check for completed respawn results (non-blocking)
             app.apply_respawn_results();
 
-            // Check for force-restart signal (written by `agman restart` CLI command)
-            #[cfg(unix)]
-            {
-                let force_restart_signal = dirs::home_dir()
-                    .unwrap_or_default()
-                    .join(".agman/.force-restart-tui");
-                if force_restart_signal.exists() {
-                    tracing::info!("detected .force-restart-tui signal file, restarting immediately");
-                    let _ = std::fs::remove_file(&force_restart_signal);
-                    app.should_restart = true;
-                }
-            }
-
-            // Check for restart signal (written by release.sh when agman is rebuilt)
+            // Check for restart signal (written by release.sh or `agman restart`)
             #[cfg(unix)]
             {
                 let restart_signal = dirs::home_dir()
                     .unwrap_or_default()
-                    .join(".agman/.restart-tui");
+                    .join(".agman/.agman-restart");
                 if restart_signal.exists() {
-                    tracing::info!("detected .restart-tui signal file, deferring to restart modal");
+                    tracing::info!("detected .agman-restart signal file, restarting immediately");
                     let _ = std::fs::remove_file(&restart_signal);
-                    app.restart_pending = true;
-
-                    // Notify CEO agent about the new version
-                    let ceo_inbox = app.config.ceo_inbox();
-                    if let Err(e) = inbox::append_message(
-                        &ceo_inbox,
-                        "system",
-                        "A new agman version has been installed. Use `agman restart` to restart the TUI and pick up the new binary.",
-                    ) {
-                        tracing::warn!(error = %e, "failed to notify CEO about new version");
-                    } else {
-                        tracing::info!("notified CEO about new agman version via inbox");
-                    }
+                    app.should_restart = true;
+                    break;
                 }
-            }
-
-            // Show restart modal when no other modal is active
-            if app.restart_pending
-                && matches!(app.view, View::ProjectList | View::TaskList | View::Preview)
-            {
-                app.restart_confirm_index = 0;
-                app.view = View::RestartConfirm;
-                app.restart_pending = false;
             }
 
             // Clear old status messages
