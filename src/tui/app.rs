@@ -5608,11 +5608,12 @@ impl App {
 
                     // Readiness gate (process-only check; no UI scraping)
                     match Tmux::is_session_ready(&session_name) {
-                        Ok(false) => {
+                        Ok((false, cmd)) => {
                             tracing::info!(
                                 target_name = &target,
                                 session = &session_name,
-                                "session not ready (claude/node not foreground), skipping delivery this cycle"
+                                cmd = %cmd,
+                                "session not ready (foreground: {cmd}), skipping delivery this cycle"
                             );
 
                             // Stuck-cycle counter
@@ -5624,9 +5625,10 @@ impl App {
                                 tracing::warn!(
                                     target_name = &target,
                                     session = &session_name,
+                                    cmd = %cmd,
                                     seq = first_msg.seq,
                                     consecutive_skips = *counter,
-                                    "message delivery stuck: session not ready for {} consecutive cycles",
+                                    "message delivery stuck: session not ready (foreground: {cmd}) for {} consecutive cycles",
                                     *counter
                                 );
                                 *counter = 0;
@@ -5653,7 +5655,7 @@ impl App {
                             });
                             continue;
                         }
-                        Ok(true) => {
+                        Ok((true, _)) => {
                             // Clear any stuck counter for this target+seq since we're now ready
                             stuck_skip_counts.remove(&(target.clone(), first_msg.seq));
                         }
