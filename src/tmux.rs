@@ -3,35 +3,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReadinessStatus {
-    Ready,
-    NotReady { reason: &'static str },
-}
-
 /// Clean initial content written to REVIEW.md
 pub const REVIEW_MD_INITIAL: &str = "# Code Review\n\n(Review in progress...)\n";
-
-pub fn has_startup_modal(content: &str) -> bool {
-    content
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .take(15)
-        .any(|l| l.contains("trust this folder") || l.contains("Is this a project you created"))
-}
-
-pub fn has_input_prompt(content: &str) -> bool {
-    content
-        .lines()
-        .rev()
-        .filter(|l| !l.trim().is_empty())
-        .take(40)
-        .any(|l| {
-            let t = l.trim_start();
-            t.starts_with("> ") || t == ">" || t.starts_with('❯')
-                || t.starts_with("│ >") || t.starts_with("│ ❯")
-        })
-}
 
 pub struct Tmux;
 
@@ -549,88 +522,19 @@ impl Tmux {
         Ok(cmd == "claude" || cmd == "node")
     }
 
-    /// Capture only the visible pane content (no scrollback).
-    pub fn capture_pane_visible(session_name: &str) -> Result<String> {
-        let output = Command::new("tmux")
-            .args(["capture-pane", "-p", "-t", session_name])
-            .output()
-            .context("failed to capture visible tmux pane")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "failed to capture visible tmux pane: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    }
-
-    /// Check whether a tmux session has Claude Code ready for input.
+    /// Check whether a tmux session is ready to receive a message.
     ///
-    /// Uses process detection + visible-pane content (no scrollback) to avoid
-    /// poisoning by message content quoting UI phrases.
-    ///
-    /// `past_modal`: true if this session has previously been seen with an input
-    /// prompt, allowing us to skip content checks entirely.
-    pub fn is_session_ready(session_name: &str, past_modal: bool) -> Result<ReadinessStatus> {
+    /// Pure process check: returns true iff `claude` (or its `node` runtime) is
+    /// the foreground command in the pane. Does not inspect pane content, so it
+    /// cannot be poisoned by message text. Delivery reliability is ensured by
+    /// the snippet-verification loop in the caller, not by UI scraping here.
+    pub fn is_session_ready(session_name: &str) -> Result<bool> {
         let is_running = Self::is_claude_running(session_name)?;
-        if !is_running {
-            tracing::debug!(
-                session = session_name,
-                past_modal,
-                is_running,
-                ready = false,
-                reason = "process not running",
-                "session readiness check",
-            );
-            return Ok(ReadinessStatus::NotReady {
-                reason: "process not running",
-            });
-        }
-
-        if !past_modal {
-            let content = Self::capture_pane_visible(session_name)?;
-            let modal_active = has_startup_modal(&content);
-            if modal_active {
-                tracing::debug!(
-                    session = session_name,
-                    past_modal,
-                    is_running,
-                    modal_active,
-                    ready = false,
-                    reason = "startup modal active",
-                    "session readiness check",
-                );
-                return Ok(ReadinessStatus::NotReady {
-                    reason: "startup modal active",
-                });
-            }
-            let has_prompt = has_input_prompt(&content);
-            if !has_prompt {
-                tracing::debug!(
-                    session = session_name,
-                    past_modal,
-                    is_running,
-                    modal_active,
-                    has_prompt,
-                    ready = false,
-                    reason = "no input prompt yet (startup race)",
-                    "session readiness check",
-                );
-                return Ok(ReadinessStatus::NotReady {
-                    reason: "no input prompt yet (startup race)",
-                });
-            }
-        }
-
         tracing::debug!(
             session = session_name,
-            past_modal,
             is_running,
-            ready = true,
             "session readiness check",
         );
-        Ok(ReadinessStatus::Ready)
+        Ok(is_running)
     }
 }

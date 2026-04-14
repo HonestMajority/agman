@@ -24,7 +24,7 @@ use agman::flow::Flow;
 use agman::git::Git;
 use agman::repo_stats::RepoStats;
 use agman::task::{QueueItem, Task, TaskStatus};
-use agman::tmux::{ReadinessStatus, Tmux};
+use agman::tmux::Tmux;
 use agman::inbox;
 use agman::project::Project;
 use agman::researcher::Researcher;
@@ -389,7 +389,6 @@ struct InboxPollResult {
 
 struct InboxPollOutput {
     results: Vec<InboxPollResult>,
-    sessions_past_modal: std::collections::HashSet<String>,
     stuck_skip_counts: std::collections::HashMap<(String, u64), u32>,
 }
 
@@ -698,7 +697,6 @@ pub struct App {
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
     inbox_poll_rx: tokio_mpsc::UnboundedReceiver<InboxPollOutput>,
     inbox_poll_active: bool,
-    sessions_past_modal: std::collections::HashSet<String>,
     stuck_skip_counts: std::collections::HashMap<(String, u64), u32>,
     // Agent respawn
     pub respawn_in_progress: Option<String>,
@@ -895,7 +893,6 @@ impl App {
             inbox_poll_tx,
             inbox_poll_rx,
             inbox_poll_active: false,
-            sessions_past_modal: std::collections::HashSet::new(),
             stuck_skip_counts: std::collections::HashMap::new(),
             respawn_in_progress: None,
             respawn_tx,
@@ -5538,7 +5535,6 @@ impl App {
 
         self.inbox_poll_active = true;
         let tx = self.inbox_poll_tx.clone();
-        let mut sessions_past_modal = self.sessions_past_modal.clone();
         let mut stuck_skip_counts = self.stuck_skip_counts.clone();
 
         self.rt.spawn(async move {
@@ -5610,31 +5606,13 @@ impl App {
                         continue;
                     }
 
-                    // Readiness gate
-                    let past_modal = sessions_past_modal.contains(&session_name);
-                    match Tmux::is_session_ready(&session_name, past_modal) {
-                        Ok(ReadinessStatus::NotReady { reason }) => {
-                            let visible_tail: String = Tmux::capture_pane_visible(&session_name)
-                                .map(|content| {
-                                    content.lines()
-                                        .filter(|l| !l.trim().is_empty())
-                                        .collect::<Vec<_>>()
-                                        .into_iter()
-                                        .rev()
-                                        .take(5)
-                                        .collect::<Vec<_>>()
-                                        .into_iter()
-                                        .rev()
-                                        .collect::<Vec<_>>()
-                                        .join(" | ")
-                                })
-                                .unwrap_or_default();
+                    // Readiness gate (process-only check; no UI scraping)
+                    match Tmux::is_session_ready(&session_name) {
+                        Ok(false) => {
                             tracing::info!(
                                 target_name = &target,
                                 session = &session_name,
-                                reason,
-                                pane_tail = &visible_tail,
-                                "session not ready, skipping delivery this cycle"
+                                "session not ready (claude/node not foreground), skipping delivery this cycle"
                             );
 
                             // Stuck-cycle counter
@@ -5648,7 +5626,6 @@ impl App {
                                     session = &session_name,
                                     seq = first_msg.seq,
                                     consecutive_skips = *counter,
-                                    pane_tail = &visible_tail,
                                     "message delivery stuck: session not ready for {} consecutive cycles",
                                     *counter
                                 );
@@ -5676,10 +5653,7 @@ impl App {
                             });
                             continue;
                         }
-                        Ok(ReadinessStatus::Ready) => {
-                            if !past_modal {
-                                sessions_past_modal.insert(session_name.clone());
-                            }
+                        Ok(true) => {
                             // Clear any stuck counter for this target+seq since we're now ready
                             stuck_skip_counts.remove(&(target.clone(), first_msg.seq));
                         }
@@ -5751,14 +5725,12 @@ impl App {
                 }
                 InboxPollOutput {
                     results,
-                    sessions_past_modal,
                     stuck_skip_counts,
                 }
             })
             .await
             .unwrap_or_else(|_| InboxPollOutput {
                 results: Vec::new(),
-                sessions_past_modal: std::collections::HashSet::new(),
                 stuck_skip_counts: std::collections::HashMap::new(),
             });
             let _ = tx.send(output);
@@ -5772,7 +5744,6 @@ impl App {
         };
         self.inbox_poll_active = false;
 
-        self.sessions_past_modal.extend(output.sessions_past_modal);
         self.stuck_skip_counts = output.stuck_skip_counts;
 
         for result in &output.results {
