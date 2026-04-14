@@ -2057,10 +2057,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
             ]);
             spans.extend(break_hint_spans(app));
-            spans.extend([
-                Span::styled("q", Style::default().fg(Color::LightCyan)),
-                Span::styled(" quit", Style::default().fg(Color::DarkGray)),
-            ]);
             spans
         }
         View::TaskList => {
@@ -2130,11 +2126,12 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("w", Style::default().fg(Color::LightYellow)),
                 Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
             ]);
-            let quit_label = if app.current_project.is_some() { " back" } else { " quit" };
-            spans.extend([
-                Span::styled("q", Style::default().fg(Color::LightCyan)),
-                Span::styled(quit_label, Style::default().fg(Color::DarkGray)),
-            ]);
+            if app.current_project.is_some() {
+                spans.extend([
+                    Span::styled("q", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                ]);
+            }
             spans
         }
         View::Preview => {
