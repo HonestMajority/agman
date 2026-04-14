@@ -302,6 +302,14 @@ impl Tmux {
         let cmd = Self::build_claude_command(system_prompt, resume_id, session_id);
         Self::send_keys_to_session(session_name, &cmd)?;
 
+        // One-shot SIGWINCH nudge: gives Claude/Ink a resize event to commit its
+        // first full render while no popup is attached yet.
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let _ = Command::new("tmux")
+            .args(["resize-window", "-t", session_name, "-x", "200", "-y", "50"])
+            .output();
+        tracing::debug!(session = session_name, "sent one-shot SIGWINCH nudge after session creation");
+
         Ok(())
     }
 
@@ -464,7 +472,7 @@ impl Tmux {
         }
 
         // Give tmux time to process the pasted text before sending Enter
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        std::thread::sleep(std::time::Duration::from_millis(300));
 
         tracing::trace!(session = session_name, "sending Enter to submit message");
         let enter_output = Command::new("tmux")
@@ -535,13 +543,8 @@ impl Tmux {
 
     /// Non-blocking check whether a tmux session has Claude Code ready for input.
     ///
-    /// Issues a SIGWINCH nudge (resize-window) to force a re-render, then checks
-    /// the last 40 non-empty lines for Claude chrome, input prompt, and modal menus.
+    /// Checks the last 40 non-empty lines for Claude chrome, input prompt, and modal menus.
     pub fn is_session_ready(session_name: &str) -> Result<bool> {
-        let _ = Command::new("tmux")
-            .args(["resize-window", "-t", session_name, "-x", "200", "-y", "50"])
-            .output();
-
         let content = Self::capture_pane(session_name)?;
 
         let tail: Vec<&str> = content
