@@ -58,10 +58,18 @@ pub enum Commands {
     },
 
     /// Send a message to an agent's inbox
+    #[command(after_help = "\
+EXAMPLES:
+  agman send-message ceo \"Check the deploy status\"
+  cat <<'EOF' | agman send-message ceo -
+  Multi-line message via stdin using the - sentinel.
+  EOF
+  agman send-message ceo @./message.md")]
     SendMessage {
         /// Target: "ceo", "telegram", "researcher:<project>--<name>", or a project name (for the PM)
         target: String,
         /// Message text (can also be provided via stdin or --file)
+        #[arg(allow_hyphen_values = true)]
         message: Option<String>,
         /// Read message from a file
         #[arg(short = 'F', long)]
@@ -111,6 +119,13 @@ pub enum Commands {
     },
 
     /// Create a task within a project
+    #[command(after_help = "\
+EXAMPLES:
+  agman create-pm-task myproj myrepo fix-bug --description \"Fix the login bug\"
+  cat <<'EOF' | agman create-pm-task myproj myrepo fix-bug --description -
+  Multi-line description via stdin using the - sentinel.
+  EOF
+  agman create-pm-task myproj myrepo fix-bug --description @./task-desc.md")]
     CreatePmTask {
         /// Project name
         project: String,
@@ -119,7 +134,7 @@ pub enum Commands {
         /// Task name (becomes the branch name, e.g. 'fix-login-bug')
         task_name: String,
         /// Task description for the TASK.md Goal section
-        #[arg(long, short)]
+        #[arg(long, short, allow_hyphen_values = true)]
         description: Option<String>,
     },
 
@@ -157,10 +172,18 @@ pub enum Commands {
     Status,
 
     /// Queue feedback on a running task
+    #[command(after_help = "\
+EXAMPLES:
+  agman queue-feedback myrepo--fix-bug \"Please also check edge cases\"
+  cat <<'EOF' | agman queue-feedback myrepo--fix-bug -
+  Multi-line feedback via stdin using the - sentinel.
+  EOF
+  agman queue-feedback myrepo--fix-bug @./feedback.md")]
     QueueFeedback {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
         /// Feedback text to queue
+        #[arg(allow_hyphen_values = true)]
         feedback: Option<String>,
         /// Read feedback from a file
         #[arg(short = 'F', long)]
@@ -168,6 +191,13 @@ pub enum Commands {
     },
 
     /// Create a researcher (defaults to CEO-level when --project is omitted)
+    #[command(after_help = "\
+EXAMPLES:
+  agman create-researcher my-research --description \"Investigate the API latency\"
+  cat <<'EOF' | agman create-researcher my-research --description -
+  Multi-line description via stdin using the - sentinel.
+  EOF
+  agman create-researcher my-research --description @./research-desc.md")]
     CreateResearcher {
         /// Researcher name (alphanumeric + hyphens)
         name: String,
@@ -184,7 +214,7 @@ pub enum Commands {
         #[arg(long)]
         task: Option<String>,
         /// Research description/question
-        #[arg(long, short)]
+        #[arg(long, short, allow_hyphen_values = true)]
         description: Option<String>,
     },
 
