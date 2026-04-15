@@ -3228,44 +3228,74 @@ fn handoff_file_mechanics() {
 }
 
 // ---------------------------------------------------------------------------
-// Chat unread count and mark read
+// Chat unread tracking (transcript-based)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn chat_unread_count_and_mark_read() {
+fn chat_unread_via_transcript_and_mark_viewed() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
-    // Create CEO inbox with 3 messages
-    let ceo_inbox = config.ceo_inbox();
-    for i in 0..3 {
-        agman::inbox::append_message(&ceo_inbox, "user", &format!("msg {}", i)).unwrap();
-    }
+    let claude_projects_tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("AGMAN_CLAUDE_PROJECTS_DIR", claude_projects_tmp.path());
 
-    // Create a project inbox with 2 messages
     let project_name = "test-project";
-    let project_inbox = config.project_inbox(project_name);
-    std::fs::create_dir_all(config.project_dir(project_name)).unwrap();
-    for i in 0..2 {
-        agman::inbox::append_message(&project_inbox, "ceo", &format!("task {}", i)).unwrap();
-    }
+    let project_dir = config.project_dir(project_name);
+    std::fs::create_dir_all(&project_dir).unwrap();
 
-    // Count unread — should have CEO and test-project
+    let session_id = "test-session-abc";
+    let session_id_path = config.project_session_id(project_name);
+    std::fs::write(&session_id_path, session_id).unwrap();
+
+    let transcript_path =
+        use_cases::claude_transcript_path(claude_projects_tmp.path(), &project_dir, session_id);
+    std::fs::create_dir_all(transcript_path.parent().unwrap()).unwrap();
+
+    // User-only transcript — no unread
+    std::fs::write(
+        &transcript_path,
+        "{\"type\":\"user\",\"uuid\":\"u1\",\"timestamp\":\"2026-01-01T00:00:00Z\"}\n",
+    )
+    .unwrap();
     let result = use_cases::count_unread_chat_messages(&config);
-    assert!(result.unread_names.contains(&"CEO".to_string()));
-    assert!(result.unread_names.contains(&"test-project".to_string()));
-    assert_eq!(result.unread_names.len(), 2);
+    assert!(result.unread_names.is_empty());
 
-    // Mark CEO inbox as read
-    use_cases::mark_chat_read(&config, "ceo", &ceo_inbox).unwrap();
+    // Append assistant line — project appears as unread
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript_path)
+        .unwrap();
+    writeln!(
+        f,
+        r#"{{"type":"assistant","uuid":"a1","timestamp":"2026-01-01T00:01:00Z"}}"#
+    )
+    .unwrap();
+    drop(f);
     let result = use_cases::count_unread_chat_messages(&config);
     assert_eq!(result.unread_names, vec!["test-project".to_string()]);
 
-    // Mark project inbox as read
-    let project_key = format!("project:{}", project_name);
-    use_cases::mark_chat_read(&config, &project_key, &project_inbox).unwrap();
+    // Mark viewed — no longer unread
+    let agent_key = format!("project:{project_name}");
+    use_cases::mark_chat_viewed(&config, &agent_key).unwrap();
     let result = use_cases::count_unread_chat_messages(&config);
     assert!(result.unread_names.is_empty());
+
+    // Append another assistant line — unread again
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript_path)
+        .unwrap();
+    writeln!(
+        f,
+        r#"{{"type":"assistant","uuid":"a2","timestamp":"2026-01-01T00:02:00Z"}}"#
+    )
+    .unwrap();
+    drop(f);
+    let result = use_cases::count_unread_chat_messages(&config);
+    assert_eq!(result.unread_names, vec!["test-project".to_string()]);
+
+    std::env::remove_var("AGMAN_CLAUDE_PROJECTS_DIR");
 }
 
 #[test]

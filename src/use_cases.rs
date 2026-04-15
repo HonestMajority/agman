@@ -2333,10 +2333,19 @@ pub fn start_ceo_session(config: &Config) -> Result<()> {
     let ceo_dir = config.ceo_dir();
     std::fs::create_dir_all(&ceo_dir).context("failed to create CEO directory")?;
 
-    // Check for resume ID
     let session_id_path = config.ceo_session_id();
-    let resume_id = std::fs::read_to_string(&session_id_path).ok();
-    let resume_ref = resume_id.as_deref().map(|s| s.trim());
+    let existing_session_id = std::fs::read_to_string(&session_id_path).ok();
+    let existing_session_id_trimmed = existing_session_id.as_deref().map(|s| s.trim().to_string());
+
+    let (resume_id, new_session_id) = if let Some(ref id) = existing_session_id_trimmed {
+        (Some(id.as_str()), None)
+    } else {
+        let uuid = uuid::Uuid::new_v4().to_string();
+        std::fs::write(&session_id_path, &uuid)
+            .context("failed to write CEO session-id")?;
+        tracing::info!(session_id = %uuid, "generated new CEO session ID");
+        (None, Some(uuid))
+    };
 
     let (token, chat_id) = load_telegram_config(config);
     let telegram_enabled = token.as_deref().is_some_and(|t| !t.is_empty())
@@ -2345,7 +2354,13 @@ pub fn start_ceo_session(config: &Config) -> Result<()> {
 
     let session_name = Config::ceo_tmux_session();
     tracing::info!(session = session_name, telegram_enabled, "starting CEO session");
-    Tmux::create_agent_session(session_name, &prompt, resume_ref, None, None)?;
+    Tmux::create_agent_session(
+        session_name,
+        &prompt,
+        resume_id,
+        new_session_id.as_deref(),
+        Some(&ceo_dir),
+    )?;
     Ok(())
 }
 
@@ -2366,13 +2381,29 @@ pub fn start_pm_session(config: &Config, project_name: &str) -> Result<()> {
     }
 
     let session_id_path = config.project_session_id(project_name);
-    let resume_id = std::fs::read_to_string(&session_id_path).ok();
-    let resume_ref = resume_id.as_deref().map(|s| s.trim());
+    let existing_session_id = std::fs::read_to_string(&session_id_path).ok();
+    let existing_session_id_trimmed = existing_session_id.as_deref().map(|s| s.trim().to_string());
+
+    let (resume_id, new_session_id) = if let Some(ref id) = existing_session_id_trimmed {
+        (Some(id.as_str()), None)
+    } else {
+        let uuid = uuid::Uuid::new_v4().to_string();
+        std::fs::write(&session_id_path, &uuid)
+            .context("failed to write PM session-id")?;
+        tracing::info!(project = project_name, session_id = %uuid, "generated new PM session ID");
+        (None, Some(uuid))
+    };
 
     let prompt = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
     let session_name = Config::pm_tmux_session(project_name);
     tracing::info!(session = &session_name, project = project_name, "starting PM session");
-    Tmux::create_agent_session(&session_name, &prompt, resume_ref, None, None)?;
+    Tmux::create_agent_session(
+        &session_name,
+        &prompt,
+        resume_id,
+        new_session_id.as_deref(),
+        Some(&project_dir),
+    )?;
     Ok(())
 }
 
@@ -2766,10 +2797,16 @@ pub fn get_task_log_tail(config: &Config, task_id: &str, n: usize) -> Result<Str
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ChatLastSeen(pub std::collections::HashMap<String, u64>);
+struct ChatLastViewed(std::collections::HashMap<String, ChatViewedEntry>);
 
-impl ChatLastSeen {
-    pub fn load(path: &Path) -> Self {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatViewedEntry {
+    session_id: String,
+    last_assistant_uuid: String,
+}
+
+impl ChatLastViewed {
+    fn load(path: &Path) -> Self {
         let data = match std::fs::read_to_string(path) {
             Ok(d) => d,
             Err(_) => return Self::default(),
@@ -2777,18 +2814,10 @@ impl ChatLastSeen {
         serde_json::from_str(&data).unwrap_or_default()
     }
 
-    pub fn save(&self, path: &Path) {
+    fn save(&self, path: &Path) {
         if let Ok(data) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(path, data);
         }
-    }
-
-    pub fn get(&self, key: &str) -> u64 {
-        self.0.get(key).copied().unwrap_or(0)
-    }
-
-    pub fn set(&mut self, key: String, seq: u64) {
-        self.0.insert(key, seq);
     }
 }
 
@@ -2796,114 +2825,78 @@ pub struct ChatPollResult {
     pub unread_names: Vec<String>,
 }
 
-/// Collect names of inboxes with unread chat messages (CEO + all projects).
+pub fn claude_transcript_path(claude_projects_dir: &Path, cwd: &Path, session_id: &str) -> PathBuf {
+    let escaped_cwd = cwd.to_string_lossy().replace('/', "-");
+    claude_projects_dir.join(escaped_cwd).join(format!("{session_id}.jsonl"))
+}
+
+pub fn find_last_assistant_uuid(transcript_path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(transcript_path).ok()?;
+    let mut last_uuid = None;
+    for line in content.lines() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+                if let Some(uuid) = v.get("uuid").and_then(|u| u.as_str()) {
+                    last_uuid = Some(uuid.to_string());
+                }
+            }
+        } else {
+            tracing::debug!(line = line, "skipping unparseable transcript line");
+        }
+    }
+    last_uuid
+}
+
+fn check_agent_unread(
+    claude_projects_dir: &Path,
+    last_viewed: &ChatLastViewed,
+    agent_key: &str,
+    session_id: &str,
+    cwd: &Path,
+) -> bool {
+    let transcript = claude_transcript_path(claude_projects_dir, cwd, session_id);
+    let Some(uuid) = find_last_assistant_uuid(&transcript) else {
+        return false;
+    };
+    match last_viewed.0.get(agent_key) {
+        Some(entry) if entry.session_id == session_id && entry.last_assistant_uuid == uuid => false,
+        _ => true,
+    }
+}
+
+/// Collect names of agents with unread assistant messages (CEO + all projects).
 pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
-    let last_seen_path = config.chat_last_seen_path();
-    let last_seen = ChatLastSeen::load(&last_seen_path);
-    tracing::debug!(path = %last_seen_path.display(), contents = ?last_seen, "loaded chat_last_seen");
+    let claude_projects_dir = config.claude_projects_dir();
+    let last_viewed = ChatLastViewed::load(&config.chat_last_viewed_path());
     let mut unread_names: Vec<String> = Vec::new();
 
-    // CEO inbox
-    let ceo_inbox = config.ceo_inbox();
-    let ceo_exists = ceo_inbox.exists();
-    match inbox::read_messages(&ceo_inbox) {
-        Ok(messages) => {
-            let message_count = messages.len();
-            if let Some(last) = messages.last() {
-                let seen = last_seen.get("ceo");
-                tracing::debug!(
-                    path = %ceo_inbox.display(),
-                    exists = ceo_exists,
-                    message_count,
-                    last_seq = last.seq,
-                    seen_seq = seen,
-                    inbox_key = "ceo",
-                    "CEO inbox check"
-                );
-                if last.seq > seen {
-                    unread_names.push("CEO".to_string());
-                }
-            } else {
-                tracing::debug!(
-                    path = %ceo_inbox.display(),
-                    exists = ceo_exists,
-                    message_count = 0,
-                    inbox_key = "ceo",
-                    "CEO inbox empty"
-                );
-            }
-        }
-        Err(e) => {
-            tracing::debug!(
-                path = %ceo_inbox.display(),
-                exists = ceo_exists,
-                error = %e,
-                inbox_key = "ceo",
-                "CEO inbox read error"
-            );
+    // CEO
+    if let Ok(session_id) = std::fs::read_to_string(config.ceo_session_id()) {
+        let session_id = session_id.trim();
+        if check_agent_unread(&claude_projects_dir, &last_viewed, "ceo", session_id, &config.ceo_dir()) {
+            unread_names.push("CEO".to_string());
         }
     }
 
-    // Project inboxes
-    let projects_dir = config.projects_dir();
-    match std::fs::read_dir(&projects_dir) {
-        Ok(entries) => {
-            for entry in entries.flatten() {
-                if !entry.path().is_dir() {
-                    continue;
-                }
-                let project_name = match entry.file_name().into_string() {
-                    Ok(n) => n,
-                    Err(_) => continue,
-                };
-                let inbox_path = config.project_inbox(&project_name);
-                let inbox_key = format!("project:{}", project_name);
-                let inbox_exists = inbox_path.exists();
-                match inbox::read_messages(&inbox_path) {
-                    Ok(messages) => {
-                        let message_count = messages.len();
-                        if let Some(last) = messages.last() {
-                            let seen = last_seen.get(&inbox_key);
-                            tracing::debug!(
-                                path = %inbox_path.display(),
-                                exists = inbox_exists,
-                                message_count,
-                                last_seq = last.seq,
-                                seen_seq = seen,
-                                %inbox_key,
-                                "project inbox check"
-                            );
-                            if last.seq > seen {
-                                unread_names.push(project_name);
-                            }
-                        } else {
-                            tracing::debug!(
-                                path = %inbox_path.display(),
-                                exists = inbox_exists,
-                                message_count = 0,
-                                %inbox_key,
-                                "project inbox empty"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            path = %inbox_path.display(),
-                            exists = inbox_exists,
-                            error = %e,
-                            %inbox_key,
-                            "project inbox read error"
-                        );
-                    }
+    // Projects
+    if let Ok(entries) = std::fs::read_dir(config.projects_dir()) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let project_name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let session_id_path = config.project_session_id(&project_name);
+            if let Ok(session_id) = std::fs::read_to_string(&session_id_path) {
+                let session_id = session_id.trim();
+                let agent_key = format!("project:{project_name}");
+                let cwd = config.project_dir(&project_name);
+                if check_agent_unread(&claude_projects_dir, &last_viewed, &agent_key, session_id, &cwd) {
+                    unread_names.push(project_name);
                 }
             }
-        }
-        Err(e) => {
-            tracing::debug!(
-                path = %projects_dir.display(),
-                error = %e,
-                "projects dir read error"
-            );
         }
     }
 
@@ -2911,20 +2904,37 @@ pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
     ChatPollResult { unread_names }
 }
 
-/// Mark a chat inbox as read by recording the current max seq in chat_last_seen.json.
-pub fn mark_chat_read(config: &Config, inbox_key: &str, inbox_path: &Path) -> Result<()> {
-    let messages = match inbox::read_messages(inbox_path) {
-        Ok(m) => m,
-        Err(_) => return Ok(()), // inbox doesn't exist, no-op
+/// Mark a chat agent as viewed by recording the current session-id and last assistant uuid.
+pub fn mark_chat_viewed(config: &Config, agent_key: &str) -> Result<()> {
+    let (session_id_path, cwd) = if agent_key == "ceo" {
+        (config.ceo_session_id(), config.ceo_dir())
+    } else if let Some(name) = agent_key.strip_prefix("project:") {
+        (config.project_session_id(name), config.project_dir(name))
+    } else {
+        return Ok(());
     };
 
-    if let Some(last) = messages.last() {
-        let path = config.chat_last_seen_path();
-        let mut last_seen = ChatLastSeen::load(&path);
-        last_seen.set(inbox_key.to_string(), last.seq);
-        last_seen.save(&path);
-    }
+    let session_id = match std::fs::read_to_string(&session_id_path) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => return Ok(()),
+    };
 
+    let transcript = claude_transcript_path(&config.claude_projects_dir(), &cwd, &session_id);
+    let uuid = match find_last_assistant_uuid(&transcript) {
+        Some(u) => u,
+        None => return Ok(()),
+    };
+
+    let path = config.chat_last_viewed_path();
+    let mut last_viewed = ChatLastViewed::load(&path);
+    last_viewed.0.insert(
+        agent_key.to_string(),
+        ChatViewedEntry {
+            session_id,
+            last_assistant_uuid: uuid,
+        },
+    );
+    last_viewed.save(&path);
     Ok(())
 }
 

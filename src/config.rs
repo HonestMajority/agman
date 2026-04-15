@@ -200,8 +200,18 @@ impl Config {
         self.base_dir.join("dismissed_notifications.json")
     }
 
-    pub fn chat_last_seen_path(&self) -> PathBuf {
-        self.base_dir.join("chat_last_seen.json")
+    pub fn chat_last_viewed_path(&self) -> PathBuf {
+        self.base_dir.join("chat_last_viewed.json")
+    }
+
+    pub fn claude_projects_dir(&self) -> PathBuf {
+        if let Ok(dir) = std::env::var("AGMAN_CLAUDE_PROJECTS_DIR") {
+            return PathBuf::from(dir);
+        }
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join(".claude")
+            .join("projects")
     }
 
     pub fn break_state_path(&self) -> PathBuf {

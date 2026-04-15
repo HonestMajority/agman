@@ -2682,8 +2682,8 @@ impl App {
                     match use_cases::open_ceo_popup(&self.config) {
                         Ok(()) => {
                             tracing::info!("opened CEO popup");
-                            if let Err(e) = use_cases::mark_chat_read(&self.config, "ceo", &self.config.ceo_inbox()) {
-                                tracing::error!(error = %e, "failed to mark CEO chat as read");
+                            if let Err(e) = use_cases::mark_chat_viewed(&self.config, "ceo") {
+                                tracing::error!(error = %e, "failed to mark CEO chat as viewed");
                             }
                             self.last_chat_poll = Instant::now() - Duration::from_secs(10);
                         }
@@ -2956,9 +2956,8 @@ impl App {
                                 Ok(()) => {
                                     tracing::info!(project = %project_name, "opened PM popup");
                                     let inbox_key = format!("project:{}", project_name);
-                                    let inbox_path = self.config.project_inbox(project_name);
-                                    if let Err(e) = use_cases::mark_chat_read(&self.config, &inbox_key, &inbox_path) {
-                                        tracing::error!(project = %project_name, error = %e, "failed to mark PM chat as read");
+                                    if let Err(e) = use_cases::mark_chat_viewed(&self.config, &inbox_key) {
+                                        tracing::error!(project = %project_name, error = %e, "failed to mark PM chat as viewed");
                                     }
                                     self.last_chat_poll = Instant::now() - Duration::from_secs(10);
                                 }
