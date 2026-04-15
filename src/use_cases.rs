@@ -2610,14 +2610,6 @@ pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<(
     Ok(())
 }
 
-/// Parse a researcher ID of the form "<project>--<name>" into (project, name).
-pub fn parse_researcher_id(id: &str) -> Result<(&str, &str)> {
-    let pos = id
-        .find("--")
-        .ok_or_else(|| anyhow::anyhow!("invalid researcher id '{}': expected '<project>--<name>'", id))?;
-    Ok((&id[..pos], &id[pos + 2..]))
-}
-
 // ---------------------------------------------------------------------------
 // Task query (for CLI commands)
 // ---------------------------------------------------------------------------
