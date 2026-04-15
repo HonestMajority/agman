@@ -2854,11 +2854,9 @@ impl App {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
-                    if self.current_project.is_some() {
-                        self.current_project = None;
-                        self.refresh_projects();
-                        self.view = View::ProjectList;
-                    }
+                    self.current_project = None;
+                    self.refresh_projects();
+                    self.view = View::ProjectList;
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.should_quit = true;
@@ -4944,13 +4942,13 @@ impl App {
                             } else {
                                 let _ = nv.save_current();
                                 self.notes_view = None;
-                                self.view = View::TaskList;
+                                self.view = View::ProjectList;
                             }
                         }
                         KeyCode::Char('q') => {
                             let _ = nv.save_current();
                             self.notes_view = None;
-                            self.view = View::TaskList;
+                            self.view = View::ProjectList;
                         }
                         _ => {}
                     }
@@ -4968,7 +4966,7 @@ impl App {
                     } else if key.code == KeyCode::Char('q') && is_normal {
                         let _ = nv.save_current();
                         self.notes_view = None;
-                        self.view = View::TaskList;
+                        self.view = View::ProjectList;
                     } else {
                         let before = nv.editor.lines_joined();
                         nv.editor.input(key.into());
@@ -6358,11 +6356,7 @@ pub fn run_tui(config: Config) -> Result<()> {
                 } else if app.view == View::ResearcherList {
                     app.refresh_researchers();
                 } else if app.view == View::TaskList {
-                    if app.current_project.is_some() {
-                        app.refresh_tasks_for_project();
-                    } else {
-                        app.refresh_tasks();
-                    }
+                    app.refresh_tasks_for_project();
                     // Check for stranded queue items on stopped tasks
                     app.process_stranded_queue();
                 }
