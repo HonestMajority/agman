@@ -422,7 +422,18 @@ impl AgentRunner {
                         step_index, agent_step.agent, agent_step.until
                     );
 
-                    let result = self.run_agent_step(task, agent_step)?;
+                    let result = match self.run_agent_step(task, agent_step) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            if let Some(ref project) = task.meta.project {
+                                let msg = format!("Task failed: {e}");
+                                if let Err(send_err) = crate::use_cases::send_message(&self.config, project, &task.meta.task_id(), &msg) {
+                                    tracing::warn!(task_id = %task.meta.task_id(), error = %send_err, "failed to notify PM of task failure");
+                                }
+                            }
+                            return Err(e);
+                        }
+                    };
 
                     match result {
                         Some(StopCondition::TaskComplete) => {
@@ -492,6 +503,12 @@ impl AgentRunner {
                         StopCondition::TaskComplete => {
                             task.update_status(TaskStatus::Stopped)?;
 
+                            if let Some(ref project) = task.meta.project {
+                                if let Err(e) = crate::use_cases::send_message(&self.config, project, &task.meta.task_id(), "Task complete") {
+                                    tracing::warn!(task_id = %task.meta.task_id(), error = %e, "failed to notify PM");
+                                }
+                            }
+
                             // Check for queued feedback and process it
                             if let Some(result) = self.process_queued_feedback(task)? {
                                 return Ok(result);
@@ -501,6 +518,11 @@ impl AgentRunner {
                         }
                         StopCondition::InputNeeded => {
                             task.update_status(TaskStatus::InputNeeded)?;
+                            if let Some(ref project) = task.meta.project {
+                                if let Err(e) = crate::use_cases::send_message(&self.config, project, &task.meta.task_id(), "Task needs input") {
+                                    tracing::warn!(task_id = %task.meta.task_id(), error = %e, "failed to notify PM");
+                                }
+                            }
                             return Ok(StopCondition::InputNeeded);
                         }
                         _ => {
