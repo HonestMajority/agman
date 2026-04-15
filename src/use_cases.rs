@@ -2163,17 +2163,76 @@ pub fn create_pm_task(
 // Messaging
 // ---------------------------------------------------------------------------
 
+enum SendTarget {
+    Ceo,
+    Telegram,
+    Project(String),
+    Researcher { project: String, name: String },
+}
+
+const VALID_TARGETS_HINT: &str =
+    "valid targets: ceo, telegram, <project>, researcher:<project>--<name>";
+
+fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
+    if target.is_empty() {
+        anyhow::bail!("unknown target ''\n{VALID_TARGETS_HINT}");
+    }
+
+    if target == "ceo" {
+        return Ok(SendTarget::Ceo);
+    }
+    if target == "telegram" {
+        return Ok(SendTarget::Telegram);
+    }
+
+    if let Some(researcher_id) = target.strip_prefix("researcher:") {
+        let pos = researcher_id.find("--").ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid researcher id '{researcher_id}': expected 'researcher:<project>--<name>'"
+            )
+        })?;
+        let project = &researcher_id[..pos];
+        let name = &researcher_id[pos + 2..];
+        if project.is_empty() || name.is_empty() {
+            anyhow::bail!(
+                "invalid researcher id '{researcher_id}': expected 'researcher:<project>--<name>'"
+            );
+        }
+        let dir = config.researcher_dir(project, name);
+        if !dir.exists() {
+            anyhow::bail!(
+                "unknown researcher '{researcher_id}' — no researcher found at {}",
+                dir.display()
+            );
+        }
+        return Ok(SendTarget::Researcher {
+            project: project.to_string(),
+            name: name.to_string(),
+        });
+    }
+
+    if target.contains(':') {
+        anyhow::bail!("unknown target '{target}'\n{VALID_TARGETS_HINT}");
+    }
+
+    let dir = config.project_dir(target);
+    if !dir.exists() {
+        anyhow::bail!(
+            "unknown project '{target}' — no project found at {}",
+            dir.display()
+        );
+    }
+    Ok(SendTarget::Project(target.to_string()))
+}
+
 /// Send a message to an agent's inbox.
 pub fn send_message(config: &Config, target: &str, from: &str, message: &str) -> Result<()> {
-    let inbox_path = if target == "ceo" {
-        config.ceo_inbox()
-    } else if target == "telegram" {
-        config.telegram_outbox()
-    } else if let Some(researcher_id) = target.strip_prefix("researcher:") {
-        let (project, name) = parse_researcher_id(researcher_id)?;
-        config.researcher_inbox(project, name)
-    } else {
-        config.project_inbox(target)
+    let parsed = parse_send_target(config, target)?;
+    let inbox_path = match &parsed {
+        SendTarget::Ceo => config.ceo_inbox(),
+        SendTarget::Telegram => config.telegram_outbox(),
+        SendTarget::Project(name) => config.project_inbox(name),
+        SendTarget::Researcher { project, name } => config.researcher_inbox(project, name),
     };
 
     tracing::info!(target = target, from = from, "sending message");
@@ -2580,14 +2639,6 @@ pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<(
 
     tracing::info!(project = project, name = name, "researcher resumed");
     Ok(())
-}
-
-/// Parse a researcher ID of the form "<project>--<name>" into (project, name).
-pub fn parse_researcher_id(id: &str) -> Result<(&str, &str)> {
-    let pos = id
-        .find("--")
-        .ok_or_else(|| anyhow::anyhow!("invalid researcher id '{}': expected '<project>--<name>'", id))?;
-    Ok((&id[..pos], &id[pos + 2..]))
 }
 
 // ---------------------------------------------------------------------------

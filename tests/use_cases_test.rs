@@ -2727,6 +2727,31 @@ fn use_case_send_message_to_project() {
 }
 
 #[test]
+fn use_case_send_message_rejects_unknown_prefix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let result = use_cases::send_message(&config, "task:xyz", "pm", "hello");
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("unknown target"));
+}
+
+#[test]
+fn use_case_send_message_rejects_nonexistent_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let result = use_cases::send_message(&config, "nonexistent", "ceo", "hello");
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("unknown project"));
+    assert!(!config.project_inbox("nonexistent").exists());
+}
+
+#[test]
 fn use_case_list_project_tasks_filters_correctly() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
