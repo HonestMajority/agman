@@ -75,6 +75,21 @@ pub enum View {
     RespawnConfirm,
 }
 
+/// Which persistent session a tmux popup is currently attached to.
+/// Determines the side-effects dispatched when the popup closes.
+enum PopupKind {
+    Ceo,
+    Pm { project: String },
+    Researcher,
+}
+
+/// A live tmux popup spawned by agman. The `Child` is polled each tick of
+/// the main loop via `try_wait` so the loop never blocks on the popup.
+struct ActivePopup {
+    child: std::process::Child,
+    kind: PopupKind,
+}
+
 /// Which wizard requested the directory picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirPickerOrigin {
@@ -722,6 +737,10 @@ pub struct App {
     // Sleep inhibition (macOS: caffeinate -s for system sleep assertion only)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
+    // Active tmux popup (CEO/PM chat, researcher attach). Polled each main-loop
+    // tick so inbox delivery, PR polls, and chat polls keep running while a
+    // popup is open.
+    popup: Option<ActivePopup>,
 }
 
 impl App {
@@ -918,6 +937,7 @@ impl App {
                 .arg("-s")
                 .spawn()
                 .ok(),
+            popup: None,
         })
     }
 
@@ -932,6 +952,30 @@ impl App {
 
     #[cfg(not(target_os = "macos"))]
     fn stop_caffeinate(&mut self) {}
+
+    /// Dispatch side-effects for a popup that just closed. Called from the
+    /// main loop once `try_wait` on the popup `Child` returns `Some`.
+    fn on_popup_closed(&mut self) {
+        if let Some(popup) = self.popup.take() {
+            match popup.kind {
+                PopupKind::Ceo => {
+                    if let Err(e) = use_cases::mark_chat_viewed(&self.config, "ceo") {
+                        tracing::error!(error = %e, "failed to mark CEO chat as viewed");
+                    }
+                    self.last_chat_poll = Instant::now() - Duration::from_secs(10);
+                }
+                PopupKind::Pm { project } => {
+                    let inbox_key = format!("project:{project}");
+                    if let Err(e) = use_cases::mark_chat_viewed(&self.config, &inbox_key) {
+                        tracing::error!(project = %project, error = %e, "failed to mark PM chat as viewed");
+                    }
+                    self.last_chat_poll = Instant::now() - Duration::from_secs(10);
+                }
+                PopupKind::Researcher => {}
+            }
+            tracing::info!("popup closed");
+        }
+    }
 
     fn create_plain_editor() -> TextArea<'static> {
         let mut editor = TextArea::default();
@@ -2689,14 +2733,17 @@ impl App {
                     }
                 }
                 KeyCode::Char('c') => {
-                    // Open CEO chat as a tmux popup
+                    // Open CEO chat as a tmux popup (non-blocking)
+                    if self.popup.is_some() {
+                        return Ok(false);
+                    }
                     match use_cases::open_ceo_popup(&self.config) {
-                        Ok(()) => {
+                        Ok(child) => {
                             tracing::info!("opened CEO popup");
-                            if let Err(e) = use_cases::mark_chat_viewed(&self.config, "ceo") {
-                                tracing::error!(error = %e, "failed to mark CEO chat as viewed");
-                            }
-                            self.last_chat_poll = Instant::now() - Duration::from_secs(10);
+                            self.popup = Some(ActivePopup {
+                                child,
+                                kind: PopupKind::Ceo,
+                            });
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "failed to open CEO popup");
@@ -2962,15 +3009,19 @@ impl App {
                 KeyCode::Char('c') => {
                     if let Some(ref project_name) = self.current_project.clone() {
                         if project_name != "(unassigned)" {
-                            // Open PM chat as a tmux popup
+                            // Open PM chat as a tmux popup (non-blocking)
+                            if self.popup.is_some() {
+                                return Ok(false);
+                            }
                             match use_cases::open_pm_popup(&self.config, project_name) {
-                                Ok(()) => {
+                                Ok(child) => {
                                     tracing::info!(project = %project_name, "opened PM popup");
-                                    let inbox_key = format!("project:{}", project_name);
-                                    if let Err(e) = use_cases::mark_chat_viewed(&self.config, &inbox_key) {
-                                        tracing::error!(project = %project_name, error = %e, "failed to mark PM chat as viewed");
-                                    }
-                                    self.last_chat_poll = Instant::now() - Duration::from_secs(10);
+                                    self.popup = Some(ActivePopup {
+                                        child,
+                                        kind: PopupKind::Pm {
+                                            project: project_name.clone(),
+                                        },
+                                    });
                                 }
                                 Err(e) => {
                                     tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
@@ -3064,6 +3115,9 @@ impl App {
                 }
                 KeyCode::Enter => {
                     // Attach to researcher tmux session, resuming archived ones
+                    if self.popup.is_some() {
+                        return Ok(false);
+                    }
                     if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
                         let project = researcher.meta.project.clone();
                         let name = researcher.meta.name.clone();
@@ -3087,11 +3141,15 @@ impl App {
                         }
 
                         match Tmux::popup_attach(&session_name) {
-                            Ok(()) => {
+                            Ok(child) => {
                                 tracing::info!(
                                     session = &session_name,
                                     "attached to researcher session"
                                 );
+                                self.popup = Some(ActivePopup {
+                                    child,
+                                    kind: PopupKind::Researcher,
+                                });
                             }
                             Err(e) => {
                                 self.set_status(format!("Failed to attach: {e}"));
@@ -6313,27 +6371,52 @@ pub fn run_tui(config: Config) -> Result<()> {
         let refresh_interval = Duration::from_secs(3);
 
         loop {
-            terminal.draw(|f| ui::draw(f, &mut app))?;
+            // Poll any active tmux popup so inbox/PR/chat polling keeps ticking
+            // while the user is interacting with the popup. When the popup
+            // process exits, dispatch close side-effects via `on_popup_closed`.
+            let popup_open = match app.popup.as_mut() {
+                Some(p) => match p.child.try_wait() {
+                    Ok(None) => true,
+                    Ok(Some(_)) => {
+                        app.on_popup_closed();
+                        false
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "popup try_wait failed, treating as closed");
+                        app.on_popup_closed();
+                        false
+                    }
+                },
+                None => false,
+            };
+
+            if !popup_open {
+                terminal.draw(|f| ui::draw(f, &mut app))?;
+            }
 
             if event::poll(Duration::from_millis(250))? {
                 let event = event::read()?;
-                let should_attach = app.handle_event(event)?;
+                if !popup_open {
+                    let should_attach = app.handle_event(event)?;
 
-                if should_attach {
-                    // Session picker sets attach_session_name directly
-                    if let Some(session) = app.attach_session_name.take() {
-                        attach_session = Some(session);
-                    } else if let Some(task) = app.selected_task() {
-                        if task.meta.has_repos() {
-                            attach_session = Some(task.meta.primary_repo().tmux_session.clone());
-                        } else if task.meta.is_multi_repo() {
-                            // Multi-repo with no repos yet — attach to parent session
-                            attach_session = Some(Config::tmux_session_name(&task.meta.name, &task.meta.branch_name));
+                    if should_attach {
+                        // Session picker sets attach_session_name directly
+                        if let Some(session) = app.attach_session_name.take() {
+                            attach_session = Some(session);
+                        } else if let Some(task) = app.selected_task() {
+                            if task.meta.has_repos() {
+                                attach_session = Some(task.meta.primary_repo().tmux_session.clone());
+                            } else if task.meta.is_multi_repo() {
+                                // Multi-repo with no repos yet — attach to parent session
+                                attach_session = Some(Config::tmux_session_name(&task.meta.name, &task.meta.branch_name));
+                            }
                         }
+                        break;
                     }
-                    break;
                 }
-
+                // While a popup is open, tmux owns input. Any crossterm events
+                // that leak through (e.g. SIGWINCH resize) target stale pane
+                // geometry and must be discarded rather than dispatched.
             }
 
             if app.should_quit || app.should_restart {

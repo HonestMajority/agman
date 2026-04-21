@@ -2425,11 +2425,13 @@ pub fn start_ceo_session(config: &Config) -> Result<()> {
 
 /// Open a CEO chat as a tmux popup overlaid on the current pane.
 /// Ensures the persistent CEO session is running, then attaches a popup to it.
-pub fn open_ceo_popup(config: &Config) -> Result<()> {
+///
+/// Returns the spawned popup `Child` so the caller can poll it and keep the
+/// main event loop ticking while the popup is open.
+pub fn open_ceo_popup(config: &Config) -> Result<std::process::Child> {
     start_ceo_session(config)?;
     tracing::info!("opening CEO popup");
-    Tmux::popup_attach(Config::ceo_tmux_session())?;
-    Ok(())
+    Tmux::popup_attach(Config::ceo_tmux_session())
 }
 
 /// Start a PM agent session for a project.
@@ -2468,12 +2470,14 @@ pub fn start_pm_session(config: &Config, project_name: &str) -> Result<()> {
 
 /// Open a PM chat as a tmux popup overlaid on the current pane.
 /// Ensures the persistent PM session is running, then attaches a popup to it.
-pub fn open_pm_popup(config: &Config, project_name: &str) -> Result<()> {
+///
+/// Returns the spawned popup `Child` so the caller can poll it and keep the
+/// main event loop ticking while the popup is open.
+pub fn open_pm_popup(config: &Config, project_name: &str) -> Result<std::process::Child> {
     start_pm_session(config, project_name)?;
     let session_name = Config::pm_tmux_session(project_name);
     tracing::info!(project = project_name, "opening PM popup");
-    Tmux::popup_attach(&session_name)?;
-    Ok(())
+    Tmux::popup_attach(&session_name)
 }
 
 /// Check if an agent's tmux session is running.
