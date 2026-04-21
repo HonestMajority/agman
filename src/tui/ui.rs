@@ -342,7 +342,11 @@ fn render_project_row<'a>(
         )
     };
 
-    let data_line = Line::from(vec![
+    let is_stalled = app
+        .stalled_targets()
+        .contains(&project.meta.name.as_str());
+
+    let mut spans = vec![
         Span::styled(
             if unseen_stopped > 0 { "● " } else { "  " },
             Style::default().fg(Color::Rgb(100, 200, 220)),
@@ -364,7 +368,14 @@ fn render_project_row<'a>(
         ),
         Span::raw(COL_GAP),
         desc_span,
-    ]);
+    ];
+    if is_stalled {
+        spans.push(Span::styled(
+            "  ⚠ stalled",
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    let data_line = Line::from(spans);
 
     ListItem::new(vec![data_line, Line::from("")]).style(style)
 }
@@ -400,11 +411,30 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    // Split inner area into header and list
+    // Optional CEO stall banner — a dedicated line at the top of the project list.
+    let ceo_stalled = app.stalled_targets().contains(&"ceo");
+
+    // Split inner area into (optional CEO banner) + header + list
+    let constraints: Vec<Constraint> = if ceo_stalled {
+        vec![Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]
+    } else {
+        vec![Constraint::Length(1), Constraint::Min(0)]
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .constraints(constraints)
         .split(inner);
+
+    let (header_chunk, list_chunk) = if ceo_stalled {
+        let banner = Paragraph::new(Line::from(Span::styled(
+            "⚠ CEO stalled",
+            Style::default().fg(Color::Yellow),
+        )));
+        f.render_widget(banner, chunks[0]);
+        (chunks[1], chunks[2])
+    } else {
+        (chunks[0], chunks[1])
+    };
 
     // Column constants
     const TASKS_WIDTH: usize = 6;
@@ -444,7 +474,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(COL_GAP),
         Span::styled("DESCRIPTION", header_style),
     ]);
-    f.render_widget(Paragraph::new(header), chunks[0]);
+    f.render_widget(Paragraph::new(header), header_chunk);
 
     // Build list items — partition into active and held projects
     // Render order matches navigation order: active → held → unassigned
@@ -517,7 +547,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let list = List::new(items);
-    f.render_widget(list, chunks[1]);
+    f.render_widget(list, list_chunk);
 }
 
 fn draw_project_wizard(f: &mut Frame, app: &mut App) {
@@ -2482,6 +2512,16 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut line_spans = help_text;
+
+    let stalled = app.stalled_targets();
+    if !stalled.is_empty() {
+        let mut banner = vec![Span::styled(
+            format!("⚠ {} stalled inbox(es)  ", stalled.len()),
+            Style::default().fg(Color::LightRed),
+        )];
+        banner.append(&mut line_spans);
+        line_spans = banner;
+    }
 
     if let Some((msg, _)) = &app.status_message {
         line_spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
@@ -4618,7 +4658,10 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Gray)
             };
 
-            let line = Line::from(vec![
+            let stall_key = format!("researcher:{}--{}", r.meta.project, r.meta.name);
+            let is_stalled = app.stalled_targets().contains(&stall_key.as_str());
+
+            let mut spans = vec![
                 Span::raw(" "),
                 Span::styled(*icon, Style::default().fg(status_color)),
                 Span::raw("  "),
@@ -4644,7 +4687,14 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
                 ),
                 Span::raw(COL_GAP),
                 Span::styled(desc, Style::default().fg(Color::DarkGray)),
-            ]);
+            ];
+            if is_stalled {
+                spans.push(Span::styled(
+                    "  ⚠ stalled",
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            let line = Line::from(spans);
 
             let row_style = if is_selected {
                 Style::default().bg(Color::Rgb(40, 40, 50))

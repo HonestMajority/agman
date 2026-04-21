@@ -2642,6 +2642,105 @@ pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<(
 }
 
 // ---------------------------------------------------------------------------
+// Inbox polling target enumeration
+// ---------------------------------------------------------------------------
+
+/// A destination for inbox polling: identifies where to read undelivered messages
+/// and which tmux session to deliver them to.
+#[derive(Debug, Clone)]
+pub struct InboxPollTarget {
+    /// `"ceo"`, `"<project>"`, or `"researcher:<project>--<name>"`.
+    pub name: String,
+    pub inbox_path: PathBuf,
+    pub seq_path: PathBuf,
+    pub session_name: String,
+}
+
+/// Enumerate all inbox delivery targets from disk.
+///
+/// Reads projects and researchers directly from the filesystem so delivery does
+/// not depend on which TUI view the user has visited. `session_exists` is a
+/// predicate — production callers pass `Tmux::session_exists`; tests pass a
+/// stub like `|_| true`.
+pub fn collect_inbox_poll_targets(
+    config: &Config,
+    session_exists: impl Fn(&str) -> bool,
+) -> Vec<InboxPollTarget> {
+    let mut targets = Vec::new();
+
+    // CEO target
+    let ceo_session = Config::ceo_tmux_session().to_string();
+    if session_exists(&ceo_session) {
+        targets.push(InboxPollTarget {
+            name: "ceo".to_string(),
+            inbox_path: config.ceo_inbox(),
+            seq_path: config.ceo_seq(),
+            session_name: ceo_session,
+        });
+    }
+
+    // PM targets
+    match Project::list_all(config) {
+        Ok(projects) => {
+            for p in projects {
+                let session_name = Config::pm_tmux_session(&p.meta.name);
+                if session_exists(&session_name) {
+                    targets.push(InboxPollTarget {
+                        name: p.meta.name.clone(),
+                        inbox_path: config.project_inbox(&p.meta.name),
+                        seq_path: config.project_seq(&p.meta.name),
+                        session_name,
+                    });
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "collect_inbox_poll_targets: failed to list projects, skipping PM targets");
+        }
+    }
+
+    // Researcher targets
+    match Researcher::list_all(config) {
+        Ok(researchers) => {
+            for r in researchers {
+                if r.meta.status != ResearcherStatus::Running {
+                    continue;
+                }
+                let session_name = Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
+                if session_exists(&session_name) {
+                    targets.push(InboxPollTarget {
+                        name: format!("researcher:{}--{}", r.meta.project, r.meta.name),
+                        inbox_path: config.researcher_inbox(&r.meta.project, &r.meta.name),
+                        seq_path: config.researcher_seq(&r.meta.project, &r.meta.name),
+                        session_name,
+                    });
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "collect_inbox_poll_targets: failed to list researchers, skipping researcher targets");
+        }
+    }
+
+    targets
+}
+
+/// Filter a counts map to the subset whose count meets `threshold`.
+///
+/// Pulled out as a free function so we can unit-test the threshold logic
+/// without spinning up an `App`.
+pub fn stalled_targets_from_counts<'a>(
+    counts: &'a std::collections::HashMap<String, u32>,
+    threshold: u32,
+) -> Vec<&'a str> {
+    counts
+        .iter()
+        .filter(|(_, n)| **n >= threshold)
+        .map(|(t, _)| t.as_str())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Task query (for CLI commands)
 // ---------------------------------------------------------------------------
 

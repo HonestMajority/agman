@@ -389,8 +389,14 @@ struct InboxPollResult {
 
 struct InboxPollOutput {
     results: Vec<InboxPollResult>,
-    stuck_skip_counts: std::collections::HashMap<(String, u64), u32>,
+    stuck_skip_counts: std::collections::HashMap<String, u32>,
 }
+
+/// How many consecutive "skipped" poll cycles (readiness gate refused to
+/// deliver while the inbox still had undelivered messages) qualifies a target
+/// as "stalled" and surfaces a UI indicator. At the 2s poll cadence this is
+/// ~10 seconds.
+pub const STALL_THRESHOLD: u32 = 5;
 
 /// Query a PR's state via `gh pr view`. Returns `(is_merged, review_count)`.
 /// Returns `None` on any error so polling gracefully skips failures.
@@ -697,7 +703,11 @@ pub struct App {
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
     inbox_poll_rx: tokio_mpsc::UnboundedReceiver<InboxPollOutput>,
     inbox_poll_active: bool,
-    stuck_skip_counts: std::collections::HashMap<(String, u64), u32>,
+    stuck_skip_counts: std::collections::HashMap<String, u32>,
+    /// Targets we've already emitted a one-shot "stalled" warning for this
+    /// episode — prevents a per-cycle warn spam. Cleared when the target
+    /// recovers (falls below `STALL_THRESHOLD`).
+    stall_warned: std::collections::HashSet<String>,
     // Agent respawn
     pub respawn_in_progress: Option<String>,
     respawn_tx: tokio_mpsc::UnboundedSender<Result<String, String>>,
@@ -894,6 +904,7 @@ impl App {
             inbox_poll_rx,
             inbox_poll_active: false,
             stuck_skip_counts: std::collections::HashMap::new(),
+            stall_warned: std::collections::HashSet::new(),
             respawn_in_progress: None,
             respawn_tx,
             respawn_rx,
@@ -5483,48 +5494,24 @@ impl App {
     // Inbox polling (CEO & PM message delivery)
     // -----------------------------------------------------------------------
 
+    /// Targets whose consecutive-skip count has reached `STALL_THRESHOLD`.
+    /// Surfaced in the TUI as `⚠ stalled` indicators.
+    pub fn stalled_targets(&self) -> Vec<&str> {
+        use_cases::stalled_targets_from_counts(&self.stuck_skip_counts, STALL_THRESHOLD)
+    }
+
     fn start_inbox_poll(&mut self) {
         if self.inbox_poll_active {
             return;
         }
 
-        // Collect targets: CEO + all projects that have active sessions
-        let mut targets: Vec<(String, PathBuf, PathBuf, String)> = Vec::new();
-
-        let ceo_session = Config::ceo_tmux_session().to_string();
-        if Tmux::session_exists(&ceo_session) {
-            targets.push((
-                "ceo".to_string(),
-                self.config.ceo_inbox(),
-                self.config.ceo_seq(),
-                ceo_session,
-            ));
-        }
-
-        for project in &self.projects {
-            let pm_session = Config::pm_tmux_session(&project.meta.name);
-            if Tmux::session_exists(&pm_session) {
-                targets.push((
-                    project.meta.name.clone(),
-                    self.config.project_inbox(&project.meta.name),
-                    self.config.project_seq(&project.meta.name),
-                    pm_session,
-                ));
-            }
-        }
-
-        // Researchers
-        for researcher in &self.researchers {
-            let session_name = Config::researcher_tmux_session(&researcher.meta.project, &researcher.meta.name);
-            if Tmux::session_exists(&session_name) {
-                targets.push((
-                    format!("researcher:{}--{}", researcher.meta.project, researcher.meta.name),
-                    self.config.researcher_inbox(&researcher.meta.project, &researcher.meta.name),
-                    self.config.researcher_seq(&researcher.meta.project, &researcher.meta.name),
-                    session_name,
-                ));
-            }
-        }
+        // Enumerate delivery targets from disk so polling does not depend on
+        // whichever TUI view the user has visited.
+        let targets: Vec<(String, PathBuf, PathBuf, String)> =
+            use_cases::collect_inbox_poll_targets(&self.config, |s| Tmux::session_exists(s))
+                .into_iter()
+                .map(|t| (t.name, t.inbox_path, t.seq_path, t.session_name))
+                .collect();
 
         if targets.is_empty() {
             return;
@@ -5538,7 +5525,6 @@ impl App {
             let output = tokio::task::spawn_blocking(move || {
                 const MAX_RETRIES: usize = 3;
                 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
-                const STUCK_WARN_THRESHOLD: u32 = 10;
 
                 let mut results = Vec::new();
                 for (target, inbox_path, seq_path, session_name) in targets {
@@ -5555,6 +5541,7 @@ impl App {
                     };
 
                     if undelivered.is_empty() {
+                        stuck_skip_counts.remove(&target);
                         results.push(InboxPollResult {
                             target,
                             delivered: 0,
@@ -5594,7 +5581,7 @@ impl App {
                         }
                         // Even if rescue handled one message, skip to next target this cycle
                         // (subsequent messages will be delivered in future poll cycles)
-                        stuck_skip_counts.remove(&(target.clone(), first_msg.seq));
+                        stuck_skip_counts.remove(&target);
                         results.push(InboxPollResult {
                             target,
                             delivered,
@@ -5613,23 +5600,8 @@ impl App {
                                 "session not ready (foreground: {cmd}), skipping delivery this cycle"
                             );
 
-                            // Stuck-cycle counter
-                            let counter = stuck_skip_counts
-                                .entry((target.clone(), first_msg.seq))
-                                .or_insert(0);
+                            let counter = stuck_skip_counts.entry(target.clone()).or_insert(0);
                             *counter += 1;
-                            if *counter >= STUCK_WARN_THRESHOLD {
-                                tracing::warn!(
-                                    target_name = &target,
-                                    session = &session_name,
-                                    cmd = %cmd,
-                                    seq = first_msg.seq,
-                                    consecutive_skips = *counter,
-                                    "message delivery stuck: session not ready (foreground: {cmd}) for {} consecutive cycles",
-                                    *counter
-                                );
-                                *counter = 0;
-                            }
 
                             results.push(InboxPollResult {
                                 target,
@@ -5653,8 +5625,7 @@ impl App {
                             continue;
                         }
                         Ok((true, _)) => {
-                            // Clear any stuck counter for this target+seq since we're now ready
-                            stuck_skip_counts.remove(&(target.clone(), first_msg.seq));
+                            stuck_skip_counts.remove(&target);
                         }
                     }
 
@@ -5745,6 +5716,26 @@ impl App {
 
         self.stuck_skip_counts = output.stuck_skip_counts;
 
+        // One-shot warn the first time a target crosses STALL_THRESHOLD; clear
+        // the warned marker when it recovers, so a later stall episode warns again.
+        let currently_stalled: std::collections::HashSet<String> = self
+            .stuck_skip_counts
+            .iter()
+            .filter(|(_, n)| **n >= STALL_THRESHOLD)
+            .map(|(t, _)| t.clone())
+            .collect();
+        for target in &currently_stalled {
+            if self.stall_warned.insert(target.clone()) {
+                tracing::warn!(
+                    target = %target,
+                    threshold = STALL_THRESHOLD,
+                    "message delivery stalled: session not ready for {} consecutive cycles",
+                    STALL_THRESHOLD
+                );
+            }
+        }
+        self.stall_warned.retain(|t| currently_stalled.contains(t));
+
         for result in &output.results {
             if result.delivered > 0 {
                 tracing::info!(
@@ -5752,6 +5743,7 @@ impl App {
                     delivered = result.delivered,
                     "delivered inbox messages"
                 );
+                self.stuck_skip_counts.remove(&result.target);
             }
             for err in &result.errors {
                 tracing::warn!(target = %result.target, error = %err, "inbox poll error");
