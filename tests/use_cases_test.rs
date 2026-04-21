@@ -3331,3 +3331,100 @@ fn dotted_branch_name_gets_sanitized_tmux_session() {
 
     assert_eq!(task.meta.repos[0].tmux_session, "(myrepo)__bump-0_6_18");
 }
+
+// ---------------------------------------------------------------------------
+// Inbox polling target enumeration (Bug 1 + Bug 2 — cross-project delivery)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn collect_inbox_poll_targets_enumerates_disk() {
+    use agman::config::Config;
+    use helpers::create_test_researcher;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    // Two projects, each with a Running researcher.
+    let _alpha = create_test_project(&config, "alpha");
+    let _beta = create_test_project(&config, "beta");
+    let _r1 = create_test_researcher(&config, "alpha", "r1");
+    let _r2 = create_test_researcher(&config, "beta", "r2");
+
+    // Pretend every tmux session exists so the enumeration logic is exercised.
+    let targets = use_cases::collect_inbox_poll_targets(&config, |_| true);
+
+    let names: Vec<&str> = targets.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"ceo"), "expected CEO target, got {names:?}");
+    assert!(names.contains(&"alpha"), "expected alpha PM target, got {names:?}");
+    assert!(names.contains(&"beta"), "expected beta PM target, got {names:?}");
+    assert!(
+        names.contains(&"researcher:alpha--r1"),
+        "expected alpha researcher target, got {names:?}"
+    );
+    assert!(
+        names.contains(&"researcher:beta--r2"),
+        "expected beta researcher target, got {names:?}"
+    );
+
+    // Paths match what Config returns for each name.
+    for t in &targets {
+        match t.name.as_str() {
+            "ceo" => {
+                assert_eq!(t.inbox_path, config.ceo_inbox());
+                assert_eq!(t.seq_path, config.ceo_seq());
+                assert_eq!(t.session_name, Config::ceo_tmux_session());
+            }
+            "alpha" => {
+                assert_eq!(t.inbox_path, config.project_inbox("alpha"));
+                assert_eq!(t.seq_path, config.project_seq("alpha"));
+                assert_eq!(t.session_name, Config::pm_tmux_session("alpha"));
+            }
+            "beta" => {
+                assert_eq!(t.inbox_path, config.project_inbox("beta"));
+                assert_eq!(t.seq_path, config.project_seq("beta"));
+                assert_eq!(t.session_name, Config::pm_tmux_session("beta"));
+            }
+            "researcher:alpha--r1" => {
+                assert_eq!(t.inbox_path, config.researcher_inbox("alpha", "r1"));
+                assert_eq!(t.seq_path, config.researcher_seq("alpha", "r1"));
+                assert_eq!(
+                    t.session_name,
+                    Config::researcher_tmux_session("alpha", "r1")
+                );
+            }
+            "researcher:beta--r2" => {
+                assert_eq!(t.inbox_path, config.researcher_inbox("beta", "r2"));
+                assert_eq!(t.seq_path, config.researcher_seq("beta", "r2"));
+                assert_eq!(
+                    t.session_name,
+                    Config::researcher_tmux_session("beta", "r2")
+                );
+            }
+            other => panic!("unexpected target: {other}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stalled-target threshold (Bug 4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stalled_targets_from_counts_honors_threshold() {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    counts.insert("alpha".to_string(), 2);
+    counts.insert("beta".to_string(), 5);
+    counts.insert("ceo".to_string(), 6);
+
+    let stalled = use_cases::stalled_targets_from_counts(&counts, 5);
+
+    assert!(stalled.contains(&"beta"), "expected beta, got {stalled:?}");
+    assert!(stalled.contains(&"ceo"), "expected ceo, got {stalled:?}");
+    assert!(
+        !stalled.contains(&"alpha"),
+        "alpha is below threshold, got {stalled:?}"
+    );
+    assert_eq!(stalled.len(), 2, "got {stalled:?}");
+}
