@@ -10,8 +10,8 @@
 //!
 //! If not configured, the feature is completely dormant.
 
-use std::io::Read;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +20,39 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::inbox;
+
+// ---------------------------------------------------------------------------
+// Error classification
+// ---------------------------------------------------------------------------
+
+/// Failure modes for Telegram API calls.
+///
+/// - `Permanent` means the message will never succeed (HTTP 4xx — bad request,
+///   bot kicked from chat, etc.) and the caller should abandon it.
+/// - `Transient` means it might succeed on retry (HTTP 5xx, network, JSON
+///   parse) and the caller should stop and try again next cycle.
+#[derive(Debug)]
+pub enum TgError {
+    Permanent,
+    Transient,
+}
+
+/// What `drain_outbox` should do with a given message based on the send result.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OutboxAction {
+    MarkDelivered,
+    DeadLetter,
+    Stop,
+}
+
+/// Pure classifier — extracted so it can be unit-tested without a network call.
+pub fn classify_outbox_result(result: Result<(), TgError>) -> OutboxAction {
+    match result {
+        Ok(()) => OutboxAction::MarkDelivered,
+        Err(TgError::Permanent) => OutboxAction::DeadLetter,
+        Err(TgError::Transient) => OutboxAction::Stop,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Context
@@ -34,6 +67,15 @@ struct BotCtx {
     ceo_inbox: PathBuf,
     telegram_outbox: PathBuf,
     telegram_outbox_seq: PathBuf,
+    telegram_dead_letter: PathBuf,
+}
+
+/// Filesystem paths the bot needs. Bundled to keep `run_bot`'s arg count sane.
+struct BotPaths {
+    ceo_inbox: PathBuf,
+    telegram_outbox: PathBuf,
+    telegram_outbox_seq: PathBuf,
+    telegram_dead_letter: PathBuf,
 }
 
 // ---------------------------------------------------------------------------
@@ -44,22 +86,17 @@ struct BotCtx {
 ///
 /// The thread shuts down when `cancel` is set to `true`.
 pub fn start(config: &Config, token: String, chat_id: String, cancel: Arc<AtomicBool>) {
-    let ceo_inbox = config.ceo_inbox();
-    let telegram_outbox = config.telegram_outbox();
-    let telegram_outbox_seq = config.telegram_outbox_seq();
+    let paths = BotPaths {
+        ceo_inbox: config.ceo_inbox(),
+        telegram_outbox: config.telegram_outbox(),
+        telegram_outbox_seq: config.telegram_outbox_seq(),
+        telegram_dead_letter: config.telegram_dead_letter(),
+    };
     let whisper_model = std::env::var("WHISPER_MODEL")
         .unwrap_or_else(|_| config.whisper_model_path().to_string_lossy().into_owned());
 
     std::thread::spawn(move || {
-        run_bot(
-            token,
-            chat_id,
-            cancel,
-            ceo_inbox,
-            telegram_outbox,
-            telegram_outbox_seq,
-            whisper_model,
-        );
+        run_bot(token, chat_id, cancel, paths, whisper_model);
     });
 }
 
@@ -71,9 +108,7 @@ fn run_bot(
     token: String,
     chat_id: String,
     cancel: Arc<AtomicBool>,
-    ceo_inbox: PathBuf,
-    telegram_outbox: PathBuf,
-    telegram_outbox_seq: PathBuf,
+    paths: BotPaths,
     whisper_model: String,
 ) {
     if token.trim().is_empty() || chat_id.trim().is_empty() {
@@ -92,9 +127,10 @@ fn run_bot(
         base: format!("https://api.telegram.org/bot{token}"),
         chat_id,
         whisper_model,
-        ceo_inbox,
-        telegram_outbox,
-        telegram_outbox_seq,
+        ceo_inbox: paths.ceo_inbox,
+        telegram_outbox: paths.telegram_outbox,
+        telegram_outbox_seq: paths.telegram_outbox_seq,
+        telegram_dead_letter: paths.telegram_dead_letter,
     };
 
     let mut offset: i64 = 0;
@@ -118,8 +154,9 @@ fn poll_updates(ctx: &BotCtx, offset: &mut i64) {
         "allowed_updates": ["message"],
     });
 
-    let Some(resp) = tg_post(&ctx.agent, &format!("{}/getUpdates", ctx.base), &body) else {
-        return;
+    let resp = match tg_post(&ctx.agent, &format!("{}/getUpdates", ctx.base), &body) {
+        Ok(v) => v,
+        Err(_) => return,
     };
     let Some(updates) = resp["result"].as_array() else {
         return;
@@ -175,56 +212,102 @@ fn drain_outbox(ctx: &BotCtx) {
     };
 
     for msg in messages {
-        if tg_send(ctx, &msg.message) {
-            if let Err(e) = inbox::mark_delivered(&ctx.telegram_outbox_seq, msg.seq) {
-                tracing::warn!(error = %e, seq = msg.seq, "telegram: failed to mark delivered");
+        let result = tg_send(ctx, &msg.message);
+        match classify_outbox_result(result) {
+            OutboxAction::MarkDelivered => {
+                if let Err(e) = inbox::mark_delivered(&ctx.telegram_outbox_seq, msg.seq) {
+                    tracing::warn!(error = %e, seq = msg.seq, "telegram: failed to mark delivered");
+                }
             }
-        } else {
-            // Stop on first failure, retry next cycle.
-            break;
+            OutboxAction::DeadLetter => {
+                let preview: String = msg.message.chars().take(80).collect();
+                tracing::error!(
+                    seq = msg.seq,
+                    from = %msg.from,
+                    preview = %preview,
+                    "telegram: permanent send failure, moving to dead-letter queue",
+                );
+                if let Err(e) = append_dead_letter(&ctx.telegram_dead_letter, &msg, "permanent send failure") {
+                    tracing::warn!(error = %e, seq = msg.seq, "telegram: failed to write dead-letter entry");
+                }
+                // Mark delivered anyway so the queue unblocks for subsequent messages.
+                if let Err(e) = inbox::mark_delivered(&ctx.telegram_outbox_seq, msg.seq) {
+                    tracing::warn!(error = %e, seq = msg.seq, "telegram: failed to mark dead-lettered message delivered");
+                }
+            }
+            OutboxAction::Stop => {
+                // Transient error — stop and retry next cycle.
+                break;
+            }
         }
     }
+}
+
+/// Append a failed outbox message to the dead-letter JSONL file.
+fn append_dead_letter(path: &Path, msg: &inbox::InboxMessage, reason: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let entry = serde_json::json!({
+        "seq": msg.seq,
+        "from": msg.from,
+        "message": msg.message,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "reason": reason,
+    });
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{}", entry)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Telegram API helpers
 // ---------------------------------------------------------------------------
 
-fn tg_post(agent: &ureq::Agent, url: &str, body: &Value) -> Option<Value> {
+fn tg_post(agent: &ureq::Agent, url: &str, body: &Value) -> Result<Value, TgError> {
     let method = url.rsplit('/').next().unwrap_or("?");
     tracing::debug!(method = method, "telegram: API request");
 
     match agent.post(url).send_json(body) {
         Ok(resp) => match resp.into_json::<Value>() {
-            Ok(val) => Some(val),
+            Ok(val) => Ok(val),
             Err(e) => {
                 tracing::warn!(method = method, error = %e, "telegram: response parse error");
-                None
+                Err(TgError::Transient)
             }
         },
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
             tracing::warn!(method = method, status = code, body = body, "telegram: API error");
-            None
+            if (400..=499).contains(&code) {
+                Err(TgError::Permanent)
+            } else {
+                Err(TgError::Transient)
+            }
         }
         Err(e) => {
             tracing::warn!(method = method, error = %e, "telegram: transport error");
-            None
+            Err(TgError::Transient)
         }
     }
 }
 
-/// Send a plain-text message. Returns `true` on success.
-fn tg_send(ctx: &BotCtx, text: &str) -> bool {
+/// Send a plain-text message. Returns `Ok(())` on success, classified error otherwise.
+fn tg_send(ctx: &BotCtx, text: &str) -> Result<(), TgError> {
     let body = serde_json::json!({
         "chat_id": ctx.chat_id,
         "text": text,
     });
-    let result = tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body);
-    if result.is_some() {
-        tracing::info!(text_len = text.len(), "telegram: sent message");
+    match tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body) {
+        Ok(_) => {
+            tracing::info!(text_len = text.len(), "telegram: sent message");
+            Ok(())
+        }
+        Err(e) => Err(e),
     }
-    result.is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +336,7 @@ fn check_voice_deps() -> Option<String> {
 fn handle_voice(ctx: &BotCtx, file_id: &str) {
     if let Some(binary) = check_voice_deps() {
         tracing::warn!(binary = %binary, "telegram: voice dependency not found");
-        tg_send(
+        let _ = tg_send(
             ctx,
             &format!("⚠️ Voice transcription requires `{binary}` but it's not installed. Please install it and try again."),
         );
@@ -261,7 +344,7 @@ fn handle_voice(ctx: &BotCtx, file_id: &str) {
     }
 
     let Some(audio_data) = download_voice(&ctx.agent, &ctx.base, &ctx.file_base, file_id) else {
-        tg_send(ctx, "Failed to download voice message.");
+        let _ = tg_send(ctx, "Failed to download voice message.");
         return;
     };
 
@@ -272,13 +355,13 @@ fn handle_voice(ctx: &BotCtx, file_id: &str) {
     match transcribe_audio(&ctx.whisper_model, &audio_data) {
         Some(text) if !text.is_empty() => {
             tracing::info!(text_len = text.len(), "telegram: transcribed voice message");
-            tg_send(ctx, &format!("🎤 {text}"));
+            let _ = tg_send(ctx, &format!("🎤 {text}"));
             if let Err(e) = inbox::append_message(&ctx.ceo_inbox, "telegram", &text) {
                 tracing::warn!(error = %e, "telegram: failed to write transcription to CEO inbox");
             }
         }
         _ => {
-            tg_send(ctx, "Failed to transcribe voice message.");
+            let _ = tg_send(ctx, "Failed to transcribe voice message.");
         }
     }
 }
@@ -294,7 +377,7 @@ fn download_voice(
     file_id: &str,
 ) -> Option<Vec<u8>> {
     let body = serde_json::json!({"file_id": file_id});
-    let resp = tg_post(agent, &format!("{base}/getFile"), &body)?;
+    let resp = tg_post(agent, &format!("{base}/getFile"), &body).ok()?;
     let file_path = resp["result"]["file_path"].as_str()?;
 
     let url = format!("{file_base}/{file_path}");
@@ -329,7 +412,7 @@ fn ensure_whisper_model(ctx: &BotCtx) -> bool {
     }
 
     tracing::info!(path = %ctx.whisper_model, "telegram: whisper model not found, downloading");
-    tg_send(ctx, "Downloading whisper model (first time only)...");
+    let _ = tg_send(ctx, "Downloading whisper model (first time only)...");
 
     let url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
     let dl_agent = ureq::AgentBuilder::new()
@@ -345,14 +428,14 @@ fn ensure_whisper_model(ctx: &BotCtx) -> bool {
                 Ok(f) => f,
                 Err(e) => {
                     tracing::error!(error = %e, "telegram: failed to create model file");
-                    tg_send(ctx, "Failed to save whisper model.");
+                    let _ = tg_send(ctx, "Failed to save whisper model.");
                     return false;
                 }
             };
             if let Err(e) = std::io::copy(&mut resp.into_reader(), &mut file) {
                 tracing::error!(error = %e, "telegram: failed to write model file");
                 let _ = std::fs::remove_file(&ctx.whisper_model);
-                tg_send(ctx, "Failed to download whisper model.");
+                let _ = tg_send(ctx, "Failed to download whisper model.");
                 return false;
             }
             tracing::info!("telegram: whisper model downloaded successfully");
@@ -360,7 +443,7 @@ fn ensure_whisper_model(ctx: &BotCtx) -> bool {
         }
         Err(e) => {
             tracing::error!(error = %e, "telegram: model download error");
-            tg_send(ctx, "Failed to download whisper model.");
+            let _ = tg_send(ctx, "Failed to download whisper model.");
             false
         }
     }

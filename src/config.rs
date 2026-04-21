@@ -277,6 +277,10 @@ impl Config {
         self.telegram_dir().join("outbox.seq")
     }
 
+    pub fn telegram_dead_letter(&self) -> PathBuf {
+        self.telegram_dir().join("dead-letter.jsonl")
+    }
+
     pub fn whisper_model_path(&self) -> PathBuf {
         self.base_dir.join("whisper").join("ggml-base.bin")
     }
