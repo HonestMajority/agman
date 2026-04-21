@@ -2729,10 +2729,10 @@ pub fn collect_inbox_poll_targets(
 ///
 /// Pulled out as a free function so we can unit-test the threshold logic
 /// without spinning up an `App`.
-pub fn stalled_targets_from_counts<'a>(
-    counts: &'a std::collections::HashMap<String, u32>,
+pub fn stalled_targets_from_counts(
+    counts: &std::collections::HashMap<String, u32>,
     threshold: u32,
-) -> Vec<&'a str> {
+) -> Vec<&str> {
     counts
         .iter()
         .filter(|(_, n)| **n >= threshold)
