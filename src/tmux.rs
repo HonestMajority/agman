@@ -310,11 +310,14 @@ impl Tmux {
     /// Open a tmux popup that attaches to an existing persistent session.
     /// When the user closes the popup (Esc), the session keeps running — the
     /// popup merely detaches from it.
-    pub fn popup_attach(session_name: &str) -> Result<()> {
+    ///
+    /// Returns the spawned `Child` so callers can poll it with `try_wait`
+    /// and keep the agman main loop ticking while the popup is open.
+    pub fn popup_attach(session_name: &str) -> Result<std::process::Child> {
         tracing::info!(session = session_name, "opening popup attached to session");
 
         let attach_cmd = format!("tmux attach-session -t {}", session_name);
-        let output = Command::new("tmux")
+        Command::new("tmux")
             .args([
                 "display-popup",
                 "-E", // close popup when attach detaches
@@ -322,17 +325,8 @@ impl Tmux {
                 "-h", "90%",
                 &attach_cmd,
             ])
-            .output()
-            .context("failed to open tmux popup")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "failed to open tmux popup: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        Ok(())
+            .spawn()
+            .context("failed to spawn tmux popup")
     }
 
     /// Build a `claude` CLI command string with system prompt and optional resume.
