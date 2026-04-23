@@ -6,8 +6,7 @@ use ratatui::crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -732,8 +731,10 @@ pub struct App {
     pub respawn_confirm_index: usize,
     pub respawn_confirm_is_ceo: bool,
     pub respawn_confirm_return_view: View,
-    // Telegram bot cancel flag (None when env vars absent)
-    telegram_cancel: Option<Arc<AtomicBool>>,
+    // Telegram bot handle (None when not configured). Carries the cancel flag,
+    // a heartbeat atomic the TUI reads to render a health indicator, and the
+    // join handle (held only for potential future clean shutdown).
+    pub telegram: Option<agman::telegram::TelegramHandle>,
     // Sleep inhibition (macOS: caffeinate -s for system sleep assertion only)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -790,13 +791,13 @@ impl App {
             }
         }
 
-        // Start Telegram bot if settings are configured
+        // Start Telegram bot if settings are configured. `start` returns None
+        // when token/chat_id are empty, so the match here just unwraps the
+        // configured case.
         let (tg_token, tg_chat_id) = use_cases::load_telegram_config(&config);
-        let telegram_cancel = match (&tg_token, &tg_chat_id) {
-            (Some(token), Some(chat_id)) if !token.is_empty() && !chat_id.is_empty() => {
-                let cancel = Arc::new(AtomicBool::new(false));
-                agman::telegram::start(&config, token.clone(), chat_id.clone(), Arc::clone(&cancel));
-                Some(cancel)
+        let telegram = match (&tg_token, &tg_chat_id) {
+            (Some(token), Some(chat_id)) => {
+                agman::telegram::start(&config, token.clone(), chat_id.clone())
             }
             _ => None,
         };
@@ -931,7 +932,7 @@ impl App {
             respawn_confirm_index: 0,
             respawn_confirm_is_ceo: false,
             respawn_confirm_return_view: View::ProjectList,
-            telegram_cancel,
+            telegram,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-s")
@@ -985,24 +986,21 @@ impl App {
 
     fn restart_telegram_bot(&mut self) {
         // Stop existing bot if running
-        if let Some(ref cancel) = self.telegram_cancel {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(ref h) = self.telegram {
+            h.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        self.telegram_cancel = None;
+        self.telegram = None;
 
         // Start new bot if both settings are configured
         let (token, chat_id) = use_cases::load_telegram_config(&self.config);
         match (token, chat_id) {
-            (Some(token), Some(chat_id)) if !token.is_empty() && !chat_id.is_empty() => {
-                let cancel = Arc::new(AtomicBool::new(false));
-                agman::telegram::start(
-                    &self.config,
-                    token,
-                    chat_id,
-                    Arc::clone(&cancel),
-                );
-                self.telegram_cancel = Some(cancel);
-                tracing::info!("telegram bot restarted with new settings");
+            (Some(token), Some(chat_id)) => {
+                self.telegram = agman::telegram::start(&self.config, token, chat_id);
+                if self.telegram.is_some() {
+                    tracing::info!("telegram bot restarted with new settings");
+                } else {
+                    tracing::info!("telegram bot disabled (token or chat_id empty)");
+                }
             }
             _ => {
                 tracing::info!("telegram bot disabled (token or chat_id not set)");
@@ -6523,8 +6521,8 @@ pub fn run_tui(config: Config) -> Result<()> {
         terminal.show_cursor()?;
 
         // Signal Telegram bot to stop
-        if let Some(ref cancel) = app.telegram_cancel {
-            cancel.store(true, Ordering::Relaxed);
+        if let Some(ref h) = app.telegram {
+            h.cancel.store(true, Ordering::Relaxed);
         }
 
         // If user confirmed restart, exec the new binary

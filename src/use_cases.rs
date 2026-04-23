@@ -1051,6 +1051,43 @@ pub fn save_telegram_config(
     crate::config::save_config_file(&config.base_dir, &cf)
 }
 
+/// Health classification for the Telegram bot thread, derived from the
+/// in-memory heartbeat the bot writes each loop iteration.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TelegramHealth {
+    Disabled,
+    NeverPolled,
+    Healthy,
+    Stale,
+    Dead,
+}
+
+/// Classify Telegram bot health for the status-bar indicator.
+///
+/// Thresholds (vs. wall-clock now): `<30s` healthy, `30..=120s` stale, `>120s` dead.
+/// `heartbeat_epoch == None` means the bot has never written a heartbeat
+/// (callers should coerce sentinel `0` from the `AtomicU64` to `None`).
+pub fn classify_telegram_health(
+    heartbeat_epoch: Option<u64>,
+    now_epoch: u64,
+    configured: bool,
+) -> TelegramHealth {
+    if !configured {
+        return TelegramHealth::Disabled;
+    }
+    let Some(hb) = heartbeat_epoch else {
+        return TelegramHealth::NeverPolled;
+    };
+    let age = now_epoch.saturating_sub(hb);
+    if age < 30 {
+        TelegramHealth::Healthy
+    } else if age <= 120 {
+        TelegramHealth::Stale
+    } else {
+        TelegramHealth::Dead
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GitHub Notifications
 // ---------------------------------------------------------------------------

@@ -10,8 +10,10 @@ use ratatui::{
 use agman::command::StoredCommand;
 use agman::researcher::ResearcherStatus;
 use agman::task::{QueueItem, TaskStatus};
+use agman::use_cases::{self, TelegramHealth};
 
-use std::time::Duration;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::app::{App, BranchSource, DirPickerOrigin, DirKind, NotesFocus, PreviewPane, RestartWizardStep, View, WizardStep, BREAK_WARNING_SECS};
 use super::vim::VimMode;
@@ -1937,6 +1939,33 @@ fn draw_output_pane(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(output, area);
 }
 
+/// Status-bar Telegram health indicator: `tg ●` colored by [`TelegramHealth`].
+/// Returns an empty vec when the bot is not configured (so the indicator
+/// disappears entirely rather than rendering a neutral dot).
+fn telegram_health_spans(app: &App) -> Vec<Span<'static>> {
+    let configured = app.telegram.is_some();
+    let heartbeat = app
+        .telegram
+        .as_ref()
+        .map(|h| h.heartbeat.load(Ordering::Relaxed))
+        .filter(|v| *v != 0);
+    let now_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let health = use_cases::classify_telegram_health(heartbeat, now_epoch, configured);
+    let dot_color = match health {
+        TelegramHealth::Disabled => return vec![],
+        TelegramHealth::Healthy => Color::LightGreen,
+        TelegramHealth::Stale => Color::LightYellow,
+        TelegramHealth::Dead | TelegramHealth::NeverPolled => Color::LightRed,
+    };
+    vec![
+        Span::styled("tg ", Style::default().fg(Color::DarkGray)),
+        Span::styled("●", Style::default().fg(dot_color)),
+    ]
+}
+
 fn break_hint_spans(app: &App) -> Vec<Span<'static>> {
     let break_due = app.last_break_reset.elapsed() >= app.break_interval;
     if break_due {
@@ -2526,6 +2555,17 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     if let Some((msg, _)) = &app.status_message {
         line_spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
         line_spans.push(Span::styled(msg, Style::default().fg(Color::LightYellow)));
+    }
+
+    if matches!(
+        app.view,
+        View::ProjectList | View::TaskList | View::ResearcherList
+    ) {
+        let tg = telegram_health_spans(app);
+        if !tg.is_empty() {
+            line_spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+            line_spans.extend(tg);
+        }
     }
 
     let status = Paragraph::new(Line::from(line_spans)).block(
