@@ -281,6 +281,10 @@ impl Config {
         self.telegram_dir().join("dead-letter.jsonl")
     }
 
+    pub fn telegram_panic_log(&self) -> PathBuf {
+        self.telegram_dir().join("last-panic.log")
+    }
+
     pub fn whisper_model_path(&self) -> PathBuf {
         self.base_dir.join("whisper").join("ggml-base.bin")
     }

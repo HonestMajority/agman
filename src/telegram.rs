@@ -11,10 +11,11 @@
 //! If not configured, the feature is completely dormant.
 
 use std::io::{Read, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -55,6 +56,46 @@ pub fn classify_outbox_result(result: Result<(), TgError>) -> OutboxAction {
 }
 
 // ---------------------------------------------------------------------------
+// Panic recovery helpers
+// ---------------------------------------------------------------------------
+
+/// Standard `Box<dyn Any>` panic-payload downcast: try `&str`, then `String`,
+/// else fall back to a sentinel.
+fn extract_panic_msg(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic>".to_string()
+    }
+}
+
+/// Append `<rfc3339 ts>\t<msg>\n` to the never-rotated panic log so evidence
+/// survives rotation of the main `agman.log`. Best-effort — IO errors are
+/// swallowed (we must never panic-on-panic).
+fn append_panic_log(path: &Path, panic_msg: &str) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{}\t{}", chrono::Utc::now().to_rfc3339(), panic_msg);
+    }
+}
+
+/// Run a closure under `catch_unwind`, returning `Err(extracted_msg)` on panic.
+///
+/// Exposed so the production loop and tests share the same panic-handling
+/// code path.
+pub fn run_iter_catching_panic<F: FnOnce() + std::panic::UnwindSafe>(f: F) -> Result<(), String> {
+    catch_unwind(f).map_err(|payload| extract_panic_msg(&*payload))
+}
+
+// ---------------------------------------------------------------------------
 // Context
 // ---------------------------------------------------------------------------
 
@@ -82,10 +123,29 @@ struct BotPaths {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Spawn the Telegram bot in a background thread (fire-and-forget).
+/// Handle returned by [`start`]: shutdown flag + heartbeat (epoch seconds, 0 = never)
+/// + thread join handle (held for potential future clean shutdown via `.join()`).
+pub struct TelegramHandle {
+    pub cancel: Arc<AtomicBool>,
+    pub heartbeat: Arc<AtomicU64>,
+    pub join: std::thread::JoinHandle<()>,
+}
+
+/// Spawn the Telegram bot in a self-healing background thread.
 ///
-/// The thread shuts down when `cancel` is set to `true`.
-pub fn start(config: &Config, token: String, chat_id: String, cancel: Arc<AtomicBool>) {
+/// Returns `None` when token/chat_id are empty so callers don't pre-build state
+/// for a doomed thread. The thread:
+/// - Catches per-iteration panics (`drain_outbox` / `poll_updates`), logs them,
+///   sleeps 5s, and continues.
+/// - Catches setup panics (e.g. during `BotCtx` construction), retries up to 3
+///   times with a 10s gap between attempts, then exits cleanly.
+/// - Bumps the `heartbeat` atomic each loop iteration so the TUI can show
+///   liveness independent of network success.
+pub fn start(config: &Config, token: String, chat_id: String) -> Option<TelegramHandle> {
+    if token.trim().is_empty() || chat_id.trim().is_empty() {
+        return None;
+    }
+
     let paths = BotPaths {
         ceo_inbox: config.ceo_inbox(),
         telegram_outbox: config.telegram_outbox(),
@@ -94,10 +154,60 @@ pub fn start(config: &Config, token: String, chat_id: String, cancel: Arc<Atomic
     };
     let whisper_model = std::env::var("WHISPER_MODEL")
         .unwrap_or_else(|_| config.whisper_model_path().to_string_lossy().into_owned());
+    let panic_log_path = config.telegram_panic_log();
 
-    std::thread::spawn(move || {
-        run_bot(token, chat_id, cancel, paths, whisper_model);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let heartbeat = Arc::new(AtomicU64::new(0));
+
+    let cancel_thread = Arc::clone(&cancel);
+    let heartbeat_thread = Arc::clone(&heartbeat);
+
+    let join = std::thread::spawn(move || {
+        for attempt in 1..=3u32 {
+            if cancel_thread.load(Ordering::Relaxed) {
+                break;
+            }
+            // Each retry attempt gets fresh clones; cancel/heartbeat are Arc clones.
+            let token = token.clone();
+            let chat_id = chat_id.clone();
+            let whisper_model = whisper_model.clone();
+            let cancel = Arc::clone(&cancel_thread);
+            let heartbeat = Arc::clone(&heartbeat_thread);
+            let panic_log = panic_log_path.clone();
+            let paths = BotPaths {
+                ceo_inbox: paths.ceo_inbox.clone(),
+                telegram_outbox: paths.telegram_outbox.clone(),
+                telegram_outbox_seq: paths.telegram_outbox_seq.clone(),
+                telegram_dead_letter: paths.telegram_dead_letter.clone(),
+            };
+
+            let result = catch_unwind(AssertUnwindSafe(move || {
+                run_bot(token, chat_id, cancel, paths, whisper_model, heartbeat, panic_log);
+            }));
+
+            match result {
+                Ok(()) => return,
+                Err(payload) => {
+                    let msg = extract_panic_msg(&*payload);
+                    tracing::warn!(
+                        attempt = attempt,
+                        panic_msg = %msg,
+                        "telegram bot: setup panic, retrying",
+                    );
+                    append_panic_log(
+                        &panic_log_path,
+                        &format!("setup panic (attempt {attempt}): {msg}"),
+                    );
+                    if attempt < 3 {
+                        std::thread::sleep(Duration::from_secs(10));
+                    }
+                }
+            }
+        }
+        tracing::error!("telegram bot: abandoning after 3 setup panics");
     });
+
+    Some(TelegramHandle { cancel, heartbeat, join })
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +220,8 @@ fn run_bot(
     cancel: Arc<AtomicBool>,
     paths: BotPaths,
     whisper_model: String,
+    heartbeat: Arc<AtomicU64>,
+    panic_log_path: PathBuf,
 ) {
     if token.trim().is_empty() || chat_id.trim().is_empty() {
         tracing::warn!("telegram bot not started: token or chat_id is empty");
@@ -136,8 +248,30 @@ fn run_bot(
     let mut offset: i64 = 0;
 
     while !cancel.load(Ordering::Relaxed) {
-        drain_outbox(&ctx);
-        poll_updates(&ctx, &mut offset);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        heartbeat.store(now, Ordering::Relaxed);
+
+        let result = run_iter_catching_panic(AssertUnwindSafe(|| {
+            drain_outbox(&ctx);
+            poll_updates(&ctx, &mut offset);
+        }));
+        match result {
+            Ok(()) => {
+                tracing::debug!("telegram bot: poll cycle complete");
+            }
+            Err(msg) => {
+                tracing::error!(
+                    panic_msg = %msg,
+                    chat_id_len = ctx.chat_id.len(),
+                    "telegram bot: iteration panic, recovering",
+                );
+                append_panic_log(&panic_log_path, &format!("iteration panic: {msg}"));
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
     }
 
     tracing::info!("telegram bot shutting down");

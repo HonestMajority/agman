@@ -3428,3 +3428,50 @@ fn stalled_targets_from_counts_honors_threshold() {
     );
     assert_eq!(stalled.len(), 2, "got {stalled:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Telegram health classifier
+// ---------------------------------------------------------------------------
+
+#[test]
+fn classify_telegram_health_states() {
+    use agman::use_cases::{classify_telegram_health, TelegramHealth};
+
+    // Not configured → Disabled regardless of heartbeat.
+    assert_eq!(
+        classify_telegram_health(None, 1000, false),
+        TelegramHealth::Disabled
+    );
+    assert_eq!(
+        classify_telegram_health(Some(1000), 1000, false),
+        TelegramHealth::Disabled
+    );
+
+    // Configured but no heartbeat yet → NeverPolled.
+    assert_eq!(
+        classify_telegram_health(None, 1000, true),
+        TelegramHealth::NeverPolled
+    );
+
+    // Heartbeat fresh (<30s) → Healthy.
+    assert_eq!(
+        classify_telegram_health(Some(990), 1000, true),
+        TelegramHealth::Healthy
+    );
+
+    // 30..=120s → Stale.
+    assert_eq!(
+        classify_telegram_health(Some(940), 1000, true),
+        TelegramHealth::Stale
+    );
+    assert_eq!(
+        classify_telegram_health(Some(880), 1000, true),
+        TelegramHealth::Stale
+    );
+
+    // >120s → Dead.
+    assert_eq!(
+        classify_telegram_health(Some(800), 1000, true),
+        TelegramHealth::Dead
+    );
+}
