@@ -5563,10 +5563,10 @@ impl App {
 
         // Enumerate delivery targets from disk so polling does not depend on
         // whichever TUI view the user has visited.
-        let targets: Vec<(String, PathBuf, PathBuf, String)> =
+        let targets: Vec<(String, PathBuf, PathBuf, String, Option<String>)> =
             use_cases::collect_inbox_poll_targets(&self.config, |s| Tmux::session_exists(s))
                 .into_iter()
-                .map(|t| (t.name, t.inbox_path, t.seq_path, t.session_name))
+                .map(|t| (t.name, t.inbox_path, t.seq_path, t.session_name, t.window))
                 .collect();
 
         if targets.is_empty() {
@@ -5583,7 +5583,8 @@ impl App {
                 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
                 let mut results = Vec::new();
-                for (target, inbox_path, seq_path, session_name) in targets {
+                for (target, inbox_path, seq_path, session_name, window) in targets {
+                    let window_ref = window.as_deref();
                     let undelivered = match inbox::read_undelivered(&inbox_path, &seq_path) {
                         Ok(msgs) => msgs,
                         Err(e) => {
@@ -5612,7 +5613,7 @@ impl App {
                     // Decision 5: already-pasted rescue BEFORE readiness gate
                     let first_msg = &undelivered[0];
                     let first_snippet = format!("[msg:{}:{}]", first_msg.from, first_msg.seq);
-                    let already_pasted = Tmux::capture_pane(&session_name)
+                    let already_pasted = Tmux::capture_pane_window(&session_name, window_ref)
                         .map(|content| content.contains(&first_snippet))
                         .unwrap_or(false);
 
@@ -5623,9 +5624,9 @@ impl App {
                             seq = first_msg.seq,
                             "already-pasted rescue: message visible in pane, sending Enter"
                         );
-                        let _ = Tmux::send_enter(&session_name);
+                        let _ = Tmux::send_enter_to(&session_name, window_ref);
                         std::thread::sleep(std::time::Duration::from_millis(200));
-                        let verified = Tmux::capture_pane(&session_name)
+                        let verified = Tmux::capture_pane_window(&session_name, window_ref)
                             .map(|content| content.contains(&first_snippet))
                             .unwrap_or(false);
                         if verified {
@@ -5647,7 +5648,7 @@ impl App {
                     }
 
                     // Readiness gate (process-only check; no UI scraping)
-                    match Tmux::is_session_ready(&session_name) {
+                    match Tmux::is_session_ready_in(&session_name, window_ref) {
                         Ok((false, cmd)) => {
                             tracing::info!(
                                 target_name = &target,
@@ -5689,7 +5690,7 @@ impl App {
                         let formatted_snippet = format!("[msg:{}:{}]", msg.from, msg.seq);
 
                         for attempt in 0..MAX_RETRIES {
-                            let already_pasted = Tmux::capture_pane(&session_name)
+                            let already_pasted = Tmux::capture_pane_window(&session_name, window_ref)
                                 .map(|content| content.contains(&formatted_snippet))
                                 .unwrap_or(false);
 
@@ -5698,7 +5699,7 @@ impl App {
                                     target = &target, seq = msg.seq, attempt = attempt,
                                     "message text already in pane, retrying Enter"
                                 );
-                                if let Err(e) = Tmux::send_enter(&session_name) {
+                                if let Err(e) = Tmux::send_enter_to(&session_name, window_ref) {
                                     tracing::warn!(
                                         target = &target, seq = msg.seq, error = %e,
                                         "failed to send Enter retry"
@@ -5707,7 +5708,7 @@ impl App {
                                     continue;
                                 }
                             } else {
-                                if let Err(e) = Tmux::inject_message(&session_name, &msg.from, &msg.message, msg.seq) {
+                                if let Err(e) = Tmux::inject_message_to(&session_name, window_ref, &msg.from, &msg.message, msg.seq) {
                                     tracing::warn!(
                                         target = &target, seq = msg.seq, attempt = attempt, error = %e,
                                         "inject_message failed"
@@ -5718,7 +5719,7 @@ impl App {
                             }
 
                             std::thread::sleep(std::time::Duration::from_millis(200));
-                            let verified = Tmux::capture_pane(&session_name)
+                            let verified = Tmux::capture_pane_window(&session_name, window_ref)
                                 .map(|content| content.contains(&formatted_snippet))
                                 .unwrap_or(false);
 

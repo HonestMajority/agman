@@ -3435,6 +3435,40 @@ fn collect_inbox_poll_targets_enumerates_disk() {
     }
 }
 
+#[test]
+fn collect_inbox_poll_targets_scopes_task_to_agman_window() {
+    // Non-task targets (CEO, PM, researcher) carry `window = None` — their
+    // sessions have a single window so window scoping is irrelevant.
+    // Task targets carry `window = Some("agman")` because the interactive
+    // claude lives in the `agman` window of the task's tmux session.
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    let task = create_test_task(&config, "myrepo", "feat-x");
+    let task_session = task.meta.primary_repo().tmux_session.clone();
+    let task_id = task.meta.task_id();
+
+    let targets = use_cases::collect_inbox_poll_targets(&config, |s| {
+        s == agman::config::Config::ceo_tmux_session() || s == task_session
+    });
+
+    let ceo = targets
+        .iter()
+        .find(|t| t.name == "ceo")
+        .expect("CEO target should be present");
+    assert_eq!(ceo.window, None, "CEO target must not be window-scoped");
+
+    let task_target = targets
+        .iter()
+        .find(|t| t.name == format!("task:{task_id}"))
+        .expect("task target should be present for Running task");
+    assert_eq!(
+        task_target.window.as_deref(),
+        Some("agman"),
+        "task target must be scoped to the `agman` window"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Stalled-target threshold (Bug 4)
 // ---------------------------------------------------------------------------

@@ -2833,11 +2833,15 @@ pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<(
 /// and which tmux session to deliver them to.
 #[derive(Debug, Clone)]
 pub struct InboxPollTarget {
-    /// `"ceo"`, `"<project>"`, or `"researcher:<project>--<name>"`.
+    /// `"ceo"`, `"<project>"`, `"researcher:<project>--<name>"`, or `"task:<id>"`.
     pub name: String,
     pub inbox_path: PathBuf,
     pub seq_path: PathBuf,
     pub session_name: String,
+    /// Optional window within `session_name` where delivery should happen.
+    /// `None` for single-window sessions (CEO/PM/researcher); `Some("agman")`
+    /// for task sessions whose interactive claude lives in the `agman` window.
+    pub window: Option<String>,
 }
 
 /// Enumerate all inbox delivery targets from disk.
@@ -2860,6 +2864,7 @@ pub fn collect_inbox_poll_targets(
             inbox_path: config.ceo_inbox(),
             seq_path: config.ceo_seq(),
             session_name: ceo_session,
+            window: None,
         });
     }
 
@@ -2874,6 +2879,7 @@ pub fn collect_inbox_poll_targets(
                         inbox_path: config.project_inbox(&p.meta.name),
                         seq_path: config.project_seq(&p.meta.name),
                         session_name,
+                        window: None,
                     });
                 }
             }
@@ -2897,6 +2903,7 @@ pub fn collect_inbox_poll_targets(
                         inbox_path: config.researcher_inbox(&r.meta.project, &r.meta.name),
                         seq_path: config.researcher_seq(&r.meta.project, &r.meta.name),
                         session_name,
+                        window: None,
                     });
                 }
             }
@@ -2931,6 +2938,7 @@ pub fn collect_inbox_poll_targets(
             inbox_path: config.task_inbox(&task_id),
             seq_path: config.task_inbox_seq(&task_id),
             session_name,
+            window: Some(crate::supervisor::AGMAN_WINDOW.to_string()),
         });
     }
 
