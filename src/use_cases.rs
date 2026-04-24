@@ -3319,17 +3319,27 @@ fn build_ceo_prompt(telegram_enabled: bool) -> String {
 
 Telegram is connected and active — you can send and receive messages from the user via Telegram.
 
-**Critical rules for Telegram messages:**
-- Messages tagged `[Message from telegram]` come from the user on their phone. They **cannot** see your tmux chat — the only way to respond is via the Telegram send command.
-- You **MUST** reply via Telegram whenever you receive a `[Message from telegram]`. Use:
+**The one rule you must never break: acknowledge first, work second, report third.**
+
+Messages tagged `[Message from telegram]` come from the user on their phone. They **cannot** see your tmux chat — the only way to respond is via the Telegram send command. The user is staring at their phone waiting for any sign that you saw the message. Silence while you work is not acceptable.
+
+Every `[Message from telegram]` triggers this exact sequence:
+
+1. **IMMEDIATELY acknowledge** — Your very first action, before any investigation, planning, or delegation, is to send a short acknowledgment via Telegram (e.g. "Got it, looking into this now" or "On it — will report back shortly"). Do this BEFORE running any other command. Do not read files, do not call `agman list-projects`, do not think through the problem first — just acknowledge.
+2. **Do the work** — Then proceed with whatever was requested (investigate, brief PMs, create projects, etc.).
+3. **Report back** — When the work is done (or you've hit a decision point), send a follow-up Telegram message with the result or outcome.
+
+Send command:
 ```
 cat <<'AGMAN_MSG' | agman send-message telegram --from ceo
 <your reply>
 AGMAN_MSG
 ```
-- **Reply to Telegram first**, then take any follow-up actions (create projects, brief PMs, etc.). The user is waiting on their phone.
+
+Additional rules:
 - Keep Telegram replies concise — this is a mobile chat, not a report.
 - The user sees `[CEO]` prepended to your replies, so they always know who is speaking.
+- Never leave the user waiting in silence while you work. Acknowledge first, work second, report third.
 "#;
 
     format!("{}{}", DEFAULT_CEO_PROMPT, telegram_section)
@@ -3347,17 +3357,27 @@ pub fn build_pm_prompt(telegram_enabled: bool, project_name: &str) -> String {
 
 Telegram is connected and the user can switch chats over to you directly. When that happens, messages tagged `[Message from telegram]` will appear in your tmux session.
 
-**Critical rules for Telegram messages:**
-- `[Message from telegram]` means the user is on their phone and **cannot** see your tmux session. The only way to reach them is via the Telegram send command.
-- You **MUST** reply via Telegram whenever you receive a `[Message from telegram]`. Use:
+**The one rule you must never break: acknowledge first, work second, report third.**
+
+`[Message from telegram]` means the user is on their phone and **cannot** see your tmux session. The only way to reach them is via the Telegram send command. The user is staring at their phone waiting for any sign that you saw the message. Silence while you work is not acceptable.
+
+Every `[Message from telegram]` triggers this exact sequence:
+
+1. **IMMEDIATELY acknowledge** — Your very first action, before any investigation, task creation, or delegation, is to send a short acknowledgment via Telegram (e.g. "Got it, looking into this now" or "On it — will report back shortly"). Do this BEFORE running any other command. Do not read files, do not list tasks, do not think through the problem first — just acknowledge.
+2. **Do the work** — Then proceed with whatever was requested (investigate, create tasks, brief researchers, etc.).
+3. **Report back** — When the work is done (or you've hit a decision point), send a follow-up Telegram message with the result or outcome.
+
+Send command:
 ```
 cat <<'AGMAN_MSG' | agman send-message telegram --from {project_name}
 <your reply>
 AGMAN_MSG
 ```
-- Reply to Telegram **first**, then take any follow-up actions. The user is waiting on their phone.
+
+Additional rules:
 - Keep Telegram replies concise — this is a mobile chat, not a report.
 - The user sees `[PM:{project_name}]` prepended to your replies, so they always know who is speaking.
+- Never leave the user waiting in silence while you work. Acknowledge first, work second, report third.
 "#);
 
     format!("{base}{telegram_section}")
@@ -3386,17 +3406,27 @@ pub fn build_researcher_prompt(
 
 Telegram is connected and the user can switch chats over to you directly. When that happens, messages tagged `[Message from telegram]` will appear in your tmux session.
 
-**Critical rules for Telegram messages:**
-- `[Message from telegram]` means the user is on their phone and **cannot** see your tmux session. The only way to reach them is via the Telegram send command.
-- You **MUST** reply via Telegram whenever you receive a `[Message from telegram]`. Use:
+**The one rule you must never break: acknowledge first, work second, report third.**
+
+`[Message from telegram]` means the user is on their phone and **cannot** see your tmux session. The only way to reach them is via the Telegram send command. The user is staring at their phone waiting for any sign that you saw the message. Silence while you research is not acceptable.
+
+Every `[Message from telegram]` triggers this exact sequence:
+
+1. **IMMEDIATELY acknowledge** — Your very first action, before any investigation or research, is to send a short acknowledgment via Telegram (e.g. "Got it, looking into this now" or "On it — will report back shortly"). Do this BEFORE running any other command. Do not read files, do not grep the codebase, do not think through the problem first — just acknowledge.
+2. **Do the work** — Then proceed with the research or investigation.
+3. **Report back** — When your research is done (or you've hit a decision point), send a follow-up Telegram message with your findings.
+
+Send command:
 ```
 cat <<'AGMAN_MSG' | agman send-message telegram --from "researcher:{project_name}--{researcher_name}"
 <your reply>
 AGMAN_MSG
 ```
-- Reply to Telegram **first**, then take any follow-up actions. The user is waiting on their phone.
+
+Additional rules:
 - Keep Telegram replies concise — this is a mobile chat, not a report.
 - The user sees `[R:{researcher_name}]` prepended to your replies, so they always know who is speaking.
+- Never leave the user waiting in silence while you work. Acknowledge first, work second, report third.
 "#);
 
     format!("{base}{telegram_section}")
