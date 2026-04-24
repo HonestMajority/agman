@@ -127,12 +127,9 @@ fn config_init_default_files() {
     assert!(continue_flow.exists());
 
     // Verify representative prompt files exist
-    let planner = config.prompt_path("planner");
-    assert!(planner.exists());
-    assert!(!std::fs::read_to_string(&planner).unwrap().is_empty());
-
     let coder = config.prompt_path("coder");
     assert!(coder.exists());
+    assert!(!std::fs::read_to_string(&coder).unwrap().is_empty());
 
     // Verify representative command files exist
     let create_pr = config.command_path("create-pr");

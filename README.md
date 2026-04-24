@@ -59,7 +59,7 @@ repos_dir = "~/repos/"
 ## Features
 
 - **Task management** — create tasks via wizard, track status, give feedback, restart from specific flow steps
-- **Agent orchestration** — YAML-defined flows chain specialized agents (planner, coder, tester, reviewer, etc.) with stop conditions and loop support
+- **Agent orchestration** — YAML-defined flows chain specialized agents (coder, checker, reviewer, refiner, repo-inspector, etc.) with stop conditions and loop support
 - **Git worktree isolation** — automatic worktree creation/cleanup per task, branch management, rebase workflows
 - **Tmux integration** — dedicated session per task with pre-configured windows (nvim, lazygit, claude, shell, agent)
 - **GitHub integration** — draft PRs, CI monitoring, review tracking, local merge

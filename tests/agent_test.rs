@@ -9,8 +9,8 @@ fn agent_load() {
     let config = test_config(&tmp);
     config.init_default_files(false).unwrap();
 
-    let agent = Agent::load(&config, "planner").unwrap();
-    assert_eq!(agent.name, "planner");
+    let agent = Agent::load(&config, "coder").unwrap();
+    assert_eq!(agent.name, "coder");
     assert!(!agent.prompt_template.is_empty());
 }
 
@@ -24,11 +24,10 @@ fn agent_build_prompt_basic() {
     task.write_task("# Goal\nBuild the widget\n\n# Plan\n- [ ] Step 1\n")
         .unwrap();
 
-    let agent = Agent::load(&config, "planner").unwrap();
+    let agent = Agent::load(&config, "coder").unwrap();
     let prompt = agent.build_prompt(&task).unwrap();
 
-    // Should contain the template and the task content
-    assert!(prompt.contains("planning agent"));
+    assert!(prompt.contains("coding agent"));
     assert!(prompt.contains("Build the widget"));
 }
 

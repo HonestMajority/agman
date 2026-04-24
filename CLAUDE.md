@@ -68,7 +68,7 @@ src/
 ### Flow
 - YAML file in `~/.agman/flows/`
 - Defines sequence of agents with stop conditions
-- Example: `default.yaml` (planner → coder), `continue.yaml` (refiner → coder)
+- Example: `new.yaml` (coder ↔ checker loop), `continue.yaml` (refiner → coder ↔ checker loop)
 
 ### Agent
 - Prompt template in `~/.agman/prompts/<name>.md`
