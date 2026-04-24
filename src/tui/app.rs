@@ -27,6 +27,7 @@ use agman::tmux::Tmux;
 use agman::inbox;
 use agman::project::Project;
 use agman::researcher::Researcher;
+use agman::supervisor;
 use agman::use_cases;
 
 use super::ui;
@@ -406,6 +407,25 @@ struct InboxPollOutput {
     stuck_skip_counts: std::collections::HashMap<String, u32>,
 }
 
+/// One supervisor tick result for a single Running task.
+///
+/// Collected in the background by `start_supervisor_poll` and drained in the
+/// main loop by `apply_supervisor_poll_results`. During iteration 1 of the
+/// chunk-2 integration these are only logged — dispatch (advancing the flow,
+/// launching the next agent, notifying the PM) is wired up in a later
+/// iteration.
+#[derive(Debug)]
+struct SupervisorPollItem {
+    task_id: String,
+    session_id: String,
+    outcome: supervisor::PollOutcome,
+}
+
+#[derive(Debug)]
+struct SupervisorPollOutput {
+    items: Vec<SupervisorPollItem>,
+}
+
 /// How many consecutive "skipped" poll cycles (readiness gate refused to
 /// deliver while the inbox still had undelivered messages) qualifies a target
 /// as "stalled" and surfaces a UI indicator. At the 2s poll cadence this is
@@ -717,6 +737,11 @@ pub struct App {
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
     inbox_poll_rx: tokio_mpsc::UnboundedReceiver<InboxPollOutput>,
     inbox_poll_active: bool,
+    // Supervisor polling (drives interactive-claude flow progression)
+    pub last_supervisor_poll: Instant,
+    supervisor_poll_tx: tokio_mpsc::UnboundedSender<SupervisorPollOutput>,
+    supervisor_poll_rx: tokio_mpsc::UnboundedReceiver<SupervisorPollOutput>,
+    supervisor_poll_active: bool,
     stuck_skip_counts: std::collections::HashMap<String, u32>,
     /// Targets we've already emitted a one-shot "stalled" warning for this
     /// episode — prevents a per-cycle warn spam. Cleared when the target
@@ -768,6 +793,7 @@ impl App {
         let (show_prs_poll_tx, show_prs_poll_rx) = tokio_mpsc::unbounded_channel();
         let (keybase_tx, keybase_rx) = tokio_mpsc::unbounded_channel();
         let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
+        let (supervisor_poll_tx, supervisor_poll_rx) = tokio_mpsc::unbounded_channel();
         let (respawn_tx, respawn_rx) = tokio_mpsc::unbounded_channel();
         let (chat_poll_tx, chat_poll_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
@@ -923,6 +949,10 @@ impl App {
             inbox_poll_tx,
             inbox_poll_rx,
             inbox_poll_active: false,
+            last_supervisor_poll: Instant::now(),
+            supervisor_poll_tx,
+            supervisor_poll_rx,
+            supervisor_poll_active: false,
             stuck_skip_counts: std::collections::HashMap::new(),
             stall_warned: std::collections::HashSet::new(),
             respawn_in_progress: None,
@@ -5808,6 +5838,88 @@ impl App {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Supervisor polling (drives flow progression for interactive-claude tasks)
+    // -----------------------------------------------------------------------
+
+    /// Spawn a background poll of every Running task's supervisor sentinel.
+    /// For each task with a live session (`meta.session_history.last()`),
+    /// call `supervisor::poll` and collect the outcome so the main loop can
+    /// log it. Dispatch (advance flow, launch next agent, notify PM) is NOT
+    /// wired yet — this iteration is observation-only.
+    fn start_supervisor_poll(&mut self) {
+        if self.supervisor_poll_active {
+            return;
+        }
+        self.supervisor_poll_active = true;
+        let config = self.config.clone();
+        let tx = self.supervisor_poll_tx.clone();
+
+        self.rt.spawn(async move {
+            let output = tokio::task::spawn_blocking(move || {
+                let mut items = Vec::new();
+                for task in Task::list_all(&config) {
+                    if task.meta.status != TaskStatus::Running {
+                        continue;
+                    }
+                    let session_id = match task.meta.session_history.last() {
+                        Some(entry) if entry.stopped_at.is_none() => entry.session_id.clone(),
+                        _ => continue,
+                    };
+                    match supervisor::poll(&task, &session_id) {
+                        Ok(outcome) => items.push(SupervisorPollItem {
+                            task_id: task.meta.task_id(),
+                            session_id,
+                            outcome,
+                        }),
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = %task.meta.task_id(),
+                                error = %e,
+                                "supervisor poll failed"
+                            );
+                        }
+                    }
+                }
+                SupervisorPollOutput { items }
+            })
+            .await
+            .unwrap_or_else(|_| SupervisorPollOutput { items: Vec::new() });
+            let _ = tx.send(output);
+        });
+    }
+
+    /// Drain any completed supervisor poll and log its findings. No dispatch
+    /// yet (see `start_supervisor_poll`).
+    fn apply_supervisor_poll_results(&mut self) {
+        let output = match self.supervisor_poll_rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        self.supervisor_poll_active = false;
+
+        for item in &output.items {
+            match &item.outcome {
+                supervisor::PollOutcome::Idle => {}
+                supervisor::PollOutcome::StopRequested => {
+                    tracing::info!(
+                        task_id = %item.task_id,
+                        session_id = %item.session_id,
+                        "supervisor poll: stop requested (dispatch not yet wired)"
+                    );
+                }
+                supervisor::PollOutcome::Condition(cond) => {
+                    tracing::info!(
+                        task_id = %item.task_id,
+                        session_id = %item.session_id,
+                        condition = %cond,
+                        "supervisor poll: stop condition reached (dispatch not yet wired)"
+                    );
+                }
+            }
+        }
+    }
+
     fn apply_respawn_results(&mut self) {
         let result = match self.respawn_rx.try_recv() {
             Ok(r) => r,
@@ -6489,6 +6601,16 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed inbox poll results (non-blocking)
             app.apply_inbox_poll_results();
+
+            // Poll task supervisor sentinels every 3 seconds. During this
+            // iteration the poll is observation-only — outcomes are logged
+            // and the flow is still driven by `agman flow-run` / `AgentRunner`
+            // as before. Dispatch wiring comes in a follow-up pass.
+            if app.last_supervisor_poll.elapsed() >= Duration::from_secs(3) {
+                app.start_supervisor_poll();
+                app.last_supervisor_poll = Instant::now();
+            }
+            app.apply_supervisor_poll_results();
 
             // Check for completed respawn results (non-blocking)
             app.apply_respawn_results();
