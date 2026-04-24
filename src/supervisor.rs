@@ -12,9 +12,11 @@
 //! the TUI main loop can drive it the same way it drives the inbox poller.
 
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use crate::agent::Agent;
+use crate::command::StoredCommand;
 use crate::config::Config;
 use crate::flow::{Flow, FlowStep, LoopStep, StopCondition};
 use crate::task::{QueueItem, SessionEntry, Task, TaskStatus};
@@ -335,34 +337,110 @@ fn notify_pm(config: &Config, task: &Task, message: &str) {
     }
 }
 
+/// Resolve a `flow_name` stored on `TaskMeta` to a concrete YAML path.
+///
+/// Regular flows live in `flows_dir/<name>.yaml`; stored commands (drained
+/// from `QueueItem::Command`) reuse their command id as the flow name and
+/// live in `commands_dir/<id>.yaml`. Since command IDs and flow names share
+/// a namespace inside `TaskMeta::flow_name`, we check the flows directory
+/// first and fall back to the commands directory. The returned path always
+/// points at an existing file — callers don't need to re-check.
+fn resolve_flow_path(config: &Config, flow_name: &str) -> Result<PathBuf> {
+    let flow_candidate = config.flow_path(flow_name);
+    if flow_candidate.exists() {
+        return Ok(flow_candidate);
+    }
+    let command_candidate = config.command_path(flow_name);
+    if command_candidate.exists() {
+        return Ok(command_candidate);
+    }
+    anyhow::bail!(
+        "flow '{}' not found in flows_dir ({}) or commands_dir ({})",
+        flow_name,
+        flow_candidate.display(),
+        command_candidate.display(),
+    )
+}
+
 /// Drain the front of the queue at flow-end.
 ///
 /// Returns `Ok(true)` if an item was processed (task state reset, supervisor
 /// should attempt `launch_next_step` again with a freshly-loaded flow).
-/// Returns `Ok(false)` if the queue is empty or the front item can't be
-/// handled by the supervisor yet (currently: any `Command` entry is left in
-/// place for the TUI/AgentRunner path until stored-command dispatch lands).
-fn drain_queue(task: &mut Task) -> Result<bool> {
+/// Returns `Ok(false)` if the queue is empty.
+///
+/// Handled kinds:
+/// - `Feedback { text }` — write FEEDBACK.md, switch to the `continue` flow,
+///   reset step/sub_step, set status=Running.
+/// - `Command { command_id, branch }` — look up the `StoredCommand`; if it
+///   requires a `branch` arg, write `.branch-target`. Switch `flow_name` to
+///   the command id (resolved via `resolve_flow_path`), reset step/sub_step,
+///   set status=Running. If the command doesn't exist on disk, log a warning
+///   and drop the item without mutating task state so the supervisor doesn't
+///   get stuck on a bad queue entry.
+fn drain_queue(task: &mut Task, config: &Config) -> Result<bool> {
     if !task.has_queued_items() {
         return Ok(false);
     }
-    let queue = task.read_queue();
-    match queue.first() {
-        Some(QueueItem::Feedback { .. }) => {}
-        _ => return Ok(false),
-    }
-    let Some(QueueItem::Feedback { text }) = task.pop_queue()? else {
+    let Some(item) = task.pop_queue()? else {
         return Ok(false);
     };
-    tracing::info!(
-        task_id = %task.meta.task_id(),
-        "supervisor draining queued feedback at flow-end"
-    );
-    task.write_feedback(&text)?;
-    task.meta.flow_name = "continue".to_string();
-    task.reset_flow_step()?;
-    task.update_status(TaskStatus::Running)?;
-    Ok(true)
+    match item {
+        QueueItem::Feedback { text } => {
+            tracing::info!(
+                task_id = %task.meta.task_id(),
+                "supervisor draining queued feedback at flow-end"
+            );
+            task.write_feedback(&text)?;
+            task.meta.flow_name = "continue".to_string();
+            task.reset_flow_step()?;
+            task.update_status(TaskStatus::Running)?;
+            Ok(true)
+        }
+        QueueItem::Command { command_id, branch } => {
+            let stored = match StoredCommand::get_by_id(&config.commands_dir, &command_id) {
+                Ok(Some(cmd)) => cmd,
+                Ok(None) => {
+                    tracing::warn!(
+                        task_id = %task.meta.task_id(),
+                        command_id = %command_id,
+                        "queued command not found on disk; dropping"
+                    );
+                    return Ok(false);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        task_id = %task.meta.task_id(),
+                        command_id = %command_id,
+                        error = %e,
+                        "failed to load queued command; dropping"
+                    );
+                    return Ok(false);
+                }
+            };
+            if stored.requires_arg.as_deref() == Some("branch") {
+                if let Some(ref b) = branch {
+                    std::fs::write(task.dir.join(".branch-target"), b)
+                        .context("failed to write .branch-target")?;
+                } else {
+                    tracing::warn!(
+                        task_id = %task.meta.task_id(),
+                        command_id = %command_id,
+                        "queued command requires a branch arg but none supplied; dropping"
+                    );
+                    return Ok(false);
+                }
+            }
+            tracing::info!(
+                task_id = %task.meta.task_id(),
+                command_id = %command_id,
+                "supervisor draining queued command at flow-end"
+            );
+            task.meta.flow_name = command_id;
+            task.reset_flow_step()?;
+            task.update_status(TaskStatus::Running)?;
+            Ok(true)
+        }
+    }
 }
 
 /// Try to launch the agent at the current `flow_step`. If the current step is
@@ -376,7 +454,8 @@ fn launch_next_step(config: &Config, task: &mut Task) -> Result<AdvanceOutcome> 
     const MAX_ITERATIONS: usize = 32;
     for _ in 0..MAX_ITERATIONS {
         let flow_name = task.meta.flow_name.clone();
-        let flow = Flow::load(&config.flow_path(&flow_name))
+        let flow_path = resolve_flow_path(config, &flow_name)?;
+        let flow = Flow::load(&flow_path)
             .with_context(|| format!("failed to load flow '{}'", flow_name))?;
         let step_index = task.meta.flow_step;
         match flow.get_step(step_index).cloned() {
@@ -384,7 +463,7 @@ fn launch_next_step(config: &Config, task: &mut Task) -> Result<AdvanceOutcome> 
                 task.update_status(TaskStatus::Stopped)?;
                 task.update_agent(None)?;
                 notify_pm(config, task, "Flow complete");
-                if drain_queue(task)? {
+                if drain_queue(task, config)? {
                     // Re-enter with the new flow.
                     continue;
                 }
@@ -503,7 +582,7 @@ pub fn advance(
             task.update_status(TaskStatus::Stopped)?;
             task.update_agent(None)?;
             notify_pm(config, task, "Task complete");
-            if drain_queue(task)? {
+            if drain_queue(task, config)? {
                 return launch_next_step(config, task);
             }
             Ok(AdvanceOutcome::Stopped)
@@ -519,7 +598,8 @@ pub fn advance(
             // advance. Otherwise the step needs another pass with the same
             // agent (e.g. a pre_command that wants TASK_COMPLETE).
             let flow_name = task.meta.flow_name.clone();
-            let flow = Flow::load(&config.flow_path(&flow_name))
+            let flow_path = resolve_flow_path(config, &flow_name)?;
+            let flow = Flow::load(&flow_path)
                 .with_context(|| format!("failed to load flow '{}'", flow_name))?;
             let step_index = task.meta.flow_step;
             match flow.get_step(step_index).cloned() {
@@ -552,7 +632,7 @@ pub fn advance(
                     task.update_status(TaskStatus::Stopped)?;
                     task.update_agent(None)?;
                     notify_pm(config, task, "Flow complete");
-                    if drain_queue(task)? {
+                    if drain_queue(task, config)? {
                         return launch_next_step(config, task);
                     }
                     Ok(AdvanceOutcome::Stopped)
@@ -755,14 +835,14 @@ mod tests {
     #[test]
     fn drain_queue_feedback_resets_to_continue_flow() {
         let tmp = tempfile::tempdir().unwrap();
-        let (_cfg, mut task) = build_task(&tmp);
+        let (cfg, mut task) = build_task(&tmp);
         task.queue_feedback("follow-up instructions").unwrap();
         task.meta.flow_name = "something_else".to_string();
         task.meta.flow_step = 5;
         task.meta.status = TaskStatus::Stopped;
         task.save_meta().unwrap();
 
-        let drained = drain_queue(&mut task).unwrap();
+        let drained = drain_queue(&mut task, &cfg).unwrap();
         assert!(drained);
         assert_eq!(task.meta.flow_name, "continue");
         assert_eq!(task.meta.flow_step, 0);
@@ -772,15 +852,120 @@ mod tests {
         assert!(!task.has_queued_items());
     }
 
-    #[test]
-    fn drain_queue_skips_when_front_is_command() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (_cfg, mut task) = build_task(&tmp);
-        task.queue_command("some-command", None).unwrap();
+    /// Helper: write a minimal StoredCommand YAML to `config.commands_dir`.
+    fn write_test_command(config: &Config, id: &str, body: &str) {
+        std::fs::write(config.command_path(id), body).unwrap();
+    }
 
-        let drained = drain_queue(&mut task).unwrap();
-        assert!(!drained, "Command entries are left for the TUI/legacy path");
-        assert!(task.has_queued_items(), "queue should be untouched");
+    #[test]
+    fn drain_queue_command_switches_to_command_flow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, mut task) = build_task(&tmp);
+        write_test_command(
+            &cfg,
+            "create-pr",
+            "name: Create PR\nid: create-pr\ndescription: test\nsteps:\n  - agent: pr-creator\n    until: AGENT_DONE\n",
+        );
+        task.queue_command("create-pr", None).unwrap();
+        task.meta.flow_name = "new".to_string();
+        task.meta.flow_step = 3;
+        task.meta.flow_sub_step = 1;
+        task.meta.status = TaskStatus::Stopped;
+        task.save_meta().unwrap();
+
+        let drained = drain_queue(&mut task, &cfg).unwrap();
+        assert!(drained);
+        assert_eq!(task.meta.flow_name, "create-pr");
+        assert_eq!(task.meta.flow_step, 0);
+        assert_eq!(task.meta.flow_sub_step, 0);
+        assert_eq!(task.meta.status, TaskStatus::Running);
+        assert!(!task.has_queued_items());
+        assert!(
+            !task.dir.join(".branch-target").exists(),
+            "no branch-target should be written for commands without branch arg"
+        );
+    }
+
+    #[test]
+    fn drain_queue_command_writes_branch_target_when_required() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, mut task) = build_task(&tmp);
+        write_test_command(
+            &cfg,
+            "rebase",
+            "name: Rebase\nid: rebase\ndescription: test\nrequires_arg: branch\nsteps:\n  - agent: rebaser\n    until: AGENT_DONE\n",
+        );
+        task.queue_command("rebase", Some("main")).unwrap();
+        task.save_meta().unwrap();
+
+        let drained = drain_queue(&mut task, &cfg).unwrap();
+        assert!(drained);
+        assert_eq!(task.meta.flow_name, "rebase");
+        let branch_target = std::fs::read_to_string(task.dir.join(".branch-target")).unwrap();
+        assert_eq!(branch_target, "main");
+    }
+
+    #[test]
+    fn drain_queue_command_drops_missing_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, mut task) = build_task(&tmp);
+        task.queue_command("does-not-exist", None).unwrap();
+        task.meta.flow_name = "new".to_string();
+        task.meta.flow_step = 2;
+        task.save_meta().unwrap();
+
+        let drained = drain_queue(&mut task, &cfg).unwrap();
+        assert!(!drained, "missing command should be dropped");
+        // State must be untouched so we don't corrupt flow position.
+        assert_eq!(task.meta.flow_name, "new");
+        assert_eq!(task.meta.flow_step, 2);
+        assert!(!task.has_queued_items(), "bad item should be popped from queue");
+    }
+
+    #[test]
+    fn drain_queue_command_drops_when_branch_missing_but_required() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, mut task) = build_task(&tmp);
+        write_test_command(
+            &cfg,
+            "rebase",
+            "name: Rebase\nid: rebase\ndescription: test\nrequires_arg: branch\nsteps:\n  - agent: rebaser\n    until: AGENT_DONE\n",
+        );
+        task.queue_command("rebase", None).unwrap();
+        task.save_meta().unwrap();
+
+        let drained = drain_queue(&mut task, &cfg).unwrap();
+        assert!(!drained);
+        assert!(!task.dir.join(".branch-target").exists());
+    }
+
+    #[test]
+    fn resolve_flow_path_prefers_flows_dir_over_commands_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, _task) = build_task(&tmp);
+        // Both files exist — flow dir wins.
+        std::fs::write(cfg.flow_path("shared"), "name: from-flows\nsteps: []\n").unwrap();
+        std::fs::write(cfg.command_path("shared"), "name: from-commands\nsteps: []\n").unwrap();
+
+        let resolved = resolve_flow_path(&cfg, "shared").unwrap();
+        assert_eq!(resolved, cfg.flow_path("shared"));
+    }
+
+    #[test]
+    fn resolve_flow_path_falls_back_to_commands_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, _task) = build_task(&tmp);
+        std::fs::write(cfg.command_path("create-pr"), "name: cmd\nsteps: []\n").unwrap();
+
+        let resolved = resolve_flow_path(&cfg, "create-pr").unwrap();
+        assert_eq!(resolved, cfg.command_path("create-pr"));
+    }
+
+    #[test]
+    fn resolve_flow_path_errors_when_nowhere() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, _task) = build_task(&tmp);
+        assert!(resolve_flow_path(&cfg, "missing").is_err());
     }
 
     // -----------------------------------------------------------------------
