@@ -1614,53 +1614,31 @@ impl App {
                 self.log_output(format!("Queued feedback for {} ({} in queue)", task_id, queue_count));
                 self.set_status(format!("Feedback queued ({} in queue)", queue_count));
             }
-        } else {
+        } else if let Some(task) = self.tasks.get_mut(self.selected_index) {
             // Clear review_addressed on user interaction
-            if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                let _ = use_cases::set_review_addressed(task, false);
+            let _ = use_cases::set_review_addressed(task, false);
+
+            // Ensure the task's tmux session + agman window exist before the
+            // supervisor tries to send keys into them.
+            if let Err(e) = supervisor::ensure_task_tmux(task) {
+                self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
+                self.set_status(format!("Feedback failed: {}", e));
+                self.feedback_editor = VimTextArea::new();
+                self.view = View::Preview;
+                self.load_preview();
+                return Ok(());
             }
 
-            // Delegate to use_cases: write immediate feedback
-            if let Some(task) = self.selected_task() {
-                use_cases::write_immediate_feedback(task, &feedback)?;
-            }
-
-            self.log_output(format!("Starting continue flow for {}...", task_id));
-
-            // Run agman continue (reads feedback from FEEDBACK.md)
-            // Capture output to avoid corrupting TUI
-            let output = Command::new("agman")
-                .args(["continue", &task_id])
-                .output();
-
-            match output {
-                Ok(o) if o.status.success() => {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    if !stdout.is_empty() {
-                        for line in stdout.lines() {
-                            self.log_output(line.to_string());
-                        }
-                    }
-                    if !stderr.is_empty() {
-                        for line in stderr.lines() {
-                            self.log_output(format!("[stderr] {}", line));
-                        }
-                    }
-                    self.log_output(format!("Flow started for {}", task_id));
-                    self.set_status(format!("Feedback submitted for {}", task_id));
-                    self.refresh_tasks_and_select(&task_id);
-                }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    self.log_output(format!("Failed to start continue flow: {}", stderr));
-                    self.set_status("Failed to start continue flow".to_string());
-                }
-                Err(e) => {
-                    self.log_output(format!("Error: {}", e));
-                    self.set_status(format!("Error: {}", e));
-                }
-            }
+            // Queue the feedback; wake_if_idle drains it (writes FEEDBACK.md,
+            // switches to `continue` flow, flips to Running) and launches the
+            // first step in the task's agman tmux window.
+            let queue_count = use_cases::queue_feedback(task, &self.config, &feedback)?;
+            self.log_output(format!(
+                "Queued feedback for {} ({} in queue); supervisor waking",
+                task_id, queue_count
+            ));
+            self.set_status(format!("Feedback submitted for {}", task_id));
+            self.refresh_tasks_and_select(&task_id);
         }
 
         self.feedback_editor = VimTextArea::new(); // Clear editor

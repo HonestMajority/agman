@@ -216,6 +216,12 @@ pub fn claude_launch_cmd(task: &Task, session_id: &str) -> String {
 /// `classify` would then route the task to `LiveSession` after our subsequent
 /// failure (or even success, since `push_session` would add a *second* live
 /// entry), and `poll` would scan the pane for the stale session id forever.
+///
+/// Callers must run `ensure_task_tmux(task)` before reaching this function
+/// — `start_agent_step` targets `<session>:agman` via `send-keys` and will
+/// fail if the session or window doesn't exist. It is intentionally not
+/// self-ensuring so tests can exercise the state-machine layer without
+/// creating real tmux sessions.
 pub fn start_agent_step(
     config: &Config,
     task: &mut Task,

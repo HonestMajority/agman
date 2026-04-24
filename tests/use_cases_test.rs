@@ -538,6 +538,42 @@ fn write_immediate_feedback_on_stopped_task() {
 }
 
 // ---------------------------------------------------------------------------
+// queue_feedback on a Stopped task now drains + wakes via the supervisor
+// (TUI submit_feedback's Stopped branch; replaces the old
+// write_immediate_feedback + `agman continue` shell-out path).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn queue_feedback_on_stopped_task_drains_and_wakes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+    task.update_status(TaskStatus::Stopped).unwrap();
+    // Simulate an earlier run leaving the task on some flow past step 0.
+    task.meta.flow_name = "new".to_string();
+    task.meta.flow_step = 3;
+    task.save_meta().unwrap();
+
+    // queue_feedback on a Stopped task should drain (writing FEEDBACK.md,
+    // switching to the `continue` flow, resetting the step, flipping to
+    // Running) and then attempt to launch the next step. The launch itself
+    // errors in the test env because no tmux is available — wake_if_idle's
+    // error is warn-and-swallowed so queue_feedback still returns Ok.
+    let _ = use_cases::queue_feedback(&mut task, &config, "please address the review").unwrap();
+
+    // Queue was drained, not left pending.
+    assert_eq!(task.read_queue().len(), 0);
+    // Flow was switched to `continue` and reset to step 0.
+    assert_eq!(task.meta.flow_name, "continue");
+    assert_eq!(task.meta.flow_step, 0);
+    // Task was flipped to Running by drain_queue.
+    assert_eq!(task.meta.status, TaskStatus::Running);
+    // Feedback was persisted to FEEDBACK.md for the refiner agent to read.
+    let fb = task.read_feedback().unwrap();
+    assert_eq!(fb, "please address the review");
+}
+
+// ---------------------------------------------------------------------------
 // Delete queued feedback
 // ---------------------------------------------------------------------------
 
