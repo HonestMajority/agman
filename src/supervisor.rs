@@ -56,6 +56,52 @@ pub enum PollOutcome {
     Condition(StopCondition),
 }
 
+/// Per-tick classification of how the supervisor should treat a task.
+///
+/// Computed by `classify` from task meta and used by the TUI's background
+/// poll loop to decide between polling a live session vs. relaunching a
+/// half-state task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PollTarget {
+    /// Task has a live supervisor session; poll it for a stop condition.
+    LiveSession { session_id: String },
+    /// Task is Running but its last supervisor session already stopped —
+    /// the caller should re-enter `launch_next_step` to recover. This is
+    /// the "half-state" case (e.g. `wake_if_idle` drained the queue but a
+    /// subsequent `launch_next_step` failed, or an `advance` relaunched
+    /// and tmux was briefly unavailable).
+    NeedsLaunch,
+    /// Not a supervisor concern — either the task isn't Running, or it has
+    /// no session history at all (still driven by `AgentRunner` today).
+    Skip,
+}
+
+/// Decide how the supervisor's background poll should treat a task.
+///
+/// Classification rules (in order):
+/// 1. Non-Running → `Skip`.
+/// 2. Last session entry present and `stopped_at.is_none()` → `LiveSession`.
+/// 3. Last session entry present and `stopped_at.is_some()` → `NeedsLaunch`
+///    (half-state recovery — supervisor-driven task, ended without a relaunch).
+/// 4. No session history → `Skip` (not yet supervised; `AgentRunner` owns it).
+///
+/// Keeping the "no history → Skip" branch is important during the transition
+/// window when `AgentRunner::run_direct` is still the default driver for new
+/// tasks. Once every task goes through the supervisor, rule 4 can be merged
+/// into rule 3 (or removed) so that a first-ever launch failure also retries.
+pub fn classify(task: &Task) -> PollTarget {
+    if task.meta.status != TaskStatus::Running {
+        return PollTarget::Skip;
+    }
+    match task.meta.session_history.last() {
+        Some(entry) if entry.stopped_at.is_none() => PollTarget::LiveSession {
+            session_id: entry.session_id.clone(),
+        },
+        Some(_) => PollTarget::NeedsLaunch,
+        None => PollTarget::Skip,
+    }
+}
+
 /// Kill the `claude` process currently running in a session's `agman` window,
 /// best-effort. Tries SIGTERM on the pane pid; falls back to two Ctrl+C key
 /// presses if the pid is not available.
@@ -448,7 +494,7 @@ fn drain_queue(task: &mut Task, config: &Config) -> Result<bool> {
 /// post_hook) and the loop continues. On flow exhaustion the queue is drained
 /// — `Feedback` resets the task to the `continue` flow and the loop restarts
 /// with the freshly-loaded flow.
-fn launch_next_step(config: &Config, task: &mut Task) -> Result<AdvanceOutcome> {
+pub fn launch_next_step(config: &Config, task: &mut Task) -> Result<AdvanceOutcome> {
     // Guard against pathological loops (e.g. pre_command always passing and a
     // flow entirely made of pre_command steps).
     const MAX_ITERATIONS: usize = 32;
@@ -1198,5 +1244,59 @@ mod tests {
         let fb = task.read_feedback().unwrap();
         assert_eq!(fb, "please fix the bug");
         assert!(!task.has_queued_items());
+    }
+
+    // -----------------------------------------------------------------------
+    // classify — supervisor poll task triage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn classify_skips_non_running_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_cfg, mut task) = build_task(&tmp);
+        task.meta.status = TaskStatus::Stopped;
+        // Non-Running takes precedence over any session state.
+        push_session(&mut task, "coder", "sid-1");
+
+        assert_eq!(classify(&task), PollTarget::Skip);
+    }
+
+    #[test]
+    fn classify_skips_running_without_session_history() {
+        // A Running task with no session_history entries is still owned by
+        // `AgentRunner` during the transition — supervisor must not touch it.
+        let tmp = tempfile::tempdir().unwrap();
+        let (_cfg, task) = build_task(&tmp);
+        assert_eq!(task.meta.status, TaskStatus::Running);
+        assert!(task.meta.session_history.is_empty());
+
+        assert_eq!(classify(&task), PollTarget::Skip);
+    }
+
+    #[test]
+    fn classify_live_session_returns_session_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_cfg, mut task) = build_task(&tmp);
+        push_session(&mut task, "coder", "sid-live");
+
+        assert_eq!(
+            classify(&task),
+            PollTarget::LiveSession {
+                session_id: "sid-live".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn classify_needs_launch_when_last_session_stopped() {
+        // Half-state: Running + last session has stopped_at=Some. This is the
+        // post-wake_if_idle or post-advance failure scenario the new poll
+        // branch is designed to recover.
+        let tmp = tempfile::tempdir().unwrap();
+        let (_cfg, mut task) = build_task(&tmp);
+        push_session(&mut task, "coder", "sid-done");
+        task.finish_last_session(Some("AGENT_DONE".to_string())).unwrap();
+
+        assert_eq!(classify(&task), PollTarget::NeedsLaunch);
     }
 }

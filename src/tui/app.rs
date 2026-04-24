@@ -410,15 +410,19 @@ struct InboxPollOutput {
 /// One supervisor tick result for a single Running task.
 ///
 /// Collected in the background by `start_supervisor_poll` and drained in the
-/// main loop by `apply_supervisor_poll_results`. During iteration 1 of the
-/// chunk-2 integration these are only logged — dispatch (advancing the flow,
-/// launching the next agent, notifying the PM) is wired up in a later
-/// iteration.
+/// main loop by `apply_supervisor_poll_results`. `Tick` carries a `PollOutcome`
+/// from a live session; `NeedsLaunch` signals a half-state task (Running with
+/// a stopped last session) that should re-enter `launch_next_step`.
 #[derive(Debug)]
-struct SupervisorPollItem {
-    task_id: String,
-    session_id: String,
-    outcome: supervisor::PollOutcome,
+enum SupervisorPollItem {
+    Tick {
+        task_id: String,
+        session_id: String,
+        outcome: supervisor::PollOutcome,
+    },
+    NeedsLaunch {
+        task_id: String,
+    },
 }
 
 #[derive(Debug)]
@@ -5867,25 +5871,28 @@ impl App {
             let output = tokio::task::spawn_blocking(move || {
                 let mut items = Vec::new();
                 for task in Task::list_all(&config) {
-                    if task.meta.status != TaskStatus::Running {
-                        continue;
-                    }
-                    let session_id = match task.meta.session_history.last() {
-                        Some(entry) if entry.stopped_at.is_none() => entry.session_id.clone(),
-                        _ => continue,
-                    };
-                    match supervisor::poll(&task, &session_id) {
-                        Ok(outcome) => items.push(SupervisorPollItem {
-                            task_id: task.meta.task_id(),
-                            session_id,
-                            outcome,
-                        }),
-                        Err(e) => {
-                            tracing::warn!(
-                                task_id = %task.meta.task_id(),
-                                error = %e,
-                                "supervisor poll failed"
-                            );
+                    match supervisor::classify(&task) {
+                        supervisor::PollTarget::Skip => continue,
+                        supervisor::PollTarget::LiveSession { session_id } => {
+                            match supervisor::poll(&task, &session_id) {
+                                Ok(outcome) => items.push(SupervisorPollItem::Tick {
+                                    task_id: task.meta.task_id(),
+                                    session_id,
+                                    outcome,
+                                }),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        task_id = %task.meta.task_id(),
+                                        error = %e,
+                                        "supervisor poll failed"
+                                    );
+                                }
+                            }
+                        }
+                        supervisor::PollTarget::NeedsLaunch => {
+                            items.push(SupervisorPollItem::NeedsLaunch {
+                                task_id: task.meta.task_id(),
+                            });
                         }
                     }
                 }
@@ -5918,64 +5925,103 @@ impl App {
         self.supervisor_poll_active = false;
 
         for item in output.items {
-            match item.outcome {
-                supervisor::PollOutcome::Idle => {}
-                supervisor::PollOutcome::StopRequested => {
-                    tracing::info!(
-                        task_id = %item.task_id,
-                        session_id = %item.session_id,
-                        "supervisor poll: honoring stop sentinel"
-                    );
-                    let mut task = match Task::load_by_id(&self.config, &item.task_id) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            tracing::warn!(
-                                task_id = %item.task_id,
-                                error = %e,
-                                "failed to reload task for stop dispatch"
-                            );
-                            continue;
-                        }
-                    };
-                    if let Err(e) = supervisor::honor_stop(&self.config, &mut task) {
-                        tracing::error!(
-                            task_id = %item.task_id,
-                            error = %e,
-                            "supervisor honor_stop failed"
+            match item {
+                SupervisorPollItem::Tick {
+                    task_id,
+                    session_id,
+                    outcome,
+                } => match outcome {
+                    supervisor::PollOutcome::Idle => {}
+                    supervisor::PollOutcome::StopRequested => {
+                        tracing::info!(
+                            task_id = %task_id,
+                            session_id = %session_id,
+                            "supervisor poll: honoring stop sentinel"
                         );
+                        let mut task = match Task::load_by_id(&self.config, &task_id) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    error = %e,
+                                    "failed to reload task for stop dispatch"
+                                );
+                                continue;
+                            }
+                        };
+                        if let Err(e) = supervisor::honor_stop(&self.config, &mut task) {
+                            tracing::error!(
+                                task_id = %task_id,
+                                error = %e,
+                                "supervisor honor_stop failed"
+                            );
+                        }
                     }
-                }
-                supervisor::PollOutcome::Condition(cond) => {
+                    supervisor::PollOutcome::Condition(cond) => {
+                        tracing::info!(
+                            task_id = %task_id,
+                            session_id = %session_id,
+                            condition = %cond,
+                            "supervisor poll: dispatching condition"
+                        );
+                        let mut task = match Task::load_by_id(&self.config, &task_id) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    error = %e,
+                                    "failed to reload task for advance dispatch"
+                                );
+                                continue;
+                            }
+                        };
+                        match supervisor::advance(&self.config, &mut task, cond) {
+                            Ok(outcome) => {
+                                tracing::info!(
+                                    task_id = %task_id,
+                                    outcome = ?outcome,
+                                    "supervisor advance completed"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    task_id = %task_id,
+                                    error = %e,
+                                    "supervisor advance failed"
+                                );
+                            }
+                        }
+                    }
+                },
+                SupervisorPollItem::NeedsLaunch { task_id } => {
                     tracing::info!(
-                        task_id = %item.task_id,
-                        session_id = %item.session_id,
-                        condition = %cond,
-                        "supervisor poll: dispatching condition"
+                        task_id = %task_id,
+                        "supervisor poll: half-state detected, retrying launch_next_step"
                     );
-                    let mut task = match Task::load_by_id(&self.config, &item.task_id) {
+                    let mut task = match Task::load_by_id(&self.config, &task_id) {
                         Ok(t) => t,
                         Err(e) => {
                             tracing::warn!(
-                                task_id = %item.task_id,
+                                task_id = %task_id,
                                 error = %e,
-                                "failed to reload task for advance dispatch"
+                                "failed to reload task for relaunch"
                             );
                             continue;
                         }
                     };
-                    match supervisor::advance(&self.config, &mut task, cond) {
+                    match supervisor::launch_next_step(&self.config, &mut task) {
                         Ok(outcome) => {
                             tracing::info!(
-                                task_id = %item.task_id,
+                                task_id = %task_id,
                                 outcome = ?outcome,
-                                "supervisor advance completed"
+                                "supervisor relaunch completed"
                             );
                         }
                         Err(e) => {
                             tracing::error!(
-                                task_id = %item.task_id,
+                                task_id = %task_id,
                                 error = %e,
-                                "supervisor advance failed"
+                                "supervisor relaunch failed"
                             );
                         }
                     }
