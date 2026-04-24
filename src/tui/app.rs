@@ -1606,7 +1606,7 @@ impl App {
         if is_running {
             // Delegate to use_cases: queue the feedback
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                let queue_count = use_cases::queue_feedback(task, &feedback)?;
+                let queue_count = use_cases::queue_feedback(task, &self.config, &feedback)?;
                 self.log_output(format!("Queued feedback for {} ({} in queue)", task_id, queue_count));
                 self.set_status(format!("Feedback queued ({} in queue)", queue_count));
             }
@@ -1903,9 +1903,13 @@ impl App {
         };
 
         // If task is running, queue the command instead of running it immediately
-        if let Some(task) = self.selected_task() {
-            if task.meta.status == TaskStatus::Running {
-                match use_cases::queue_command(task, &command.id, Some(branch)) {
+        let is_running = self
+            .selected_task()
+            .map(|t| t.meta.status == TaskStatus::Running)
+            .unwrap_or(false);
+        if is_running {
+            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                match use_cases::queue_command(task, &self.config, &command.id, Some(branch)) {
                     Ok(count) => {
                         self.set_status(format!("Command queued: {} → {} ({} in queue)", command.name, branch, count));
                     }
@@ -1913,9 +1917,9 @@ impl App {
                         self.set_status(format!("Failed to queue command: {}", e));
                     }
                 }
-                self.view = View::Preview;
-                return Ok(());
             }
+            self.view = View::Preview;
+            return Ok(());
         }
 
         self.log_output(format!(
@@ -2001,9 +2005,13 @@ impl App {
         };
 
         // If task is running, queue the command instead of running it immediately
-        if let Some(task) = self.selected_task() {
-            if task.meta.status == TaskStatus::Running {
-                match use_cases::queue_command(task, &command.id, None) {
+        let is_running = self
+            .selected_task()
+            .map(|t| t.meta.status == TaskStatus::Running)
+            .unwrap_or(false);
+        if is_running {
+            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                match use_cases::queue_command(task, &self.config, &command.id, None) {
                     Ok(count) => {
                         self.set_status(format!("Command queued: {} ({} in queue)", command.name, count));
                     }
@@ -2011,9 +2019,9 @@ impl App {
                         self.set_status(format!("Failed to queue command: {}", e));
                     }
                 }
-                self.view = View::Preview;
-                return Ok(());
             }
+            self.view = View::Preview;
+            return Ok(());
         }
 
         // Guard: refuse create-pr if a PR is already linked

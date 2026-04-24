@@ -433,6 +433,12 @@ fn stop_task() {
     assert_eq!(task.meta.status, TaskStatus::Stopped);
     assert!(task.meta.current_agent.is_none());
 
+    // .stop sentinel is written so a live supervisor can kill its claude.
+    assert!(
+        task.stop_path().exists(),
+        ".stop sentinel should exist after stop_task"
+    );
+
     // Persisted to disk
     let loaded = Task::load(&config, "repo", "branch").unwrap();
     assert_eq!(loaded.meta.status, TaskStatus::Stopped);
@@ -488,13 +494,13 @@ fn resume_after_answering_not_input_needed_is_noop() {
 fn queue_feedback_on_running_task() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
+    let mut task = create_test_task(&config, "repo", "branch");
     // task starts as Running
 
-    let count = use_cases::queue_feedback(&task, "fix the button").unwrap();
+    let count = use_cases::queue_feedback(&mut task, &config, "fix the button").unwrap();
     assert_eq!(count, 1);
 
-    let count2 = use_cases::queue_feedback(&task, "also fix the header").unwrap();
+    let count2 = use_cases::queue_feedback(&mut task, &config, "also fix the header").unwrap();
     assert_eq!(count2, 2);
 
     let queue = task.read_queue();
@@ -651,9 +657,9 @@ fn pop_and_apply_queue_item_empty_queue_returns_none() {
 fn queue_command_on_task() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
+    let mut task = create_test_task(&config, "repo", "branch");
 
-    let count = use_cases::queue_command(&task, "rebase", Some("main")).unwrap();
+    let count = use_cases::queue_command(&mut task, &config, "rebase", Some("main")).unwrap();
     assert_eq!(count, 1);
 
     let queue = task.read_queue();
@@ -675,9 +681,9 @@ fn queue_command_on_task() {
 fn queue_command_without_branch() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
+    let mut task = create_test_task(&config, "repo", "branch");
 
-    let count = use_cases::queue_command(&task, "create-pr", None).unwrap();
+    let count = use_cases::queue_command(&mut task, &config, "create-pr", None).unwrap();
     assert_eq!(count, 1);
 
     let queue = task.read_queue();

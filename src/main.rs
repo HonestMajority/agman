@@ -915,11 +915,11 @@ fn cmd_queue_feedback(
     file: Option<&std::path::Path>,
 ) -> Result<()> {
     let resolved = resolve_text_arg(feedback, file, "feedback")?;
-    let task = Task::load_by_id(config, task_id)?;
+    let mut task = Task::load_by_id(config, task_id)?;
     let feedback = resolved.trim_end();
 
     if task.meta.status == TaskStatus::Running {
-        let count = use_cases::queue_feedback(&task, feedback)?;
+        let count = use_cases::queue_feedback(&mut task, config, feedback)?;
         tracing::info!(task_id = %task_id, count, "queued feedback via CLI");
         println!(
             "Feedback queued for '{}' ({} item(s) in queue)",

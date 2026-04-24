@@ -642,6 +642,34 @@ pub fn advance(
     }
 }
 
+/// Wake a currently-Stopped task by draining the front of its queue and
+/// launching the next agent step. No-op for non-Stopped tasks (nothing to
+/// wake) and for Stopped tasks with an empty queue (nothing to drain).
+///
+/// Returns `Some(outcome)` when a launch was attempted, `None` otherwise.
+///
+/// This is the "idle drain" entry point used by `use_cases::queue_feedback`
+/// and `use_cases::queue_command` to kick the supervisor immediately when
+/// work is queued onto an idle task. The mid-flight drain (at flow-end on an
+/// already-Running task) is handled inside `advance` / `launch_next_step`.
+pub fn wake_if_idle(
+    config: &Config,
+    task: &mut Task,
+) -> Result<Option<AdvanceOutcome>> {
+    if task.meta.status != TaskStatus::Stopped {
+        return Ok(None);
+    }
+    if !drain_queue(task, config)? {
+        return Ok(None);
+    }
+    tracing::info!(
+        task_id = %task.meta.task_id(),
+        flow = %task.meta.flow_name,
+        "supervisor waking idle task after queue drain"
+    );
+    Ok(Some(launch_next_step(config, task)?))
+}
+
 /// Honor a `.stop` sentinel: kill the currently-running claude, finish the
 /// live session, and transition the task to Stopped. Idempotent — safe to
 /// call even if the session is already stopped or the sentinel is gone.
@@ -1115,5 +1143,60 @@ mod tests {
         assert_eq!(task.meta.status, TaskStatus::InputNeeded);
         assert_eq!(task.meta.flow_step, 0);
         assert_eq!(task.meta.flow_sub_step, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // wake_if_idle — idle-drain entry point
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn wake_if_idle_noop_on_running_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        // task starts Running; queue an item to ensure drain is not attempted.
+        task.queue_feedback("pending").unwrap();
+        task.save_meta().unwrap();
+
+        let result = wake_if_idle(&config, &mut task).unwrap();
+        assert!(result.is_none(), "running task should not be woken");
+        assert_eq!(task.meta.status, TaskStatus::Running);
+        assert!(task.has_queued_items(), "queue must not be drained");
+    }
+
+    #[test]
+    fn wake_if_idle_noop_on_stopped_empty_queue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        task.update_status(TaskStatus::Stopped).unwrap();
+
+        let result = wake_if_idle(&config, &mut task).unwrap();
+        assert!(result.is_none(), "nothing to drain, no launch attempted");
+        assert_eq!(task.meta.status, TaskStatus::Stopped);
+    }
+
+    #[test]
+    fn wake_if_idle_drains_feedback_on_stopped_task() {
+        // Stopped + queued feedback → drain resets to `continue` flow.
+        // The subsequent launch_next_step tries to start `refiner` via tmux
+        // which fails in the test env; we assert that the drain side-effects
+        // (flow_name, status, FEEDBACK.md) were persisted before the error.
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        task.queue_feedback("please fix the bug").unwrap();
+        task.meta.flow_name = "new".to_string();
+        task.meta.flow_step = 3;
+        task.meta.status = TaskStatus::Stopped;
+        task.save_meta().unwrap();
+
+        // Error propagates from launch_next_step; we don't care about the Ok/Err
+        // result here — we only care that drain_queue ran first.
+        let _ = wake_if_idle(&config, &mut task);
+
+        assert_eq!(task.meta.flow_name, "continue");
+        assert_eq!(task.meta.flow_step, 0);
+        assert_eq!(task.meta.status, TaskStatus::Running);
+        let fb = task.read_feedback().unwrap();
+        assert_eq!(fb, "please fix the bug");
+        assert!(!task.has_queued_items());
     }
 }

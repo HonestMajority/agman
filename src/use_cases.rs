@@ -12,6 +12,7 @@ use crate::inbox;
 use crate::project::Project;
 use crate::repo_stats::RepoStats;
 use crate::researcher::{Researcher, ResearcherStatus};
+use crate::supervisor;
 use crate::task::{QueueItem, RepoEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
 
@@ -370,11 +371,14 @@ pub fn list_archived_tasks(config: &Config) -> Vec<(Task, String)> {
 ///
 /// This is the pure business logic behind `App::stop_task()`.
 /// It does NOT send Ctrl+C to tmux — that's a side effect handled by the caller.
+/// It DOES write the `.stop` sentinel file so the supervisor (if running) can
+/// kill the live `claude` session on its next poll tick.
 pub fn stop_task(task: &mut Task) -> Result<()> {
     if task.meta.status == TaskStatus::Stopped {
         return Ok(());
     }
     tracing::info!(task_id = %task.meta.task_id(), old_status = %task.meta.status, new_status = "stopped", "stopping task");
+    task.request_stop()?;
     task.update_status(TaskStatus::Stopped)?;
     task.meta.current_agent = None;
     task.save_meta()?;
@@ -448,21 +452,49 @@ pub fn resume_after_answering(task: &mut Task) -> Result<()> {
     Ok(())
 }
 
-/// Queue feedback on a running task.
+/// Queue feedback for a task and, if the task is currently idle (Stopped),
+/// wake the supervisor so it drains the queue and launches the next step.
 ///
-/// Extracts the "running" branch of `App::submit_feedback()`.
-pub fn queue_feedback(task: &Task, feedback: &str) -> Result<usize> {
+/// If `wake_if_idle` fails (for example, tmux is unavailable) the error is
+/// logged but *not* propagated — the feedback is already persisted in the
+/// queue, so the user's action should still be reported as successful.
+/// A subsequent supervisor poll or user action can retry the launch.
+pub fn queue_feedback(task: &mut Task, config: &Config, feedback: &str) -> Result<usize> {
     tracing::info!(task_id = %task.meta.task_id(), "queuing feedback");
     task.append_feedback_to_log(feedback)?;
     task.queue_feedback(feedback)?;
-    Ok(task.queued_item_count())
+    let count = task.queued_item_count();
+    if let Err(e) = supervisor::wake_if_idle(config, task) {
+        tracing::warn!(
+            task_id = %task.meta.task_id(),
+            error = %e,
+            "wake_if_idle failed after queuing feedback"
+        );
+    }
+    Ok(count)
 }
 
-/// Queue a command on a running task.
-pub fn queue_command(task: &Task, command_id: &str, branch: Option<&str>) -> Result<usize> {
+/// Queue a command for a task and, if the task is currently idle (Stopped),
+/// wake the supervisor so it drains the queue and launches the command flow.
+///
+/// Error-swallowing semantics match `queue_feedback`.
+pub fn queue_command(
+    task: &mut Task,
+    config: &Config,
+    command_id: &str,
+    branch: Option<&str>,
+) -> Result<usize> {
     tracing::info!(task_id = %task.meta.task_id(), command_id, "queuing command");
     task.queue_command(command_id, branch)?;
-    Ok(task.queued_item_count())
+    let count = task.queued_item_count();
+    if let Err(e) = supervisor::wake_if_idle(config, task) {
+        tracing::warn!(
+            task_id = %task.meta.task_id(),
+            error = %e,
+            "wake_if_idle failed after queuing command"
+        );
+    }
+    Ok(count)
 }
 
 /// Write immediate feedback for a stopped task.
