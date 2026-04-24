@@ -22,7 +22,7 @@ use agman::dismissed_notifications::DismissedNotifications;
 use agman::flow::Flow;
 use agman::git::Git;
 use agman::repo_stats::RepoStats;
-use agman::task::{QueueItem, Task, TaskStatus};
+use agman::task::{Task, TaskStatus};
 use agman::tmux::Tmux;
 use agman::inbox;
 use agman::project::Project;
@@ -1172,9 +1172,11 @@ impl App {
 
     /// Process any stranded queue items for stopped tasks.
     /// This is a safety net: if items were queued while a task was running and
-    /// the agent process exited without processing them, the TUI picks them up.
+    /// the agent process exited without draining them (legacy AgentRunner path,
+    /// or supervisor half-state that failed to relaunch), the TUI picks them up
+    /// and routes through the supervisor: ensure tmux → wake_if_idle drains the
+    /// queue and launches the next flow step in the `agman` window.
     pub fn process_stranded_queue(&mut self) {
-        // Collect task_ids for stopped tasks with queued items
         let stranded: Vec<String> = self
             .tasks
             .iter()
@@ -1183,94 +1185,34 @@ impl App {
             .collect();
 
         for task_id in stranded {
-            // Pop the first queued item and apply it
-            let item = match self
-                .tasks
-                .iter()
-                .find(|t| t.meta.task_id() == task_id)
-            {
-                Some(task) => match use_cases::pop_and_apply_queue_item(task) {
-                    Ok(Some(item)) => item,
-                    Ok(None) => continue,
-                    Err(e) => {
-                        self.log_output(format!("Error processing queue for {}: {}", task_id, e));
-                        continue;
-                    }
-                },
-                None => continue,
+            let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) else {
+                continue;
             };
 
-            match item {
-                QueueItem::Feedback { .. } => {
+            self.log_output(format!("Waking stopped task {} with queued items...", task_id));
+
+            if let Some(task) = self.tasks.get_mut(idx) {
+                if let Err(e) = supervisor::ensure_task_tmux(task) {
                     self.log_output(format!(
-                        "Processing queued feedback for {}...",
-                        task_id
+                        "Failed to prepare tmux for {}: {}",
+                        task_id, e
                     ));
-
-                    let output = Command::new("agman")
-                        .args(["continue", &task_id])
-                        .output();
-
-                    match output {
-                        Ok(o) if o.status.success() => {
-                            let stdout = String::from_utf8_lossy(&o.stdout);
-                            if !stdout.is_empty() {
-                                for line in stdout.lines() {
-                                    self.log_output(line.to_string());
-                                }
-                            }
-                            self.log_output(format!("Queued feedback processed for {}", task_id));
-                            self.set_status(format!("Processing queued feedback for {}", task_id));
-                        }
-                        Ok(o) => {
-                            let stderr = String::from_utf8_lossy(&o.stderr);
-                            self.log_output(format!(
-                                "Failed to process queued feedback for {}: {}",
-                                task_id, stderr
-                            ));
-                        }
-                        Err(e) => {
-                            self.log_output(format!("Error processing queued feedback: {}", e));
-                        }
-                    }
+                    continue;
                 }
-                QueueItem::Command { command_id, branch } => {
-                    self.log_output(format!(
-                        "Processing queued command '{}' for {}...",
-                        command_id, task_id
-                    ));
-
-                    let mut args = vec!["run-command".to_string(), task_id.clone(), command_id.clone()];
-                    if let Some(ref b) = branch {
-                        args.push("--branch".to_string());
-                        args.push(b.clone());
+                match supervisor::wake_if_idle(&self.config, task) {
+                    Ok(Some(_)) => {
+                        self.log_output(format!(
+                            "Queued item drained and launched for {}",
+                            task_id
+                        ));
+                        self.set_status(format!("Waking stranded task {}", task_id));
                     }
-
-                    let output = Command::new("agman")
-                        .args(&args)
-                        .output();
-
-                    match output {
-                        Ok(o) if o.status.success() => {
-                            let stdout = String::from_utf8_lossy(&o.stdout);
-                            if !stdout.is_empty() {
-                                for line in stdout.lines() {
-                                    self.log_output(line.to_string());
-                                }
-                            }
-                            self.log_output(format!("Queued command '{}' processed for {}", command_id, task_id));
-                            self.set_status(format!("Processing queued command for {}", task_id));
-                        }
-                        Ok(o) => {
-                            let stderr = String::from_utf8_lossy(&o.stderr);
-                            self.log_output(format!(
-                                "Failed to process queued command for {}: {}",
-                                task_id, stderr
-                            ));
-                        }
-                        Err(e) => {
-                            self.log_output(format!("Error processing queued command: {}", e));
-                        }
+                    Ok(None) => {}
+                    Err(e) => {
+                        self.log_output(format!(
+                            "Error waking stranded task {}: {}",
+                            task_id, e
+                        ));
                     }
                 }
             }
