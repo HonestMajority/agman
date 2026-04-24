@@ -2620,9 +2620,12 @@ pub fn start_pm_session(config: &Config, project_name: &str) -> Result<()> {
         (None, Some(uuid))
     };
 
-    let prompt = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
+    let (token, chat_id) = load_telegram_config(config);
+    let telegram_enabled = token.as_deref().is_some_and(|t| !t.is_empty())
+        && chat_id.as_deref().is_some_and(|c| !c.is_empty());
+    let prompt = build_pm_prompt(telegram_enabled, project_name);
     let session_name = Config::pm_tmux_session(project_name);
-    tracing::info!(session = &session_name, project = project_name, "starting PM session");
+    tracing::info!(session = &session_name, project = project_name, telegram_enabled, "starting PM session");
     Tmux::create_agent_session(
         &session_name,
         &prompt,
@@ -2711,20 +2714,16 @@ pub fn start_researcher_session(config: &Config, project: &str, name: &str) -> R
         (None, Some(uuid))
     };
 
-    let template = if project == "ceo" {
-        DEFAULT_CEO_RESEARCHER_PROMPT_TEMPLATE
-    } else {
-        DEFAULT_RESEARCHER_PROMPT_TEMPLATE
-    };
-    let prompt = template
-        .replace("{{PROJECT_NAME}}", project)
-        .replace("{{RESEARCHER_NAME}}", name);
+    let (token, chat_id) = load_telegram_config(config);
+    let telegram_enabled = token.as_deref().is_some_and(|t| !t.is_empty())
+        && chat_id.as_deref().is_some_and(|c| !c.is_empty());
+    let prompt = build_researcher_prompt(telegram_enabled, project, name);
 
     // Resolve working directory
     let work_dir = resolve_researcher_work_dir(config, &researcher);
 
     let session_name = Config::researcher_tmux_session(project, name);
-    tracing::info!(session = &session_name, project = project, name = name, "starting researcher session");
+    tracing::info!(session = &session_name, project = project, name = name, telegram_enabled, "starting researcher session");
     Tmux::create_agent_session(
         &session_name,
         &prompt,
@@ -3330,9 +3329,77 @@ AGMAN_MSG
 ```
 - **Reply to Telegram first**, then take any follow-up actions (create projects, brief PMs, etc.). The user is waiting on their phone.
 - Keep Telegram replies concise — this is a mobile chat, not a report.
+- The user sees `[CEO]` prepended to your replies, so they always know who is speaking.
 "#;
 
     format!("{}{}", DEFAULT_CEO_PROMPT, telegram_section)
+}
+
+pub fn build_pm_prompt(telegram_enabled: bool, project_name: &str) -> String {
+    let base = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
+    if !telegram_enabled {
+        return base;
+    }
+
+    let telegram_section = format!(r#"
+
+## Telegram
+
+Telegram is connected and the user can switch chats over to you directly. When that happens, messages tagged `[Message from telegram]` will appear in your tmux session.
+
+**Critical rules for Telegram messages:**
+- `[Message from telegram]` means the user is on their phone and **cannot** see your tmux session. The only way to reach them is via the Telegram send command.
+- You **MUST** reply via Telegram whenever you receive a `[Message from telegram]`. Use:
+```
+cat <<'AGMAN_MSG' | agman send-message telegram --from {project_name}
+<your reply>
+AGMAN_MSG
+```
+- Reply to Telegram **first**, then take any follow-up actions. The user is waiting on their phone.
+- Keep Telegram replies concise — this is a mobile chat, not a report.
+- The user sees `[PM:{project_name}]` prepended to your replies, so they always know who is speaking.
+"#);
+
+    format!("{base}{telegram_section}")
+}
+
+pub fn build_researcher_prompt(
+    telegram_enabled: bool,
+    project_name: &str,
+    researcher_name: &str,
+) -> String {
+    let template = if project_name == "ceo" {
+        DEFAULT_CEO_RESEARCHER_PROMPT_TEMPLATE
+    } else {
+        DEFAULT_RESEARCHER_PROMPT_TEMPLATE
+    };
+    let base = template
+        .replace("{{PROJECT_NAME}}", project_name)
+        .replace("{{RESEARCHER_NAME}}", researcher_name);
+    if !telegram_enabled {
+        return base;
+    }
+
+    let telegram_section = format!(r#"
+
+## Telegram
+
+Telegram is connected and the user can switch chats over to you directly. When that happens, messages tagged `[Message from telegram]` will appear in your tmux session.
+
+**Critical rules for Telegram messages:**
+- `[Message from telegram]` means the user is on their phone and **cannot** see your tmux session. The only way to reach them is via the Telegram send command.
+- You **MUST** reply via Telegram whenever you receive a `[Message from telegram]`. Use:
+```
+cat <<'AGMAN_MSG' | agman send-message telegram --from "researcher:{project_name}--{researcher_name}"
+<your reply>
+AGMAN_MSG
+```
+- Reply to Telegram **first**, then take any follow-up actions. The user is waiting on their phone.
+- Keep Telegram replies concise — this is a mobile chat, not a report.
+- The user sees `[R:{researcher_name}]` prepended to your replies, so they always know who is speaking.
+"#);
+
+    format!("{base}{telegram_section}")
 }
 
 const DEFAULT_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for project "{{PROJECT_NAME}}", named "{{RESEARCHER_NAME}}".
