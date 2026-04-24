@@ -187,9 +187,6 @@ pub fn create_task(
         task.meta.project = project;
     }
 
-    // Ensure TASK.md is excluded from git tracking
-    let _ = task.ensure_git_excludes_task();
-
     // Save if any optional fields were set after creation
     if task.meta.parent_dir.is_some() || task.meta.review_after || task.meta.project.is_some() {
         task.save_meta()?;
@@ -702,9 +699,6 @@ pub fn create_setup_only_task(
     // Write a minimal TASK.md (empty goal, ready for user to fill via feedback)
     task.write_task("# Goal\n\n# Plan\n")?;
 
-    // Ensure TASK.md is excluded from git tracking
-    let _ = task.ensure_git_excludes_task();
-
     // Increment repo usage stats
     let stats_path = config.repo_stats_path();
     let mut stats = RepoStats::load(&stats_path);
@@ -952,13 +946,8 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task, skip_tmux: boo
         if !skip_tmux && !Tmux::session_exists(&tmux_session) {
             if let Err(e) = Tmux::create_session_with_windows(&tmux_session, &worktree_path) {
                 tracing::warn!(repo = repo_name, error = %e, "failed to create tmux session (non-fatal)");
-            } else {
-                let _ = Tmux::add_review_window(&tmux_session, &worktree_path);
             }
         }
-
-        // Ensure REVIEW.md is excluded from git tracking
-        let _ = task.ensure_git_excludes_for_worktree(&worktree_path);
 
         entries.push(RepoEntry {
             repo_name: repo_name.clone(),

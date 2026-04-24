@@ -232,11 +232,6 @@ fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
             println!();
             println!("Running post-flow review...");
 
-            // Wipe REVIEW.md for a clean slate in all repos
-            for repo in &task.meta.repos {
-                let _ = Tmux::wipe_review_md(&repo.worktree_path);
-            }
-
             // Reset review_after so it doesn't re-trigger
             task.meta.review_after = false;
             task.save_meta()?;
@@ -301,11 +296,6 @@ fn cmd_continue(
 
     if !task.meta.has_repos() {
         anyhow::bail!("Task '{}' has no repos configured yet", task.meta.task_id());
-    }
-
-    // Wipe REVIEW.md in all repo worktrees
-    for repo in &task.meta.repos {
-        let _ = Tmux::wipe_review_md(&repo.worktree_path);
     }
 
     // Log feedback to agent.log for history
@@ -434,13 +424,6 @@ fn cmd_command_flow_run(
     // Load the command
     let cmd = command::StoredCommand::get_by_id(&config.commands_dir, command_id)?
         .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?;
-
-    // Wipe REVIEW.md at the start of review-pr (and continue) flows for a clean slate
-    if command_id == "review-pr" {
-        for repo in &task.meta.repos {
-            let _ = Tmux::wipe_review_md(&repo.worktree_path);
-        }
-    }
 
     println!("Running command: {}", cmd.name);
     println!("  Task: {}", task.meta.task_id());
@@ -706,7 +689,6 @@ fn cmd_create_pm_task(
     let session = &task.meta.primary_repo().tmux_session;
 
     Tmux::create_session_with_windows(session, &worktree_path)?;
-    let _ = Tmux::add_review_window(session, &worktree_path);
 
     let flow_cmd = format!("agman flow-run {}", task_id);
     tracing::info!(task_id = %task_id, "dispatching flow-run for PM task");

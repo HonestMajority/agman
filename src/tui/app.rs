@@ -2288,8 +2288,6 @@ impl App {
                 return Ok(());
             }
 
-            let _ = Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path);
-
             let task_id = task.meta.task_id();
             let flow_cmd = format!("agman flow-run {}", task_id);
             let _ = Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &flow_cmd);
@@ -2381,8 +2379,6 @@ impl App {
             }
             return Ok(());
         }
-
-        let _ = Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path);
 
         // No flow-run command sent — this is the key difference from create_task_from_wizard
 
@@ -2580,8 +2576,6 @@ impl App {
             }
             return Ok(());
         }
-
-        Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path)?;
 
         let task_id = task.meta.task_id();
         let review_cmd = format!("agman run-command {} review-pr", task_id);

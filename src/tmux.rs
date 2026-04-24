@@ -3,9 +3,6 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// Clean initial content written to REVIEW.md
-pub const REVIEW_MD_INITIAL: &str = "# Code Review\n\n(Review in progress...)\n";
-
 pub struct Tmux;
 
 impl Tmux {
@@ -20,9 +17,8 @@ impl Tmux {
     /// Create a new tmux session with multiple windows:
     /// - nvim: starts nvim
     /// - lazygit: starts lazygit
-    /// - claude: starts claude --dangerously-skip-permissions
     /// - shell: runs git status
-    /// - agman: shell for agent commands
+    /// - agman: shell where the supervisor launches an interactive claude
     pub fn create_session_with_windows(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
             tracing::debug!(session = session_name, "tmux session already exists, skipping creation");
@@ -67,16 +63,6 @@ impl Tmux {
             .output();
         Self::send_keys_to_window(session_name, "lazygit", "lazygit")?;
 
-        // Create claude window
-        let _ = Command::new("tmux")
-            .args(["new-window", "-t", session_name, "-n", "claude", "-c", wd])
-            .output();
-        Self::send_keys_to_window(
-            session_name,
-            "claude",
-            "claude --dangerously-skip-permissions",
-        )?;
-
         // Create shell window
         let _ = Command::new("tmux")
             .args(["new-window", "-t", session_name, "-n", "shell", "-c", wd])
@@ -87,11 +73,11 @@ impl Tmux {
             "git status && git branch --show-current",
         )?;
 
-        // Create agman window (just a shell, agents will send commands here)
+        // Create agman window (just a shell; the supervisor launches an
+        // interactive claude here when the task starts)
         let _ = Command::new("tmux")
             .args(["new-window", "-t", session_name, "-n", "agman", "-c", wd])
             .output();
-        // Don't start agman interactively - agents will send commands to this window
 
         // Select nvim window as default
         let _ = Command::new("tmux")
@@ -183,54 +169,16 @@ impl Tmux {
         Ok(())
     }
 
-    /// Add a "review" tmux window with nvim REVIEW.md, then swap it before "agman"
-    /// so that review is window 5 and agman is window 6.
-    ///
-    /// Pre-creates REVIEW.md in working_dir if it doesn't already exist.
-    pub fn add_review_window(session_name: &str, working_dir: &Path) -> Result<()> {
-        // Pre-create REVIEW.md so nvim can open it immediately
-        let review_md_path = working_dir.join("REVIEW.md");
-        if !review_md_path.exists() {
-            std::fs::write(&review_md_path, REVIEW_MD_INITIAL)?;
-        }
-
-        let wd = working_dir.to_str().unwrap_or(".");
-
-        // Create the review window (appended after agman, so it becomes window 6)
-        let _ = Command::new("tmux")
-            .args(["new-window", "-t", session_name, "-n", "review", "-c", wd])
-            .output();
-        Self::send_keys_to_window(session_name, "review", "nvim REVIEW.md")?;
-
-        // Swap review (window 6) and agman (window 5) so review=5, agman=6
-        let review_target = format!("{}:review", session_name);
-        let agman_target = format!("{}:agman", session_name);
-        let _ = Command::new("tmux")
-            .args(["swap-window", "-s", &review_target, "-t", &agman_target])
-            .output();
-
-        Ok(())
-    }
-
-    /// Ensure a tmux session exists with all standard windows (including review).
+    /// Ensure a tmux session exists with all standard windows.
     ///
     /// If the session already exists, this is a no-op. Otherwise, creates the
-    /// session with `create_session_with_windows` and adds the review window.
+    /// session with `create_session_with_windows`.
     pub fn ensure_session(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
             return Ok(());
         }
         tracing::info!(session = session_name, dir = %working_dir.display(), "recreating missing tmux session");
         Self::create_session_with_windows(session_name, working_dir)?;
-        Self::add_review_window(session_name, working_dir)?;
-        Ok(())
-    }
-
-    /// Wipe REVIEW.md to a clean slate in the given working directory.
-    pub fn wipe_review_md(working_dir: &Path) -> Result<()> {
-        let review_md_path = working_dir.join("REVIEW.md");
-        std::fs::write(&review_md_path, REVIEW_MD_INITIAL)
-            .context("Failed to wipe REVIEW.md")?;
         Ok(())
     }
 
