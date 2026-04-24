@@ -285,6 +285,10 @@ impl Config {
         self.telegram_dir().join("last-panic.log")
     }
 
+    pub fn telegram_current_agent_path(&self) -> PathBuf {
+        self.telegram_dir().join("current-agent")
+    }
+
     pub fn whisper_model_path(&self) -> PathBuf {
         self.base_dir.join("whisper").join("ggml-base.bin")
     }

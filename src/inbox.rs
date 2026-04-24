@@ -12,9 +12,23 @@ pub struct InboxMessage {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Serializes the "read max seq → write next" sequence across threads so
+/// concurrent `append_message` calls can't collide on the same `seq`.
+///
+/// **In-process only.** A separate `agman` CLI invocation (a different OS
+/// process) writing to the same inbox at the same moment can still race —
+/// that scenario is out of scope for this lock. The races we observed (TUI
+/// main thread, telegram bot thread, tokio workers) are all in-process.
+static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Append a message to an inbox JSONL file. Assigns the next sequence number
 /// automatically by reading the current max seq from the file.
+///
+/// Thread-safe within a single process (see [`APPEND_LOCK`]). Not safe against
+/// concurrent writers from separate processes.
 pub fn append_message(inbox_path: &Path, from: &str, message: &str) -> Result<InboxMessage> {
+    let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     // Read existing messages to determine next seq
     let next_seq = match read_messages(inbox_path) {
         Ok(messages) => messages.last().map_or(1, |m| m.seq + 1),

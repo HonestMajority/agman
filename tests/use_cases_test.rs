@@ -3475,3 +3475,172 @@ fn classify_telegram_health_states() {
         TelegramHealth::Dead
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-agent Telegram chat
+// ---------------------------------------------------------------------------
+
+#[test]
+fn append_message_concurrent_seqs() {
+    use agman::inbox;
+    use std::sync::Arc;
+    use std::thread;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let inbox_path = Arc::new(tmp.path().join("inbox.jsonl"));
+
+    let threads: Vec<_> = (0..50)
+        .map(|i| {
+            let path = Arc::clone(&inbox_path);
+            thread::spawn(move || {
+                inbox::append_message(&path, "test", &format!("msg {i}")).unwrap();
+            })
+        })
+        .collect();
+
+    for t in threads {
+        t.join().unwrap();
+    }
+
+    let messages = inbox::read_messages(&inbox_path).unwrap();
+    assert_eq!(messages.len(), 50, "expected exactly 50 messages");
+    let mut seqs: Vec<u64> = messages.iter().map(|m| m.seq).collect();
+    seqs.sort();
+    let expected: Vec<u64> = (1..=50).collect();
+    assert_eq!(seqs, expected, "seqs should be unique and contiguous 1..=50");
+}
+
+#[test]
+fn relative_agent_list_from_ceo() {
+    use agman::researcher::{Researcher, ResearcherStatus};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    create_test_project(&config, "alpha");
+    create_test_project(&config, "beta");
+    helpers::create_test_researcher(&config, "ceo", "live");
+    let mut archived = helpers::create_test_researcher(&config, "ceo", "old");
+    archived.meta.status = ResearcherStatus::Archived;
+    archived.save_meta().unwrap();
+
+    // Sanity-check the helper left the archived researcher archived.
+    let archived_reload =
+        Researcher::load(config.researcher_dir("ceo", "old")).unwrap();
+    assert_eq!(archived_reload.meta.status, ResearcherStatus::Archived);
+
+    let agents = use_cases::relative_agent_list(&config, "ceo");
+    let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+    assert!(ids.contains(&"alpha"));
+    assert!(ids.contains(&"beta"));
+    assert!(ids.contains(&"researcher:ceo--live"));
+    assert!(!ids.iter().any(|id| id.contains("old")));
+    assert_eq!(agents.len(), 3);
+}
+
+#[test]
+fn relative_agent_list_from_pm() {
+    use agman::researcher::ResearcherStatus;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    create_test_project(&config, "alpha");
+    helpers::create_test_researcher(&config, "alpha", "live");
+    let mut archived = helpers::create_test_researcher(&config, "alpha", "old");
+    archived.meta.status = ResearcherStatus::Archived;
+    archived.save_meta().unwrap();
+
+    let agents = use_cases::relative_agent_list(&config, "alpha");
+    let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+    assert!(ids.contains(&"researcher:alpha--live"));
+    assert!(ids.contains(&"ceo"));
+    assert!(!ids.iter().any(|id| id.contains("old")));
+    assert_eq!(agents.len(), 2);
+}
+
+#[test]
+fn relative_agent_list_from_researcher() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    create_test_project(&config, "alpha");
+    helpers::create_test_researcher(&config, "alpha", "live");
+
+    let agents = use_cases::relative_agent_list(&config, "researcher:alpha--live");
+    let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(ids, vec!["alpha", "ceo"]);
+}
+
+#[test]
+fn relative_agent_list_from_ceo_researcher_no_duplicate_ceo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    helpers::create_test_researcher(&config, "ceo", "live");
+
+    let agents = use_cases::relative_agent_list(&config, "researcher:ceo--live");
+    let ceo_count = agents.iter().filter(|a| a.id == "ceo").count();
+    assert_eq!(ceo_count, 1, "ceo must appear exactly once");
+}
+
+#[test]
+fn read_current_agent_missing_falls_back_to_ceo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    assert_eq!(use_cases::read_current_agent(&config), "ceo");
+}
+
+#[test]
+fn read_current_agent_stale_falls_back_to_ceo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let path = config.telegram_current_agent_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "nonexistent-project").unwrap();
+
+    assert_eq!(use_cases::read_current_agent(&config), "ceo");
+}
+
+#[test]
+fn current_agent_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    create_test_project(&config, "proj");
+    create_test_project(&config, "proj2");
+
+    use_cases::write_current_agent(&config, "proj").unwrap();
+    assert_eq!(use_cases::read_current_agent(&config), "proj");
+
+    use_cases::write_current_agent(&config, "proj2").unwrap();
+    assert_eq!(use_cases::read_current_agent(&config), "proj2");
+}
+
+#[test]
+fn pm_prompt_omits_telegram_section_when_disabled() {
+    let prompt = use_cases::build_pm_prompt(false, "foo");
+    assert!(prompt.contains("foo"));
+    assert!(!prompt.contains("## Telegram"));
+}
+
+#[test]
+fn pm_prompt_includes_telegram_section_when_enabled() {
+    let prompt = use_cases::build_pm_prompt(true, "foo");
+    assert!(prompt.contains("foo"));
+    assert!(prompt.contains("## Telegram"));
+}
+
+#[test]
+fn researcher_prompt_includes_correct_from() {
+    let proj_prompt = use_cases::build_researcher_prompt(true, "proj", "bar");
+    assert!(
+        proj_prompt.contains(r#"--from "researcher:proj--bar""#),
+        "expected project researcher prompt to include --from \"researcher:proj--bar\", got:\n{proj_prompt}"
+    );
+
+    let ceo_prompt = use_cases::build_researcher_prompt(true, "ceo", "baz");
+    assert!(
+        ceo_prompt.contains(r#"--from "researcher:ceo--baz""#),
+        "expected ceo researcher prompt to include --from \"researcher:ceo--baz\", got:\n{ceo_prompt}"
+    );
+}

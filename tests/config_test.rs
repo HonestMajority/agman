@@ -112,6 +112,15 @@ fn config_ensure_dirs() {
 }
 
 #[test]
+fn config_telegram_current_agent_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    let path = config.telegram_current_agent_path();
+    assert_eq!(path, tmp.path().join(".agman/telegram/current-agent"));
+}
+
+#[test]
 fn config_init_default_files() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
