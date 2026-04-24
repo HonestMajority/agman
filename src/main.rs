@@ -355,7 +355,7 @@ fn cmd_run_command(
 ) -> Result<()> {
     config.init_default_files(false)?;
 
-    let task = Task::load_by_id(config, task_id)?;
+    let mut task = Task::load_by_id(config, task_id)?;
 
     // Guard: refuse create-pr if a PR is already linked
     if command_id == "create-pr" {
@@ -369,62 +369,48 @@ fn cmd_run_command(
         anyhow::bail!("Task '{}' has no repos configured yet", task.meta.task_id());
     }
 
-    let mut task = task;
-
-    // Load the command (validate it exists)
+    // Load the command (validate it exists + get metadata)
     let cmd = command::StoredCommand::get_by_id(&config.commands_dir, command_id)?
         .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?;
+
+    // Validate the branch arg loudly at the CLI boundary — drain_queue silently
+    // drops malformed command queue items, which would be a confusing UX here.
+    if cmd.requires_arg.as_deref() == Some("branch") && branch.is_none() {
+        anyhow::bail!("Command '{}' requires --branch argument", command_id);
+    }
 
     println!("Running command: {}", cmd.name);
     println!("  Description: {}", cmd.description);
     println!("  Task: {}", task.meta.task_id());
-
-    // If the command requires a branch arg, write it to .branch-target in the task dir
-    if cmd.requires_arg.as_deref() == Some("branch") {
-        let branch = branch.ok_or_else(|| {
-            anyhow::anyhow!("Command '{}' requires --branch argument", command_id)
-        })?;
-        let branch_target_path = task.dir.join(".branch-target");
-        std::fs::write(&branch_target_path, branch)?;
-        println!("  Target branch: {}", branch);
+    if let Some(b) = branch {
+        println!("  Target branch: {}", b);
     }
-
     println!();
 
-    // Ensure tmux sessions exist for all repos
-    for repo in &task.meta.repos {
-        println!("Ensuring tmux session for {}...", repo.repo_name);
-        Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path)?;
-    }
-
-    // Update task to running state
-    task.update_status(TaskStatus::Running)?;
-
-    // Dispatch the flow execution to tmux (non-blocking) so the caller returns immediately.
-    // For multi-repo tasks, also ensure the parent-dir session exists and dispatch there.
-    let tmux_target = if task.meta.is_multi_repo() {
-        let parent_dir = task.meta.parent_dir.as_ref().expect("multi-repo task must have parent_dir");
-        let session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
-        if !Tmux::session_exists(&session) {
-            println!("Recreating parent-dir tmux session...");
-            Tmux::create_session_with_windows(&session, parent_dir)?;
-        }
-        session
+    if task.meta.status == TaskStatus::Running {
+        let count = use_cases::queue_command(&mut task, config, command_id, branch)?;
+        tracing::info!(task_id = %task_id, command_id, count, "queued command via CLI");
+        println!(
+            "Command queued for '{}' ({} item(s) in queue)",
+            task_id, count
+        );
     } else {
-        task.meta.primary_repo().tmux_session.clone()
-    };
-    let mut flow_cmd = format!(
-        "agman command-flow-run {} {}",
-        task.meta.task_id(),
-        command_id
-    );
-    if let Some(b) = branch {
-        flow_cmd.push_str(&format!(" --branch {}", b));
-    }
-    Tmux::send_keys_to_window(&tmux_target, "agman", &flow_cmd)?;
+        supervisor::ensure_task_tmux(&task).with_context(|| {
+            format!("failed to prepare tmux for command on '{}'", task_id)
+        })?;
 
-    println!("Command flow started in tmux.");
-    println!("To watch: agman attach {}", task.meta.task_id());
+        let count = use_cases::queue_command(&mut task, config, command_id, branch)?;
+        tracing::info!(
+            task_id = %task_id,
+            command_id,
+            count,
+            "queued command via CLI; supervisor waking"
+        );
+        println!(
+            "Command queued for '{}' ({} item(s) in queue); supervisor waking",
+            task_id, count
+        );
+    }
 
     Ok(())
 }
