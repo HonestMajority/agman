@@ -346,7 +346,8 @@ fn drain_outbox(ctx: &BotCtx) {
     };
 
     for msg in messages {
-        let result = tg_send(ctx, &msg.message);
+        let tagged = format!("[{}] {}", format_sender_tag(&msg.from), msg.message);
+        let result = tg_send(ctx, &tagged);
         match classify_outbox_result(result) {
             OutboxAction::MarkDelivered => {
                 if let Err(e) = inbox::mark_delivered(&ctx.telegram_outbox_seq, msg.seq) {
@@ -400,6 +401,22 @@ fn append_dead_letter(path: &Path, msg: &inbox::InboxMessage, reason: &str) -> s
 // ---------------------------------------------------------------------------
 // Telegram API helpers
 // ---------------------------------------------------------------------------
+
+/// Short human-readable sender tag rendered on outbound Telegram messages.
+///
+/// - `"ceo"` → `"CEO"`
+/// - `"researcher:<project>--<name>"` → `"R:<name>"` (text after the last `--`)
+/// - anything else → `"PM:<from>"` (default — project names live here)
+pub fn format_sender_tag(from: &str) -> String {
+    if from == "ceo" {
+        return "CEO".to_string();
+    }
+    if let Some(rest) = from.strip_prefix("researcher:") {
+        let name = rest.rsplit("--").next().unwrap_or(rest);
+        return format!("R:{name}");
+    }
+    format!("PM:{from}")
+}
 
 fn tg_post(agent: &ureq::Agent, url: &str, body: &Value) -> Result<Value, TgError> {
     let method = url.rsplit('/').next().unwrap_or("?");
