@@ -1909,32 +1909,26 @@ impl App {
             command.name, branch, task_id
         ));
 
-        let output = Command::new("agman")
-            .args(["run-command", &task_id, &command.id, "--branch", branch])
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                if !stdout.is_empty() {
-                    for line in stdout.lines() {
-                        self.log_output(line.to_string());
-                    }
+        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+            if let Err(e) = supervisor::ensure_task_tmux(task) {
+                self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
+                self.set_status(format!("Failed to run {}: {}", command.name, e));
+                self.view = View::Preview;
+                self.load_preview();
+                return Ok(());
+            }
+            match use_cases::queue_command(task, &self.config, &command.id, Some(branch)) {
+                Ok(_count) => {
+                    self.set_status(format!("Started: {} onto {}", command.name, branch));
                 }
-                self.refresh_tasks_and_select(&task_id);
-                self.set_status(format!("Started: {} onto {}", command.name, branch));
-            }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                self.log_output(format!("Failed: {}", stderr));
-                self.set_status(format!("Failed to run {}", command.name));
-            }
-            Err(e) => {
-                self.log_output(format!("Error: {}", e));
-                self.set_status(format!("Error: {}", e));
+                Err(e) => {
+                    self.log_output(format!("Failed: {}", e));
+                    self.set_status(format!("Failed to run {}: {}", command.name, e));
+                }
             }
         }
 
+        self.refresh_tasks_and_select(&task_id);
         self.view = View::Preview;
         self.load_preview();
         Ok(())
@@ -2022,41 +2016,31 @@ impl App {
             command.name, task_id
         ));
 
-        // Run agman run-command in background
-        let output = Command::new("agman")
-            .args(["run-command", &task_id, &command.id])
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                if !stdout.is_empty() {
-                    for line in stdout.lines() {
-                        self.log_output(line.to_string());
-                    }
-                }
-                // Update review_addressed flag based on which command was run
-                if let Some(task) = self.tasks.iter_mut().find(|t| t.meta.task_id() == task_id) {
+        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+            if let Err(e) = supervisor::ensure_task_tmux(task) {
+                self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
+                self.set_status(format!("Failed to run {}: {}", command.name, e));
+                self.view = View::Preview;
+                self.load_preview();
+                return Ok(());
+            }
+            match use_cases::queue_command(task, &self.config, &command.id, None) {
+                Ok(_count) => {
                     if command.id == "address-review" {
                         let _ = use_cases::set_review_addressed(task, true);
                     } else {
                         let _ = use_cases::set_review_addressed(task, false);
                     }
+                    self.set_status(format!("Started: {}", command.name));
                 }
-                self.refresh_tasks_and_select(&task_id);
-                self.set_status(format!("Started: {}", command.name));
-            }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                self.log_output(format!("Failed: {}", stderr));
-                self.set_status(format!("Failed to run {}", command.name));
-            }
-            Err(e) => {
-                self.log_output(format!("Error: {}", e));
-                self.set_status(format!("Error: {}", e));
+                Err(e) => {
+                    self.log_output(format!("Failed: {}", e));
+                    self.set_status(format!("Failed to run {}: {}", command.name, e));
+                }
             }
         }
 
+        self.refresh_tasks_and_select(&task_id);
         self.view = View::Preview;
         self.load_preview();
         Ok(())

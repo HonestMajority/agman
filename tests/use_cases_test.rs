@@ -734,6 +734,45 @@ fn queue_command_without_branch() {
 }
 
 // ---------------------------------------------------------------------------
+// queue_command on a Stopped task drains via the supervisor and switches
+// the task to the command flow (TUI run_branch_command / run_selected_command
+// Stopped branches; replaces the old `agman run-command` shell-out path).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn queue_command_on_stopped_task_drains_and_wakes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+
+    std::fs::write(
+        config.command_path("rebase"),
+        "name: Rebase\nid: rebase\ndescription: test\nrequires_arg: branch\nsteps:\n  - agent: rebaser\n    until: AGENT_DONE\n",
+    )
+    .unwrap();
+
+    task.update_status(TaskStatus::Stopped).unwrap();
+    task.meta.flow_name = "new".to_string();
+    task.meta.flow_step = 2;
+    task.save_meta().unwrap();
+
+    // queue_command on a Stopped task should drain (snapshot the prior flow,
+    // switch flow_name to the command id, write .branch-target if required,
+    // flip to Running) and then attempt to launch. The launch errors in the
+    // test env (no tmux); wake_if_idle warn-and-swallows so this returns Ok.
+    let _ = use_cases::queue_command(&mut task, &config, "rebase", Some("main")).unwrap();
+
+    assert_eq!(task.read_queue().len(), 0);
+    assert_eq!(task.meta.flow_name, "rebase");
+    assert_eq!(task.meta.flow_step, 0);
+    assert_eq!(task.meta.status, TaskStatus::Running);
+    assert_eq!(task.meta.pre_command_flow_name.as_deref(), Some("new"));
+    assert_eq!(task.meta.pre_command_flow_step, Some(2));
+    let branch_target = std::fs::read_to_string(task.dir.join(".branch-target")).unwrap();
+    assert_eq!(branch_target, "main");
+}
+
+// ---------------------------------------------------------------------------
 // Mixed queue (feedback + commands)
 // ---------------------------------------------------------------------------
 
