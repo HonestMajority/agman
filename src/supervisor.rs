@@ -146,11 +146,13 @@ pub fn claude_launch_cmd(task: &Task, session_id: &str) -> String {
 /// Start an agent step as an interactive claude session.
 ///
 /// Sequence:
-/// 1. Kill any prior claude running in the agman window
-/// 2. Clear stale `.agent-done`
-/// 3. Build the prompt + write `.current-prompt.md`
-/// 4. `send-keys` the claude launch command to `<session>:agman`
-/// 5. On successful send, append a `SessionEntry` to `meta.session_history`
+/// 1. Reconcile any unstopped prior session (defensive — the caller is
+///    expected to have done this already via `finish_last_session`)
+/// 2. Kill any prior claude running in the agman window
+/// 3. Clear stale `.agent-done`
+/// 4. Build the prompt + write `.current-prompt.md`
+/// 5. `send-keys` the claude launch command to `<session>:agman`
+/// 6. On successful send, append a `SessionEntry` to `meta.session_history`
 ///    and update the displayed agent.
 ///
 /// Returns the newly-minted `session_id` so callers can log or resume.
@@ -161,12 +163,31 @@ pub fn claude_launch_cmd(task: &Task, session_id: &str) -> String {
 /// `classify` can recover from on the next tick. If the push happened first
 /// and send-keys failed, `classify` would see `LiveSession` for a claude
 /// that never actually launched, and `poll` would return `Idle` forever.
+///
+/// The pre-kill reconciliation closes the symmetric corner case: if a caller
+/// hands us a task whose `session_history.last().stopped_at` is `None`,
+/// killing the claude would leave the bookkeeping out of sync with reality.
+/// `classify` would then route the task to `LiveSession` after our subsequent
+/// failure (or even success, since `push_session` would add a *second* live
+/// entry), and `poll` would scan the pane for the stale session id forever.
 pub fn start_agent_step(
     config: &Config,
     task: &mut Task,
     agent_name: &str,
 ) -> Result<String> {
     let session_name = supervisor_session(task)?;
+
+    if let Some(last) = task.meta.session_history.last() {
+        if last.stopped_at.is_none() {
+            tracing::warn!(
+                task_id = %task.meta.task_id(),
+                stale_session_id = %last.session_id,
+                stale_agent = %last.agent,
+                "start_agent_step: prior session not finished by caller; reconciling before relaunch"
+            );
+            task.finish_last_session(Some("RELAUNCHED".to_string()))?;
+        }
+    }
 
     kill_current_claude(&session_name)?;
     task.clear_agent_done()?;
@@ -1616,6 +1637,42 @@ mod tests {
         assert!(
             task.meta.current_agent.is_none(),
             "displayed agent should not be updated on tmux failure"
+        );
+    }
+
+    #[test]
+    fn start_agent_step_reconciles_unstopped_prior_session() {
+        // Defensive corner case: caller hands us a task whose last session is
+        // still marked live (`stopped_at == None`). Without reconciliation,
+        // `classify` would route the task to `LiveSession` after the relaunch,
+        // and `poll` would scan the pane for the stale session id forever
+        // (since the prior claude is dead and the new one — if it launched —
+        // is emitting a different session id).
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        push_session(&mut task, "coder", "stale-sid");
+        assert!(task.meta.session_history[0].stopped_at.is_none());
+
+        // start_agent_step will error somewhere downstream (no tmux, no
+        // prompts files), but the reconciliation must happen before the
+        // error so `classify` can see a clean state on the next tick.
+        let result = start_agent_step(&config, &mut task, "coder");
+        assert!(result.is_err(), "expected downstream error in test env");
+
+        let last = task
+            .meta
+            .session_history
+            .last()
+            .expect("history must still contain the prior entry");
+        assert!(
+            last.stopped_at.is_some(),
+            "prior session must be reconciled (stopped_at stamped) before kill"
+        );
+        assert_eq!(last.condition.as_deref(), Some("RELAUNCHED"));
+        assert_eq!(
+            task.meta.session_history.len(),
+            1,
+            "no new SessionEntry should be appended when launch fails"
         );
     }
 }
