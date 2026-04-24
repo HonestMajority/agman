@@ -5889,8 +5889,19 @@ impl App {
         });
     }
 
-    /// Drain any completed supervisor poll and log its findings. No dispatch
-    /// yet (see `start_supervisor_poll`).
+    /// Drain any completed supervisor poll and dispatch outcomes.
+    ///
+    /// For `Condition(_)` this reloads the task from disk, calls
+    /// `supervisor::advance` (which applies the condition, advances the flow
+    /// step if appropriate, and launches the next agent), and logs the result.
+    /// For `StopRequested` this honors the `.stop` sentinel by killing the
+    /// running claude and transitioning the task to Stopped.
+    ///
+    /// Tasks with a live `AgentRunner` flow (still the default path) never
+    /// produce non-`Idle` outcomes today because legacy agents don't populate
+    /// `.agent-done` or `<MAGIC>:<session_id>` in the pane — so this dispatch
+    /// is wired but dormant until `supervisor::start_agent_step` is the thing
+    /// actually launching agents. Safe to land ahead of that flip.
     fn apply_supervisor_poll_results(&mut self) {
         let output = match self.supervisor_poll_rx.try_recv() {
             Ok(r) => r,
@@ -5898,23 +5909,68 @@ impl App {
         };
         self.supervisor_poll_active = false;
 
-        for item in &output.items {
-            match &item.outcome {
+        for item in output.items {
+            match item.outcome {
                 supervisor::PollOutcome::Idle => {}
                 supervisor::PollOutcome::StopRequested => {
                     tracing::info!(
                         task_id = %item.task_id,
                         session_id = %item.session_id,
-                        "supervisor poll: stop requested (dispatch not yet wired)"
+                        "supervisor poll: honoring stop sentinel"
                     );
+                    let mut task = match Task::load_by_id(&self.config, &item.task_id) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = %item.task_id,
+                                error = %e,
+                                "failed to reload task for stop dispatch"
+                            );
+                            continue;
+                        }
+                    };
+                    if let Err(e) = supervisor::honor_stop(&self.config, &mut task) {
+                        tracing::error!(
+                            task_id = %item.task_id,
+                            error = %e,
+                            "supervisor honor_stop failed"
+                        );
+                    }
                 }
                 supervisor::PollOutcome::Condition(cond) => {
                     tracing::info!(
                         task_id = %item.task_id,
                         session_id = %item.session_id,
                         condition = %cond,
-                        "supervisor poll: stop condition reached (dispatch not yet wired)"
+                        "supervisor poll: dispatching condition"
                     );
+                    let mut task = match Task::load_by_id(&self.config, &item.task_id) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = %item.task_id,
+                                error = %e,
+                                "failed to reload task for advance dispatch"
+                            );
+                            continue;
+                        }
+                    };
+                    match supervisor::advance(&self.config, &mut task, cond) {
+                        Ok(outcome) => {
+                            tracing::info!(
+                                task_id = %item.task_id,
+                                outcome = ?outcome,
+                                "supervisor advance completed"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                task_id = %item.task_id,
+                                error = %e,
+                                "supervisor advance failed"
+                            );
+                        }
+                    }
                 }
             }
         }
