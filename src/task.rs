@@ -131,6 +131,16 @@ pub struct TaskMeta {
     /// user can `claude --resume` any prior session.
     #[serde(default)]
     pub session_history: Vec<SessionEntry>,
+    /// Snapshot of `flow_name` captured before a stored command took over via
+    /// `drain_queue`. Restored when the command flow completes without a
+    /// terminal `post_action` (archive/delete). `None` outside of command
+    /// flows.
+    #[serde(default)]
+    pub pre_command_flow_name: Option<String>,
+    /// Companion to `pre_command_flow_name` — the `flow_step` captured before
+    /// the stored command took over. Restored together with `pre_command_flow_name`.
+    #[serde(default)]
+    pub pre_command_flow_step: Option<usize>,
 }
 
 fn default_true() -> bool {
@@ -183,6 +193,8 @@ impl TaskMeta {
             saved: false,
             project: None,
             session_history: Vec::new(),
+            pre_command_flow_name: None,
+            pre_command_flow_step: None,
         }
     }
 
@@ -216,6 +228,8 @@ impl TaskMeta {
             saved: false,
             project: None,
             session_history: Vec::new(),
+            pre_command_flow_name: None,
+            pre_command_flow_step: None,
         }
     }
 

@@ -481,12 +481,93 @@ fn drain_queue(task: &mut Task, config: &Config) -> Result<bool> {
                 command_id = %command_id,
                 "supervisor draining queued command at flow-end"
             );
+            // Snapshot the current flow so `handle_command_flow_end` can
+            // restore it after the command completes without a terminal
+            // post_action. If the task is already in a command flow (nested
+            // drain — shouldn't normally happen but be defensive), keep the
+            // existing snapshot so we restore to the *original* user flow.
+            if task.meta.pre_command_flow_name.is_none() {
+                task.meta.pre_command_flow_name = Some(task.meta.flow_name.clone());
+                task.meta.pre_command_flow_step = Some(task.meta.flow_step);
+            }
             task.meta.flow_name = command_id;
             task.reset_flow_step()?;
             task.update_status(TaskStatus::Running)?;
             Ok(true)
         }
     }
+}
+
+/// Handle the end of a stored-command flow.
+///
+/// Called when a flow has exhausted (either via `None` from `flow.get_step` in
+/// `launch_next_step`, or via `TaskComplete` / `AgentDone`-past-last-step in
+/// `advance`). Checks whether the current `flow_name` resolves to a
+/// `StoredCommand` and dispatches on its `post_action`:
+///
+/// - `Some("archive_task") | Some("delete_task")` — archive the task (matching
+///   the legacy `cmd_command_flow_run` semantics where both variants hit
+///   `archive_task`). Kill all task tmux sessions after archival. Returns
+///   `Ok(true)` — callers must stop immediately (task is gone).
+/// - Anything else (no post_action, unknown post_action, or not a stored
+///   command at all) — restore the pre-command flow_name/step snapshot taken
+///   by `drain_queue` (if any) and return `Ok(false)` so the caller continues
+///   the normal flow-exhaustion path (update status to Stopped, notify PM,
+///   drain queue, etc.).
+fn handle_command_flow_end(config: &Config, task: &mut Task) -> Result<bool> {
+    let flow_name = task.meta.flow_name.clone();
+    let stored = StoredCommand::get_by_id(&config.commands_dir, &flow_name).ok().flatten();
+
+    // Terminal post_action: archive the task and kill its tmux sessions.
+    if let Some(ref cmd) = stored {
+        if matches!(
+            cmd.post_action.as_deref(),
+            Some("archive_task") | Some("delete_task")
+        ) {
+            tracing::info!(
+                task_id = %task.meta.task_id(),
+                command_id = %flow_name,
+                post_action = ?cmd.post_action,
+                "command post_action: archiving task"
+            );
+
+            // Collect tmux session names before archival wipes worktrees.
+            let mut tmux_sessions: Vec<String> =
+                task.meta.repos.iter().map(|r| r.tmux_session.clone()).collect();
+            if task.meta.is_multi_repo() {
+                tmux_sessions.push(Config::tmux_session_name(
+                    &task.meta.name,
+                    &task.meta.branch_name,
+                ));
+            }
+
+            crate::use_cases::archive_task(config, task, false)?;
+
+            for session in &tmux_sessions {
+                let _ = Tmux::kill_session(session);
+            }
+
+            return Ok(true);
+        }
+    }
+
+    // Non-terminal: restore pre-command flow snapshot if one was taken.
+    if let Some(name) = task.meta.pre_command_flow_name.take() {
+        let step = task.meta.pre_command_flow_step.take().unwrap_or(0);
+        tracing::info!(
+            task_id = %task.meta.task_id(),
+            command_id = %flow_name,
+            restored_flow = %name,
+            restored_step = step,
+            "restoring pre-command flow state after command completion"
+        );
+        task.meta.flow_name = name;
+        task.meta.flow_step = step;
+        task.meta.flow_sub_step = 0;
+        task.save_meta()?;
+    }
+
+    Ok(false)
 }
 
 /// Try to launch the agent at the current `flow_step`. If the current step is
@@ -506,6 +587,11 @@ pub fn launch_next_step(config: &Config, task: &mut Task) -> Result<AdvanceOutco
         let step_index = task.meta.flow_step;
         match flow.get_step(step_index).cloned() {
             None => {
+                // If this was a stored command with a terminal post_action,
+                // archive the task and stop — no queue drain, no PM notify.
+                if handle_command_flow_end(config, task)? {
+                    return Ok(AdvanceOutcome::Stopped);
+                }
                 task.update_status(TaskStatus::Stopped)?;
                 task.update_agent(None)?;
                 notify_pm(config, task, "Flow complete");
@@ -625,6 +711,11 @@ pub fn advance(
     // 3. Dispatch on the condition.
     match condition {
         StopCondition::TaskComplete => {
+            // If this was a stored command with a terminal post_action,
+            // archive the task and stop — no queue drain, no PM notify.
+            if handle_command_flow_end(config, task)? {
+                return Ok(AdvanceOutcome::Stopped);
+            }
             task.update_status(TaskStatus::Stopped)?;
             task.update_agent(None)?;
             notify_pm(config, task, "Task complete");
@@ -675,6 +766,9 @@ pub fn advance(
                 }
                 None => {
                     // Flow already past its last step — treat as flow-complete.
+                    if handle_command_flow_end(config, task)? {
+                        return Ok(AdvanceOutcome::Stopped);
+                    }
                     task.update_status(TaskStatus::Stopped)?;
                     task.update_agent(None)?;
                     notify_pm(config, task, "Flow complete");
@@ -958,6 +1052,10 @@ mod tests {
             !task.dir.join(".branch-target").exists(),
             "no branch-target should be written for commands without branch arg"
         );
+        // Pre-command snapshot must be captured so handle_command_flow_end can
+        // restore the original flow after the command completes.
+        assert_eq!(task.meta.pre_command_flow_name.as_deref(), Some("new"));
+        assert_eq!(task.meta.pre_command_flow_step, Some(3));
     }
 
     #[test]
@@ -1011,6 +1109,146 @@ mod tests {
         let drained = drain_queue(&mut task, &cfg).unwrap();
         assert!(!drained);
         assert!(!task.dir.join(".branch-target").exists());
+    }
+
+    // -----------------------------------------------------------------------
+    // handle_command_flow_end — post_action + pre-command flow restore
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn handle_command_flow_end_archives_on_archive_task_post_action() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, mut task) = build_task(&tmp);
+        write_test_command(
+            &cfg,
+            "address-review",
+            "name: Address Review\nid: address-review\ndescription: test\npost_action: archive_task\nsteps:\n  - agent: reviewer\n    until: AGENT_DONE\n",
+        );
+        // Pretend the supervisor just finished this command flow.
+        task.meta.flow_name = "address-review".to_string();
+        task.meta.pre_command_flow_name = Some("continue".to_string());
+        task.meta.pre_command_flow_step = Some(2);
+        task.save_meta().unwrap();
+
+        let archived = handle_command_flow_end(&cfg, &mut task).unwrap();
+        assert!(archived, "archive_task post_action must archive the task");
+        assert!(task.meta.archived_at.is_some(), "archived_at should be stamped");
+    }
+
+    #[test]
+    fn handle_command_flow_end_archives_on_delete_task_post_action() {
+        // Matches legacy `cmd_command_flow_run` quirk: both `archive_task` and
+        // `delete_task` post_action values hit `use_cases::archive_task`.
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, mut task) = build_task(&tmp);
+        write_test_command(
+            &cfg,
+            "delete-and-done",
+            "name: Delete\nid: delete-and-done\ndescription: test\npost_action: delete_task\nsteps:\n  - agent: a\n    until: AGENT_DONE\n",
+        );
+        task.meta.flow_name = "delete-and-done".to_string();
+        task.save_meta().unwrap();
+
+        let archived = handle_command_flow_end(&cfg, &mut task).unwrap();
+        assert!(archived);
+        assert!(task.meta.archived_at.is_some());
+    }
+
+    #[test]
+    fn handle_command_flow_end_restores_previous_flow_when_no_post_action() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, mut task) = build_task(&tmp);
+        write_test_command(
+            &cfg,
+            "create-pr",
+            "name: Create PR\nid: create-pr\ndescription: test\nsteps:\n  - agent: pr-creator\n    until: AGENT_DONE\n",
+        );
+        task.meta.flow_name = "create-pr".to_string();
+        task.meta.flow_step = 1;
+        task.meta.flow_sub_step = 0;
+        task.meta.pre_command_flow_name = Some("new".to_string());
+        task.meta.pre_command_flow_step = Some(4);
+        task.save_meta().unwrap();
+
+        let archived = handle_command_flow_end(&cfg, &mut task).unwrap();
+        assert!(!archived, "no post_action must not archive");
+        assert_eq!(task.meta.flow_name, "new");
+        assert_eq!(task.meta.flow_step, 4);
+        assert_eq!(task.meta.flow_sub_step, 0);
+        assert!(task.meta.pre_command_flow_name.is_none(), "snapshot must be cleared");
+        assert!(task.meta.pre_command_flow_step.is_none());
+        assert!(task.meta.archived_at.is_none());
+    }
+
+    #[test]
+    fn handle_command_flow_end_noop_for_regular_flow() {
+        // Regular flow (not a stored command) + no pre-command snapshot →
+        // nothing to archive, nothing to restore. Must return false and leave
+        // state untouched so the caller can proceed with the normal
+        // flow-exhaustion path.
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, mut task) = build_task(&tmp);
+        task.meta.flow_name = "new".to_string();
+        task.meta.flow_step = 5;
+        task.save_meta().unwrap();
+
+        let archived = handle_command_flow_end(&cfg, &mut task).unwrap();
+        assert!(!archived);
+        assert_eq!(task.meta.flow_name, "new");
+        assert_eq!(task.meta.flow_step, 5);
+        assert!(task.meta.archived_at.is_none());
+    }
+
+    #[test]
+    fn advance_archives_task_at_command_flow_end_with_post_action() {
+        // End-to-end: a stored command with post_action=archive_task runs to
+        // completion via `advance`. The task must be archived and further
+        // flow-end handling (PM notify, queue drain) skipped.
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, mut task) = build_task(&tmp);
+        write_test_command(
+            &cfg,
+            "address-review",
+            "name: Address Review\nid: address-review\ndescription: test\npost_action: archive_task\nsteps:\n  - agent: reviewer\n    until: AGENT_DONE\n",
+        );
+        task.meta.flow_name = "address-review".to_string();
+        task.meta.flow_step = 0;
+        task.meta.pre_command_flow_name = Some("continue".to_string());
+        task.meta.pre_command_flow_step = Some(2);
+        task.save_meta().unwrap();
+        push_session(&mut task, "reviewer", "sid-rv");
+
+        let outcome = advance(&cfg, &mut task, StopCondition::AgentDone).unwrap();
+        assert_eq!(outcome, AdvanceOutcome::Stopped);
+        assert!(task.meta.archived_at.is_some(), "task should be archived");
+    }
+
+    #[test]
+    fn advance_restores_previous_flow_when_command_completes_without_post_action() {
+        // End-to-end: a stored command without post_action runs to completion.
+        // The task's flow_name/flow_step must be restored to the pre-command
+        // snapshot captured by `drain_queue`.
+        let tmp = tempfile::tempdir().unwrap();
+        let (cfg, mut task) = build_task(&tmp);
+        write_test_command(
+            &cfg,
+            "create-pr",
+            "name: Create PR\nid: create-pr\ndescription: test\nsteps:\n  - agent: pr-creator\n    until: AGENT_DONE\n",
+        );
+        task.meta.flow_name = "create-pr".to_string();
+        task.meta.flow_step = 0;
+        task.meta.pre_command_flow_name = Some("new".to_string());
+        task.meta.pre_command_flow_step = Some(7);
+        task.save_meta().unwrap();
+        push_session(&mut task, "pr-creator", "sid-pr");
+
+        let outcome = advance(&cfg, &mut task, StopCondition::AgentDone).unwrap();
+        assert_eq!(outcome, AdvanceOutcome::Stopped);
+        assert!(task.meta.archived_at.is_none());
+        assert_eq!(task.meta.flow_name, "new");
+        assert_eq!(task.meta.flow_step, 7);
+        assert_eq!(task.meta.status, TaskStatus::Stopped);
+        assert!(task.meta.pre_command_flow_name.is_none());
     }
 
     #[test]
