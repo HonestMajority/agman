@@ -14,13 +14,14 @@ use std::io::{Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
 use crate::config::Config;
 use crate::inbox;
+use crate::use_cases;
 
 // ---------------------------------------------------------------------------
 // Error classification
@@ -105,7 +106,8 @@ struct BotCtx {
     file_base: String,
     chat_id: String,
     whisper_model: String,
-    ceo_inbox: PathBuf,
+    config: Config,
+    current_agent: Arc<RwLock<String>>,
     telegram_outbox: PathBuf,
     telegram_outbox_seq: PathBuf,
     telegram_dead_letter: PathBuf,
@@ -113,7 +115,6 @@ struct BotCtx {
 
 /// Filesystem paths the bot needs. Bundled to keep `run_bot`'s arg count sane.
 struct BotPaths {
-    ceo_inbox: PathBuf,
     telegram_outbox: PathBuf,
     telegram_outbox_seq: PathBuf,
     telegram_dead_letter: PathBuf,
@@ -147,7 +148,6 @@ pub fn start(config: &Config, token: String, chat_id: String) -> Option<Telegram
     }
 
     let paths = BotPaths {
-        ceo_inbox: config.ceo_inbox(),
         telegram_outbox: config.telegram_outbox(),
         telegram_outbox_seq: config.telegram_outbox_seq(),
         telegram_dead_letter: config.telegram_dead_letter(),
@@ -155,6 +155,9 @@ pub fn start(config: &Config, token: String, chat_id: String) -> Option<Telegram
     let whisper_model = std::env::var("WHISPER_MODEL")
         .unwrap_or_else(|_| config.whisper_model_path().to_string_lossy().into_owned());
     let panic_log_path = config.telegram_panic_log();
+    let initial_agent = use_cases::read_current_agent(config);
+    let current_agent = Arc::new(RwLock::new(initial_agent));
+    let config_owned = config.clone();
 
     let cancel = Arc::new(AtomicBool::new(false));
     let heartbeat = Arc::new(AtomicU64::new(0));
@@ -174,15 +177,26 @@ pub fn start(config: &Config, token: String, chat_id: String) -> Option<Telegram
             let cancel = Arc::clone(&cancel_thread);
             let heartbeat = Arc::clone(&heartbeat_thread);
             let panic_log = panic_log_path.clone();
+            let config = config_owned.clone();
+            let current_agent = Arc::clone(&current_agent);
             let paths = BotPaths {
-                ceo_inbox: paths.ceo_inbox.clone(),
                 telegram_outbox: paths.telegram_outbox.clone(),
                 telegram_outbox_seq: paths.telegram_outbox_seq.clone(),
                 telegram_dead_letter: paths.telegram_dead_letter.clone(),
             };
 
             let result = catch_unwind(AssertUnwindSafe(move || {
-                run_bot(token, chat_id, cancel, paths, whisper_model, heartbeat, panic_log);
+                run_bot(
+                    token,
+                    chat_id,
+                    cancel,
+                    paths,
+                    whisper_model,
+                    heartbeat,
+                    panic_log,
+                    config,
+                    current_agent,
+                );
             }));
 
             match result {
@@ -222,6 +236,8 @@ fn run_bot(
     whisper_model: String,
     heartbeat: Arc<AtomicU64>,
     panic_log_path: PathBuf,
+    config: Config,
+    current_agent: Arc<RwLock<String>>,
 ) {
     if token.trim().is_empty() || chat_id.trim().is_empty() {
         tracing::warn!("telegram bot not started: token or chat_id is empty");
@@ -239,11 +255,14 @@ fn run_bot(
         base: format!("https://api.telegram.org/bot{token}"),
         chat_id,
         whisper_model,
-        ceo_inbox: paths.ceo_inbox,
+        config,
+        current_agent,
         telegram_outbox: paths.telegram_outbox,
         telegram_outbox_seq: paths.telegram_outbox_seq,
         telegram_dead_letter: paths.telegram_dead_letter,
     };
+
+    register_bot_commands(&ctx);
 
     let mut offset: i64 = 0;
 
@@ -285,7 +304,7 @@ fn poll_updates(ctx: &BotCtx, offset: &mut i64) {
     let body = serde_json::json!({
         "offset": *offset,
         "timeout": 2,
-        "allowed_updates": ["message"],
+        "allowed_updates": ["message", "callback_query"],
     });
 
     let resp = match tg_post(&ctx.agent, &format!("{}/getUpdates", ctx.base), &body) {
@@ -299,6 +318,11 @@ fn poll_updates(ctx: &BotCtx, offset: &mut i64) {
     for update in updates {
         if let Some(uid) = update["update_id"].as_i64() {
             *offset = uid + 1;
+        }
+
+        if let Some(cq) = update.get("callback_query") {
+            handle_callback_query(ctx, cq);
+            continue;
         }
 
         let Some(msg) = update.get("message") else {
@@ -325,10 +349,81 @@ fn poll_updates(ctx: &BotCtx, offset: &mut i64) {
             continue;
         };
 
-        tracing::info!(text_len = text.len(), "telegram: received message");
-        if let Err(e) = inbox::append_message(&ctx.ceo_inbox, "telegram", text) {
-            tracing::warn!(error = %e, "telegram: failed to write to CEO inbox");
+        let trimmed = text.trim();
+        match trimmed {
+            "/ls" => {
+                tracing::info!("telegram: /ls command");
+                let (reply_text, buttons) = build_ls_reply(ctx);
+                let _ = tg_send_with_keyboard(ctx, &reply_text, buttons);
+                continue;
+            }
+            "/where" => {
+                tracing::info!("telegram: /where command");
+                let current = ctx
+                    .current_agent
+                    .read()
+                    .map(|g| g.clone())
+                    .unwrap_or_else(|p| p.into_inner().clone());
+                let _ = tg_send(ctx, &format!("📍 Talking to: {current}"));
+                continue;
+            }
+            "/back" => {
+                tracing::info!("telegram: /back command");
+                let current = ctx
+                    .current_agent
+                    .read()
+                    .map(|g| g.clone())
+                    .unwrap_or_else(|p| p.into_inner().clone());
+                match parent_of(&current) {
+                    Some(parent) => switch_current_agent(ctx, &parent),
+                    None => {
+                        let _ = tg_send(ctx, "📍 Already at CEO (root).");
+                    }
+                }
+                continue;
+            }
+            _ => {}
         }
+
+        let inbox_path = current_inbox(ctx);
+        let current = ctx
+            .current_agent
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_else(|p| p.into_inner().clone());
+        tracing::info!(text_len = text.len(), agent = %current, "telegram: received message");
+        if let Err(e) = inbox::append_message(&inbox_path, "telegram", text) {
+            tracing::warn!(error = %e, agent = %current, "telegram: failed to write to agent inbox");
+        }
+    }
+}
+
+fn handle_callback_query(ctx: &BotCtx, cq: &Value) {
+    let callback_id = cq["id"].as_str().unwrap_or_default();
+
+    let msg_chat_id = cq["message"]["chat"]["id"].as_i64();
+    match msg_chat_id {
+        Some(id) if id.to_string() == ctx.chat_id => {}
+        _ => {
+            tracing::warn!(
+                got = ?msg_chat_id,
+                expected = %ctx.chat_id,
+                "telegram: rejected callback_query from unauthorized chat"
+            );
+            return;
+        }
+    }
+
+    if let Some(data) = cq["data"].as_str() {
+        if let Some(target) = data.strip_prefix("switch:") {
+            switch_current_agent(ctx, target);
+        } else {
+            tracing::warn!(data = %data, "telegram: unknown callback data");
+        }
+    }
+
+    if !callback_id.is_empty() {
+        tg_answer_callback(ctx, callback_id);
     }
 }
 
@@ -461,6 +556,182 @@ fn tg_send(ctx: &BotCtx, text: &str) -> Result<(), TgError> {
     }
 }
 
+/// Register the bot's supported slash commands with Telegram so they appear in
+/// the command menu on the client side. Best-effort — logs on failure.
+fn register_bot_commands(ctx: &BotCtx) {
+    let body = serde_json::json!({
+        "commands": [
+            {"command": "ls", "description": "List agents you can switch to"},
+            {"command": "back", "description": "Switch to parent agent"},
+            {"command": "where", "description": "Show current agent"},
+        ]
+    });
+    if let Err(e) = tg_post(&ctx.agent, &format!("{}/setMyCommands", ctx.base), &body) {
+        tracing::warn!(error = ?e, "telegram: setMyCommands failed");
+    }
+}
+
+/// Send a message with an inline keyboard. `buttons` is a grid — outer vec is
+/// rows, inner tuples are `(label, callback_data)`.
+fn tg_send_with_keyboard(
+    ctx: &BotCtx,
+    text: &str,
+    buttons: Vec<Vec<(String, String)>>,
+) -> Result<(), TgError> {
+    let keyboard: Vec<Vec<Value>> = buttons
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|(label, mut data)| {
+                    if data.len() > 64 {
+                        tracing::warn!(
+                            data = %data,
+                            "telegram: callback_data exceeded 64 bytes, truncating"
+                        );
+                        data.truncate(64);
+                    }
+                    serde_json::json!({"text": label, "callback_data": data})
+                })
+                .collect()
+        })
+        .collect();
+
+    let body = serde_json::json!({
+        "chat_id": ctx.chat_id,
+        "text": text,
+        "reply_markup": {"inline_keyboard": keyboard},
+    });
+    match tg_post(&ctx.agent, &format!("{}/sendMessage", ctx.base), &body) {
+        Ok(_) => {
+            tracing::info!(text_len = text.len(), "telegram: sent keyboard message");
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Dismiss the loading spinner on a tapped inline-keyboard button. Best-effort.
+fn tg_answer_callback(ctx: &BotCtx, callback_id: &str) {
+    let body = serde_json::json!({"callback_query_id": callback_id});
+    if let Err(e) = tg_post(&ctx.agent, &format!("{}/answerCallbackQuery", ctx.base), &body) {
+        tracing::debug!(error = ?e, "telegram: answerCallbackQuery failed");
+    }
+}
+
+/// Resolve the inbox for the currently-selected agent. On a stale agent
+/// (resolution fails) we reset both in-memory and on-disk state back to `"ceo"`,
+/// notify the user, and return the CEO inbox.
+fn current_inbox(ctx: &BotCtx) -> PathBuf {
+    let id = ctx
+        .current_agent
+        .read()
+        .map(|g| g.clone())
+        .unwrap_or_else(|p| p.into_inner().clone());
+    match use_cases::agent_inbox_path(&ctx.config, &id) {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::warn!(
+                old = %id,
+                error = %e,
+                "telegram: current agent is stale, resetting to ceo"
+            );
+            match ctx.current_agent.write() {
+                Ok(mut g) => *g = "ceo".to_string(),
+                Err(p) => {
+                    let mut g = p.into_inner();
+                    *g = "ceo".to_string();
+                }
+            }
+            if let Err(e) = use_cases::write_current_agent(&ctx.config, "ceo") {
+                tracing::warn!(error = %e, "telegram: failed to persist reset to ceo");
+            }
+            let _ = tg_send(
+                ctx,
+                "⚠️ The agent you were talking to no longer exists. Reset to CEO.",
+            );
+            ctx.config.ceo_inbox()
+        }
+    }
+}
+
+/// Build the `/ls` reply: header showing the current agent + inline-keyboard
+/// buttons for each reachable agent, two per row.
+fn build_ls_reply(ctx: &BotCtx) -> (String, Vec<Vec<(String, String)>>) {
+    let current = ctx
+        .current_agent
+        .read()
+        .map(|g| g.clone())
+        .unwrap_or_else(|p| p.into_inner().clone());
+    let agents = use_cases::relative_agent_list(&ctx.config, &current);
+
+    if agents.is_empty() {
+        return (
+            format!("📍 Current: {current}\n\n(no other agents available)"),
+            vec![],
+        );
+    }
+
+    let buttons: Vec<Vec<(String, String)>> = agents
+        .chunks(2)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|a| (a.label.clone(), format!("switch:{}", a.id)))
+                .collect()
+        })
+        .collect();
+
+    (
+        format!("📍 Current: {current}\n\nSwitch to:"),
+        buttons,
+    )
+}
+
+/// Parent agent for `/back`. Returns `None` when already at root (`"ceo"`).
+pub fn parent_of(current: &str) -> Option<String> {
+    if current == "ceo" {
+        return None;
+    }
+    if let Some(rest) = current.strip_prefix("researcher:") {
+        if let Some(pos) = rest.find("--") {
+            let project = &rest[..pos];
+            return Some(project.to_string());
+        }
+    }
+    Some("ceo".to_string())
+}
+
+/// Validate and apply a current-agent switch. Persists, updates in-memory
+/// state, notifies the user, and logs old→new.
+fn switch_current_agent(ctx: &BotCtx, target: &str) {
+    if !use_cases::agent_exists(&ctx.config, target) {
+        tracing::warn!(target = %target, "telegram: rejected switch to unknown agent");
+        let _ = tg_send(ctx, &format!("⚠️ Unknown agent: {target}"));
+        return;
+    }
+
+    let old = ctx
+        .current_agent
+        .read()
+        .map(|g| g.clone())
+        .unwrap_or_else(|p| p.into_inner().clone());
+
+    if let Err(e) = use_cases::write_current_agent(&ctx.config, target) {
+        tracing::warn!(error = %e, target = %target, "telegram: failed to persist current agent");
+    }
+
+    match ctx.current_agent.write() {
+        Ok(mut g) => *g = target.to_string(),
+        Err(p) => {
+            let mut g = p.into_inner();
+            *g = target.to_string();
+        }
+    }
+
+    tracing::info!(old = %old, new = %target, "telegram: switched current agent");
+    let _ = tg_send(ctx, &format!("📍 Now talking to: {target}"));
+}
+
 // ---------------------------------------------------------------------------
 // Voice message handling
 // ---------------------------------------------------------------------------
@@ -507,8 +778,9 @@ fn handle_voice(ctx: &BotCtx, file_id: &str) {
         Some(text) if !text.is_empty() => {
             tracing::info!(text_len = text.len(), "telegram: transcribed voice message");
             let _ = tg_send(ctx, &format!("🎤 {text}"));
-            if let Err(e) = inbox::append_message(&ctx.ceo_inbox, "telegram", &text) {
-                tracing::warn!(error = %e, "telegram: failed to write transcription to CEO inbox");
+            let inbox_path = current_inbox(ctx);
+            if let Err(e) = inbox::append_message(&inbox_path, "telegram", &text) {
+                tracing::warn!(error = %e, "telegram: failed to write transcription to agent inbox");
             }
         }
         _ => {
