@@ -16,7 +16,7 @@ use std::process::{Command, Stdio};
 
 use crate::agent::Agent;
 use crate::config::Config;
-use crate::flow::{Flow, FlowStep, StopCondition};
+use crate::flow::{Flow, FlowStep, LoopStep, StopCondition};
 use crate::task::{QueueItem, SessionEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
 
@@ -194,10 +194,32 @@ pub enum AdvanceOutcome {
     InputNeeded,
     /// Flow finished and no queued feedback/command replaced it. Task is Stopped.
     Stopped,
-    /// Flow step is an unsupported shape (currently `Loop`). The supervisor is
-    /// observation-only for this task; the legacy `AgentRunner` still drives it.
-    /// Returned without mutating task state so callers can log and move on.
+    /// Flow step is an unsupported shape. The supervisor is observation-only
+    /// for this task; the legacy `AgentRunner` still drives it. Returned
+    /// without mutating task state so callers can log and move on.
     Unsupported,
+}
+
+/// What to do next inside a `FlowStep::Loop` after an `AGENT_DONE`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LoopDecision {
+    /// The loop's `until` matched — advance `flow_step` and reset sub-step.
+    ExitLoop,
+    /// Stay in the loop — set `flow_sub_step` to this index.
+    NextSubStep(usize),
+}
+
+/// Pure decision function for loop progression on `AGENT_DONE`.
+///
+/// `TaskComplete` and `InputNeeded` are handled by `advance` directly and
+/// never reach this function — they always propagate out of the loop.
+fn decide_loop_next(loop_step: &LoopStep, sub_step: usize) -> LoopDecision {
+    if loop_step.until == StopCondition::AgentDone {
+        LoopDecision::ExitLoop
+    } else {
+        let n = loop_step.steps.len().max(1);
+        LoopDecision::NextSubStep((sub_step + 1) % n)
+    }
 }
 
 /// Determine the tmux session's working directory. Multi-repo tasks use
@@ -393,16 +415,43 @@ fn launch_next_step(config: &Config, task: &mut Task) -> Result<AdvanceOutcome> 
                 let session_id = start_agent_step(config, task, &agent_step.agent)?;
                 return Ok(AdvanceOutcome::Launched { session_id });
             }
-            Some(FlowStep::Loop(_)) => {
-                // Loop steps are not yet handled by the supervisor; the legacy
-                // AgentRunner still drives flows that contain loops. Left in
-                // place as a TODO for the next iteration.
-                tracing::info!(
-                    task_id = %task.meta.task_id(),
-                    step = step_index,
-                    "supervisor encountered loop step; deferring to legacy runner"
-                );
-                return Ok(AdvanceOutcome::Unsupported);
+            Some(FlowStep::Loop(loop_step)) => {
+                if loop_step.steps.is_empty() {
+                    tracing::warn!(
+                        task_id = %task.meta.task_id(),
+                        step = step_index,
+                        "empty loop step; advancing past"
+                    );
+                    task.advance_flow_step()?;
+                    continue;
+                }
+                let sub = task.meta.flow_sub_step.min(loop_step.steps.len() - 1);
+                let inner = loop_step.steps[sub].clone();
+                if let Some(ref cmd) = inner.pre_command {
+                    match run_pre_command(task, cmd) {
+                        Ok(true) => {
+                            match decide_loop_next(&loop_step, sub) {
+                                LoopDecision::ExitLoop => {
+                                    task.advance_flow_step()?;
+                                }
+                                LoopDecision::NextSubStep(next) => {
+                                    task.set_flow_sub_step(next)?;
+                                }
+                            }
+                            continue;
+                        }
+                        Ok(false) => { /* fall through to agent */ }
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = %task.meta.task_id(),
+                                error = %e,
+                                "loop pre_command errored; falling through to agent"
+                            );
+                        }
+                    }
+                }
+                let session_id = start_agent_step(config, task, &inner.agent)?;
+                return Ok(AdvanceOutcome::Launched { session_id });
             }
         }
     }
@@ -483,9 +532,20 @@ pub fn advance(
                     }
                     launch_next_step(config, task)
                 }
-                Some(FlowStep::Loop(_)) => {
-                    // Supervisor doesn't drive loops yet; observation-only.
-                    Ok(AdvanceOutcome::Unsupported)
+                Some(FlowStep::Loop(loop_step)) => {
+                    // TaskComplete/InputNeeded are handled in branches above;
+                    // only AgentDone reaches here. Consult `decide_loop_next`
+                    // to see whether to exit the loop (when `loop.until` is
+                    // AgentDone) or advance to the next inner agent.
+                    match decide_loop_next(&loop_step, task.meta.flow_sub_step) {
+                        LoopDecision::ExitLoop => {
+                            task.advance_flow_step()?;
+                        }
+                        LoopDecision::NextSubStep(next) => {
+                            task.set_flow_sub_step(next)?;
+                        }
+                    }
+                    launch_next_step(config, task)
                 }
                 None => {
                     // Flow already past its last step — treat as flow-complete.
@@ -721,5 +781,154 @@ mod tests {
         let drained = drain_queue(&mut task).unwrap();
         assert!(!drained, "Command entries are left for the TUI/legacy path");
         assert!(task.has_queued_items(), "queue should be untouched");
+    }
+
+    // -----------------------------------------------------------------------
+    // Loop-support tests (FlowStep::Loop)
+    // -----------------------------------------------------------------------
+
+    fn make_loop(steps: Vec<crate::flow::AgentStep>, until: StopCondition) -> LoopStep {
+        LoopStep { steps, until }
+    }
+
+    fn make_agent_step(name: &str, until: StopCondition) -> crate::flow::AgentStep {
+        crate::flow::AgentStep {
+            agent: name.to_string(),
+            until,
+            on_fail: None,
+            post_hook: None,
+            pre_command: None,
+        }
+    }
+
+    #[test]
+    fn decide_loop_next_advances_sub_step_when_until_is_task_complete() {
+        let loop_step = make_loop(
+            vec![
+                make_agent_step("coder", StopCondition::AgentDone),
+                make_agent_step("checker", StopCondition::AgentDone),
+            ],
+            StopCondition::TaskComplete,
+        );
+        assert_eq!(decide_loop_next(&loop_step, 0), LoopDecision::NextSubStep(1));
+    }
+
+    #[test]
+    fn decide_loop_next_wraps_sub_step_at_end_of_loop() {
+        let loop_step = make_loop(
+            vec![
+                make_agent_step("coder", StopCondition::AgentDone),
+                make_agent_step("checker", StopCondition::AgentDone),
+            ],
+            StopCondition::TaskComplete,
+        );
+        assert_eq!(decide_loop_next(&loop_step, 1), LoopDecision::NextSubStep(0));
+    }
+
+    #[test]
+    fn decide_loop_next_exits_when_until_is_agent_done() {
+        let loop_step = make_loop(
+            vec![make_agent_step("coder", StopCondition::AgentDone)],
+            StopCondition::AgentDone,
+        );
+        assert_eq!(decide_loop_next(&loop_step, 0), LoopDecision::ExitLoop);
+    }
+
+    #[test]
+    fn advance_flow_step_resets_sub_step() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_cfg, mut task) = build_task(&tmp);
+        task.meta.flow_step = 0;
+        task.meta.flow_sub_step = 5;
+        task.save_meta().unwrap();
+
+        task.advance_flow_step().unwrap();
+        assert_eq!(task.meta.flow_step, 1);
+        assert_eq!(task.meta.flow_sub_step, 0);
+    }
+
+    #[test]
+    fn reset_flow_step_resets_sub_step() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_cfg, mut task) = build_task(&tmp);
+        task.meta.flow_step = 3;
+        task.meta.flow_sub_step = 2;
+        task.save_meta().unwrap();
+
+        task.reset_flow_step().unwrap();
+        assert_eq!(task.meta.flow_step, 0);
+        assert_eq!(task.meta.flow_sub_step, 0);
+    }
+
+    #[test]
+    fn advance_loop_exits_when_until_agent_done_matches() {
+        // Single-step flow whose only step is a loop with `until: AGENT_DONE`.
+        // Receiving AgentDone exits the loop, advances flow_step past the end,
+        // and stops the task — no tmux launch needed.
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        write_test_flow(
+            &config,
+            "test_loop_exit",
+            "name: test_loop_exit\nsteps:\n  - loop:\n      - agent: coder\n        until: AGENT_DONE\n    until: AGENT_DONE\n",
+        );
+        task.meta.flow_name = "test_loop_exit".to_string();
+        task.meta.flow_step = 0;
+        task.meta.flow_sub_step = 0;
+        task.save_meta().unwrap();
+        push_session(&mut task, "coder", "sid-1");
+
+        let outcome = advance(&config, &mut task, StopCondition::AgentDone).unwrap();
+        assert_eq!(outcome, AdvanceOutcome::Stopped);
+        assert_eq!(task.meta.flow_step, 1, "flow_step should advance past loop");
+        assert_eq!(task.meta.flow_sub_step, 0, "sub_step should reset on loop exit");
+        assert_eq!(task.meta.status, TaskStatus::Stopped);
+    }
+
+    #[test]
+    fn advance_loop_task_complete_stops_regardless_of_sub_step() {
+        // Loop with `until: TASK_COMPLETE` (mirrors new.yaml). When any inner
+        // agent returns TASK_COMPLETE, the task stops — sub_step position
+        // doesn't matter.
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        write_test_flow(
+            &config,
+            "test_loop_tc",
+            "name: test_loop_tc\nsteps:\n  - loop:\n      - agent: coder\n        until: AGENT_DONE\n      - agent: checker\n        until: AGENT_DONE\n    until: TASK_COMPLETE\n",
+        );
+        task.meta.flow_name = "test_loop_tc".to_string();
+        task.meta.flow_step = 0;
+        task.meta.flow_sub_step = 1;
+        task.save_meta().unwrap();
+        push_session(&mut task, "checker", "sid-checker");
+
+        let outcome = advance(&config, &mut task, StopCondition::TaskComplete).unwrap();
+        assert_eq!(outcome, AdvanceOutcome::Stopped);
+        assert_eq!(task.meta.status, TaskStatus::Stopped);
+    }
+
+    #[test]
+    fn advance_loop_input_needed_pauses_without_changing_sub_step() {
+        // InputNeeded mid-loop should leave flow_step + flow_sub_step untouched
+        // so the answerer re-enters the same inner agent.
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        write_test_flow(
+            &config,
+            "test_loop_in",
+            "name: test_loop_in\nsteps:\n  - loop:\n      - agent: coder\n        until: AGENT_DONE\n      - agent: checker\n        until: AGENT_DONE\n    until: TASK_COMPLETE\n",
+        );
+        task.meta.flow_name = "test_loop_in".to_string();
+        task.meta.flow_step = 0;
+        task.meta.flow_sub_step = 1;
+        task.save_meta().unwrap();
+        push_session(&mut task, "checker", "sid-checker");
+
+        let outcome = advance(&config, &mut task, StopCondition::InputNeeded).unwrap();
+        assert_eq!(outcome, AdvanceOutcome::InputNeeded);
+        assert_eq!(task.meta.status, TaskStatus::InputNeeded);
+        assert_eq!(task.meta.flow_step, 0);
+        assert_eq!(task.meta.flow_sub_step, 1);
     }
 }

@@ -81,6 +81,11 @@ pub struct TaskMeta {
     pub flow_name: String,
     pub current_agent: Option<String>,
     pub flow_step: usize,
+    /// Index within a `FlowStep::Loop`'s inner `steps`. Zero when the current
+    /// flow step is an `Agent` or when we are entering a loop. Reset whenever
+    /// `flow_step` is advanced or reset.
+    #[serde(default)]
+    pub flow_sub_step: usize,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// The parent directory containing the repo(s), when it differs from `config.repos_dir`.
@@ -164,6 +169,7 @@ impl TaskMeta {
             flow_name,
             current_agent: None,
             flow_step: 0,
+            flow_sub_step: 0,
             created_at: now,
             updated_at: now,
             parent_dir: None,
@@ -196,6 +202,7 @@ impl TaskMeta {
             flow_name,
             current_agent: None,
             flow_step: 0,
+            flow_sub_step: 0,
             created_at: now,
             updated_at: now,
             parent_dir: Some(parent_dir),
@@ -501,6 +508,14 @@ impl Task {
 
     pub fn advance_flow_step(&mut self) -> Result<()> {
         self.meta.flow_step += 1;
+        self.meta.flow_sub_step = 0;
+        self.meta.updated_at = Utc::now();
+        self.save_meta()
+    }
+
+    /// Update `flow_sub_step` (position within a `FlowStep::Loop`) and persist.
+    pub fn set_flow_sub_step(&mut self, sub_step: usize) -> Result<()> {
+        self.meta.flow_sub_step = sub_step;
         self.meta.updated_at = Utc::now();
         self.save_meta()
     }
@@ -1033,6 +1048,7 @@ impl Task {
     /// Reset flow step to 0 for re-running
     pub fn reset_flow_step(&mut self) -> Result<()> {
         self.meta.flow_step = 0;
+        self.meta.flow_sub_step = 0;
         self.meta.updated_at = Utc::now();
         self.save_meta()
     }
