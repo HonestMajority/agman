@@ -94,6 +94,10 @@ src/
     └── <branch>/    # Individual worktree
 ```
 
+### Default file upgrades
+
+`agman init` (run implicitly on first launch) only writes embedded default flows and prompts when the target file is *absent* — it never overwrites existing files. So when the embedded defaults change (e.g. a retired flow stage or a reworked prompt), users who ran agman before the change keep their stale copies on disk. To pick up new defaults, run `agman init --force` to re-materialize everything, or delete the specific file under `~/.agman/flows/` or `~/.agman/prompts/` and re-run `agman init`. Obsolete files from retired stages (e.g. `prompts/prompt-builder.md`, `prompts/planner.md`) are harmless but can be deleted manually — there is no automatic cleanup.
+
 ## Common Modifications
 
 ### Adding a new CLI command
