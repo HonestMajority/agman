@@ -2200,7 +2200,7 @@ pub fn create_pm_task(
 // Messaging
 // ---------------------------------------------------------------------------
 
-enum SendTarget {
+pub enum SendTarget {
     Ceo,
     Telegram,
     Project(String),
@@ -2210,7 +2210,7 @@ enum SendTarget {
 const VALID_TARGETS_HINT: &str =
     "valid targets: ceo, telegram, <project>, researcher:<project>--<name>";
 
-fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
+pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     if target.is_empty() {
         anyhow::bail!("unknown target ''\n{VALID_TARGETS_HINT}");
     }
@@ -2264,16 +2264,144 @@ fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
 
 /// Send a message to an agent's inbox.
 pub fn send_message(config: &Config, target: &str, from: &str, message: &str) -> Result<()> {
-    let parsed = parse_send_target(config, target)?;
-    let inbox_path = match &parsed {
-        SendTarget::Ceo => config.ceo_inbox(),
-        SendTarget::Telegram => config.telegram_outbox(),
-        SendTarget::Project(name) => config.project_inbox(name),
-        SendTarget::Researcher { project, name } => config.researcher_inbox(project, name),
-    };
+    let inbox_path = agent_inbox_path(config, target)?;
 
     tracing::info!(target = target, from = from, "sending message");
     inbox::append_message(&inbox_path, from, message)?;
+    Ok(())
+}
+
+/// Shorthand reference to an agent for UI rendering (e.g. Telegram button lists).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRef {
+    /// Agent id in send-message form: `"ceo"`, `"<project>"`, or `"researcher:<project>--<name>"`.
+    pub id: String,
+    /// Short human label (e.g. `"CEO"`, `"PM:foo"`, `"R:bar"`).
+    pub label: String,
+}
+
+/// Resolve an agent id to its inbox path by routing through `parse_send_target`.
+/// For the `telegram` pseudo-agent, returns the outbox path.
+pub fn agent_inbox_path(config: &Config, id: &str) -> Result<PathBuf> {
+    let parsed = parse_send_target(config, id)?;
+    Ok(match parsed {
+        SendTarget::Ceo => config.ceo_inbox(),
+        SendTarget::Telegram => config.telegram_outbox(),
+        SendTarget::Project(name) => config.project_inbox(&name),
+        SendTarget::Researcher { project, name } => config.researcher_inbox(&project, &name),
+    })
+}
+
+/// True if `id` resolves to an agent that exists on disk.
+pub fn agent_exists(config: &Config, id: &str) -> bool {
+    parse_send_target(config, id).is_ok()
+}
+
+fn agent_ref_for(id: String) -> AgentRef {
+    let label = if id == "ceo" {
+        "CEO".to_string()
+    } else if let Some(rest) = id.strip_prefix("researcher:") {
+        let name = rest.rsplit("--").next().unwrap_or(rest);
+        format!("R:{name}")
+    } else {
+        format!("PM:{id}")
+    };
+    AgentRef { id, label }
+}
+
+/// Agents reachable from `current` via a Telegram `/ls` switch list.
+///
+/// - From `"ceo"`: all PMs (sorted by name) plus all CEO-level researchers
+///   (`project == "ceo"`) with `status == Running`.
+/// - From `"<project>"`: that project's researchers (`Running` only) plus `"ceo"`.
+/// - From `"researcher:<proj>--<name>"`: its parent (`"ceo"` if `proj == "ceo"`,
+///   otherwise the project) plus `"ceo"` — de-duplicated by id.
+pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
+    let mut ids: Vec<String> = Vec::new();
+
+    match current {
+        "ceo" => {
+            if let Ok(projects) = Project::list_all(config) {
+                for p in projects {
+                    ids.push(p.meta.name);
+                }
+            }
+            if let Ok(researchers) = Researcher::list_for_project(config, "ceo") {
+                for r in researchers {
+                    if r.meta.status == ResearcherStatus::Running {
+                        ids.push(format!("researcher:ceo--{}", r.meta.name));
+                    }
+                }
+            }
+        }
+        other => {
+            if let Some(rest) = other.strip_prefix("researcher:") {
+                let pos = rest.find("--");
+                if let Some(pos) = pos {
+                    let project = &rest[..pos];
+                    let parent_id = if project == "ceo" {
+                        "ceo".to_string()
+                    } else {
+                        project.to_string()
+                    };
+                    ids.push(parent_id);
+                    ids.push("ceo".to_string());
+                }
+            } else {
+                // Project-scoped view.
+                if let Ok(researchers) = Researcher::list_for_project(config, other) {
+                    for r in researchers {
+                        if r.meta.status == ResearcherStatus::Running {
+                            ids.push(format!("researcher:{}--{}", other, r.meta.name));
+                        }
+                    }
+                }
+                ids.push("ceo".to_string());
+            }
+        }
+    }
+
+    // De-duplicate preserving order.
+    let mut seen = std::collections::HashSet::new();
+    ids.retain(|id| seen.insert(id.clone()));
+
+    ids.into_iter().map(agent_ref_for).collect()
+}
+
+/// Read the persisted current Telegram agent. Falls back to `"ceo"` on any of:
+/// - file missing / empty / IO error (silent),
+/// - file contents that no longer resolve to an existing agent (`tracing::warn`).
+///
+/// Never returns an error — always yields a usable agent id.
+pub fn read_current_agent(config: &Config) -> String {
+    let path = config.telegram_current_agent_path();
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return "ceo".to_string(),
+    };
+    let value = raw.trim();
+    if value.is_empty() {
+        return "ceo".to_string();
+    }
+    if !agent_exists(config, value) {
+        tracing::warn!(stored = %value, "telegram current-agent: stale, falling back to ceo");
+        return "ceo".to_string();
+    }
+    value.to_string()
+}
+
+/// Persist the Telegram current agent id atomically (tmp file + rename).
+pub fn write_current_agent(config: &Config, value: &str) -> Result<()> {
+    let path = config.telegram_current_agent_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, value)
+        .with_context(|| format!("failed to write {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
