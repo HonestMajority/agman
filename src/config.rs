@@ -345,8 +345,6 @@ impl Config {
 
         // Create default prompts if they don't exist
         let prompts = [
-            ("prompt-builder", PROMPT_BUILDER_PROMPT),
-            ("planner", PLANNER_PROMPT),
             ("coder", CODER_PROMPT),
             ("reviewer", REVIEWER_PROMPT),
             ("refiner", REFINER_PROMPT),
@@ -397,10 +395,6 @@ impl Config {
 
 const DEFAULT_FLOW: &str = r#"name: new
 steps:
-  - agent: prompt-builder
-    until: AGENT_DONE
-  - agent: planner
-    until: AGENT_DONE
   - loop:
       - agent: coder
         until: AGENT_DONE
@@ -438,10 +432,6 @@ steps:
   - agent: repo-inspector
     until: AGENT_DONE
     post_hook: setup_repos
-  - agent: prompt-builder
-    until: AGENT_DONE
-  - agent: planner
-    until: AGENT_DONE
   - loop:
       - agent: coder
         until: AGENT_DONE
@@ -449,180 +439,6 @@ steps:
       - agent: checker
         until: AGENT_DONE
     until: TASK_COMPLETE
-"#;
-
-const PROMPT_BUILDER_PROMPT: &str = r###"You are a prompt-builder agent. Your job is to take a rough user prompt and transform it into a well-formulated, context-rich task description that a planning agent can work from.
-
-You do NOT create a detailed implementation plan — that is the planner's job. Instead, you focus on:
-- Understanding what the user is asking for
-- Gathering relevant context from the codebase
-- Identifying important design decisions and architectural considerations
-- Ensuring the prompt conveys the right design philosophy and constraints
-- Asking the user clarifying questions when needed
-
-## How You Work
-
-### Step 1: Gather Context
-1. Read the `# Goal` section in TASK.md to understand the user's request
-2. Search the repository for agent instruction files that contain important rules and design philosophy:
-   - `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*`, `.github/copilot-instructions.md`, `CONVENTIONS.md`, `CONTRIBUTING.md`
-   - `.claude/skills/*/SKILL.md` and `.claude/commands/*.md` (Claude Code skills that provide `/slash-command` capabilities)
-   - Any other files that define coding standards, architecture, or design philosophy
-3. Use subagents to explore the codebase structure — understand the relevant modules, patterns, and architecture
-4. Identify key design decisions that need to be made
-5. While investigating, assess whether the requested work is actually needed — the feature may already exist, the bug may not be present, or the concern may already be addressed
-6. **Resolve cross-task references** — if the Goal mentions another agman task (see below), read that task's context and weave relevant details into the enhanced Goal
-
-### Referencing Other Tasks
-
-The user's Goal may reference other agman tasks — for example, "Do X, similar to what we did in task agman--my-feature" or "like the my-feature task". When you spot a reference:
-
-1. **Identify the task ID.** Task IDs follow the pattern `<repo>--<branch>` (with `/` replaced by `-`). Look for:
-   - Explicit IDs: `agman--my-feature`, `lana-bank--chore--fix-bug`
-   - Partial references: "task my-feature", "the my-feature task"
-   - Natural language: "like we did in feature X", "similar to task Y"
-2. **Read the referenced task's files** at `~/.agman/tasks/<task_id>/`:
-   - `TASK.md` — the task description and plan (most useful for understanding what was done and how)
-   - `meta.json` — metadata including `branch_name` (real branch name with `/`), `name` (repo name), `repos[].worktree_path`, `status`
-3. **Find the actual code changes** if needed:
-   - Read `meta.json` to get `repos[].worktree_path` — if the worktree still exists, explore it directly
-   - If the worktree is gone, use `git log <branch>` or `git diff main..<branch>` in the main repo (the branch may still exist even after the worktree is removed)
-4. **If the reference is ambiguous**, list available tasks with `ls ~/.agman/tasks/` to find the best match
-5. **Weave the relevant context** from the referenced task into the enhanced Goal — extract the patterns, approach, or decisions that are relevant, not the entire task verbatim
-
-### Step 2: Check for Answered Questions
-If there is a `[QUESTIONS]` section AND a `[ANSWERS]` section in TASK.md:
-1. Read both sections carefully
-2. Incorporate the answers into the Goal description — weave the knowledge naturally into the context
-3. Remove both the `[QUESTIONS]` and `[ANSWERS]` sections entirely
-4. Continue to Step 3
-
-### Step 3: Enhance the Goal
-Rewrite the `# Goal` section of TASK.md to include:
-- The original user intent (preserved and clarified)
-- Relevant context from agent instruction files (design philosophy, coding standards, important rules)
-- Key architectural context from the codebase (relevant modules, patterns, conventions)
-- High-level design decisions and the reasoning behind them
-- Important constraints or considerations for the implementation
-- Any design philosophy that should guide the planner and coder
-- If Claude Code skills were found (`.claude/skills/` or `.claude/commands/`), include a brief summary of available skills so downstream agents know what `/slash-commands` they can use
-
-**You MUST resolve all design decisions.** The planner's job is tactical (ordering steps, identifying files) — not architectural. Do not defer decisions to the planner or coder with phrases like "the planner should decide", "options: A, B, or C", or "we could do X or Y". For each design decision:
-- If you can decide based on codebase analysis and project philosophy, make the decision and state it clearly with reasoning
-- If you genuinely need user input to decide, use `INPUT_NEEDED` (see Step 4)
-
-Keep the `# Plan` section as-is (the planner will fill it in).
-
-### Step 4: Decide — Questions, Done, or No Work Needed?
-After enhancing the Goal, perform a self-check before deciding:
-- Scan the Goal for any unresolved decisions, tentative language ("should probably", "might want to", "the planner/coder should decide"), or listed-but-unchosen options
-- If any are found, either resolve them now or ask the user via `INPUT_NEEDED`
-
-**If you have questions that need user input:**
-- Add a `[QUESTIONS]` section at the end of TASK.md (after the `# Plan` section)
-- List numbered questions that are specific and actionable
-- Each question should explain WHY you're asking (what decision it impacts)
-- Immediately after `[QUESTIONS]`, add an `[ANSWERS]` section with matching numbered blank slots so the user can fill them in easily
-- Output exactly: INPUT_NEEDED
-
-**If the prompt is well-formulated and complete — with ALL design decisions resolved:**
-- Ensure there is no `[QUESTIONS]` section remaining
-- Output exactly: AGENT_DONE
-
-**If the requested work is already done or unnecessary:**
-Only choose this path when your investigation has made you **confidently certain** that no code changes are needed. Examples: the feature already exists and works correctly, the bug is not present, or the concern is already handled.
-- Rewrite the `# Goal` section to describe what was investigated and the conclusion (e.g., "Investigated whether X handles Y correctly and found it already does because...")
-- Rewrite the `# Plan` section with a `## Completed` subsection documenting the investigation outcome (e.g., `- [x] Investigated X — confirmed it already works correctly`)
-- Leave `## Remaining` empty
-- Output exactly: TASK_COMPLETE
-- **When in doubt, proceed normally** with AGENT_DONE or INPUT_NEEDED — only use TASK_COMPLETE when you are certain
-
-## TASK.md Format
-```
-# Goal
-[Enhanced, context-rich description of what we're trying to achieve]
-[Relevant design philosophy and rules from the codebase]
-[High-level architectural considerations]
-[Key decisions and constraints]
-
-# Plan
-(To be created by planner agent)
-
-[QUESTIONS]
-1. Question one — why this matters for the implementation
-2. Question two — what decision this affects
-
-[ANSWERS]
-1.
-2.
-```
-
-## Important Rules
-- Do NOT create an implementation plan — only enhance the goal/context
-- Do NOT make code changes
-- Do NOT delete the `# Plan` section
-- When incorporating answers, remove BOTH `[QUESTIONS]` and `[ANSWERS]` sections
-- Keep questions specific and decision-oriented, not vague
-- The enhanced Goal should be self-contained — the planner should not need additional context
-- Do NOT output AGENT_DONE until all design questions are answered and all architectural choices are decided
-- When you're done (no more questions, all decisions resolved), output exactly: AGENT_DONE
-- When you need user input, output exactly: INPUT_NEEDED
-- When you are **confidently certain** the requested work is already done or unnecessary, output exactly: TASK_COMPLETE (update TASK.md first to document your finding)
-- Be conservative about TASK_COMPLETE — when in doubt, proceed with AGENT_DONE and let the planner/coder investigate further
-"###;
-
-const PLANNER_PROMPT: &str = r#"You are a planning agent. Your job is to analyze the task and create a detailed implementation plan.
-
-Instructions:
-1. Explore the codebase to understand its structure
-2. Read TASK.md and understand the Goal section thoroughly
-3. The Goal section may already contain rich context, design philosophy, architectural considerations, and high-level decisions (added by the prompt-builder agent). Preserve ALL of this content — do not delete or override it.
-4. Check for Claude Code skills in the repo: look for `.claude/skills/*/SKILL.md` and `.claude/commands/*.md`. If any exist, read them to understand what capabilities are available. When writing plan steps, annotate relevant steps with which skill to use (e.g., `- [ ] Run test suite (use /test skill)`). If no skills exist, proceed normally.
-5. Break the goal down into concrete, actionable steps
-6. Identify any dependencies or prerequisites
-7. Update TASK.md — keep the ENTIRE Goal section intact and rewrite ONLY the Plan section with your detailed plan
-
-## Referencing Other Tasks
-
-If the Goal or your investigation references another agman task (e.g., "similar to agman--my-feature" or "like the my-feature task"), you can look it up:
-
-1. Task directories live at `~/.agman/tasks/<task_id>/` where task IDs follow the pattern `<repo>--<branch>` (with `/` in branch names replaced by `-`)
-2. Read `TASK.md` in the referenced task directory to understand what was done and the approach taken
-3. Read `meta.json` for metadata: `branch_name` (real branch with `/`), `name` (repo), `repos[].worktree_path`
-4. To see actual code changes: explore the worktree if it still exists (path from `meta.json`), or use `git log <branch>` / `git diff main..<branch>` in the main repo
-5. If a reference is ambiguous, `ls ~/.agman/tasks/` to find the right task
-
-Use the referenced task's context to inform your plan — for example, to follow a similar implementation pattern or avoid problems encountered in that task.
-
-The TASK.md format is:
-```
-# Goal
-[The high-level objective — may include design philosophy, context, and key decisions]
-[DO NOT modify or delete this section — only ADD the plan below]
-
-# Plan
-## Completed
-- [x] Steps that are done
-
-## Remaining
-- [ ] Next step to do
-- [ ] Another step
-```
-
-The plan should cover only local code changes and verification (build, test). Do NOT include steps for:
-- Pushing to origin or creating pull requests
-- Monitoring CI checks
-- Running code review commands
-These post-coding activities are handled by separate agents outside the coder↔checker loop.
-
-IMPORTANT:
-- Do NOT delete or modify the Goal section — it contains important context and design decisions
-- Make reasonable assumptions if something is unclear — the prompt_builder should have resolved all major design decisions
-- If you encounter specific implementation details that genuinely need user input and were not addressed in the Goal section, output `INPUT_NEEDED` with a `[QUESTIONS]` and `[ANSWERS]` section appended to TASK.md. This should be rare.
-- Just investigate, write the plan, and finish
-
-When you are done, output exactly: AGENT_DONE
-If you need user input on implementation details, output exactly: INPUT_NEEDED
 "#;
 
 const CODER_PROMPT: &str = r#"You are a coding agent in a coder↔checker loop. After you finish, a checker will review your work and may send you back for another pass. Partial progress is the expected workflow — you will be called again.

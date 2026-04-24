@@ -54,7 +54,7 @@ fn create_task_with_new_branch() {
 
     // Default flows/prompts created
     assert!(config.flow_path("new").exists());
-    assert!(config.prompt_path("planner").exists());
+    assert!(config.prompt_path("coder").exists());
 }
 
 #[test]
@@ -1240,7 +1240,7 @@ Build a cross-repo feature.
 - shared-lib: Common types used by both
 
 # Plan
-(To be created by planner agent)
+(To be filled in by coder)
 "#;
 
     let repos = use_cases::parse_repos_from_task_md(content);
@@ -2806,7 +2806,7 @@ fn use_case_get_task_status_text() {
     std::fs::create_dir_all(&config.flows_dir).unwrap();
     std::fs::write(
         config.flows_dir.join("new.yaml"),
-        "name: new\nsteps:\n  - agent: planner\n    until: AGENT_DONE\n  - agent: coder\n    until: TASK_COMPLETE\n",
+        "name: new\nsteps:\n  - agent: coder\n    until: TASK_COMPLETE\n",
     )
     .unwrap();
 
@@ -2814,7 +2814,7 @@ fn use_case_get_task_status_text() {
     assert!(text.contains("myrepo--feat-status"));
     assert!(text.contains("running"));
     // Rich flow step with total count and agent name
-    assert!(text.contains("step 1/2: planner"));
+    assert!(text.contains("step 1/1: coder"));
     // Elapsed time for running task
     assert!(text.contains("Running for:"));
     // Goal from TASK.md
@@ -2905,7 +2905,7 @@ fn aggregated_status() {
     let flow_yaml = r#"
 name: new
 steps:
-  - agent: planner
+  - agent: refiner
     until: AGENT_DONE
   - agent: coder
     until: AGENT_DONE
@@ -2994,7 +2994,7 @@ fn aggregated_status_with_archived() {
     let flow_yaml = r#"
 name: new
 steps:
-  - agent: planner
+  - agent: coder
     until: AGENT_DONE
 "#;
     std::fs::write(config.flow_path("new"), flow_yaml).unwrap();

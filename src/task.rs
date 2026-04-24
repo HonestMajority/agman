@@ -250,7 +250,7 @@ impl Task {
 
         // Write TASK.md to the task directory
         task.write_task(&format!(
-            "# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n",
+            "# Goal\n{}\n\n# Plan\n(To be filled in by coder)\n",
             description
         ))?;
 
@@ -283,7 +283,7 @@ impl Task {
         task.init_files()?;
 
         task.write_task(&format!(
-            "# Goal\n{}\n\n# Plan\n(To be created by planner agent)\n",
+            "# Goal\n{}\n\n# Plan\n(To be filled in by coder)\n",
             description
         ))?;
 
