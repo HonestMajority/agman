@@ -1394,47 +1394,46 @@ impl App {
     }
 
     fn resume_after_answering(&mut self) -> Result<()> {
-        let task_info = self.selected_task().and_then(|t| {
-            let tmux_session = if t.meta.has_repos() {
-                t.meta.primary_repo().tmux_session.clone()
-            } else if t.meta.is_multi_repo() {
-                Config::tmux_session_name(&t.meta.name, &t.meta.branch_name)
-            } else {
-                return None;
-            };
-            Some((t.meta.task_id(), tmux_session, t.meta.status))
-        });
+        let task_info = self
+            .selected_task()
+            .map(|t| (t.meta.task_id(), t.meta.status));
 
-        if let Some((task_id, tmux_session, status)) = task_info {
+        if let Some((task_id, status)) = task_info {
             if status != TaskStatus::InputNeeded {
                 return Ok(());
             }
 
             tracing::info!(task_id = %task_id, "TUI: resume after answering");
-            // Delegate business logic to use_cases
-            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+
+            let launch_error: Option<anyhow::Error> = if let Some(task) =
+                self.tasks.get_mut(self.selected_index)
+            {
                 use_cases::resume_after_answering(task)?;
                 let _ = use_cases::set_review_addressed(task, false);
-            }
-
-            // Side effects: ensure tmux sessions exist for all repos and dispatch flow
-            if let Some(task) = self.selected_task() {
-                for repo in &task.meta.repos {
-                    let _ = Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path);
+                match supervisor::ensure_task_tmux(task)
+                    .and_then(|_| supervisor::launch_next_step(&self.config, task).map(|_| ()))
+                {
+                    Ok(_) => None,
+                    Err(e) => Some(e),
                 }
-                // For multi-repo tasks with no repos yet, ensure the primary session exists
-                if !task.meta.has_repos() && !Tmux::session_exists(&tmux_session) {
-                    if let Some(ref parent) = task.meta.parent_dir {
-                        let _ = Tmux::create_session_with_windows(&tmux_session, parent);
-                    }
+            } else {
+                None
+            };
+
+            match launch_error {
+                None => {
+                    self.log_output(format!(
+                        "Resumed flow for {} — processing your answers",
+                        task_id
+                    ));
+                    self.set_status(format!("Resumed: {}", task_id));
+                }
+                Some(e) => {
+                    tracing::error!(task_id = %task_id, error = %e, "failed to resume via supervisor");
+                    self.log_output(format!("Resume failed: {}", e));
+                    self.set_status(format!("Resume failed: {}", e));
                 }
             }
-
-            let flow_cmd = format!("agman flow-run {}", task_id);
-            let _ = Tmux::send_keys_to_window(&tmux_session, "agman", &flow_cmd);
-
-            self.log_output(format!("Resumed flow for {} — processing your answers", task_id));
-            self.set_status(format!("Resumed: {}", task_id));
             self.refresh_tasks_and_select(&task_id);
         }
 
@@ -2197,7 +2196,7 @@ impl App {
         if is_multi {
             // Multi-repo path: use the path directly from the directory picker
             let parent_dir = repo_path;
-            let task = match use_cases::create_multi_repo_task(
+            let mut task = match use_cases::create_multi_repo_task(
                 &self.config,
                 &name,
                 &branch_name,
@@ -2218,22 +2217,18 @@ impl App {
                 }
             };
 
-            // Create a temporary tmux session for the repo-inspector to run in
-            // (working dir = parent directory)
-            let tmux_session = Config::tmux_session_name(&name, &branch_name);
-            self.log_output("  Creating tmux session for repo-inspector...".to_string());
-            if let Err(e) = Tmux::create_session_with_windows(&tmux_session, &parent_dir) {
-                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to create tmux session for multi-repo task");
+            let task_id = task.meta.task_id();
+            self.log_output("  Launching flow via supervisor...".to_string());
+            if let Err(e) = supervisor::ensure_task_tmux(&task)
+                .and_then(|_| supervisor::launch_next_step(&self.config, &mut task).map(|_| ()))
+            {
+                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch multi-repo task flow");
                 self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
-                    w.error_message = Some(format!("Failed to create tmux session: {}", e));
+                    w.error_message = Some(format!("Failed to launch flow: {}", e));
                 }
                 return Ok(());
             }
-
-            let task_id = task.meta.task_id();
-            let flow_cmd = format!("agman flow-run {}", task_id);
-            let _ = Tmux::send_keys_to_window(&tmux_session, "agman", &flow_cmd);
 
             // Success - close wizard and refresh
             self.wizard = None;
@@ -2254,7 +2249,7 @@ impl App {
                 }
             });
 
-            let task = match use_cases::create_task(
+            let mut task = match use_cases::create_task(
                 &self.config,
                 &name,
                 &branch_name,
@@ -2276,21 +2271,18 @@ impl App {
                 }
             };
 
-            // Side effects: create tmux session and start flow
-            let worktree_path = task.meta.primary_repo().worktree_path.clone();
-            self.log_output("  Creating tmux session...".to_string());
-            if let Err(e) = Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path) {
-                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to create tmux session");
+            let task_id = task.meta.task_id();
+            self.log_output("  Launching flow via supervisor...".to_string());
+            if let Err(e) = supervisor::ensure_task_tmux(&task)
+                .and_then(|_| supervisor::launch_next_step(&self.config, &mut task).map(|_| ()))
+            {
+                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch task flow");
                 self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
-                    w.error_message = Some(format!("Failed to create tmux session: {}", e));
+                    w.error_message = Some(format!("Failed to launch flow: {}", e));
                 }
                 return Ok(());
             }
-
-            let task_id = task.meta.task_id();
-            let flow_cmd = format!("agman flow-run {}", task_id);
-            let _ = Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &flow_cmd);
 
             // Success - close wizard and refresh
             self.wizard = None;
@@ -6378,44 +6370,41 @@ impl App {
         };
 
         let task_meta = &self.tasks[task_idx].meta;
-        let (tmux_session, working_dir) = if task_meta.has_repos() {
-            (
-                task_meta.primary_repo().tmux_session.clone(),
-                task_meta.primary_repo().worktree_path.clone(),
-            )
-        } else if task_meta.is_multi_repo() {
-            (
-                Config::tmux_session_name(&task_meta.name, &task_meta.branch_name),
-                task_meta.parent_dir.clone().unwrap_or_default(),
-            )
-        } else {
+        if !task_meta.has_repos() && !task_meta.is_multi_repo() {
             self.set_status(format!("Task {} has no repos configured", task_id));
             self.restart_wizard = None;
             self.view = View::TaskList;
             return Ok(());
-        };
-
-        // Set flow_step and status
-        use_cases::restart_task(&mut self.tasks[task_idx], selected_step_index)?;
-        // Clear review_addressed on restart
-        let _ = use_cases::set_review_addressed(&mut self.tasks[task_idx], false);
-
-        // Ensure tmux session exists
-        if self.tasks[task_idx].meta.has_repos() {
-            let _ = Tmux::ensure_session(&tmux_session, &working_dir);
-        } else if !Tmux::session_exists(&tmux_session) {
-            let _ = Tmux::create_session_with_windows(&tmux_session, &working_dir);
         }
 
-        // Dispatch flow-run
-        let flow_cmd = format!("agman flow-run {}", task_id);
-        let _ = Tmux::send_keys_to_window(&tmux_session, "agman", &flow_cmd);
+        // Set flow_step and status, then launch via supervisor.
+        use_cases::restart_task(&mut self.tasks[task_idx], selected_step_index)?;
+        let _ = use_cases::set_review_addressed(&mut self.tasks[task_idx], false);
 
-        // Clean up wizard
+        let task = &mut self.tasks[task_idx];
+        let launch_error = match supervisor::ensure_task_tmux(task)
+            .and_then(|_| supervisor::launch_next_step(&self.config, task).map(|_| ()))
+        {
+            Ok(_) => None,
+            Err(e) => Some(e),
+        };
+
+        match launch_error {
+            None => {
+                self.set_status(format!(
+                    "Rerun: {} from step {}",
+                    task_id, selected_step_index
+                ));
+            }
+            Some(e) => {
+                tracing::error!(task_id = %task_id, error = %e, "failed to relaunch via supervisor");
+                self.set_status(format!("Rerun failed: {}", e));
+            }
+        }
+
         self.restart_wizard = None;
         self.view = View::TaskList;
         self.refresh_tasks_and_select(&task_id);
-        self.set_status(format!("Rerun: {} from step {}", task_id, selected_step_index));
 
         Ok(())
     }
