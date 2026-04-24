@@ -149,10 +149,18 @@ pub fn claude_launch_cmd(task: &Task, session_id: &str) -> String {
 /// 1. Kill any prior claude running in the agman window
 /// 2. Clear stale `.agent-done`
 /// 3. Build the prompt + write `.current-prompt.md`
-/// 4. Append a `SessionEntry` to `meta.session_history`
-/// 5. `send-keys` the claude launch command to `<session>:agman`
+/// 4. `send-keys` the claude launch command to `<session>:agman`
+/// 5. On successful send, append a `SessionEntry` to `meta.session_history`
+///    and update the displayed agent.
 ///
 /// Returns the newly-minted `session_id` so callers can log or resume.
+///
+/// The `send-keys` call happens *before* the `SessionEntry` is pushed so that a
+/// tmux failure leaves the task in a clean half-state (previous session still
+/// stamped as stopped, or history still empty) that the supervisor's
+/// `classify` can recover from on the next tick. If the push happened first
+/// and send-keys failed, `classify` would see `LiveSession` for a claude
+/// that never actually launched, and `poll` would return `Idle` forever.
 pub fn start_agent_step(
     config: &Config,
     task: &mut Task,
@@ -165,6 +173,9 @@ pub fn start_agent_step(
     prepare_prompt(config, task, agent_name)?;
 
     let session_id = new_session_id();
+    let cmd = claude_launch_cmd(task, &session_id);
+    Tmux::send_keys_to_window(&session_name, AGMAN_WINDOW, &cmd)?;
+
     let entry = SessionEntry {
         agent: agent_name.to_string(),
         session_id: session_id.clone(),
@@ -174,9 +185,6 @@ pub fn start_agent_step(
     };
     task.push_session(entry)?;
     task.update_agent(Some(agent_name.to_string()))?;
-
-    let cmd = claude_launch_cmd(task, &session_id);
-    Tmux::send_keys_to_window(&session_name, AGMAN_WINDOW, &cmd)?;
 
     tracing::info!(
         task_id = %task.meta.task_id(),
@@ -575,7 +583,21 @@ fn handle_command_flow_end(config: &Config, task: &mut Task) -> Result<bool> {
 /// post_hook) and the loop continues. On flow exhaustion the queue is drained
 /// — `Feedback` resets the task to the `continue` flow and the loop restarts
 /// with the freshly-loaded flow.
+///
+/// Bails early with `AdvanceOutcome::Stopped` if the task is not `Running`.
+/// This guards the channel-staleness race where a background poll classifies
+/// a task as `NeedsLaunch`, the user calls `stop_task` before `apply` drains,
+/// and the freshly-reloaded meta now reads `Stopped` — we must not launch a
+/// new agent against a task the user just halted.
 pub fn launch_next_step(config: &Config, task: &mut Task) -> Result<AdvanceOutcome> {
+    if task.meta.status != TaskStatus::Running {
+        tracing::debug!(
+            task_id = %task.meta.task_id(),
+            status = ?task.meta.status,
+            "launch_next_step called on non-Running task; bailing"
+        );
+        return Ok(AdvanceOutcome::Stopped);
+    }
     // Guard against pathological loops (e.g. pre_command always passing and a
     // flow entirely made of pre_command steps).
     const MAX_ITERATIONS: usize = 32;
@@ -1536,5 +1558,64 @@ mod tests {
         task.finish_last_session(Some("AGENT_DONE".to_string())).unwrap();
 
         assert_eq!(classify(&task), PollTarget::NeedsLaunch);
+    }
+
+    // -----------------------------------------------------------------------
+    // launch_next_step status guard — don't launch against non-Running tasks
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn launch_next_step_bails_when_task_not_running() {
+        // Race-window guard: a stale `NeedsLaunch` item can arrive at the
+        // apply step after the user called `stop_task`. The freshly-reloaded
+        // task meta will then read `Stopped`, and we must not launch claude.
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        task.update_status(TaskStatus::Stopped).unwrap();
+
+        let outcome = launch_next_step(&config, &mut task).unwrap();
+        assert_eq!(outcome, AdvanceOutcome::Stopped);
+        // No session was pushed — classify should still skip this task.
+        assert!(task.meta.session_history.is_empty());
+        assert_eq!(task.meta.status, TaskStatus::Stopped);
+    }
+
+    #[test]
+    fn launch_next_step_bails_when_task_input_needed() {
+        // Same guard, different non-Running status. An in-flight `NeedsLaunch`
+        // must never relaunch a task that's awaiting user input.
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        task.update_status(TaskStatus::InputNeeded).unwrap();
+
+        let outcome = launch_next_step(&config, &mut task).unwrap();
+        assert_eq!(outcome, AdvanceOutcome::Stopped);
+        assert!(task.meta.session_history.is_empty());
+        assert_eq!(task.meta.status, TaskStatus::InputNeeded);
+    }
+
+    // -----------------------------------------------------------------------
+    // start_agent_step ordering — push_session happens after send_keys
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn start_agent_step_does_not_push_session_when_tmux_fails() {
+        // There's no live tmux session in the test env, so `send_keys_to_window`
+        // errors out. With push_session running *before* send_keys (old order),
+        // session_history would have a dangling live entry. With the new
+        // order, the failure propagates cleanly and history stays empty.
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+
+        let result = start_agent_step(&config, &mut task, "coder");
+        assert!(result.is_err(), "tmux send_keys must fail in test env");
+        assert!(
+            task.meta.session_history.is_empty(),
+            "no SessionEntry should be pushed when send_keys fails"
+        );
+        assert!(
+            task.meta.current_agent.is_none(),
+            "displayed agent should not be updated on tmux failure"
+        );
     }
 }
