@@ -45,6 +45,52 @@ pub fn supervisor_session(task: &Task) -> Result<String> {
     }
 }
 
+/// Ensure every tmux session the supervisor needs to drive a task exists, and
+/// return the session name `start_agent_step` will target.
+///
+/// Single-repo tasks need just the primary repo's session (created via
+/// `Tmux::ensure_session`, which sets up the full window set including
+/// `agman`). Multi-repo tasks need both (a) every per-repo session (for the
+/// user to `attach` into) and (b) the parent-directory session that hosts the
+/// supervisor's `agman` window (created via `Tmux::create_session_with_windows`
+/// if missing).
+///
+/// Idempotent — if a session already exists it is left alone.
+///
+/// This is the prep step every caller that wants to hand a task over to the
+/// supervisor must run first: `start_agent_step` sends keys to
+/// `<session>:agman`, so the session (and that window) must exist. Returns
+/// the same string `supervisor_session` would.
+pub fn ensure_task_tmux(task: &Task) -> Result<String> {
+    for repo in &task.meta.repos {
+        Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path)
+            .with_context(|| {
+                format!(
+                    "failed to ensure tmux session for repo '{}'",
+                    repo.repo_name
+                )
+            })?;
+    }
+    if task.meta.is_multi_repo() {
+        let parent_dir = task.meta.parent_dir.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "multi-repo task '{}' has no parent_dir",
+                task.meta.task_id()
+            )
+        })?;
+        let session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+        if !Tmux::session_exists(&session) {
+            Tmux::create_session_with_windows(&session, parent_dir).with_context(|| {
+                format!(
+                    "failed to create parent-dir tmux session '{}' for multi-repo task",
+                    session
+                )
+            })?;
+        }
+    }
+    supervisor_session(task)
+}
+
 /// Outcome of a single supervisor poll cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PollOutcome {
@@ -1674,5 +1720,89 @@ mod tests {
             1,
             "no new SessionEntry should be appended when launch fails"
         );
+    }
+
+    #[test]
+    fn supervisor_session_returns_primary_for_single_repo_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_cfg, task) = build_task(&tmp);
+        assert!(!task.meta.is_multi_repo());
+        let expected = task.meta.primary_repo().tmux_session.clone();
+        assert_eq!(supervisor_session(&task).unwrap(), expected);
+    }
+
+    #[test]
+    fn supervisor_session_returns_parent_for_multi_repo_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Config::new(tmp.path().join(".agman"), tmp.path().join("repos"));
+        config.ensure_dirs().unwrap();
+        let parent = tmp.path().join("parent");
+        std::fs::create_dir_all(&parent).unwrap();
+        let task = Task {
+            meta: crate::task::TaskMeta::new_multi(
+                "proj".into(),
+                "feat".into(),
+                parent.clone(),
+                "new".into(),
+            ),
+            dir: config.task_dir("proj", "feat"),
+        };
+        std::fs::create_dir_all(&task.dir).unwrap();
+        task.save_meta().unwrap();
+        assert!(task.meta.is_multi_repo());
+        assert_eq!(
+            supervisor_session(&task).unwrap(),
+            Config::tmux_session_name("proj", "feat")
+        );
+    }
+
+    #[test]
+    fn supervisor_session_bails_when_task_has_no_repos() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Config::new(tmp.path().join(".agman"), tmp.path().join("repos"));
+        config.ensure_dirs().unwrap();
+        let mut meta = crate::task::TaskMeta::new(
+            "r".into(),
+            "b".into(),
+            config.worktree_path("r", "b"),
+            "new".into(),
+        );
+        meta.repos.clear();
+        meta.multi_repo = Some(false);
+        let task = Task {
+            meta,
+            dir: config.task_dir("r", "b"),
+        };
+        std::fs::create_dir_all(&task.dir).unwrap();
+        task.save_meta().unwrap();
+        // Not multi-repo and no repos → supervisor_session must bail.
+        assert!(supervisor_session(&task).is_err());
+    }
+
+    #[test]
+    fn ensure_task_tmux_bails_when_task_has_no_repos() {
+        // Same shape as supervisor_session_bails_when_task_has_no_repos; this
+        // verifies `ensure_task_tmux` propagates the error rather than
+        // returning a bogus session name. No tmux is invoked because the repos
+        // list is empty and is_multi_repo is false, so supervisor_session is
+        // the first fallible step.
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Config::new(tmp.path().join(".agman"), tmp.path().join("repos"));
+        config.ensure_dirs().unwrap();
+        let mut meta = crate::task::TaskMeta::new(
+            "r".into(),
+            "b".into(),
+            config.worktree_path("r", "b"),
+            "new".into(),
+        );
+        meta.repos.clear();
+        meta.multi_repo = Some(false);
+        let task = Task {
+            meta,
+            dir: config.task_dir("r", "b"),
+        };
+        std::fs::create_dir_all(&task.dir).unwrap();
+        task.save_meta().unwrap();
+        assert!(ensure_task_tmux(&task).is_err());
     }
 }
