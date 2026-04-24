@@ -54,6 +54,21 @@ pub struct RepoEntry {
     pub tmux_session: String,
 }
 
+/// A single interactive claude session run by the supervisor.
+///
+/// Records enough state to let the user resume the conversation with
+/// `claude --resume <session_id>` after the fact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEntry {
+    pub agent: String,
+    pub session_id: String,
+    pub started_at: DateTime<Utc>,
+    #[serde(default)]
+    pub stopped_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub condition: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMeta {
     /// For single-repo tasks this equals the repo name; for multi-repo tasks
@@ -106,6 +121,11 @@ pub struct TaskMeta {
     /// The project this task belongs to (None for unassigned/legacy tasks).
     #[serde(default)]
     pub project: Option<String>,
+    /// History of interactive claude sessions run by the supervisor.
+    /// Appended to on every agent step; persists across iterations so the
+    /// user can `claude --resume` any prior session.
+    #[serde(default)]
+    pub session_history: Vec<SessionEntry>,
 }
 
 fn default_true() -> bool {
@@ -156,6 +176,7 @@ impl TaskMeta {
             archived_at: None,
             saved: false,
             project: None,
+            session_history: Vec::new(),
         }
     }
 
@@ -187,6 +208,7 @@ impl TaskMeta {
             archived_at: None,
             saved: false,
             project: None,
+            session_history: Vec::new(),
         }
     }
 
@@ -1015,4 +1037,92 @@ impl Task {
         self.save_meta()
     }
 
+    // ---------------------------------------------------------------------
+    // Supervisor sentinel files
+    // ---------------------------------------------------------------------
+
+    /// Path to the agent-done sentinel. Agents append to this file with their
+    /// final stop condition; the supervisor polls for it to advance flow steps.
+    pub fn agent_done_path(&self) -> PathBuf {
+        self.dir.join(".agent-done")
+    }
+
+    /// Path to the stop sentinel. The TUI writes this to ask the supervisor
+    /// to cancel the current step gracefully.
+    pub fn stop_path(&self) -> PathBuf {
+        self.dir.join(".stop")
+    }
+
+    /// Path to the current prompt. The supervisor writes each step's
+    /// system-prompt here so it can be passed to `claude --system-prompt`.
+    pub fn current_prompt_path(&self) -> PathBuf {
+        self.dir.join(".current-prompt.md")
+    }
+
+    /// Read and remove the agent-done sentinel. Returns the raw trimmed
+    /// contents (expected to be one of `AGENT_DONE`, `TASK_COMPLETE`,
+    /// `INPUT_NEEDED`, optionally suffixed with `:<session_id>`) if present.
+    pub fn take_agent_done(&self) -> Result<Option<String>> {
+        let path = self.agent_done_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let contents = std::fs::read_to_string(&path)
+            .context("Failed to read .agent-done sentinel")?;
+        let _ = std::fs::remove_file(&path);
+        Ok(Some(contents.trim().to_string()))
+    }
+
+    /// Remove any stale `.agent-done` sentinel before launching a new step.
+    pub fn clear_agent_done(&self) -> Result<()> {
+        let path = self.agent_done_path();
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .context("Failed to remove .agent-done sentinel")?;
+        }
+        Ok(())
+    }
+
+    /// Write the `.stop` sentinel to request supervisor cancellation.
+    pub fn request_stop(&self) -> Result<()> {
+        std::fs::write(self.stop_path(), "")
+            .context("Failed to write .stop sentinel")
+    }
+
+    /// Return true if a `.stop` sentinel is present.
+    pub fn stop_requested(&self) -> bool {
+        self.stop_path().exists()
+    }
+
+    /// Remove the `.stop` sentinel after the supervisor has honored it.
+    pub fn clear_stop(&self) -> Result<()> {
+        let path = self.stop_path();
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .context("Failed to remove .stop sentinel")?;
+        }
+        Ok(())
+    }
+
+    /// Append a session record to `meta.session_history` and persist.
+    pub fn push_session(&mut self, entry: SessionEntry) -> Result<()> {
+        self.meta.session_history.push(entry);
+        self.meta.updated_at = Utc::now();
+        self.save_meta()
+    }
+
+    /// Update the most recent session entry in-place (stopped_at + condition)
+    /// and persist. No-op if `session_history` is empty.
+    pub fn finish_last_session(
+        &mut self,
+        condition: Option<String>,
+    ) -> Result<()> {
+        if let Some(last) = self.meta.session_history.last_mut() {
+            last.stopped_at = Some(Utc::now());
+            last.condition = condition;
+            self.meta.updated_at = Utc::now();
+            self.save_meta()?;
+        }
+        Ok(())
+    }
 }

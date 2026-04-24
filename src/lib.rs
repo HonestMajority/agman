@@ -9,6 +9,7 @@ pub mod inbox;
 pub mod project;
 pub mod repo_stats;
 pub mod researcher;
+pub mod supervisor;
 pub mod task;
 pub mod telegram;
 pub mod tmux;

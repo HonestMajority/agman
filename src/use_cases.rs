@@ -2205,10 +2205,11 @@ pub enum SendTarget {
     Telegram,
     Project(String),
     Researcher { project: String, name: String },
+    Task(String),
 }
 
 const VALID_TARGETS_HINT: &str =
-    "valid targets: ceo, telegram, <project>, researcher:<project>--<name>";
+    "valid targets: ceo, telegram, <project>, researcher:<project>--<name>, task:<repo>--<branch>";
 
 pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     if target.is_empty() {
@@ -2246,6 +2247,20 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
             project: project.to_string(),
             name: name.to_string(),
         });
+    }
+
+    if let Some(task_id) = target.strip_prefix("task:") {
+        if task_id.is_empty() {
+            anyhow::bail!("invalid task id '': expected 'task:<repo>--<branch>'");
+        }
+        let dir = config.tasks_dir.join(task_id);
+        if !dir.exists() {
+            anyhow::bail!(
+                "unknown task '{task_id}' — no task found at {}",
+                dir.display()
+            );
+        }
+        return Ok(SendTarget::Task(task_id.to_string()));
     }
 
     if target.contains(':') {
@@ -2289,6 +2304,7 @@ pub fn agent_inbox_path(config: &Config, id: &str) -> Result<PathBuf> {
         SendTarget::Telegram => config.telegram_outbox(),
         SendTarget::Project(name) => config.project_inbox(&name),
         SendTarget::Researcher { project, name } => config.researcher_inbox(&project, &name),
+        SendTarget::Task(task_id) => config.task_inbox(&task_id),
     })
 }
 
@@ -2888,6 +2904,34 @@ pub fn collect_inbox_poll_targets(
         Err(e) => {
             tracing::warn!(error = %e, "collect_inbox_poll_targets: failed to list researchers, skipping researcher targets");
         }
+    }
+
+    // Task targets. Tasks host their interactive claude in the `agman` window
+    // of their session (single-repo: primary repo's session; multi-repo:
+    // parent-dir session). `session_name` carries only the session; the
+    // caller must deliver to the `agman` window specifically via the
+    // window-aware tmux APIs.
+    for task in Task::list_all(config) {
+        if task.meta.status != TaskStatus::Running {
+            continue;
+        }
+        let session_name = if task.meta.is_multi_repo() {
+            Config::tmux_session_name(&task.meta.name, &task.meta.branch_name)
+        } else if task.meta.has_repos() {
+            task.meta.primary_repo().tmux_session.clone()
+        } else {
+            continue;
+        };
+        if !session_exists(&session_name) {
+            continue;
+        }
+        let task_id = task.meta.task_id();
+        targets.push(InboxPollTarget {
+            name: format!("task:{task_id}"),
+            inbox_path: config.task_inbox(&task_id),
+            seq_path: config.task_inbox_seq(&task_id),
+            session_name,
+        });
     }
 
     targets

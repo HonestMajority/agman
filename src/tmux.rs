@@ -372,6 +372,16 @@ impl Tmux {
         Ok(())
     }
 
+    /// Build a tmux target string for a session, optionally scoped to a window.
+    /// When `window` is `None`, returns just the session name (targets the
+    /// current window/pane). When `Some`, returns `session:window`.
+    fn tmux_target(session_name: &str, window: Option<&str>) -> String {
+        match window {
+            Some(w) => format!("{}:{}", session_name, w),
+            None => session_name.to_string(),
+        }
+    }
+
     /// Inject a formatted message into an agent's tmux session.
     ///
     /// Uses `tmux load-buffer -` (stdin pipe) + `paste-buffer -p` (bracket paste
@@ -384,6 +394,20 @@ impl Tmux {
     /// a delivery tag (`[msg:{from}:{seq}]`) so each message can be uniquely
     /// identified in the scrollback for verification.
     pub fn inject_message(session_name: &str, from: &str, message: &str, seq: u64) -> Result<()> {
+        Self::inject_message_to(session_name, None, from, message, seq)
+    }
+
+    /// Like [`inject_message`] but scopes delivery to a specific window within
+    /// the session (e.g. the `agman` window of a task session). When `window`
+    /// is `None`, behaves exactly like `inject_message`.
+    pub fn inject_message_to(
+        session_name: &str,
+        window: Option<&str>,
+        from: &str,
+        message: &str,
+        seq: u64,
+    ) -> Result<()> {
+        let target = Self::tmux_target(session_name, window);
         let formatted = format!("[msg:{}:{}] [Message from {}]: {}", from, seq, from, message);
 
         // Load message into tmux paste buffer via stdin (avoids shell escaping issues)
@@ -415,9 +439,9 @@ impl Tmux {
         }
 
         // Paste buffer into target session with bracket paste mode
-        tracing::trace!(session = session_name, "pasting buffer with bracket paste mode");
+        tracing::trace!(session = session_name, target = %target, "pasting buffer with bracket paste mode");
         let paste_output = Command::new("tmux")
-            .args(["paste-buffer", "-p", "-t", session_name])
+            .args(["paste-buffer", "-p", "-t", &target])
             .output()
             .context("failed to paste buffer into agent session")?;
 
@@ -431,9 +455,9 @@ impl Tmux {
         // Give tmux time to process the pasted text before sending Enter
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        tracing::trace!(session = session_name, "sending Enter to submit message");
+        tracing::trace!(session = session_name, target = %target, "sending Enter to submit message");
         let enter_output = Command::new("tmux")
-            .args(["send-keys", "-t", session_name, "Enter"])
+            .args(["send-keys", "-t", &target, "Enter"])
             .output()
             .context("failed to send Enter to agent session")?;
 
@@ -447,9 +471,9 @@ impl Tmux {
         // Send a second Enter as a safety measure — some terminal states absorb the first
         std::thread::sleep(std::time::Duration::from_millis(80));
 
-        tracing::trace!(session = session_name, "sending second Enter for reliability");
+        tracing::trace!(session = session_name, target = %target, "sending second Enter for reliability");
         let enter2_output = Command::new("tmux")
-            .args(["send-keys", "-t", session_name, "Enter"])
+            .args(["send-keys", "-t", &target, "Enter"])
             .output()
             .context("failed to send second Enter to agent session")?;
 
@@ -465,8 +489,14 @@ impl Tmux {
 
     /// Capture the content of a tmux pane including scrollback history for delivery verification.
     pub fn capture_pane(session_name: &str) -> Result<String> {
+        Self::capture_pane_window(session_name, None)
+    }
+
+    /// Like [`capture_pane`] but scoped to a specific window within the session.
+    pub fn capture_pane_window(session_name: &str, window: Option<&str>) -> Result<String> {
+        let target = Self::tmux_target(session_name, window);
         let output = Command::new("tmux")
-            .args(["capture-pane", "-p", "-S", "-500", "-t", session_name])
+            .args(["capture-pane", "-p", "-S", "-500", "-t", &target])
             .output()
             .context("failed to capture tmux pane")?;
 
@@ -483,8 +513,14 @@ impl Tmux {
     /// Send just an Enter key press to a session (for retry when text was pasted
     /// but Enter didn't register).
     pub fn send_enter(session_name: &str) -> Result<()> {
+        Self::send_enter_to(session_name, None)
+    }
+
+    /// Like [`send_enter`] but scoped to a specific window within the session.
+    pub fn send_enter_to(session_name: &str, window: Option<&str>) -> Result<()> {
+        let target = Self::tmux_target(session_name, window);
         let output = Command::new("tmux")
-            .args(["send-keys", "-t", session_name, "Enter"])
+            .args(["send-keys", "-t", &target, "Enter"])
             .output()
             .context("failed to send Enter to agent session")?;
 
@@ -507,8 +543,17 @@ impl Tmux {
     /// shell, and when claude runs it takes over the foreground. So "ready" ≡
     /// "foreground is not a known shell".
     pub fn is_claude_running(session_name: &str) -> Result<(bool, String)> {
+        Self::is_claude_running_in(session_name, None)
+    }
+
+    /// Like [`is_claude_running`] but scoped to a specific window within the session.
+    pub fn is_claude_running_in(
+        session_name: &str,
+        window: Option<&str>,
+    ) -> Result<(bool, String)> {
+        let target = Self::tmux_target(session_name, window);
         let output = Command::new("tmux")
-            .args(["display-message", "-p", "-t", session_name, "#{pane_current_command}"])
+            .args(["display-message", "-p", "-t", &target, "#{pane_current_command}"])
             .output()
             .context("failed to query pane_current_command")?;
 
@@ -522,7 +567,7 @@ impl Tmux {
         let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
         const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "csh", "tcsh"];
         let is_shell = cmd.is_empty() || SHELLS.contains(&cmd.as_str());
-        tracing::debug!(session = session_name, cmd = %cmd, is_shell, "session readiness check");
+        tracing::debug!(session = session_name, target = %target, cmd = %cmd, is_shell, "session readiness check");
         Ok((!is_shell, cmd))
     }
 
@@ -534,5 +579,33 @@ impl Tmux {
     /// loop in the caller, not by UI scraping here.
     pub fn is_session_ready(session_name: &str) -> Result<(bool, String)> {
         Self::is_claude_running(session_name)
+    }
+
+    /// Like [`is_session_ready`] but scoped to a specific window.
+    pub fn is_session_ready_in(
+        session_name: &str,
+        window: Option<&str>,
+    ) -> Result<(bool, String)> {
+        Self::is_claude_running_in(session_name, window)
+    }
+
+    /// Return the pane PID (`#{pane_pid}`) for the given session/window, used by
+    /// the supervisor to SIGTERM a running `claude` cleanly before replacing it.
+    pub fn pane_pid(session_name: &str, window: Option<&str>) -> Result<Option<u32>> {
+        let target = Self::tmux_target(session_name, window);
+        let output = Command::new("tmux")
+            .args(["display-message", "-p", "-t", &target, "#{pane_pid}"])
+            .output()
+            .context("failed to query pane_pid")?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if pid_str.is_empty() {
+            return Ok(None);
+        }
+        Ok(pid_str.parse::<u32>().ok())
     }
 }

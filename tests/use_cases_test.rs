@@ -2732,10 +2732,40 @@ fn use_case_send_message_rejects_unknown_prefix() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    let result = use_cases::send_message(&config, "task:xyz", "pm", "hello");
+    let result = use_cases::send_message(&config, "bogus:xyz", "pm", "hello");
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("unknown target"));
+}
+
+#[test]
+fn use_case_send_message_rejects_nonexistent_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let result = use_cases::send_message(&config, "task:ghost--branch", "pm", "hello");
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("unknown task"));
+}
+
+#[test]
+fn use_case_send_message_to_task_appends_to_task_inbox() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let task = create_test_task(&config, "repo", "feature");
+    let task_id = task.meta.task_id();
+
+    let target = format!("task:{task_id}");
+    use_cases::send_message(&config, &target, "pm", "nudge from pm").unwrap();
+
+    let messages =
+        agman::inbox::read_messages(&config.task_inbox(&task_id)).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "pm");
+    assert_eq!(messages[0].message, "nudge from pm");
 }
 
 #[test]

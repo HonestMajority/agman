@@ -113,6 +113,16 @@ impl Config {
         self.tasks_dir.join(Self::task_id(repo_name, branch_name))
     }
 
+    /// Get task inbox path: ~/.agman/tasks/<id>/inbox.jsonl
+    pub fn task_inbox(&self, task_id: &str) -> PathBuf {
+        self.tasks_dir.join(task_id).join("inbox.jsonl")
+    }
+
+    /// Get task inbox seq path: ~/.agman/tasks/<id>/inbox.seq
+    pub fn task_inbox_seq(&self, task_id: &str) -> PathBuf {
+        self.tasks_dir.join(task_id).join("inbox.seq")
+    }
+
     /// Get task ID from repo and branch names.
     /// Sanitizes `/` in branch names to `-` so the task directory is always flat.
     pub fn task_id(repo_name: &str, branch_name: &str) -> String {

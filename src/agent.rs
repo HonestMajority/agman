@@ -103,6 +103,24 @@ impl Agent {
         prompt.push_str("# Self-Improvement\n");
         prompt.push_str("**Before outputting your final stop condition**, check if the repository has a self-improvement skill (commonly named \"self-improve\" or similar) in `.claude/skills/` or `.claude/commands/`. If one exists, run it. This helps keep project documentation and conventions up to date.\n");
 
+        // Sentinel footer: the supervisor watches for this file to detect when
+        // the agent is done. Writing it is the agent's LAST action, after
+        // printing the magic string. Printing `<MAGIC>:<session_id>` makes the
+        // stop condition visible in the tmux scrollback for pane-scanning too.
+        prompt.push_str("\n\n---\n\n");
+        prompt.push_str("# Supervisor Sentinel (REQUIRED — last action)\n");
+        prompt.push_str(&format!(
+            "After printing your stop condition (`AGENT_DONE`, `TASK_COMPLETE`, or `INPUT_NEEDED`), you MUST, as your very last action, write that condition to `{}/.agent-done`. Example:\n\n",
+            task.dir.display()
+        ));
+        prompt.push_str("```\n");
+        prompt.push_str(&format!(
+            "echo AGENT_DONE > {}/.agent-done\n",
+            task.dir.display()
+        ));
+        prompt.push_str("```\n\n");
+        prompt.push_str("Do this EVEN IF you already said you are done. The supervisor does not proceed until this file exists. Do not write anything else to the file — just the single magic string.\n");
+
         Ok(prompt)
     }
 
