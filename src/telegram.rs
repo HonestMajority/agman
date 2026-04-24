@@ -357,8 +357,8 @@ fn poll_updates(ctx: &BotCtx, offset: &mut i64) {
                 let _ = tg_send_with_keyboard(ctx, &reply_text, buttons);
                 continue;
             }
-            "/where" => {
-                tracing::info!("telegram: /where command");
+            "/who" => {
+                tracing::info!("telegram: /who command");
                 let current = ctx
                     .current_agent
                     .read()
@@ -563,7 +563,7 @@ fn register_bot_commands(ctx: &BotCtx) {
         "commands": [
             {"command": "ls", "description": "List agents you can switch to"},
             {"command": "back", "description": "Switch to parent agent"},
-            {"command": "where", "description": "Show current agent"},
+            {"command": "who", "description": "Show current agent"},
         ]
     });
     if let Err(e) = tg_post(&ctx.agent, &format!("{}/setMyCommands", ctx.base), &body) {
