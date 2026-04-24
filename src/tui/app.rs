@@ -6018,38 +6018,34 @@ impl App {
                     {
                         let _ = use_cases::update_last_review_count(task, result.review_count);
                         let _ = use_cases::set_review_addressed(task, false);
-                    }
 
-                    let output = Command::new("agman")
-                        .args(["run-command", &result.task_id, "address-review"])
-                        .output();
-
-                    match output {
-                        Ok(o) if o.status.success() => {
+                        if let Err(e) = supervisor::ensure_task_tmux(task) {
                             self.log_output(format!(
-                                "Auto-triggered address-review for {}: new review on PR #{}",
-                                result.task_id, result.pr_number
-                            ));
-                            if let Some(task) = self
-                                .tasks
-                                .iter_mut()
-                                .find(|t| t.meta.task_id() == result.task_id)
-                            {
-                                let _ = use_cases::set_review_addressed(task, true);
-                            }
-                        }
-                        Ok(o) => {
-                            let stderr = String::from_utf8_lossy(&o.stderr);
-                            self.log_output(format!(
-                                "Failed to auto-trigger address-review for {}: {}",
-                                result.task_id, stderr
-                            ));
-                        }
-                        Err(e) => {
-                            self.log_output(format!(
-                                "Error triggering address-review for {}: {}",
+                                "Failed to prepare tmux for {}: {}",
                                 result.task_id, e
                             ));
+                            continue;
+                        }
+
+                        match use_cases::queue_command(
+                            task,
+                            &self.config,
+                            "address-review",
+                            None,
+                        ) {
+                            Ok(_) => {
+                                let _ = use_cases::set_review_addressed(task, true);
+                                self.log_output(format!(
+                                    "Auto-triggered address-review for {}: new review on PR #{}",
+                                    result.task_id, result.pr_number
+                                ));
+                            }
+                            Err(e) => {
+                                self.log_output(format!(
+                                    "Failed to auto-trigger address-review for {}: {}",
+                                    result.task_id, e
+                                ));
+                            }
                         }
                     }
                 }
