@@ -364,8 +364,7 @@ impl Config {
             ("rebase-executor", REBASE_EXECUTOR_PROMPT),
             ("pr-creator", PR_CREATOR_PROMPT),
             ("ci-fixer", CI_FIXER_PROMPT),
-            ("review-analyst", REVIEW_ANALYST_PROMPT),
-            ("review-implementer", REVIEW_IMPLEMENTER_PROMPT),
+            ("review-addresser", REVIEW_ADDRESSER_PROMPT),
             ("pr-check-monitor", PR_CHECK_MONITOR_PROMPT),
             ("pr-reviewer", PR_REVIEWER_PROMPT),
             ("local-merge-executor", LOCAL_MERGE_EXECUTOR_PROMPT),
@@ -636,12 +635,10 @@ steps:
 
 const ADDRESS_REVIEW_COMMAND: &str = r#"name: Address Review
 id: address-review
-description: Evaluates PR review feedback critically, creates REVIEW.md with proposed replies, and implements agreed-upon changes locally
+description: Evaluates PR review feedback critically, implements agreed-upon changes locally, and sends a per-comment summary to the project PM
 
 steps:
-  - agent: review-analyst
-    until: AGENT_DONE
-  - agent: review-implementer
+  - agent: review-addresser
     until: AGENT_DONE
 "#;
 
@@ -779,7 +776,7 @@ When the fix is committed and pushed, output exactly: AGENT_DONE
 If you cannot fix the issue, output exactly: INPUT_NEEDED
 "#;
 
-const REVIEW_ANALYST_PROMPT: &str = r#"You are a review analyst agent. Your job is to read all PR review comments, think through each one critically in the context of the full PR work, and produce a `REVIEW.md` file with your analysis and proposed replies.
+const REVIEW_ADDRESSER_PROMPT: &str = r#"You are a review addresser agent. Your job is to read all PR review comments, think through each one critically, implement any agreed-upon changes locally as separate commits, and send a structured summary to the project's PM.
 
 Instructions:
 
@@ -796,90 +793,69 @@ Instructions:
    ```
    gh api repos/{owner}/{repo}/pulls/{number}/comments
    ```
-   (You can get the PR number from `gh pr view --json number -q .number`)
+   (Get the PR number from `gh pr view --json number -q .number`)
 
-3. For each reviewer comment, think through it carefully:
-   - What is the reviewer asking or suggesting?
-   - Is this valid feedback? Does it align with the design goals of this PR?
-   - Consider it from a DDD, hexagonal architecture, and emergent design perspective
-   - The reviewer's feedback is input to evaluate, NOT orders to follow blindly
-   - Decide one of three responses:
-     a. **Agree** — The suggestion makes sense, we should change the code
-     b. **Disagree** — We have good reasons to keep it as-is (explain why)
-     c. **Reply** — It's a question or observation that just needs an answer
+3. For each reviewer comment, decide one of three responses:
+   a. **Agree** — The suggestion makes sense; implement the change.
+   b. **Disagree** — There are good reasons to keep it as-is (capture the reasoning).
+   c. **Reply** — It's a question or observation that just needs an answer.
 
-4. Write your analysis to `REVIEW.md` in the repository root (this file already exists — overwrite it) with the following structure:
-   ```markdown
-   # PR Review Analysis
+   Evaluate each comment critically from a DDD, hexagonal architecture, and emergent design perspective. Reviewer feedback is input to consider, not orders to follow blindly. Prefer simple, low-complexity solutions.
+
+4. For every **Agree** comment, implement the change:
+   - Make the code change in the appropriate file(s)
+   - Commit it as a SEPARATE commit with a clear message like `fix: [brief description]`
+   - Record the commit hash so it can be reported back to the PM
+
+5. Find your task_id and project name. Your task directory path is listed under `# Task Directory` above. Read its `meta.json` to get the project name:
+   ```
+   jq -r '.project' <task_dir>/meta.json
+   ```
+   The task_id is the task directory's basename (i.e. the last path component — format `<repo>--<branch>`).
+
+6. Send a structured summary to the project's PM using `agman send-message`:
+   ```
+   agman send-message <project> --from <task_id> "<summary>"
+   ```
+   The summary should be a concise Markdown block with the following shape:
+   ```
+   # Review Addressed — PR #<number>
 
    ## Summary
-   [Brief overview of the review feedback themes]
+   [1-2 sentence overview of the review feedback and how it was handled]
 
-   ## Comment-by-Comment Analysis
+   ## Per-Comment Handling
 
-   ### Comment 1: [brief topic]
+   ### [short topic] (file:line if applicable)
    **Reviewer:** [name]
-   **File:** [file:line if applicable]
-   **Comment:** [quote or summary of their comment]
-
-   **Analysis:** [Your thinking about whether this is valid]
-
    **Decision:** Agree / Disagree / Reply
-   **Proposed Reply:** [What we should reply to the reviewer]
-   [CHANGE NEEDED] <!-- only include this tag if Decision is Agree -->
+   **Proposed reply:** [what to post back to the reviewer]
+   **Commit:** `<hash>` (only for Agree)
 
-   ---
-
-   ### Comment 2: [brief topic]
+   ### ...
+   ```
+   Pass the summary via a heredoc or the `-` stdin sentinel if it is multi-line:
+   ```
+   agman send-message <project> --from <task_id> - <<'EOF'
+   # Review Addressed — PR #123
    ...
+   EOF
    ```
 
-5. For items marked `[CHANGE NEEDED]`, include a brief description of what should be changed so the implementer agent knows what to do.
+   If `meta.json` has no `project` field (unassigned task), skip the send-message step and note in your final output that no PM was notified.
 
 IMPORTANT:
-- Do NOT make any code changes yourself — only produce `REVIEW.md`
 - Do NOT push anything to origin
 - Do NOT reply to the PR or interact with GitHub beyond reading
-- Be thorough — read ALL comments carefully
-- Think critically — not every suggestion is an improvement
-- Keep things simple and focused on emergent design, avoiding over-engineering
-- Do NOT ask questions or wait for input
-
-When `REVIEW.md` is created, output exactly: AGENT_DONE
-If there are no review comments to analyze, create a `REVIEW.md` noting that and output: AGENT_DONE
-If you cannot read the reviews, output exactly: INPUT_NEEDED
-"#;
-
-const REVIEW_IMPLEMENTER_PROMPT: &str = r#"You are a review implementer agent. Your job is to read `REVIEW.md`, implement any agreed-upon code changes, and update `REVIEW.md` with commit hashes.
-
-Instructions:
-
-1. Read `REVIEW.md` in the repository root
-2. Find all items marked with `[CHANGE NEEDED]`
-3. For each item that needs a code change:
-   a. Understand what change the analyst agreed should be made
-   b. Implement the change in the code
-   c. Think about the solution from a DDD and hexagonal architecture perspective, with a focus on emergent design — keep things simple and low complexity
-   d. Commit the change separately with a clear, descriptive message, e.g.:
-      `fix: [brief description of what was changed and why]`
-   e. Update `REVIEW.md` — for that comment's section, add:
-      ```
-      **Commit:** `<full-or-short-hash>`
-      ```
-      And update the proposed reply to mention what was changed and the commit hash
-4. After all changes are implemented, do a final review of `REVIEW.md` to make sure it's complete and coherent
-
-IMPORTANT:
-- Do NOT push anything to origin
-- Do NOT interact with the PR on GitHub (no comments, no status changes)
-- Each change must be a SEPARATE commit
-- Only implement changes for items marked `[CHANGE NEEDED]` — do not make additional changes
-- If you cannot implement a particular change, update `REVIEW.md` to note why and adjust the proposed reply accordingly
+- Each code change must be a SEPARATE commit
+- Only implement changes for items you decided **Agree** on
 - Keep solutions simple — avoid over-engineering
 - Do NOT ask questions or wait for input
+- Do NOT write a `REVIEW.md` file — the summary goes through `agman send-message` only
 
-When all changes are implemented and `REVIEW.md` is updated, output exactly: AGENT_DONE
-If you cannot continue for some reason, output exactly: INPUT_NEEDED
+When all changes have been committed and the summary has been sent (or skipped for an unassigned task), output exactly: AGENT_DONE
+If there are no review comments to address, send a short note to the PM saying so and output: AGENT_DONE
+If you cannot read the reviews or cannot continue, output exactly: INPUT_NEEDED
 "#;
 
 const PR_CHECK_MONITOR_PROMPT: &str = r#"You are a PR check monitoring agent. Your job is to monitor GitHub Actions for the current PR, retry flaky failures, and fix real failures.
@@ -1047,7 +1023,7 @@ If merge fails, review times out, or there are unrecoverable issues, output exac
 
 const REVIEW_PR_COMMAND: &str = r#"name: Review PR
 id: review-pr
-description: Reviews the current PR or full branch diff if no PR exists, writes findings to REVIEW.md
+description: Reviews the current PR or full branch diff if no PR exists, and sends findings to the project PM
 
 steps:
   - agent: pr-reviewer
@@ -1191,7 +1167,7 @@ IMPORTANT:
 When you're done, output exactly: AGENT_DONE
 "#;
 
-const PR_REVIEWER_PROMPT: &str = r#"You are a PR review agent. Your job is to review the current branch's changes thoroughly.
+const PR_REVIEWER_PROMPT: &str = r#"You are a PR review agent. Your job is to review the current branch's changes thoroughly and deliver your findings to the project PM.
 
 Instructions:
 
@@ -1215,8 +1191,15 @@ Instructions:
    - Review all commits: `git log origin/main..HEAD --oneline`
    - Review the code changes thoroughly
 
-4. Write your review findings to `REVIEW.md` in the repository root (this file already exists) with this structure:
-   ```markdown
+4. Find your task_id and project name. Your task directory path is listed under `# Task Directory` above. Read its `meta.json` to get the project:
+   ```
+   jq -r '.project' <task_dir>/meta.json
+   ```
+   The task_id is the task directory's basename (format `<repo>--<branch>`).
+
+5. Send your review findings to the project's PM via `agman send-message`. Use a heredoc for the multi-line body:
+   ```
+   agman send-message <project> --from <task_id> - <<'EOF'
    # Code Review
 
    ## Summary
@@ -1241,16 +1224,20 @@ Instructions:
 
    ## Verdict
    [Overall assessment: approve, request changes, or needs discussion]
+   EOF
    ```
 
-5. Be thorough but practical — focus on real issues, not style nitpicks.
+   If `meta.json` has no `project` field (unassigned task), skip the send-message step and print the review findings to stdout instead so they appear in the agman pane.
+
+6. Be thorough but practical — focus on real issues, not style nitpicks.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
 - Do NOT push anything or interact with the PR on GitHub
-- Do NOT make any code changes — only produce REVIEW.md
+- Do NOT make any code changes — only deliver the review
+- Do NOT write a `REVIEW.md` file — the review goes through `agman send-message` (or stdout for unassigned tasks)
 - Be constructive and specific in your feedback
 
-When REVIEW.md is written, output exactly: AGENT_DONE
+When the review has been delivered, output exactly: AGENT_DONE
 If you cannot complete the review, output exactly: INPUT_NEEDED
 "#;
