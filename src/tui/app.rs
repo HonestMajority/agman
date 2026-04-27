@@ -405,6 +405,7 @@ struct InboxPollResult {
 struct InboxPollOutput {
     results: Vec<InboxPollResult>,
     stuck_skip_counts: std::collections::HashMap<String, u32>,
+    first_ready_at: std::collections::HashMap<String, Instant>,
 }
 
 /// One supervisor tick result for a single Running task.
@@ -747,6 +748,11 @@ pub struct App {
     supervisor_poll_rx: tokio_mpsc::UnboundedReceiver<SupervisorPollOutput>,
     supervisor_poll_active: bool,
     stuck_skip_counts: std::collections::HashMap<String, u32>,
+    /// First time each target was observed in the "ready" state. Used as a
+    /// 3-second cold-start buffer: deliveries are gated until this much time
+    /// has elapsed since the readiness flip. Cleared when the target leaves
+    /// the ready state (kill+relaunch re-arms the buffer).
+    first_ready_at: std::collections::HashMap<String, Instant>,
     /// Targets we've already emitted a one-shot "stalled" warning for this
     /// episode — prevents a per-cycle warn spam. Cleared when the target
     /// recovers (falls below `STALL_THRESHOLD`).
@@ -958,6 +964,7 @@ impl App {
             supervisor_poll_rx,
             supervisor_poll_active: false,
             stuck_skip_counts: std::collections::HashMap::new(),
+            first_ready_at: std::collections::HashMap::new(),
             stall_warned: std::collections::HashSet::new(),
             respawn_in_progress: None,
             respawn_tx,
@@ -5508,6 +5515,7 @@ impl App {
         self.inbox_poll_active = true;
         let tx = self.inbox_poll_tx.clone();
         let mut stuck_skip_counts = self.stuck_skip_counts.clone();
+        let mut first_ready_at = self.first_ready_at.clone();
 
         self.rt.spawn(async move {
             let output = tokio::task::spawn_blocking(move || {
@@ -5542,7 +5550,64 @@ impl App {
                     let mut delivered = 0;
                     let mut errors = Vec::new();
 
-                    // Decision 5: already-pasted rescue BEFORE readiness gate
+                    // Readiness gate (process-only check; no UI scraping) +
+                    // 3-second cold-start buffer. Runs BEFORE the already-pasted
+                    // rescue so a paste that landed during cold-start mounting
+                    // still gets a chance to settle before we send Enter.
+                    match Tmux::is_session_ready_in(&session_name, window_ref) {
+                        Ok((false, cmd)) => {
+                            tracing::info!(
+                                target_name = &target,
+                                session = &session_name,
+                                cmd = %cmd,
+                                "session not ready (foreground: {cmd}), skipping delivery this cycle"
+                            );
+
+                            // Re-arm the cold-start buffer: when claude restarts
+                            // we want a fresh 3s window once it next flips ready.
+                            first_ready_at.remove(&target);
+
+                            let counter = stuck_skip_counts.entry(target.clone()).or_insert(0);
+                            *counter += 1;
+
+                            results.push(InboxPollResult {
+                                target,
+                                delivered: 0,
+                                errors: vec![],
+                            });
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                target_name = &target,
+                                session = &session_name,
+                                error = %e,
+                                "session readiness check failed, skipping"
+                            );
+                            results.push(InboxPollResult {
+                                target,
+                                delivered: 0,
+                                errors: vec![],
+                            });
+                            continue;
+                        }
+                        Ok((true, _)) => {
+                            let ready_since = *first_ready_at
+                                .entry(target.clone())
+                                .or_insert_with(Instant::now);
+                            if ready_since.elapsed() < Duration::from_secs(3) {
+                                results.push(InboxPollResult {
+                                    target,
+                                    delivered: 0,
+                                    errors: vec![],
+                                });
+                                continue;
+                            }
+                            stuck_skip_counts.remove(&target);
+                        }
+                    }
+
+                    // Decision 5: already-pasted rescue (after readiness+buffer)
                     let first_msg = &undelivered[0];
                     let first_snippet = format!("[msg:{}:{}]", first_msg.from, first_msg.seq);
                     let already_pasted = Tmux::capture_pane_window(&session_name, window_ref)
@@ -5577,45 +5642,6 @@ impl App {
                             errors,
                         });
                         continue;
-                    }
-
-                    // Readiness gate (process-only check; no UI scraping)
-                    match Tmux::is_session_ready_in(&session_name, window_ref) {
-                        Ok((false, cmd)) => {
-                            tracing::info!(
-                                target_name = &target,
-                                session = &session_name,
-                                cmd = %cmd,
-                                "session not ready (foreground: {cmd}), skipping delivery this cycle"
-                            );
-
-                            let counter = stuck_skip_counts.entry(target.clone()).or_insert(0);
-                            *counter += 1;
-
-                            results.push(InboxPollResult {
-                                target,
-                                delivered: 0,
-                                errors: vec![],
-                            });
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::debug!(
-                                target_name = &target,
-                                session = &session_name,
-                                error = %e,
-                                "session readiness check failed, skipping"
-                            );
-                            results.push(InboxPollResult {
-                                target,
-                                delivered: 0,
-                                errors: vec![],
-                            });
-                            continue;
-                        }
-                        Ok((true, _)) => {
-                            stuck_skip_counts.remove(&target);
-                        }
                     }
 
                     'msg_loop: for msg in &undelivered {
@@ -5685,12 +5711,14 @@ impl App {
                 InboxPollOutput {
                     results,
                     stuck_skip_counts,
+                    first_ready_at,
                 }
             })
             .await
             .unwrap_or_else(|_| InboxPollOutput {
                 results: Vec::new(),
                 stuck_skip_counts: std::collections::HashMap::new(),
+                first_ready_at: std::collections::HashMap::new(),
             });
             let _ = tx.send(output);
         });
@@ -5704,6 +5732,7 @@ impl App {
         self.inbox_poll_active = false;
 
         self.stuck_skip_counts = output.stuck_skip_counts;
+        self.first_ready_at = output.first_ready_at;
 
         // One-shot warn the first time a target crosses STALL_THRESHOLD; clear
         // the warned marker when it recovers, so a later stall episode warns again.
