@@ -302,6 +302,36 @@ impl Tmux {
         cmd
     }
 
+    /// Build a `claude` CLI command string that loads its system prompt from a
+    /// file via `--system-prompt-file`.
+    ///
+    /// When `resume_id` is `Some`, emits `--resume <id>` and omits the system
+    /// prompt entirely (the resumed session already has all context). When
+    /// `resume_id` is `None`, emits `--system-prompt-file '<path>'` and
+    /// optionally `--session-id` to pin the session for future resumption.
+    ///
+    /// File-based delivery avoids embedding the prompt body in the shell
+    /// command line (which can be megabytes once skills/footers are appended)
+    /// and matches the launch flow used by the CEO/PM/researcher agents.
+    pub fn build_claude_command_with_prompt_file(
+        prompt_path: &Path,
+        resume_id: Option<&str>,
+        session_id: Option<&str>,
+    ) -> String {
+        let mut cmd = String::from("claude --dangerously-skip-permissions");
+        if let Some(id) = resume_id {
+            cmd.push_str(&format!(" --resume {}", id));
+            // No system-prompt when resuming — session already has context
+        } else {
+            let p = prompt_path.to_string_lossy().replace('\'', "'\\''");
+            cmd.push_str(&format!(" --system-prompt-file '{}'", p));
+            if let Some(id) = session_id {
+                cmd.push_str(&format!(" --session-id {}", id));
+            }
+        }
+        cmd
+    }
+
     /// Send keys to the first (and only) window/pane of a session.
     pub fn send_keys_to_session(session_name: &str, keys: &str) -> Result<()> {
         tracing::trace!(session = session_name, "sending keys to agent session");
