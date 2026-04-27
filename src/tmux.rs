@@ -565,8 +565,14 @@ impl Tmux {
         Self::is_claude_running_in(session_name, window)
     }
 
-    /// Return the pane PID (`#{pane_pid}`) for the given session/window, used by
-    /// the supervisor to SIGTERM a running `claude` cleanly before replacing it.
+    /// Return the pane PID (`#{pane_pid}`) for the given session/window.
+    ///
+    /// Note: this is the pane's *shell* process (zsh/bash), not whatever
+    /// foreground child it has spawned. The supervisor's kill path
+    /// deliberately does **not** signal this pid — SIGTERM/SIGKILL on the
+    /// shell tears down the entire tmux window. To stop a foreground
+    /// `claude`, send `/exit` via `send_keys_to_window` instead. Kept for
+    /// future diagnostic use.
     pub fn pane_pid(session_name: &str, window: Option<&str>) -> Result<Option<u32>> {
         let target = Self::tmux_target(session_name, window);
         let output = Command::new("tmux")
