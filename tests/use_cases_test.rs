@@ -3,7 +3,7 @@ mod helpers;
 use agman::git::parse_github_owner_repo;
 use agman::project::Project;
 use agman::repo_stats::RepoStats;
-use agman::task::{QueueItem, Task, TaskStatus};
+use agman::task::{QueueItem, SessionEntry, Task, TaskStatus};
 use agman::use_cases::{self, GithubItemKind, PrPollAction, WorktreeSource};
 use helpers::{create_test_project, create_test_task, init_test_repo, init_test_repo_at, test_config};
 
@@ -428,15 +428,16 @@ fn stop_task() {
     let mut task = create_test_task(&config, "repo", "branch");
     assert_eq!(task.meta.status, TaskStatus::Running);
 
-    use_cases::stop_task(&mut task).unwrap();
+    use_cases::stop_task(&config, &mut task).unwrap();
 
     assert_eq!(task.meta.status, TaskStatus::Stopped);
     assert!(task.meta.current_agent.is_none());
 
-    // .stop sentinel is written so a live supervisor can kill its claude.
+    // honor_stop clears the .stop sentinel after handling it — the
+    // supervisor pathway is synchronous now, so no sentinel should leak.
     assert!(
-        task.stop_path().exists(),
-        ".stop sentinel should exist after stop_task"
+        !task.stop_path().exists(),
+        ".stop sentinel should be cleared by honor_stop"
     );
 
     // Persisted to disk
@@ -452,8 +453,60 @@ fn stop_task_already_stopped_is_noop() {
     task.update_status(TaskStatus::Stopped).unwrap();
 
     // Should not error
-    use_cases::stop_task(&mut task).unwrap();
+    use_cases::stop_task(&config, &mut task).unwrap();
     assert_eq!(task.meta.status, TaskStatus::Stopped);
+}
+
+#[test]
+fn stop_task_finalizes_live_session() {
+    // A live session entry (stopped_at = None) must be finalized when the
+    // user stops the task. Before this fix, stop_task bypassed the
+    // supervisor and left session_history with dangling live entries.
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+    task.push_session(SessionEntry {
+        agent: "coder".to_string(),
+        session_id: "sid-live".to_string(),
+        started_at: chrono::Utc::now(),
+        stopped_at: None,
+        condition: None,
+    })
+    .unwrap();
+
+    use_cases::stop_task(&config, &mut task).unwrap();
+
+    let last = task.meta.session_history.last().unwrap();
+    assert!(
+        last.stopped_at.is_some(),
+        "live session must be finalized on stop"
+    );
+    assert_eq!(last.condition.as_deref(), Some("STOPPED"));
+}
+
+#[test]
+fn stop_task_restores_pre_command_flow_state() {
+    // If the user stops a task mid-stored-command, the task's flow_name and
+    // flow_step must be restored to the pre-command snapshot taken by
+    // `drain_queue` so the task isn't stranded in the command flow.
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+    task.meta.flow_name = "create-pr".to_string();
+    task.meta.flow_step = 1;
+    task.meta.flow_sub_step = 0;
+    task.meta.pre_command_flow_name = Some("new".to_string());
+    task.meta.pre_command_flow_step = Some(4);
+    task.save_meta().unwrap();
+
+    use_cases::stop_task(&config, &mut task).unwrap();
+
+    assert_eq!(task.meta.status, TaskStatus::Stopped);
+    assert_eq!(task.meta.flow_name, "new");
+    assert_eq!(task.meta.flow_step, 4);
+    assert_eq!(task.meta.flow_sub_step, 0);
+    assert!(task.meta.pre_command_flow_name.is_none());
+    assert!(task.meta.pre_command_flow_step.is_none());
 }
 
 // ---------------------------------------------------------------------------

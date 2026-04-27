@@ -361,7 +361,7 @@ fn cmd_stop_task(config: &Config, task_id: &str) -> Result<()> {
     }
 
     let display_id = task.meta.task_id();
-    use_cases::stop_task(&mut task)?;
+    use_cases::stop_task(config, &mut task)?;
 
     tracing::info!(task_id = %display_id, "stopped task via CLI");
     println!("Task '{}' stopped.", display_id);

@@ -364,22 +364,34 @@ pub fn list_archived_tasks(config: &Config) -> Vec<(Task, String)> {
         .collect()
 }
 
-/// Stop a running task: set status to Stopped and clear current_agent.
+/// Stop a running task by driving the full supervisor stop pathway.
 ///
-/// This is the pure business logic behind `App::stop_task()`.
-/// It does NOT send Ctrl+C to tmux — that's a side effect handled by the caller.
-/// It DOES write the `.stop` sentinel file so the supervisor (if running) can
-/// kill the live `claude` session on its next poll tick.
-pub fn stop_task(task: &mut Task) -> Result<()> {
+/// Routes through `supervisor::honor_stop`, which:
+/// - Kills the currently-running `claude` in the agman pane (so it doesn't
+///   stay orphaned after the user clicked stop).
+/// - Finalizes the last `SessionEntry` with `stopped_at` + `condition =
+///   STOPPED`.
+/// - Restores any pre-command flow snapshot so the task is back to its
+///   original flow position when stopped mid-stored-command.
+/// - Clears the `.stop` and other sentinel files.
+/// - Sets status to Stopped and clears `current_agent`.
+///
+/// This is the pure business logic behind `App::stop_task()`. The supervisor
+/// pathway is preferred over a direct status flip because directly setting
+/// status to Stopped would orphan the live claude in the agman window, leak
+/// session-history entries with `stopped_at = null`, and leave stored-command
+/// flow state stranded.
+pub fn stop_task(config: &Config, task: &mut Task) -> Result<()> {
     if task.meta.status == TaskStatus::Stopped {
         return Ok(());
     }
-    tracing::info!(task_id = %task.meta.task_id(), old_status = %task.meta.status, new_status = "stopped", "stopping task");
-    task.request_stop()?;
-    task.update_status(TaskStatus::Stopped)?;
-    task.meta.current_agent = None;
-    task.save_meta()?;
-    Ok(())
+    tracing::info!(
+        task_id = %task.meta.task_id(),
+        old_status = %task.meta.status,
+        new_status = "stopped",
+        "stopping task via supervisor::honor_stop"
+    );
+    crate::supervisor::honor_stop(config, task)
 }
 
 /// Mark a stopped task as seen (user has viewed it in the preview).
