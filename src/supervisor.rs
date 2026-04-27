@@ -273,6 +273,13 @@ fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Resu
 /// `--resume`. The long-lived CEO/PM/researcher lifecycle (which always
 /// resumes the same session) does not apply here.
 ///
+/// We DO mint a fresh UUID and pass it via `--session-id` on every launch
+/// (the same way CEO/PM/researcher do on their first launch). That pins
+/// claude's session id to a value we know, so the entry in `session_history`
+/// is the *real* claude session id and the user can run `claude --resume
+/// <id>` to revisit a historical conversation. Without this, claude would
+/// mint its own session id internally and we'd have no easy way to learn it.
+///
 /// Sequence:
 /// 1. Reconcile any prior live session entry whose `stopped_at` was never
 ///    stamped (defensive — caller normally does this via
@@ -292,14 +299,6 @@ fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Resu
 ///    gate prevents delivery during the (now-empty) shell-only window.
 /// 6. `send-keys` the `claude` launch command to `<session>:agman`.
 /// 7. Push a `SessionEntry` and update the displayed agent.
-///
-/// The session_id stored on the entry is an internal correlation handle
-/// (we mint a UUID locally). Claude generates its own session id internally
-/// since we no longer pass `--session-id` — the two ids do NOT match. The
-/// stored id is for our own state-machine routing and for surfacing recent
-/// agent activity in the TUI; it is not directly resumable. (Users who want
-/// to resume a prior conversation manually can run `claude --resume` from
-/// the worktree and pick from claude's own listing.)
 ///
 /// The `send-keys` call happens *before* any session-history mutation so
 /// that a tmux failure leaves the task in a clean half-state (previous
@@ -378,14 +377,15 @@ pub fn start_agent_step(
         );
     }
 
-    let cmd = Tmux::build_claude_command_with_prompt_file(&task.current_prompt_path());
+    // Mint claude's session id locally and pin it via `--session-id`. This
+    // is the same pattern CEO/PM/researcher use on their first launch — we
+    // know the id because we set it, so `session_history.session_id` IS
+    // claude's real, resumable session id.
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let cmd =
+        Tmux::build_claude_command_with_prompt_file(&task.current_prompt_path(), &session_id);
     Tmux::send_keys_to_window(&session_name, AGMAN_WINDOW, &cmd)?;
 
-    // Mint an internal correlation id and record the launch in
-    // `session_history`. NOTE: this is NOT claude's actual session id (we
-    // no longer pass --session-id). It exists for our own bookkeeping and
-    // for the TUI's "current agent" display.
-    let session_id = uuid::Uuid::new_v4().to_string();
     let entry = SessionEntry {
         agent: agent_name.to_string(),
         session_id: session_id.clone(),
@@ -1136,16 +1136,21 @@ mod tests {
     }
 
     #[test]
-    fn claude_command_uses_prompt_file_only() {
-        // Task agents always start fresh — the launch command must contain
-        // --system-prompt-file and must NOT contain --session-id or --resume.
+    fn claude_command_pins_session_id_and_loads_prompt_from_file() {
+        // Task agents always start fresh, but we still pass --session-id so
+        // claude's session id matches what we store in session_history (this
+        // is the same pattern CEO/PM use on their first launch). Resume is
+        // never used for task agents.
         let tmp = tempfile::tempdir().unwrap();
         let (_cfg, task) = build_task(&tmp);
-        let cmd = Tmux::build_claude_command_with_prompt_file(&task.current_prompt_path());
+        let cmd = Tmux::build_claude_command_with_prompt_file(
+            &task.current_prompt_path(),
+            "abc-123",
+        );
         assert!(cmd.contains(".current-prompt.md"));
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--system-prompt-file"));
-        assert!(!cmd.contains("--session-id"), "task agents never pin a session id");
+        assert!(cmd.contains("--session-id abc-123"));
         assert!(!cmd.contains("--resume"), "task agents never resume");
     }
 

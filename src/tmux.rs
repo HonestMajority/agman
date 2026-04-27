@@ -302,19 +302,31 @@ impl Tmux {
         cmd
     }
 
-    /// Build a `claude` CLI command string that loads its system prompt from a
-    /// file via `--system-prompt-file`. Always launches a fresh session — task
-    /// agents are disposable and never resume, so there is no `--session-id`
-    /// or `--resume` argument. Claude generates its own session id internally.
+    /// Build a `claude` CLI command string that loads its system prompt from
+    /// a file via `--system-prompt-file` and pins claude's session id to a
+    /// caller-supplied UUID via `--session-id`.
     ///
-    /// File-based delivery avoids embedding the prompt body in the shell
-    /// command line (which can be megabytes once skills/footers are appended)
-    /// and matches the launch flow used by the CEO/PM/researcher agents.
-    pub fn build_claude_command_with_prompt_file(prompt_path: &Path) -> String {
+    /// Pinning the session id (same pattern CEO/PM/researcher use on first
+    /// launch) lets us store claude's actual session id in `session_history`,
+    /// so the user can `claude --resume <id>` from the worktree to revisit a
+    /// historical conversation. Without `--session-id`, claude would generate
+    /// its own id internally and we'd have no easy way to learn it.
+    ///
+    /// Task agents never `--resume` — they are disposable, every flow step
+    /// launches a fresh claude with a fresh id. This function therefore takes
+    /// only a session id, not a resume id.
+    ///
+    /// File-based prompt delivery avoids embedding the prompt body in the
+    /// shell command line (which can be megabytes once skills/footers are
+    /// appended).
+    pub fn build_claude_command_with_prompt_file(
+        prompt_path: &Path,
+        session_id: &str,
+    ) -> String {
         let p = prompt_path.to_string_lossy().replace('\'', "'\\''");
         format!(
-            "claude --dangerously-skip-permissions --system-prompt-file '{}'",
-            p
+            "claude --dangerously-skip-permissions --system-prompt-file '{}' --session-id {}",
+            p, session_id
         )
     }
 
