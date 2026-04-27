@@ -117,8 +117,7 @@ pub enum PollTarget {
     /// subsequent `launch_next_step` failed, or an `advance` relaunched
     /// and tmux was briefly unavailable).
     NeedsLaunch,
-    /// Not a supervisor concern — either the task isn't Running, or it has
-    /// no session history at all (still driven by `AgentRunner` today).
+    /// Not a supervisor concern — the task isn't Running.
     Skip,
 }
 
@@ -127,14 +126,11 @@ pub enum PollTarget {
 /// Classification rules (in order):
 /// 1. Non-Running → `Skip`.
 /// 2. Last session entry present and `stopped_at.is_none()` → `LiveSession`.
-/// 3. Last session entry present and `stopped_at.is_some()` → `NeedsLaunch`
-///    (half-state recovery — supervisor-driven task, ended without a relaunch).
-/// 4. No session history → `Skip` (not yet supervised; `AgentRunner` owns it).
-///
-/// Keeping the "no history → Skip" branch is important during the transition
-/// window when `AgentRunner::run_direct` is still the default driver for new
-/// tasks. Once every task goes through the supervisor, rule 4 can be merged
-/// into rule 3 (or removed) so that a first-ever launch failure also retries.
+/// 3. Otherwise (last session stopped, or no session history yet) →
+///    `NeedsLaunch`. Covers both half-state recovery (a prior session ended
+///    without a relaunch) and first-launch failure retry (the launcher
+///    pushes a `SessionEntry` only on a successful `send-keys`, so an
+///    empty history on a Running task means the launch never landed).
 pub fn classify(task: &Task) -> PollTarget {
     if task.meta.status != TaskStatus::Running {
         return PollTarget::Skip;
@@ -144,7 +140,7 @@ pub fn classify(task: &Task) -> PollTarget {
             session_id: entry.session_id.clone(),
         },
         Some(_) => PollTarget::NeedsLaunch,
-        None => PollTarget::Skip,
+        None => PollTarget::NeedsLaunch,
     }
 }
 
@@ -1595,15 +1591,16 @@ mod tests {
     }
 
     #[test]
-    fn classify_skips_running_without_session_history() {
-        // A Running task with no session_history entries is still owned by
-        // `AgentRunner` during the transition — supervisor must not touch it.
+    fn classify_needs_launch_on_empty_history_when_running() {
+        // A Running task with no session_history means the very first launch
+        // attempt did not land (start_agent_step pushes the entry only after
+        // a successful send-keys). Supervisor should retry on the next tick.
         let tmp = tempfile::tempdir().unwrap();
         let (_cfg, task) = build_task(&tmp);
         assert_eq!(task.meta.status, TaskStatus::Running);
         assert!(task.meta.session_history.is_empty());
 
-        assert_eq!(classify(&task), PollTarget::Skip);
+        assert_eq!(classify(&task), PollTarget::NeedsLaunch);
     }
 
     #[test]

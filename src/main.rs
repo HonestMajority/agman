@@ -204,59 +204,17 @@ fn cmd_flow_run(config: &Config, task_id: &str) -> Result<()> {
     let mut task = Task::load_by_id(config, task_id)?;
 
     println!(
-        "Running flow '{}' for task '{}'",
+        "Launching flow '{}' for task '{}'",
         task.meta.flow_name,
         task.meta.task_id()
     );
-    println!();
 
-    let runner = agent::AgentRunner::new(config.clone());
-    let result = runner.run_flow(&mut task)?;
+    supervisor::ensure_task_tmux(&task)
+        .with_context(|| format!("failed to prepare tmux for task '{}'", task_id))?;
+    supervisor::launch_next_step(config, &mut task)
+        .with_context(|| format!("failed to launch flow for task '{}'", task_id))?;
 
-    println!();
-    println!("Flow finished with: {}", result);
-
-    // If the flow paused for user input, just print a message and exit
-    if result == flow::StopCondition::InputNeeded {
-        println!("Task needs user input. Check the TUI to answer questions.");
-        return Ok(());
-    }
-
-    // If review_after is enabled and the flow completed successfully, run review-pr
-    // Re-read meta in case it was updated during the flow
-    task.reload_meta()?;
-    if task.meta.review_after {
-        let is_success = result == flow::StopCondition::AgentDone
-            || result == flow::StopCondition::TaskComplete;
-        if is_success {
-            println!();
-            println!("Running post-flow review...");
-
-            // Reset review_after so it doesn't re-trigger
-            task.meta.review_after = false;
-            task.save_meta()?;
-
-            // Load and run the review-pr command flow
-            if let Ok(Some(cmd)) =
-                command::StoredCommand::get_by_id(&config.commands_dir, "review-pr")
-            {
-                let review_flow = Flow::load(&cmd.flow_path)?;
-                task.meta.flow_step = 0;
-                task.save_meta()?;
-
-                let review_result = runner.run_flow_with(&mut task, &review_flow)?;
-                println!();
-                println!("Review finished with: {}", review_result);
-            } else {
-                println!("Warning: review-pr command not found, skipping review");
-            }
-        } else {
-            // Flow didn't complete successfully, reset flag
-            task.meta.review_after = false;
-            task.save_meta()?;
-        }
-    }
-
+    println!("Supervisor launched. Watch with: agman attach {}", task_id);
     Ok(())
 }
 
@@ -676,7 +634,7 @@ fn cmd_create_pm_task(
         None => String::new(),
     };
 
-    let task = use_cases::create_pm_task(
+    let mut task = use_cases::create_pm_task(
         config,
         project,
         repo,
@@ -685,14 +643,10 @@ fn cmd_create_pm_task(
     )?;
     let task_id = task.meta.task_id();
 
-    let worktree_path = task.meta.primary_repo().worktree_path.clone();
-    let session = &task.meta.primary_repo().tmux_session;
-
-    Tmux::create_session_with_windows(session, &worktree_path)?;
-
-    let flow_cmd = format!("agman flow-run {}", task_id);
-    tracing::info!(task_id = %task_id, "dispatching flow-run for PM task");
-    let _ = Tmux::send_keys_to_window(session, "agman", &flow_cmd);
+    supervisor::ensure_task_tmux(&task)
+        .with_context(|| format!("failed to prepare tmux for PM task '{}'", task_id))?;
+    supervisor::launch_next_step(config, &mut task)
+        .with_context(|| format!("failed to launch flow for PM task '{}'", task_id))?;
 
     println!("Task '{}' created in project '{}'", task_id, project);
     Ok(())
