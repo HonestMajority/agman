@@ -5764,7 +5764,7 @@ impl App {
                     match supervisor::classify(&task) {
                         supervisor::PollTarget::Skip => continue,
                         supervisor::PollTarget::LiveSession { session_id } => {
-                            match supervisor::poll(&task, &session_id) {
+                            match supervisor::poll(&task) {
                                 Ok(outcome) => items.push(SupervisorPollItem::Tick {
                                     task_id: task.meta.task_id(),
                                     session_id,

@@ -55,21 +55,6 @@ impl std::fmt::Display for StopCondition {
     }
 }
 
-impl StopCondition {
-    pub fn from_output(output: &str) -> Option<Self> {
-        let output = output.trim();
-        if output.contains("AGENT_DONE") {
-            Some(StopCondition::AgentDone)
-        } else if output.contains("TASK_COMPLETE") {
-            Some(StopCondition::TaskComplete)
-        } else if output.contains("INPUT_NEEDED") {
-            Some(StopCondition::InputNeeded)
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FailAction {

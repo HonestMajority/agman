@@ -1,19 +1,29 @@
 //! Task supervisor: runs agent flow steps as interactive `claude` sessions
 //! inside a tmux window (the task session's `agman` window) and advances the
-//! flow based on sentinel files + pane scanning.
+//! flow based on sentinel files.
 //!
 //! Each step launches a fresh interactive `claude
-//! --system-prompt-file <task_dir>/.current-prompt.md --session-id <uuid>`
-//! (or `claude --resume <uuid>` to continue the same agent across iterations).
+//! --dangerously-skip-permissions --system-prompt-file
+//! <task_dir>/.current-prompt.md`. Task agents are disposable: every flow
+//! transition kills the prior `claude` and starts a fresh one with the next
+//! agent's system prompt. We never `--resume` task agents — that lifecycle
+//! belongs to the long-lived CEO/PM/researcher.
+//!
 //! The system prompt holds **identity only** — who the agent is and how to
 //! finish — while the dynamic per-launch payload (current TASK.md, any
 //! feedback, git diff, recent commits) is delivered separately through the
 //! task inbox once claude is ready to receive messages. This mirrors the
 //! CEO/PM/researcher launch flow.
 //!
-//! The supervisor polls for `<task_dir>/.agent-done` (written by the agent
-//! as its last action) or, as a fallback, scans the pane for
-//! `AGENT_DONE:<uuid>` / `TASK_COMPLETE:<uuid>` / `INPUT_NEEDED:<uuid>`.
+//! Completion is detected purely by file existence. The agent's last action
+//! is to `touch` one of three sentinel files in `<task_dir>`:
+//!   - `.agent-done`     — finished this step, hand off to the next
+//!   - `.task-complete`  — entire task is complete
+//!   - `.input-needed`   — pause and wait for user input
+//!
+//! Pane scanning for magic strings is intentionally not used. It is fragile
+//! in interactive mode (strings can appear in code blocks or scrollback
+//! unrelated to the actual signal).
 //!
 //! The supervisor is intentionally built around one-shot tick operations so
 //! the TUI main loop can drive it the same way it drives the inbox poller.
@@ -152,24 +162,88 @@ pub fn classify(task: &Task) -> PollTarget {
     }
 }
 
-/// Kill the `claude` process currently running in a session's `agman` window,
-/// best-effort. Tries SIGTERM on the pane pid; falls back to two Ctrl+C key
-/// presses if the pid is not available.
+/// Kill the `claude` process currently running in a session's `agman` window
+/// and wait until the pane is back at a shell prompt.
+///
+/// This must be reliable: the inbox poller will paste-inject the next agent's
+/// work directive into whatever process happens to be in the foreground of
+/// the agman pane. If the prior `claude` is still alive when we queue the
+/// next agent's work, the wrong agent receives it.
+///
+/// Sequence:
+/// 1. Resolve the pane pid via `tmux display-message #{pane_pid}`.
+/// 2. If no pid (typically because the tmux session itself is gone), send a
+///    best-effort Ctrl+C×2 and return Ok — there is nothing meaningful to
+///    kill, and the caller will fail on its subsequent `send-keys` attempt.
+/// 3. SIGTERM the pid and poll `is_claude_running_in` until the foreground
+///    is back to a shell (claude is gone) or a 3-second deadline expires.
+/// 4. If SIGTERM didn't take, escalate to SIGKILL and re-check.
+/// 5. Bail with an error if the pane is *still* not back to a shell — the
+///    caller must not launch the next agent into a pane that's still
+///    occupied.
 pub fn kill_current_claude(session_name: &str) -> Result<()> {
-    match Tmux::pane_pid(session_name, Some(AGMAN_WINDOW))? {
-        Some(pid) => {
-            tracing::debug!(session = session_name, pid, "SIGTERM-ing pane pid");
-            let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).output();
-            std::thread::sleep(std::time::Duration::from_millis(300));
-        }
+    let pid = Tmux::pane_pid(session_name, Some(AGMAN_WINDOW))?;
+
+    let pid = match pid {
+        Some(pid) => pid,
         None => {
-            tracing::debug!(session = session_name, "no pane pid; sending Ctrl+C x2");
+            tracing::debug!(
+                session = session_name,
+                "no pane pid; tmux session likely missing — best-effort Ctrl+C x2"
+            );
             let _ = Tmux::send_ctrl_c_to_window(session_name, AGMAN_WINDOW);
             std::thread::sleep(std::time::Duration::from_millis(150));
             let _ = Tmux::send_ctrl_c_to_window(session_name, AGMAN_WINDOW);
+            return Ok(());
         }
+    };
+
+    tracing::debug!(session = session_name, pid, "SIGTERM-ing pane pid");
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .output();
+
+    if wait_for_pane_idle(session_name, std::time::Duration::from_secs(3)) {
+        tracing::debug!(session = session_name, "pane back to shell after SIGTERM");
+        return Ok(());
     }
-    Ok(())
+
+    tracing::warn!(
+        session = session_name,
+        pid,
+        "SIGTERM did not land within 3s; escalating to SIGKILL"
+    );
+    let _ = Command::new("kill")
+        .arg("-KILL")
+        .arg(pid.to_string())
+        .output();
+
+    if wait_for_pane_idle(session_name, std::time::Duration::from_secs(2)) {
+        tracing::debug!(session = session_name, "pane back to shell after SIGKILL");
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "failed to kill claude in pane '{}:{}' after SIGTERM+SIGKILL",
+        session_name,
+        AGMAN_WINDOW
+    )
+}
+
+/// Poll `Tmux::is_claude_running_in` for up to `timeout`, returning `true`
+/// once the foreground process is a shell (i.e. claude has exited) and
+/// `false` if the deadline expires first. Used by `kill_current_claude` to
+/// verify a kill landed before the caller launches the next agent.
+fn wait_for_pane_idle(session_name: &str, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if let Ok((false, _)) = Tmux::is_claude_running_in(session_name, Some(AGMAN_WINDOW)) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    false
 }
 
 /// Build the **system prompt** for a step (identity only — no TASK.md,
@@ -192,52 +266,47 @@ fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Resu
     agent.build_inbox_message(task)
 }
 
-/// Decide whether to resume the previous claude session or start a fresh one.
+/// Start an agent step as a fresh interactive claude session.
 ///
-/// Returns `(resume_id, session_id)`:
-/// - `(Some(id), None)` — resume the previous session in-place. Used when the
-///   last entry in `session_history` is still live (`stopped_at.is_none()`)
-///   and was opened by the same `agent_name` we're about to launch.
-/// - `(None, Some(new_uuid))` — start fresh. Used in every other case
-///   (no history, last session already stopped, or different agent).
-fn compute_session_handles(task: &Task, agent_name: &str) -> (Option<String>, Option<String>) {
-    if let Some(last) = task.meta.session_history.last() {
-        if last.stopped_at.is_none() && last.agent == agent_name {
-            return (Some(last.session_id.clone()), None);
-        }
-    }
-    (None, Some(uuid::Uuid::new_v4().to_string()))
-}
-
-/// Start an agent step as an interactive claude session.
+/// Task agents are disposable. Every flow transition launches a brand-new
+/// `claude` process with the next agent's system prompt — there is no
+/// `--resume`. The long-lived CEO/PM/researcher lifecycle (which always
+/// resumes the same session) does not apply here.
 ///
 /// Sequence:
-/// 1. Compute resume vs. fresh session handles via `compute_session_handles`
-///    — if the last session is still live and was opened by the same agent,
-///    we will `claude --resume` instead of starting fresh.
-/// 2. Kill any prior claude running in the agman window.
-/// 3. Clear stale `.agent-done`.
-/// 4. For fresh launches: build + write the **system prompt** (identity only)
-///    to `.current-prompt.md`. Resumes skip this — claude already has the
-///    system prompt in its session state.
-/// 5. Build the inbox message (the dynamic per-launch work payload).
-/// 6. `send-keys` the `claude` launch command to `<session>:agman` using
-///    `Tmux::build_claude_command_with_prompt_file`.
-/// 7. On successful send: for fresh launches, append a `SessionEntry` and
-///    update the displayed agent; for resumes, just stamp the existing
-///    entry's `started_at` so the TUI shows current activity.
-/// 8. Append the inbox message to the task inbox via `inbox::append_message`
-///    — the TUI's inbox poller will inject it once claude is ready.
+/// 1. Reconcile any prior live session entry whose `stopped_at` was never
+///    stamped (defensive — caller normally does this via
+///    `finish_last_session`). Without this, `classify` could route a
+///    relaunched task to `LiveSession` for a session id whose claude is
+///    already dead.
+/// 2. Kill the prior `claude` in the agman pane and wait until the shell
+///    prompt is back. Bails if the kill couldn't be verified — we must not
+///    launch the next agent into a pane that's still occupied.
+/// 3. Clear all three sentinel files (`.agent-done`, `.task-complete`,
+///    `.input-needed`) so the new step starts from a clean slate.
+/// 4. Write the new agent's system prompt to `.current-prompt.md`.
+/// 5. Queue the dynamic per-launch work directive (TASK.md, feedback, git
+///    diff, recent commits) onto the task inbox tagged with the project
+///    name. The TUI's inbox poller delivers it to the new claude once the
+///    pane's foreground process indicates claude is ready — the readiness
+///    gate prevents delivery during the (now-empty) shell-only window.
+/// 6. `send-keys` the `claude` launch command to `<session>:agman`.
+/// 7. Push a `SessionEntry` and update the displayed agent.
 ///
-/// Returns the active `session_id` (newly-minted or resumed) so callers can
-/// log or correlate.
+/// The session_id stored on the entry is an internal correlation handle
+/// (we mint a UUID locally). Claude generates its own session id internally
+/// since we no longer pass `--session-id` — the two ids do NOT match. The
+/// stored id is for our own state-machine routing and for surfacing recent
+/// agent activity in the TUI; it is not directly resumable. (Users who want
+/// to resume a prior conversation manually can run `claude --resume` from
+/// the worktree and pick from claude's own listing.)
 ///
-/// The `send-keys` call happens *before* any session-history mutation so that
-/// a tmux failure leaves the task in a clean half-state (previous session
-/// state untouched) that the supervisor's `classify` can recover from on the
-/// next tick. If the push happened first and send-keys failed, `classify`
-/// would see `LiveSession` for a claude that never actually launched, and
-/// `poll` would return `Idle` forever.
+/// The `send-keys` call happens *before* any session-history mutation so
+/// that a tmux failure leaves the task in a clean half-state (previous
+/// session state untouched) that the supervisor's `classify` can recover
+/// from on the next tick. If the push happened first and send-keys failed,
+/// `classify` would see `LiveSession` for a claude that never launched and
+/// `poll` would never observe a sentinel.
 ///
 /// Callers must run `ensure_task_tmux(task)` before reaching this function
 /// — `start_agent_step` targets `<session>:agman` via `send-keys` and will
@@ -251,41 +320,43 @@ pub fn start_agent_step(
 ) -> Result<String> {
     let session_name = supervisor_session(task)?;
 
-    // Decide: resume the live session for the same agent, or start fresh?
-    let (resume_id, fresh_id) = compute_session_handles(task, agent_name);
-
-    // If we're starting fresh but a prior session is still live (different
-    // agent, or `compute_session_handles` decided to abandon it), reconcile
-    // bookkeeping before killing the underlying claude.
-    if resume_id.is_none() {
-        if let Some(last) = task.meta.session_history.last() {
-            if last.stopped_at.is_none() {
-                tracing::warn!(
-                    task_id = %task.meta.task_id(),
-                    stale_session_id = %last.session_id,
-                    stale_agent = %last.agent,
-                    "start_agent_step: prior session not finished by caller; reconciling before relaunch"
-                );
-                task.finish_last_session(Some("RELAUNCHED".to_string()))?;
-            }
+    // Reconcile any prior session that wasn't cleanly closed — task agents
+    // never resume, so a stale live entry would only confuse `classify`.
+    if let Some(last) = task.meta.session_history.last() {
+        if last.stopped_at.is_none() {
+            tracing::warn!(
+                task_id = %task.meta.task_id(),
+                stale_session_id = %last.session_id,
+                stale_agent = %last.agent,
+                "start_agent_step: prior session not finished by caller; reconciling before relaunch"
+            );
+            task.finish_last_session(Some("RELAUNCHED".to_string()))?;
         }
     }
 
+    // Kill the prior claude and wait for the pane to be idle. This MUST
+    // happen before queuing the inbox message — otherwise the inbox poller
+    // could paste the next agent's work directive into the dying claude.
     kill_current_claude(&session_name)?;
-    task.clear_agent_done()?;
 
-    // Fresh launches need the system prompt on disk for `--system-prompt-file`.
-    // Resumes skip this — claude already has the system prompt in session state.
-    if resume_id.is_none() {
-        prepare_system_prompt(config, task, agent_name)?;
-    }
+    // Wipe all sentinel files so the new agent's signal can't be confused
+    // with stale state from the previous step.
+    task.clear_sentinels()?;
 
-    // Build the inbox message and queue it BEFORE sending keys. The TUI's
-    // inbox poller (already wired up for task targets with `window:
-    // Some("agman")`) will deliver it only once claude is actually ready, so
-    // it's harmless if send_keys fails afterward — the message just waits.
-    // Queuing first also keeps `inbox::append_message` failures from leaking
-    // a launched-but-unmessaged claude.
+    // Each fresh launch needs its system prompt on disk for
+    // `--system-prompt-file <path>`.
+    prepare_system_prompt(config, task, agent_name)?;
+
+    // Queue the work directive onto the inbox BEFORE sending keys. The TUI's
+    // inbox poller is window-scoped (`Some("agman")`) and will only deliver
+    // once claude is ready (foreground process != shell), so it's harmless
+    // if send_keys fails afterward — the message just waits. Queuing first
+    // also keeps `inbox::append_message` failures from leaking a
+    // launched-but-unmessaged claude.
+    //
+    // The sender tag is the project name (the PM that owns the task) so the
+    // agent sees `[Message from <project>]:`. "supervisor" is an internal
+    // implementation detail and would be confusing to the agent.
     //
     // Edge case: a send_keys failure followed by a `NeedsLaunch` retry will
     // queue a second copy of the same work payload. This is preferable to
@@ -293,7 +364,13 @@ pub fn start_agent_step(
     // and the agent simply seeing TASK.md twice is benign.
     let inbox_msg = prepare_inbox_message(config, task, agent_name)?;
     let inbox_path = config.task_inbox(&task.meta.task_id());
-    if let Err(e) = inbox::append_message(&inbox_path, "supervisor", &inbox_msg) {
+    let sender = task
+        .meta
+        .project
+        .as_deref()
+        .unwrap_or("supervisor")
+        .to_string();
+    if let Err(e) = inbox::append_message(&inbox_path, &sender, &inbox_msg) {
         tracing::warn!(
             task_id = %task.meta.task_id(),
             error = %e,
@@ -301,78 +378,51 @@ pub fn start_agent_step(
         );
     }
 
-    let cmd = Tmux::build_claude_command_with_prompt_file(
-        &task.current_prompt_path(),
-        resume_id.as_deref(),
-        fresh_id.as_deref(),
-    );
+    let cmd = Tmux::build_claude_command_with_prompt_file(&task.current_prompt_path());
     Tmux::send_keys_to_window(&session_name, AGMAN_WINDOW, &cmd)?;
 
-    // Reflect the launch in session_history. For fresh launches we push a new
-    // entry; for resumes we just refresh `started_at` on the existing entry.
-    let session_id = if let Some(id) = resume_id.clone() {
-        if let Some(last) = task.meta.session_history.last_mut() {
-            last.started_at = chrono::Utc::now();
-        }
-        task.save_meta()?;
-        id
-    } else {
-        let id = fresh_id
-            .clone()
-            .expect("compute_session_handles always returns one of resume_id or session_id");
-        let entry = SessionEntry {
-            agent: agent_name.to_string(),
-            session_id: id.clone(),
-            started_at: chrono::Utc::now(),
-            stopped_at: None,
-            condition: None,
-        };
-        task.push_session(entry)?;
-        task.update_agent(Some(agent_name.to_string()))?;
-        id
+    // Mint an internal correlation id and record the launch in
+    // `session_history`. NOTE: this is NOT claude's actual session id (we
+    // no longer pass --session-id). It exists for our own bookkeeping and
+    // for the TUI's "current agent" display.
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let entry = SessionEntry {
+        agent: agent_name.to_string(),
+        session_id: session_id.clone(),
+        started_at: chrono::Utc::now(),
+        stopped_at: None,
+        condition: None,
     };
+    task.push_session(entry)?;
+    task.update_agent(Some(agent_name.to_string()))?;
 
     tracing::info!(
         task_id = %task.meta.task_id(),
         agent = agent_name,
         session_id = %session_id,
-        resumed = resume_id.is_some(),
-        "supervisor launched agent step"
+        sender = %sender,
+        "supervisor launched fresh agent step"
     );
 
     Ok(session_id)
 }
 
-/// One supervisor tick. Reads `.stop` first, then `.agent-done`, then falls
-/// back to scanning the tmux pane for `AGENT_DONE:<session_id>` /
-/// `TASK_COMPLETE:<session_id>` / `INPUT_NEEDED:<session_id>`.
-pub fn poll(task: &Task, session_id: &str) -> Result<PollOutcome> {
+/// One supervisor tick. Reads `.stop` first, then checks the three sentinel
+/// files (`.task-complete`, `.input-needed`, `.agent-done`) for existence.
+///
+/// Detection is purely existence-based: an agent's last action is to `touch`
+/// one of the sentinel files in `<task_dir>`, and the supervisor reports the
+/// strongest signal present. No content is read from the sentinel files; no
+/// pane scanning is performed (it is fragile in interactive mode — magic
+/// strings can appear in code blocks and scrollback unrelated to the actual
+/// signal).
+pub fn poll(task: &Task) -> Result<PollOutcome> {
     if task.stop_requested() {
         return Ok(PollOutcome::StopRequested);
     }
 
-    if let Some(raw) = task.take_agent_done()? {
-        if let Some(cond) = StopCondition::from_output(&raw) {
-            return Ok(PollOutcome::Condition(cond));
-        }
-        tracing::warn!(
-            task_id = %task.meta.task_id(),
-            raw = %raw,
-            "unparseable .agent-done sentinel; ignoring"
-        );
-    }
-
-    if let Ok(session_name) = supervisor_session(task) {
-        let pane = Tmux::capture_pane_window(&session_name, Some(AGMAN_WINDOW))
-            .unwrap_or_default();
-        for magic in ["AGENT_DONE", "TASK_COMPLETE", "INPUT_NEEDED"] {
-            let needle = format!("{}:{}", magic, session_id);
-            if pane.contains(&needle) {
-                if let Some(cond) = StopCondition::from_output(magic) {
-                    return Ok(PollOutcome::Condition(cond));
-                }
-            }
-        }
+    if let Some(cond) = task.take_sentinel()? {
+        return Ok(PollOutcome::Condition(cond));
     }
 
     Ok(PollOutcome::Idle)
@@ -983,7 +1033,7 @@ pub fn honor_stop(config: &Config, task: &mut Task) -> Result<()> {
         let _ = kill_current_claude(&session);
     }
     task.clear_stop()?;
-    task.clear_agent_done()?;
+    task.clear_sentinels()?;
     task.finish_last_session(Some("STOPPED".to_string()))?;
     task.update_agent(None)?;
     task.update_status(TaskStatus::Stopped)?;
@@ -996,15 +1046,12 @@ mod tests {
 
     #[test]
     fn session_ids_are_unique() {
-        // compute_session_handles mints fresh UUIDs via uuid::Uuid::new_v4()
-        // when no resume is possible. Sample a batch and assert uniqueness so
-        // we catch any future regression that would collide live sessions.
-        let tmp = tempfile::tempdir().unwrap();
-        let (_cfg, task) = build_task(&tmp);
+        // start_agent_step mints fresh UUIDs via uuid::Uuid::new_v4() for
+        // each launch. Sample a batch directly and assert uniqueness so we
+        // catch any future regression that would collide live sessions.
         let mut seen = std::collections::HashSet::new();
         for _ in 0..64 {
-            let (_, fresh) = compute_session_handles(&task, "coder");
-            let id = fresh.expect("empty history → fresh id");
+            let id = uuid::Uuid::new_v4().to_string();
             assert!(seen.insert(id), "duplicate session id");
         }
     }
@@ -1032,16 +1079,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (_cfg, task) = build_task(&tmp);
         task.request_stop().unwrap();
-        assert_eq!(poll(&task, "sid").unwrap(), PollOutcome::StopRequested);
+        assert_eq!(poll(&task).unwrap(), PollOutcome::StopRequested);
     }
 
     #[test]
-    fn poll_reads_agent_done_sentinel() {
+    fn poll_detects_agent_done_sentinel() {
         let tmp = tempfile::tempdir().unwrap();
         let (_cfg, task) = build_task(&tmp);
-        std::fs::write(task.agent_done_path(), "AGENT_DONE\n").unwrap();
+        std::fs::write(task.agent_done_path(), "").unwrap();
         assert_eq!(
-            poll(&task, "sid").unwrap(),
+            poll(&task).unwrap(),
             PollOutcome::Condition(StopCondition::AgentDone)
         );
         // Sentinel is consumed
@@ -1049,97 +1096,57 @@ mod tests {
     }
 
     #[test]
-    fn poll_reads_task_complete_sentinel() {
+    fn poll_detects_task_complete_sentinel() {
         let tmp = tempfile::tempdir().unwrap();
         let (_cfg, task) = build_task(&tmp);
-        std::fs::write(task.agent_done_path(), "TASK_COMPLETE").unwrap();
+        std::fs::write(task.task_complete_path(), "").unwrap();
         assert_eq!(
-            poll(&task, "sid").unwrap(),
+            poll(&task).unwrap(),
             PollOutcome::Condition(StopCondition::TaskComplete)
         );
+        assert!(!task.task_complete_path().exists());
     }
 
     #[test]
-    fn claude_command_references_prompt_file_for_fresh_launch() {
+    fn poll_detects_input_needed_sentinel() {
         let tmp = tempfile::tempdir().unwrap();
         let (_cfg, task) = build_task(&tmp);
-        let cmd = Tmux::build_claude_command_with_prompt_file(
-            &task.current_prompt_path(),
-            None,
-            Some("abc-123"),
+        std::fs::write(task.input_needed_path(), "").unwrap();
+        assert_eq!(
+            poll(&task).unwrap(),
+            PollOutcome::Condition(StopCondition::InputNeeded)
         );
-        assert!(cmd.contains("--session-id abc-123"));
+        assert!(!task.input_needed_path().exists());
+    }
+
+    #[test]
+    fn poll_prefers_task_complete_over_agent_done() {
+        // Pathological: agent created both files. Strongest signal wins;
+        // both files are removed.
+        let tmp = tempfile::tempdir().unwrap();
+        let (_cfg, task) = build_task(&tmp);
+        std::fs::write(task.agent_done_path(), "").unwrap();
+        std::fs::write(task.task_complete_path(), "").unwrap();
+        assert_eq!(
+            poll(&task).unwrap(),
+            PollOutcome::Condition(StopCondition::TaskComplete)
+        );
+        assert!(!task.agent_done_path().exists());
+        assert!(!task.task_complete_path().exists());
+    }
+
+    #[test]
+    fn claude_command_uses_prompt_file_only() {
+        // Task agents always start fresh — the launch command must contain
+        // --system-prompt-file and must NOT contain --session-id or --resume.
+        let tmp = tempfile::tempdir().unwrap();
+        let (_cfg, task) = build_task(&tmp);
+        let cmd = Tmux::build_claude_command_with_prompt_file(&task.current_prompt_path());
         assert!(cmd.contains(".current-prompt.md"));
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--system-prompt-file"));
-        // Resume should NOT appear on a fresh launch.
-        assert!(!cmd.contains("--resume"));
-    }
-
-    #[test]
-    fn claude_command_uses_resume_without_prompt_when_resuming() {
-        // Resuming an existing session must drop --system-prompt-file entirely
-        // (claude already has the system prompt in session state) and emit
-        // --resume <id>.
-        let tmp = tempfile::tempdir().unwrap();
-        let (_cfg, task) = build_task(&tmp);
-        let cmd = Tmux::build_claude_command_with_prompt_file(
-            &task.current_prompt_path(),
-            Some("resume-uuid"),
-            None,
-        );
-        assert!(cmd.contains("--resume resume-uuid"));
-        assert!(!cmd.contains("--system-prompt"));
-        assert!(!cmd.contains("--session-id"));
-    }
-
-    // -----------------------------------------------------------------------
-    // compute_session_handles — resume vs. fresh decision
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn compute_session_handles_resumes_same_agent_live_session() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (_cfg, mut task) = build_task(&tmp);
-        push_session(&mut task, "coder", "live-sid");
-        // Last session is live (stopped_at = None) and agent matches → resume.
-        let (resume, fresh) = compute_session_handles(&task, "coder");
-        assert_eq!(resume.as_deref(), Some("live-sid"));
-        assert!(fresh.is_none(), "no fresh id when resuming");
-    }
-
-    #[test]
-    fn compute_session_handles_starts_fresh_when_agent_changes() {
-        // Prior session live but different agent — start fresh and let
-        // start_agent_step reconcile the stale entry.
-        let tmp = tempfile::tempdir().unwrap();
-        let (_cfg, mut task) = build_task(&tmp);
-        push_session(&mut task, "coder", "live-sid");
-        let (resume, fresh) = compute_session_handles(&task, "checker");
-        assert!(resume.is_none(), "must not resume when agent changes");
-        assert!(fresh.is_some(), "must mint a fresh session id");
-    }
-
-    #[test]
-    fn compute_session_handles_starts_fresh_when_last_stopped() {
-        // Same agent, but the prior session already stopped → start fresh.
-        let tmp = tempfile::tempdir().unwrap();
-        let (_cfg, mut task) = build_task(&tmp);
-        push_session(&mut task, "coder", "old-sid");
-        task.finish_last_session(Some("AGENT_DONE".to_string())).unwrap();
-        let (resume, fresh) = compute_session_handles(&task, "coder");
-        assert!(resume.is_none());
-        assert!(fresh.is_some());
-    }
-
-    #[test]
-    fn compute_session_handles_starts_fresh_with_empty_history() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (_cfg, task) = build_task(&tmp);
-        assert!(task.meta.session_history.is_empty());
-        let (resume, fresh) = compute_session_handles(&task, "coder");
-        assert!(resume.is_none());
-        assert!(fresh.is_some());
+        assert!(!cmd.contains("--session-id"), "task agents never pin a session id");
+        assert!(!cmd.contains("--resume"), "task agents never resume");
     }
 
     /// Helper: push a session onto history so `finish_last_session` has
@@ -1855,27 +1862,22 @@ mod tests {
     }
 
     #[test]
-    fn start_agent_step_reconciles_unstopped_prior_session_on_agent_change() {
-        // Defensive corner case: caller hands us a task whose last session is
-        // still marked live (`stopped_at == None`) under a *different* agent.
-        // (A live entry under the same agent would resume — see
-        // `compute_session_handles_resumes_same_agent_live_session`.)
-        // Without reconciliation, `classify` would route the task to
-        // `LiveSession` after the relaunch and `poll` would scan the pane
-        // for the stale session id forever (the prior claude is dead and the
-        // new one — if it launched — is emitting a different session id).
+    fn start_agent_step_reconciles_any_unstopped_prior_session() {
+        // Task agents always start fresh — there is no resume path. A prior
+        // session left in the live state (stopped_at == None) must be
+        // reconciled before the next launch so `classify` doesn't keep
+        // routing the task to `LiveSession` for a session whose claude is
+        // already dead.
         let tmp = tempfile::tempdir().unwrap();
         let (config, mut task) = build_task(&tmp);
-        prime_for_start_agent_step(&config, &task, "checker");
+        prime_for_start_agent_step(&config, &task, "coder");
         push_session(&mut task, "coder", "stale-sid");
         assert!(task.meta.session_history[0].stopped_at.is_none());
 
-        // start_agent_step will error at send_keys (no tmux), but the
-        // reconciliation must happen before the error so `classify` can see
-        // a clean state on the next tick. We launch with a *different* agent
-        // (`checker`) so compute_session_handles picks the fresh path and
-        // the reconcile branch fires.
-        let result = start_agent_step(&config, &mut task, "checker");
+        // start_agent_step will error at send_keys (no tmux session in test
+        // env), but the reconciliation must happen before the error so
+        // `classify` sees a clean state on the next tick.
+        let result = start_agent_step(&config, &mut task, "coder");
         assert!(result.is_err(), "expected send_keys error in test env");
 
         let last = task
@@ -1896,29 +1898,6 @@ mod tests {
     }
 
     #[test]
-    fn start_agent_step_does_not_reconcile_on_resume() {
-        // Symmetric case to the above: same agent + live entry → resume,
-        // not reconcile. The original entry must keep `stopped_at = None`
-        // so the supervisor's `classify` continues to route the task to
-        // `LiveSession` for that session id.
-        let tmp = tempfile::tempdir().unwrap();
-        let (config, mut task) = build_task(&tmp);
-        prime_for_start_agent_step(&config, &task, "coder");
-        push_session(&mut task, "coder", "live-sid");
-
-        // send_keys fails in test env → start_agent_step errors. But because
-        // we're on the resume path, no reconciliation should have occurred
-        // before the failure.
-        let _ = start_agent_step(&config, &mut task, "coder");
-        let last = task.meta.session_history.last().unwrap();
-        assert!(
-            last.stopped_at.is_none(),
-            "resume path must not stamp stopped_at on the existing entry"
-        );
-        assert_eq!(last.session_id, "live-sid");
-    }
-
-    #[test]
     fn start_agent_step_queues_inbox_work_directive() {
         // start_agent_step queues the dynamic per-launch payload (TASK.md,
         // feedback, git context) onto the task inbox so the TUI's inbox
@@ -1926,6 +1905,8 @@ mod tests {
         // lands even though send_keys fails in the test env (the queue
         // happens before send_keys; see start_agent_step source for the
         // ordering rationale).
+        //
+        // For a task with no project, the sender falls back to "supervisor".
         let tmp = tempfile::tempdir().unwrap();
         let (config, mut task) = build_task(&tmp);
         prime_for_start_agent_step(&config, &task, "coder");
@@ -1947,6 +1928,26 @@ mod tests {
             msg.message.contains("# Current Task"),
             "inbox message should contain the Current Task heading"
         );
+    }
+
+    #[test]
+    fn start_agent_step_uses_project_name_as_inbox_sender() {
+        // Tasks owned by a project (PM) should tag the inbox message with
+        // the project name so the agent sees `[Message from <project>]:`,
+        // not `[Message from supervisor]:` (an internal implementation
+        // detail).
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        prime_for_start_agent_step(&config, &task, "coder");
+        task.meta.project = Some("agman-ceo-pm".to_string());
+        task.save_meta().unwrap();
+
+        let _ = start_agent_step(&config, &mut task, "coder");
+
+        let inbox_path = config.task_inbox(&task.meta.task_id());
+        let messages = inbox::read_messages(&inbox_path).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].from, "agman-ceo-pm");
     }
 
     #[test]

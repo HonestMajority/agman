@@ -4,35 +4,6 @@ use agman::flow::{Flow, FlowStep, StopCondition};
 use helpers::test_config;
 
 #[test]
-fn stop_condition_from_output() {
-    assert_eq!(
-        StopCondition::from_output("AGENT_DONE"),
-        Some(StopCondition::AgentDone)
-    );
-    assert_eq!(
-        StopCondition::from_output("TASK_COMPLETE"),
-        Some(StopCondition::TaskComplete)
-    );
-    assert_eq!(
-        StopCondition::from_output("TASK_BLOCKED"),
-        None
-    );
-    assert_eq!(
-        StopCondition::from_output("INPUT_NEEDED"),
-        Some(StopCondition::InputNeeded)
-    );
-    assert_eq!(StopCondition::from_output("just some text"), None);
-}
-
-#[test]
-fn stop_condition_embedded_in_text() {
-    assert_eq!(
-        StopCondition::from_output("The agent says AGENT_DONE here"),
-        Some(StopCondition::AgentDone)
-    );
-}
-
-#[test]
 fn flow_load_default() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
