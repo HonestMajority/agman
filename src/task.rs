@@ -293,10 +293,7 @@ impl Task {
         task.init_files()?;
 
         // Write TASK.md to the task directory
-        task.write_task(&format!(
-            "# Goal\n{}\n\n# Plan\n(To be filled in by coder)\n",
-            description
-        ))?;
+        task.write_task(&format!("# Goal\n{}\n", description))?;
 
         Ok(task)
     }
@@ -326,10 +323,7 @@ impl Task {
         task.save_meta()?;
         task.init_files()?;
 
-        task.write_task(&format!(
-            "# Goal\n{}\n\n# Plan\n(To be filled in by coder)\n",
-            description
-        ))?;
+        task.write_task(&format!("# Goal\n{}\n", description))?;
 
         Ok(task)
     }
