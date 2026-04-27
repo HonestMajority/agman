@@ -20,13 +20,29 @@ impl Agent {
         })
     }
 
-    pub fn build_prompt(&self, task: &Task) -> Result<String> {
-        let task_content = task.read_task()?;
-        let feedback = task.read_feedback()?;
-
+    /// Build the **system prompt** for this agent — the static identity payload
+    /// passed to claude via `--system-prompt-file`. Contains: prompt template,
+    /// skills footer, task-dir paths, multi-repo paths, self-improve footer,
+    /// and the supervisor sentinel directive (.agent-done path).
+    ///
+    /// Does **not** contain the dynamic per-launch payload (TASK.md content,
+    /// feedback, git diff, git log) — that lives in
+    /// [`build_inbox_message`](Self::build_inbox_message) and is delivered to
+    /// the agent via the task inbox once claude is ready.
+    pub fn build_system_prompt(&self, task: &Task) -> Result<String> {
         let mut prompt = self.prompt_template.clone();
 
-        // Append skill-awareness footer before task content so the agent sees it early
+        // Work-directives preamble: tell the agent to wait for the inbox
+        // message before doing anything. The system prompt is identity only.
+        prompt.push_str("\n\n---\n\n");
+        prompt.push_str("## Work Directives\n");
+        prompt.push_str("You will receive your work assignment as a tmux message tagged\n");
+        prompt.push_str("[Message from supervisor]: containing the current TASK.md, any feedback,\n");
+        prompt.push_str("and current git context. Begin work when that message arrives. Do not act\n");
+        prompt.push_str("before then — the system prompt only describes who you are and how to\n");
+        prompt.push_str("finish, not what to do.\n");
+
+        // Append skill-awareness footer so the agent sees it early
         prompt.push_str("\n\n---\n\n");
         prompt.push_str("# Skills\n");
         prompt.push_str("Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them.\n");
@@ -51,49 +67,6 @@ impl Agent {
             }
         }
 
-        prompt.push_str("\n---\n\n");
-        prompt.push_str("# Current Task\n");
-        prompt.push_str(&task_content);
-        prompt.push_str("\n\n");
-
-        // Include git context for refiner and checker agents
-        let needs_git_context =
-            !feedback.is_empty() || self.name == "checker" || self.name == "refiner";
-
-        if needs_git_context {
-            // Include feedback if present
-            if !feedback.is_empty() {
-                prompt.push_str("# Follow-up Feedback\n");
-                prompt.push_str(&feedback);
-                prompt.push_str("\n\n");
-            }
-
-            // Include git diff for context
-            if let Ok(diff) = task.get_git_diff() {
-                if !diff.is_empty() {
-                    prompt.push_str("# Current Git Diff\n");
-                    prompt.push_str("```diff\n");
-                    // Truncate if too long
-                    if diff.len() > 10000 {
-                        prompt.push_str(&diff[..10000]);
-                        prompt.push_str("\n... (truncated)\n");
-                    } else {
-                        prompt.push_str(&diff);
-                    }
-                    prompt.push_str("```\n\n");
-                }
-            }
-
-            if let Ok(log) = task.get_git_log_summary() {
-                if !log.is_empty() {
-                    prompt.push_str("# Recent Commits\n");
-                    prompt.push_str("```\n");
-                    prompt.push_str(&log);
-                    prompt.push_str("```\n");
-                }
-            }
-        }
-
         // Append self-improve footer to all prompts
         prompt.push_str("\n\n---\n\n");
         prompt.push_str("# Self-Improvement\n");
@@ -101,8 +74,7 @@ impl Agent {
 
         // Sentinel footer: the supervisor watches for this file to detect when
         // the agent is done. Writing it is the agent's LAST action, after
-        // printing the magic string. Printing `<MAGIC>:<session_id>` makes the
-        // stop condition visible in the tmux scrollback for pane-scanning too.
+        // printing the magic string.
         prompt.push_str("\n\n---\n\n");
         prompt.push_str("# Supervisor Sentinel (REQUIRED — last action)\n");
         prompt.push_str(&format!(
@@ -118,5 +90,64 @@ impl Agent {
         prompt.push_str("Do this EVEN IF you already said you are done. The supervisor does not proceed until this file exists. Do not write anything else to the file — just the single magic string.\n");
 
         Ok(prompt)
+    }
+
+    /// Build the **inbox message** for this launch — the dynamic per-launch
+    /// work payload delivered to the agent's tmux session via the task inbox.
+    /// Contains: the current TASK.md, any pending FEEDBACK.md, the current
+    /// git diff, and the recent commit log.
+    ///
+    /// This is paired with [`build_system_prompt`](Self::build_system_prompt)
+    /// — the system prompt is "who you are and how to finish", and the inbox
+    /// message is "what to do right now".
+    pub fn build_inbox_message(&self, task: &Task) -> Result<String> {
+        let task_content = task.read_task()?;
+        let feedback = task.read_feedback()?;
+
+        let mut msg = String::new();
+        msg.push_str("# Current Task\n");
+        msg.push_str(&task_content);
+        msg.push_str("\n\n");
+
+        // Include git context for refiner and checker agents (and whenever
+        // there's queued feedback)
+        let needs_git_context =
+            !feedback.is_empty() || self.name == "checker" || self.name == "refiner";
+
+        if needs_git_context {
+            // Include feedback if present
+            if !feedback.is_empty() {
+                msg.push_str("# Follow-up Feedback\n");
+                msg.push_str(&feedback);
+                msg.push_str("\n\n");
+            }
+
+            // Include git diff for context
+            if let Ok(diff) = task.get_git_diff() {
+                if !diff.is_empty() {
+                    msg.push_str("# Current Git Diff\n");
+                    msg.push_str("```diff\n");
+                    // Truncate if too long
+                    if diff.len() > 10000 {
+                        msg.push_str(&diff[..10000]);
+                        msg.push_str("\n... (truncated)\n");
+                    } else {
+                        msg.push_str(&diff);
+                    }
+                    msg.push_str("```\n\n");
+                }
+            }
+
+            if let Ok(log) = task.get_git_log_summary() {
+                if !log.is_empty() {
+                    msg.push_str("# Recent Commits\n");
+                    msg.push_str("```\n");
+                    msg.push_str(&log);
+                    msg.push_str("```\n");
+                }
+            }
+        }
+
+        Ok(msg)
     }
 }

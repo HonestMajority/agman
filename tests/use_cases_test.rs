@@ -3729,3 +3729,63 @@ fn researcher_prompt_includes_correct_from() {
         "expected ceo researcher prompt to include --from \"researcher:ceo--baz\", got:\n{ceo_prompt}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Supervisor: inbox-based work delivery to task agents
+// ---------------------------------------------------------------------------
+
+#[test]
+fn start_agent_step_queues_inbox_work_directive() {
+    // The task agent launch flow follows the CEO/PM/researcher pattern: the
+    // system prompt holds identity, while the dynamic per-launch payload
+    // (TASK.md, feedback, git context) is delivered through the task inbox.
+    // This test verifies that `start_agent_step` queues exactly one
+    // "supervisor" message containing the TASK.md body onto the task inbox,
+    // even when the underlying tmux send_keys fails (the queue happens
+    // before send_keys so the message survives a failed launch and the TUI
+    // poller can deliver it on the next ready window).
+    use agman::inbox;
+    use agman::supervisor;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let mut task = create_test_task(&config, "myrepo", "feat-x");
+    task.write_task("# Goal\nDo the inbox-delivered work.\n").unwrap();
+
+    // Provide a minimal prompt so Agent::load + build_inbox_message succeed
+    // before send_keys errors.
+    std::fs::write(config.prompt_path("coder"), "You are a test coder.\n").unwrap();
+
+    // send_keys fails (no real tmux session in tests) — but the inbox queue
+    // happens before send_keys, so the message must still be present.
+    let _ = supervisor::start_agent_step(&config, &mut task, "coder");
+
+    let inbox_path = config.task_inbox(&task.meta.task_id());
+    let messages = inbox::read_messages(&inbox_path).unwrap();
+    assert_eq!(messages.len(), 1, "exactly one work directive should be queued");
+    let msg = &messages[0];
+    assert_eq!(msg.from, "supervisor");
+    assert!(
+        msg.message.contains("Do the inbox-delivered work"),
+        "inbox message should contain TASK.md body, got:\n{}",
+        msg.message
+    );
+    assert!(
+        msg.message.contains("# Current Task"),
+        "inbox message should contain the Current Task heading"
+    );
+
+    // The system prompt that was written to .current-prompt.md must NOT
+    // contain the TASK.md body — that lives in the inbox.
+    let system_prompt = std::fs::read_to_string(task.current_prompt_path()).unwrap();
+    assert!(
+        !system_prompt.contains("Do the inbox-delivered work"),
+        "system prompt must not embed TASK.md content"
+    );
+    assert!(
+        system_prompt.contains("Work Directives"),
+        "system prompt should include the work-directives preamble"
+    );
+}

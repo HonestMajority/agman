@@ -1014,7 +1014,10 @@ impl Task {
     }
 
     /// Path to the current prompt. The supervisor writes each step's
-    /// system-prompt here so it can be passed to `claude --system-prompt`.
+    /// **system prompt** (identity-only — no TASK.md, feedback, or git
+    /// context) here so it can be loaded by claude via
+    /// `--system-prompt-file <path>`. The dynamic per-launch payload is
+    /// delivered separately through the task inbox.
     pub fn current_prompt_path(&self) -> PathBuf {
         self.dir.join(".current-prompt.md")
     }
