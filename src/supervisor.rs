@@ -580,10 +580,10 @@ fn drain_queue(task: &mut Task, config: &Config) -> Result<bool> {
 /// `advance`). Checks whether the current `flow_name` resolves to a
 /// `StoredCommand` and dispatches on its `post_action`:
 ///
-/// - `Some("archive_task") | Some("delete_task")` — archive the task (matching
-///   the legacy `cmd_command_flow_run` semantics where both variants hit
-///   `archive_task`). Kill all task tmux sessions after archival. Returns
-///   `Ok(true)` — callers must stop immediately (task is gone).
+/// - `Some("archive_task") | Some("delete_task")` — archive the task (both
+///   variants intentionally route to `archive_task`; `delete_task` is an alias
+///   for archival here, not a hard delete). Kill all task tmux sessions after
+///   archival. Returns `Ok(true)` — callers must stop immediately (task is gone).
 /// - Anything else (no post_action, unknown post_action, or not a stored
 ///   command at all) — restore the pre-command flow_name/step snapshot taken
 ///   by `drain_queue` (if any) and return `Ok(false)` so the caller continues
@@ -1226,8 +1226,9 @@ mod tests {
 
     #[test]
     fn handle_command_flow_end_archives_on_delete_task_post_action() {
-        // Matches legacy `cmd_command_flow_run` quirk: both `archive_task` and
-        // `delete_task` post_action values hit `use_cases::archive_task`.
+        // Both `archive_task` and `delete_task` post_action values intentionally
+        // route to `use_cases::archive_task` — `delete_task` is an alias for
+        // archival, not a destructive delete.
         let tmp = tempfile::tempdir().unwrap();
         let (cfg, mut task) = build_task(&tmp);
         write_test_command(
