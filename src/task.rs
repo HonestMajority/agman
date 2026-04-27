@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::config::Config;
+use crate::flow::StopCondition;
 
 /// A single item in the task queue (feedback or command).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1000,11 +1001,30 @@ impl Task {
     // ---------------------------------------------------------------------
     // Supervisor sentinel files
     // ---------------------------------------------------------------------
+    //
+    // Three existence-based sentinel files signal completion. The agent's
+    // last action is to `touch` one of them; the supervisor polls for their
+    // existence to detect the stop condition. No content is read from these
+    // files — only their presence matters. Pane scanning for magic strings
+    // is intentionally not used: it is fragile in interactive mode (strings
+    // can appear in code blocks or scrollback unrelated to the actual
+    // signal).
 
-    /// Path to the agent-done sentinel. Agents append to this file with their
-    /// final stop condition; the supervisor polls for it to advance flow steps.
+    /// Path to the `.agent-done` sentinel — "this agent finished its work,
+    /// hand off to the next step in the flow".
     pub fn agent_done_path(&self) -> PathBuf {
         self.dir.join(".agent-done")
+    }
+
+    /// Path to the `.task-complete` sentinel — "the entire task is done,
+    /// stop the flow".
+    pub fn task_complete_path(&self) -> PathBuf {
+        self.dir.join(".task-complete")
+    }
+
+    /// Path to the `.input-needed` sentinel — "I need user input to continue".
+    pub fn input_needed_path(&self) -> PathBuf {
+        self.dir.join(".input-needed")
     }
 
     /// Path to the stop sentinel. The TUI writes this to ask the supervisor
@@ -1022,26 +1042,43 @@ impl Task {
         self.dir.join(".current-prompt.md")
     }
 
-    /// Read and remove the agent-done sentinel. Returns the raw trimmed
-    /// contents (expected to be one of `AGENT_DONE`, `TASK_COMPLETE`,
-    /// `INPUT_NEEDED`, optionally suffixed with `:<session_id>`) if present.
-    pub fn take_agent_done(&self) -> Result<Option<String>> {
-        let path = self.agent_done_path();
-        if !path.exists() {
-            return Ok(None);
+    /// Check the three sentinel files in priority order and, if any exist,
+    /// remove them all and return the corresponding `StopCondition`.
+    ///
+    /// Priority: `TaskComplete` > `InputNeeded` > `AgentDone`. The priority
+    /// matters only in the (pathological) case where an agent created more
+    /// than one sentinel — we pick the strongest signal. In normal operation
+    /// only one sentinel is ever present.
+    pub fn take_sentinel(&self) -> Result<Option<StopCondition>> {
+        let candidates = [
+            (self.task_complete_path(), StopCondition::TaskComplete),
+            (self.input_needed_path(), StopCondition::InputNeeded),
+            (self.agent_done_path(), StopCondition::AgentDone),
+        ];
+        let mut found: Option<StopCondition> = None;
+        for (path, cond) in &candidates {
+            if path.exists() {
+                if found.is_none() {
+                    found = Some(*cond);
+                }
+                let _ = std::fs::remove_file(path);
+            }
         }
-        let contents = std::fs::read_to_string(&path)
-            .context("Failed to read .agent-done sentinel")?;
-        let _ = std::fs::remove_file(&path);
-        Ok(Some(contents.trim().to_string()))
+        Ok(found)
     }
 
-    /// Remove any stale `.agent-done` sentinel before launching a new step.
-    pub fn clear_agent_done(&self) -> Result<()> {
-        let path = self.agent_done_path();
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .context("Failed to remove .agent-done sentinel")?;
+    /// Remove all three sentinel files. Called by the supervisor before
+    /// launching a new agent step so the next agent's sentinel can't be
+    /// confused with stale state from the prior step.
+    pub fn clear_sentinels(&self) -> Result<()> {
+        for path in [
+            self.agent_done_path(),
+            self.task_complete_path(),
+            self.input_needed_path(),
+        ] {
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+            }
         }
         Ok(())
     }

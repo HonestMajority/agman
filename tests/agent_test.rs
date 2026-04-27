@@ -35,6 +35,7 @@ fn agent_build_system_prompt_basic() {
     assert!(prompt.contains("coding agent"));
     // Work-directives preamble explains where work arrives
     assert!(prompt.contains("Work Directives"));
+    // No project assigned → sender falls back to "supervisor"
     assert!(prompt.contains("[Message from supervisor]"));
     // The system prompt must NOT contain the dynamic payload — TASK.md is
     // delivered through the inbox, not the system prompt.
@@ -83,7 +84,7 @@ fn agent_build_system_prompt_includes_self_improve_footer() {
 
     assert!(prompt.contains("# Self-Improvement"));
     assert!(prompt.contains("self-improve"));
-    assert!(prompt.contains("Before outputting your final stop condition"));
+    assert!(prompt.contains("Before completing"));
 }
 
 #[test]
@@ -115,11 +116,36 @@ fn agent_build_system_prompt_includes_supervisor_sentinel_directive() {
     let agent = Agent::load(&config, "coder").unwrap();
     let prompt = agent.build_system_prompt(&task).unwrap();
 
-    // The sentinel path must reference this task's directory so the
-    // supervisor's poll loop can find the .agent-done file.
+    // The sentinel section must list all three sentinel files and reference
+    // this task's directory so the supervisor can find them.
     assert!(prompt.contains("Supervisor Sentinel"));
+    assert!(prompt.contains("touch"));
     assert!(prompt.contains(".agent-done"));
+    assert!(prompt.contains(".task-complete"));
+    assert!(prompt.contains(".input-needed"));
     assert!(prompt.contains(&task.dir.display().to_string()));
+    // Magic strings are no longer used for detection.
+    assert!(!prompt.contains("printing your stop condition"));
+}
+
+#[test]
+fn agent_build_system_prompt_uses_project_as_inbox_sender_tag() {
+    // When the task has a project assigned, the work-directives preamble
+    // should tell the agent to look for `[Message from <project>]:` so the
+    // sender tag matches what the inbox poller injects.
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.init_default_files(false).unwrap();
+
+    let mut task = create_test_task(&config, "repo", "branch");
+    task.meta.project = Some("agman-ceo-pm".to_string());
+    task.save_meta().unwrap();
+    task.write_task("# Goal\nDo something\n").unwrap();
+
+    let agent = Agent::load(&config, "coder").unwrap();
+    let prompt = agent.build_system_prompt(&task).unwrap();
+    assert!(prompt.contains("[Message from agman-ceo-pm]"));
+    assert!(!prompt.contains("[Message from supervisor]"));
 }
 
 // ---------------------------------------------------------------------------

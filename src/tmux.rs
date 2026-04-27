@@ -302,34 +302,32 @@ impl Tmux {
         cmd
     }
 
-    /// Build a `claude` CLI command string that loads its system prompt from a
-    /// file via `--system-prompt-file`.
+    /// Build a `claude` CLI command string that loads its system prompt from
+    /// a file via `--system-prompt-file` and pins claude's session id to a
+    /// caller-supplied UUID via `--session-id`.
     ///
-    /// When `resume_id` is `Some`, emits `--resume <id>` and omits the system
-    /// prompt entirely (the resumed session already has all context). When
-    /// `resume_id` is `None`, emits `--system-prompt-file '<path>'` and
-    /// optionally `--session-id` to pin the session for future resumption.
+    /// Pinning the session id (same pattern CEO/PM/researcher use on first
+    /// launch) lets us store claude's actual session id in `session_history`,
+    /// so the user can `claude --resume <id>` from the worktree to revisit a
+    /// historical conversation. Without `--session-id`, claude would generate
+    /// its own id internally and we'd have no easy way to learn it.
     ///
-    /// File-based delivery avoids embedding the prompt body in the shell
-    /// command line (which can be megabytes once skills/footers are appended)
-    /// and matches the launch flow used by the CEO/PM/researcher agents.
+    /// Task agents never `--resume` — they are disposable, every flow step
+    /// launches a fresh claude with a fresh id. This function therefore takes
+    /// only a session id, not a resume id.
+    ///
+    /// File-based prompt delivery avoids embedding the prompt body in the
+    /// shell command line (which can be megabytes once skills/footers are
+    /// appended).
     pub fn build_claude_command_with_prompt_file(
         prompt_path: &Path,
-        resume_id: Option<&str>,
-        session_id: Option<&str>,
+        session_id: &str,
     ) -> String {
-        let mut cmd = String::from("claude --dangerously-skip-permissions");
-        if let Some(id) = resume_id {
-            cmd.push_str(&format!(" --resume {}", id));
-            // No system-prompt when resuming — session already has context
-        } else {
-            let p = prompt_path.to_string_lossy().replace('\'', "'\\''");
-            cmd.push_str(&format!(" --system-prompt-file '{}'", p));
-            if let Some(id) = session_id {
-                cmd.push_str(&format!(" --session-id {}", id));
-            }
-        }
-        cmd
+        let p = prompt_path.to_string_lossy().replace('\'', "'\\''");
+        format!(
+            "claude --dangerously-skip-permissions --system-prompt-file '{}' --session-id {}",
+            p, session_id
+        )
     }
 
     /// Send keys to the first (and only) window/pane of a session.

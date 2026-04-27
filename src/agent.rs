@@ -23,7 +23,7 @@ impl Agent {
     /// Build the **system prompt** for this agent — the static identity payload
     /// passed to claude via `--system-prompt-file`. Contains: prompt template,
     /// skills footer, task-dir paths, multi-repo paths, self-improve footer,
-    /// and the supervisor sentinel directive (.agent-done path).
+    /// and the supervisor sentinel directive (sentinel-file paths).
     ///
     /// Does **not** contain the dynamic per-launch payload (TASK.md content,
     /// feedback, git diff, git log) — that lives in
@@ -34,13 +34,14 @@ impl Agent {
 
         // Work-directives preamble: tell the agent to wait for the inbox
         // message before doing anything. The system prompt is identity only.
+        // The sender tag is the project (PM) name when available; falls back
+        // to "supervisor" for unassigned tasks.
+        let sender = task.meta.project.as_deref().unwrap_or("supervisor");
         prompt.push_str("\n\n---\n\n");
         prompt.push_str("## Work Directives\n");
-        prompt.push_str("You will receive your work assignment as a tmux message tagged\n");
-        prompt.push_str("[Message from supervisor]: containing the current TASK.md, any feedback,\n");
-        prompt.push_str("and current git context. Begin work when that message arrives. Do not act\n");
-        prompt.push_str("before then — the system prompt only describes who you are and how to\n");
-        prompt.push_str("finish, not what to do.\n");
+        prompt.push_str(&format!(
+            "You will receive your work assignment as a tmux message tagged\n[Message from {sender}]: containing the current TASK.md, any feedback,\nand current git context. Begin work when that message arrives. Do not act\nbefore then — the system prompt only describes who you are and how to\nfinish, not what to do.\n"
+        ));
 
         // Append skill-awareness footer so the agent sees it early
         prompt.push_str("\n\n---\n\n");
@@ -70,24 +71,23 @@ impl Agent {
         // Append self-improve footer to all prompts
         prompt.push_str("\n\n---\n\n");
         prompt.push_str("# Self-Improvement\n");
-        prompt.push_str("**Before outputting your final stop condition**, check if the repository has a self-improvement skill (commonly named \"self-improve\" or similar) in `.claude/skills/` or `.claude/commands/`. If one exists, run it. This helps keep project documentation and conventions up to date.\n");
+        prompt.push_str("**Before completing**, check if the repository has a self-improvement skill (commonly named \"self-improve\" or similar) in `.claude/skills/` or `.claude/commands/`. If one exists, run it. This helps keep project documentation and conventions up to date.\n");
 
-        // Sentinel footer: the supervisor watches for this file to detect when
-        // the agent is done. Writing it is the agent's LAST action, after
-        // printing the magic string.
+        // Sentinel footer: the supervisor detects completion purely by file
+        // existence. The agent's LAST action is to `touch` ONE of three
+        // sentinel files. No content is read from them — the supervisor only
+        // checks whether they exist. Do NOT print "magic strings" — they are
+        // not used for detection (they are unreliable in interactive mode).
+        let dir = task.dir.display();
         prompt.push_str("\n\n---\n\n");
         prompt.push_str("# Supervisor Sentinel (REQUIRED — last action)\n");
+        prompt.push_str(
+            "When you are done, signal the outcome by creating ONE of the following sentinel files in the task directory. The supervisor polls for their existence — touching the file is the signal. Do NOT write any content into the file; only its presence matters.\n\n",
+        );
         prompt.push_str(&format!(
-            "After printing your stop condition (`AGENT_DONE`, `TASK_COMPLETE`, or `INPUT_NEEDED`), you MUST, as your very last action, write that condition to `{}/.agent-done`. Example:\n\n",
-            task.dir.display()
+            "- Finished this step, hand off to the next agent in the flow:\n  ```\n  touch {dir}/.agent-done\n  ```\n- Entire task is complete, stop the flow:\n  ```\n  touch {dir}/.task-complete\n  ```\n- Need user input to continue, pause the flow:\n  ```\n  touch {dir}/.input-needed\n  ```\n"
         ));
-        prompt.push_str("```\n");
-        prompt.push_str(&format!(
-            "echo AGENT_DONE > {}/.agent-done\n",
-            task.dir.display()
-        ));
-        prompt.push_str("```\n\n");
-        prompt.push_str("Do this EVEN IF you already said you are done. The supervisor does not proceed until this file exists. Do not write anything else to the file — just the single magic string.\n");
+        prompt.push_str("\nThis MUST be your very last action. The supervisor will not advance until one of these files exists. Create exactly one — they are mutually exclusive.\n");
 
         Ok(prompt)
     }

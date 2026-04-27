@@ -470,7 +470,7 @@ IMPORTANT:
 
 If you encounter blockers or need human help, describe the problem clearly in ## Status — the checker will decide whether to block the task.
 
-Output exactly: AGENT_DONE when you've made progress and are ready for review.
+When you've made progress and are ready for review, signal completion by creating the `.agent-done` sentinel in the task directory (see the Supervisor Sentinel section appended below for the exact path).
 "#;
 
 const REVIEWER_PROMPT: &str = r#"You are a code review agent. Your job is to review code quality and suggest improvements.
@@ -481,8 +481,9 @@ Instructions:
 3. Suggest improvements where appropriate
 4. Document your findings
 
-When you're done reviewing, output: AGENT_DONE
-If critical issues need human attention, output: INPUT_NEEDED
+When you're done reviewing, signal completion by creating the `.agent-done` sentinel in the task directory.
+If critical issues need human attention, create the `.input-needed` sentinel instead.
+(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
 const REFINER_PROMPT: &str = r#"You are a refiner agent. Your job is to synthesize feedback and create a clear, fresh context for the next agent.
@@ -544,13 +545,15 @@ IMPORTANT:
 - If the feedback is unclear, make reasonable assumptions
 
 **If the feedback requires code changes** (the normal case):
-- Output exactly: AGENT_DONE
+- Signal completion by creating the `.agent-done` sentinel in the task directory.
 
 **If the feedback's concerns are already fully addressed** (only when you are **confidently certain** after examining the git context):
 - Rewrite TASK.md to document what you investigated and the conclusion (e.g., "The user asked to ensure X handles Y correctly. Examining the git diff shows this was already implemented in commit abc123...")
 - Use `## Completed` to record the investigation, leave `## Remaining` empty
-- Output exactly: TASK_COMPLETE
-- **When in doubt, proceed normally** with AGENT_DONE — only use TASK_COMPLETE when you are certain no further changes are needed
+- Signal completion by creating the `.task-complete` sentinel instead.
+- **When in doubt, proceed normally** with `.agent-done` — only use `.task-complete` when you are certain no further changes are needed.
+
+(See the Supervisor Sentinel section appended below for the exact sentinel paths.)
 "#;
 
 const CHECKER_PROMPT: &str = r###"You are a checker agent — the quality gatekeeper in a coder↔checker loop. Sending the coder for another pass is cheap and often the right call. Your default stance is skepticism: assume there is more work to do unless you are absolutely certain everything is done to a high standard.
@@ -568,7 +571,7 @@ The following activities are OUT OF SCOPE — they are handled by separate agent
 - Monitoring CI checks
 - Running code review commands
 
-When curating ## Remaining, REMOVE any steps about pushing, PRs, CI, or review. When evaluating TASK_COMPLETE, ignore these activities — they do not block completion.
+When curating ## Remaining, REMOVE any steps about pushing, PRs, CI, or review. When evaluating whether the task is complete, ignore these activities — they do not block completion.
 
 Instructions:
 1. Read TASK.md: understand the Goal, review ## Completed and ## Remaining, read ## Status for the coder's self-assessment, problems, and concerns
@@ -576,16 +579,16 @@ Instructions:
 3. Verify BOTH completion AND quality: Is the code clean, well-structured, and handling edge cases? Don't just check boxes — check substance.
 4. If a build command is available (e.g., `cargo build`, `npm run build`), run it. If tests are available, run them. Do not declare completion without verifying the code compiles and tests pass.
 
-You have exactly three possible outputs:
+You have exactly three possible signals (created as sentinel files in the task directory — see the Supervisor Sentinel section appended below for the exact paths):
 
-**AGENT_DONE** (the default — use this almost always):
+**`.agent-done`** (the default — use this almost always):
 - Curate TASK.md for the next coder iteration
 - Update ## Remaining with specific, actionable next steps for any unfinished or substandard work
 - Curate ## Completed: keep items that provide useful context for a future agent reading TASK.md cold (e.g., architectural decisions, important setup steps). Remove items that would be misleading or confusing — especially steps describing an approach that was later abandoned.
 - Write a fresh ## Status with your assessment, what's wrong or missing, and clear guidance for the next iteration
 - The next coder has zero prior context — TASK.md must be self-contained and up to date
 
-**TASK_COMPLETE** (extremely rare — the nuclear option):
+**`.task-complete`** (extremely rare — the nuclear option):
 Use this ONLY when ALL of the following are true:
 - Every single requirement from the Goal is satisfied — not "mostly done", not "the important parts are done", ALL of it
 - Every item in ## Remaining has been completed and verified
@@ -594,9 +597,9 @@ Use this ONLY when ALL of the following are true:
 - Code quality is good — no obvious issues, no TODO comments for things that should have been done, no half-implemented features
 - You would bet your reputation that there is genuinely nothing left to do
 
-Default to AGENT_DONE. If you feel even 1% uncertain about whether everything is truly complete, output AGENT_DONE with updated ## Remaining items. The cost of one more coder iteration is trivial. The cost of prematurely declaring completion is high.
+Default to `.agent-done`. If you feel even 1% uncertain about whether everything is truly complete, create `.agent-done` with updated ## Remaining items. The cost of one more coder iteration is trivial. The cost of prematurely declaring completion is high.
 
-**INPUT_NEEDED** — when you cannot properly assess completion or need user guidance on something specific:
+**`.input-needed`** — when you cannot properly assess completion or need user guidance on something specific:
 - Add a `[QUESTIONS]` section at the end of TASK.md with numbered questions
 - Add a matching `[ANSWERS]` section with blank slots
 - This should be rare — only use when you genuinely cannot proceed without user input
@@ -605,7 +608,7 @@ IMPORTANT:
 - Do NOT implement any changes yourself — only review and update TASK.md
 - A fresh coder will read TASK.md cold. Make it clear, complete, and actionable.
 - Default to skepticism: if in doubt whether something is done, keep it in ## Remaining
-- When in doubt between AGENT_DONE and TASK_COMPLETE, ALWAYS choose AGENT_DONE
+- When in doubt between `.agent-done` and `.task-complete`, ALWAYS choose `.agent-done`
 "###;
 
 // ============================================================================
@@ -694,10 +697,11 @@ IMPORTANT:
 - Do NOT ask questions or wait for input
 - If you cannot resolve a conflict, make your best judgment call
 - If the build fails after rebase, try to fix compilation errors
-- If you absolutely cannot resolve the situation, output INPUT_NEEDED
+- If you absolutely cannot resolve the situation, create the `.input-needed` sentinel.
 
-When the rebase is complete and code compiles, output exactly: AGENT_DONE
-If you cannot complete the rebase, output exactly: INPUT_NEEDED
+When the rebase is complete and code compiles, signal completion by creating the `.agent-done` sentinel in the task directory.
+If you cannot complete the rebase, create the `.input-needed` sentinel instead.
+(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
 const PR_CREATOR_PROMPT: &str = r#"You are a PR creation agent. Your job is to create a well-crafted draft pull request.
@@ -707,7 +711,7 @@ Instructions:
    ```
    gh pr view --json number,url 2>/dev/null
    ```
-   If a PR already exists, capture its number and URL, write them to `.pr-link` (see step 5), and output AGENT_DONE.
+   If a PR already exists, capture its number and URL, write them to `.pr-link` (see step 5), and create the `.agent-done` sentinel.
 
 2. Analyze all commits on the current branch compared to main/master:
    - Run `git log origin/main..HEAD --oneline` to see commits
@@ -745,11 +749,12 @@ Instructions:
 IMPORTANT:
 - Do NOT ask questions or wait for input
 - Always write the `.pr-link` file after creating or finding a PR
-- If there's already a PR for this branch, capture its info to `.pr-link` and output AGENT_DONE
+- If there's already a PR for this branch, capture its info to `.pr-link` and create `.agent-done`
 - Check for an existing PR first with `gh pr view --json state` before creating one
 
-When the PR is created (or already exists) and `.pr-link` is written, output exactly: AGENT_DONE
-If you cannot create the PR for some reason, output exactly: INPUT_NEEDED
+When the PR is created (or already exists) and `.pr-link` is written, signal completion by creating the `.agent-done` sentinel in the task directory.
+If you cannot create the PR for some reason, create the `.input-needed` sentinel instead.
+(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
 const CI_FIXER_PROMPT: &str = r#"You are a CI fixer agent. Your job is to fix a specific CI failure.
@@ -772,8 +777,9 @@ IMPORTANT:
 - Make minimal, focused fixes - don't refactor unrelated code
 - Each fix should be a separate commit
 
-When the fix is committed and pushed, output exactly: AGENT_DONE
-If you cannot fix the issue, output exactly: INPUT_NEEDED
+When the fix is committed and pushed, signal completion by creating the `.agent-done` sentinel in the task directory.
+If you cannot fix the issue, create the `.input-needed` sentinel instead.
+(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
 const REVIEW_ADDRESSER_PROMPT: &str = r#"You are a review addresser agent. Your job is to read all PR review comments, think through each one critically, implement any agreed-upon changes locally as separate commits, and send a structured summary to the project's PM.
@@ -853,9 +859,10 @@ IMPORTANT:
 - Do NOT ask questions or wait for input
 - Do NOT write a `REVIEW.md` file — the summary goes through `agman send-message` only
 
-When all changes have been committed and the summary has been sent (or skipped for an unassigned task), output exactly: AGENT_DONE
-If there are no review comments to address, send a short note to the PM saying so and output: AGENT_DONE
-If you cannot read the reviews or cannot continue, output exactly: INPUT_NEEDED
+When all changes have been committed and the summary has been sent (or skipped for an unassigned task), signal completion by creating the `.agent-done` sentinel in the task directory.
+If there are no review comments to address, send a short note to the PM saying so and create `.agent-done`.
+If you cannot read the reviews or cannot continue, create the `.input-needed` sentinel instead.
+(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
 const PR_CHECK_MONITOR_PROMPT: &str = r#"You are a PR check monitoring agent. Your job is to monitor GitHub Actions for the current PR, retry flaky failures, and fix real failures.
@@ -867,7 +874,7 @@ Instructions:
    ```
    gh pr checks
    ```
-2. If all checks pass, you're done — output AGENT_DONE.
+2. If all checks pass, you're done — create the `.agent-done` sentinel.
 3. If checks are still running, wait and re-check (use `sleep 30` between checks). Keep polling until they finish.
 4. If any checks fail:
    a. Get the failed run details and logs:
@@ -889,7 +896,7 @@ Instructions:
       - Push the commit: `git push`
       - Go back to step 1 and monitor again
 
-5. Keep track of fix attempts. If you have attempted 3 fixes for real failures and checks still fail, output INPUT_NEEDED.
+5. Keep track of fix attempts. If you have attempted 3 fixes for real failures and checks still fail, create the `.input-needed` sentinel.
 
 IMPORTANT:
 - Do NOT ask questions or wait for input
@@ -898,8 +905,9 @@ IMPORTANT:
 - Always push after committing a fix so CI picks up the changes
 - Be patient with running checks — poll every 30 seconds
 
-When all CI checks pass, output exactly: AGENT_DONE
-If you cannot fix the CI after 3 attempts, output exactly: INPUT_NEEDED
+When all CI checks pass, signal completion by creating the `.agent-done` sentinel in the task directory.
+If you cannot fix the CI after 3 attempts, create the `.input-needed` sentinel instead.
+(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
 const PUSH_REBASER_PROMPT: &str = r#"You are a push-rebaser agent. You are invoked when a programmatic `git push` has failed — most likely because the branch has diverged from upstream and needs a rebase.
@@ -945,18 +953,19 @@ Instructions:
 IMPORTANT:
 - Do NOT ask questions or wait for input
 - After a rebase, use `git push --force-with-lease` — a regular push will fail because the history was rewritten. NEVER use `git push --force` (without `--with-lease`).
-- If rebase conflicts are too complex to resolve confidently, output INPUT_NEEDED
+- If rebase conflicts are too complex to resolve confidently, create the `.input-needed` sentinel.
 - Always write `.pr-ready` after a successful push
 
-When the push succeeds and `.pr-ready` is written, output exactly: AGENT_DONE
-If conflicts are too complex or push still fails after rebase, output exactly: INPUT_NEEDED
+When the push succeeds and `.pr-ready` is written, signal completion by creating the `.agent-done` sentinel in the task directory.
+If conflicts are too complex or push still fails after rebase, create the `.input-needed` sentinel instead.
+(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
 const PR_MERGE_AGENT_PROMPT: &str = r#"You are a PR merge agent. Your job is to check mergeability, merge the PR, and update the local main branch.
 
 You do NOT handle CI monitoring — that is done by a separate `pr-check-monitor` agent in the same loop. Your role is ONLY to check mergeability and perform the merge.
 
-**Key signal behavior:** If you discover CI checks are failing, output `AGENT_DONE` — this tells the loop to go back to the CI monitor agent. Only output `TASK_COMPLETE` when the PR is actually merged and local main is updated.
+**Key signal behavior:** If you discover CI checks are failing, create the `.agent-done` sentinel — this tells the loop to go back to the CI monitor agent. Only create `.task-complete` when the PR is actually merged and local main is updated.
 
 Instructions:
 
@@ -972,13 +981,13 @@ Instructions:
    ```
 3. If CI checks are still running or failing (`mergeStateStatus` is `BLOCKED` due to failing checks, or `statusCheckRollup` contains failing/pending items):
    - Print: "CI checks not passing — handing back to CI monitor."
-   - Output `AGENT_DONE` (loop restarts from `pr-check-monitor`)
+   - Create the `.agent-done` sentinel (loop restarts from `pr-check-monitor`)
 4. If `mergeStateStatus` is `CLEAN` or `UNSTABLE` (and `mergeable` is true), proceed to Step 3.
 5. If the PR requires review approval (`reviewDecision` is `REVIEW_REQUIRED`) and has not been approved:
    - Print a message: "Waiting for review approval..."
    - `sleep 60` and re-check
-   - After 30 minutes of waiting (approximately 30 polls), output `INPUT_NEEDED` — review approval is needed
-6. If `mergeStateStatus` is `BLOCKED` for reasons other than CI or review, output `INPUT_NEEDED` with details.
+   - After 30 minutes of waiting (approximately 30 polls), create the `.input-needed` sentinel — review approval is needed
+6. If `mergeStateStatus` is `BLOCKED` for reasons other than CI or review, create the `.input-needed` sentinel with details printed to stdout.
 7. If `mergeStateStatus` is `BEHIND`, rebase the branch locally and force push:
    ```
    git fetch origin main && git rebase origin/main
@@ -988,8 +997,8 @@ Instructions:
    git push --force-with-lease
    ```
    Then print: "Branch was behind — rebased and force pushed. Handing back to CI monitor."
-   Output `AGENT_DONE` (loop restarts from `pr-check-monitor` since CI needs to re-run after rebase).
-   If the rebase fails (conflicts), attempt to resolve them. If unresolvable, output `INPUT_NEEDED`.
+   Create the `.agent-done` sentinel (loop restarts from `pr-check-monitor` since CI needs to re-run after rebase).
+   If the rebase fails (conflicts), attempt to resolve them. If unresolvable, create the `.input-needed` sentinel.
 
 ## Step 3: Merge and Update Local Main
 
@@ -997,7 +1006,7 @@ Instructions:
    ```
    gh pr merge <number> --squash --delete-branch
    ```
-   If merge fails, output `INPUT_NEEDED` with the error details.
+   If merge fails, create the `.input-needed` sentinel with error details printed to stdout.
 9. Update the local main branch. Use `git worktree list` to find where main (or master) is checked out:
    - Parse the output to find a line containing `[main]` or `[master]`
    - If found, `cd` to that worktree path and run:
@@ -1011,14 +1020,15 @@ Instructions:
 10. Print a summary: "PR #<number> merged successfully. Local main updated."
 
 IMPORTANT:
-- Do NOT monitor or fix CI — that is `pr-check-monitor`'s job. If CI is not passing, output AGENT_DONE to hand back.
+- Do NOT monitor or fix CI — that is `pr-check-monitor`'s job. If CI is not passing, create `.agent-done` to hand back.
 - Do NOT ask questions or wait for input
 - Do NOT force push UNLESS the branch is behind the base branch and you just rebased (step 7) — `git push --force-with-lease` is allowed ONLY in that case
 - Be patient with review approval — poll every 60 seconds
 
-When the PR is merged and local main is updated, output exactly: TASK_COMPLETE
-If CI is not passing and you need to hand back to CI monitor, output exactly: AGENT_DONE
-If merge fails, review times out, or there are unrecoverable issues, output exactly: INPUT_NEEDED
+When the PR is merged and local main is updated, signal completion by creating the `.task-complete` sentinel in the task directory.
+If CI is not passing and you need to hand back to CI monitor, create the `.agent-done` sentinel instead.
+If merge fails, review times out, or there are unrecoverable issues, create the `.input-needed` sentinel.
+(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
 const REVIEW_PR_COMMAND: &str = r#"name: Review PR
@@ -1130,10 +1140,11 @@ IMPORTANT:
 - Do NOT push anything to remote - this is a LOCAL merge only
 - If you cannot resolve a conflict, make your best judgment call
 - If the build fails after merge, try to fix compilation errors
-- If you absolutely cannot resolve the situation, output INPUT_NEEDED
+- If you absolutely cannot resolve the situation, create the `.input-needed` sentinel.
 
-When the merge is complete and code compiles on the target branch, output exactly: AGENT_DONE
-If you cannot complete the merge, output exactly: INPUT_NEEDED
+When the merge is complete and code compiles on the target branch, signal completion by creating the `.agent-done` sentinel in the task directory.
+If you cannot complete the merge, create the `.input-needed` sentinel instead.
+(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
 const REPO_INSPECTOR_PROMPT: &str = r#"You are a repo-inspector agent. Your job is to inspect a directory containing multiple git repos and determine which repos are relevant to the current task.
@@ -1164,7 +1175,8 @@ IMPORTANT:
 - Do NOT modify the `# Goal` section
 - Do NOT create a plan — only determine which repos are involved
 
-When you're done, output exactly: AGENT_DONE
+When you're done, signal completion by creating the `.agent-done` sentinel in the task directory.
+(See the Supervisor Sentinel section appended below for the exact path.)
 "#;
 
 const PR_REVIEWER_PROMPT: &str = r#"You are a PR review agent. Your job is to review the current branch's changes thoroughly and deliver your findings to the project PM.
@@ -1238,6 +1250,7 @@ IMPORTANT:
 - Do NOT write a `REVIEW.md` file — the review goes through `agman send-message` (or stdout for unassigned tasks)
 - Be constructive and specific in your feedback
 
-When the review has been delivered, output exactly: AGENT_DONE
-If you cannot complete the review, output exactly: INPUT_NEEDED
+When the review has been delivered, signal completion by creating the `.agent-done` sentinel in the task directory.
+If you cannot complete the review, create the `.input-needed` sentinel instead.
+(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
