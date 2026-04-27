@@ -681,7 +681,7 @@ pub fn create_setup_only_task(
     task.update_status(TaskStatus::Stopped)?;
 
     // Write a minimal TASK.md (empty goal, ready for user to fill via feedback)
-    task.write_task("# Goal\n\n# Plan\n")?;
+    task.write_task("# Goal\n")?;
 
     // Increment repo usage stats
     let stats_path = config.repo_stats_path();

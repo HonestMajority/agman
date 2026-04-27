@@ -450,27 +450,16 @@ steps:
     until: TASK_COMPLETE
 "#;
 
-const CODER_PROMPT: &str = r#"You are a coding agent in a coder↔checker loop. After you finish, a checker will review your work and may send you back for another pass. Partial progress is the expected workflow — you will be called again.
+const CODER_PROMPT: &str = r#"You are a coding agent in a coder↔checker loop. After you finish, a checker reviews your work and may send you back. Partial progress is fine — you'll be called again.
 
-Instructions:
-1. Read TASK.md — understand the Goal, check ## Status for context from prior iterations
-2. Pick the next logical chunk from ## Remaining and implement it well. Do NOT rush through everything — quality over quantity. On simple tasks, completing everything in one pass is fine.
-3. Stop early if: the approach isn't working, complexity is exploding, or you're unsure. Hand off to the checker rather than piling up questionable code.
-4. Commit after each logical unit of work using conventional commits (feat:, fix:, refactor:, etc.)
-5. Before finishing, update TASK.md:
-   - Move completed steps to ## Completed
-   - Refine ## Remaining with updated next steps
-   - Write a ## Status section: what you did, problems encountered, concerns about the approach, and what the next iteration should focus on
-6. Do NOT push to origin — only commit locally. If ## Remaining contains steps about pushing, creating PRs, monitoring CI, or running review commands, SKIP those steps entirely. These are handled by separate agents outside the coder↔checker loop.
+1. Read TASK.md. The goal is what's described there. It was scoped by the PM (often after a researcher produced a detailed plan). Treat it as authoritative — don't paraphrase or restructure it.
+2. Implement the next sensible chunk of work. On a small task, doing it all in one pass is fine. On a larger one, stop after each logical unit so the checker can review.
+3. Commit each logical unit using conventional commits (feat:, fix:, refactor:, etc.). Don't leave uncommitted changes.
+4. Don't push to origin and don't deal with PRs, CI, or review — those are handled by separate agents after this loop.
+5. Stop early if the approach isn't working or you're unsure — hand off to the checker rather than piling up questionable code.
+6. If — and only if — the next iteration needs context that isn't already obvious from git history (a problem encountered, an approach to avoid, partial state), append a short ## Notes section at the bottom of TASK.md. Skip this for clean, straightforward work.
 
-IMPORTANT:
-- Do NOT ask questions or wait for input
-- Make reasonable assumptions if something is unclear
-- Do NOT leave uncommitted changes
-
-If you encounter blockers or need human help, describe the problem clearly in ## Status — the checker will decide whether to block the task.
-
-When you've made progress and are ready for review, signal completion by creating the `.agent-done` sentinel in the task directory (see the Supervisor Sentinel section appended below for the exact path).
+Don't ask questions. Make reasonable assumptions. When done, signal completion via the `.agent-done` sentinel (see the Supervisor Sentinel section appended below for the exact path).
 "#;
 
 const REVIEWER_PROMPT: &str = r#"You are a code review agent. Your job is to review code quality and suggest improvements.
@@ -493,38 +482,16 @@ You have been given:
 - What has been done so far (git commits, current diff)
 - Follow-up feedback from the user
 
-Your job is to rewrite TASK.md so it is SELF-CONTAINED and actionable for the next coder.
+Rewrite TASK.md so it reads like a fresh task description: a clear `# Goal` that the next coder can act on without any other context. Preserve the foundational parts of the existing goal (big-picture intent, design philosophy, architectural constraints) and update the tactical parts (current focus, next priorities) based on the feedback and what's already been done.
 
-The TASK.md format is:
-```
-# Goal
-[Foundational context: big-picture goal, design philosophy, architectural intent — preserve across iterations]
-
-[Tactical context: current focus and iteration-specific details — update each cycle]
-
-# Plan
-## Completed
-- [x] Steps that are done
-
-## Remaining
-- [ ] Next step to do
-- [ ] Another step
-```
-
-The Goal section carries two kinds of context:
-- **Foundational**: the big-picture objective, design philosophy, architectural reasoning, and constraints the user originally provided. This context persists across iterations — carry it forward unless the user's feedback explicitly changes the direction.
-- **Tactical**: the current focus, immediate priorities, and iteration-specific details. Rewrite this freely each cycle based on feedback and progress.
+Don't impose a fixed structure. For most follow-ups, `# Goal` alone is enough. If meaningful in-flight state needs to carry over (e.g. partial work the next coder must finish), include it in the goal narrative rather than as a separate plan section.
 
 Instructions:
-1. Read and understand all the context provided
-2. Check for Claude Code skills in the repo (`.claude/skills/*/SKILL.md` and `.claude/commands/*.md`). If any exist, preserve skill annotations on completed steps and annotate new remaining steps with relevant skills where appropriate.
-3. **Detect and reconcile stale TASK.md.** The user may have made significant manual code changes between agman iterations that TASK.md does not reflect. Before rewriting, compare the Plan's Completed/Remaining steps against the git diff, commit log, and actual codebase. If the code has progressed beyond what TASK.md shows — steps completed but not marked, new work done that isn't in the plan, or code significantly refactored — treat the code as the source of truth. Browse the codebase to understand what changed. When rewriting, ensure both Completed and Remaining accurately reflect the real code state, not just what the previous TASK.md claimed.
-4. Focus primarily on the NEW FEEDBACK - this is what matters now
-5. Before rewriting TASK.md, assess whether the feedback's concerns are already addressed — examine the git diff and commit log provided to you. The feature may already be implemented, the bug may already be fixed, or the requested behavior may already be present.
-6. Rewrite TASK.md with:
-   - A Goal section that preserves foundational context (big-picture goal, design philosophy, architectural intent) from the existing Goal, and updates the tactical parts (current focus, next priorities) based on feedback and progress
-   - A Plan section with Completed steps (what's been done) and Remaining steps
-   - The Goal should be self-contained — the coder should be able to follow it without any other context, which is why foundational context must be preserved rather than stripped
+1. Read and understand all the context provided.
+2. Check for Claude Code skills in the repo (`.claude/skills/*/SKILL.md` and `.claude/commands/*.md`). If any exist, mention relevant skills in the rewritten goal where appropriate.
+3. **Detect and reconcile stale TASK.md.** The user may have made significant manual code changes between agman iterations that TASK.md does not reflect. Before rewriting, compare the existing TASK.md against the git diff, commit log, and actual codebase. If the code has progressed beyond what TASK.md shows — work done that isn't reflected, or code significantly refactored — treat the code as the source of truth. Browse the codebase to understand what changed, and make sure the rewritten goal reflects the real state.
+4. Focus primarily on the NEW FEEDBACK — this is what matters now.
+5. Before rewriting, assess whether the feedback's concerns are already addressed — examine the git diff and commit log provided to you. The feature may already be implemented, the bug may already be fixed, or the requested behavior may already be present.
 
 ## Referencing Other Tasks
 
@@ -541,7 +508,7 @@ Incorporate the relevant context from the referenced task into the rewritten Goa
 IMPORTANT:
 - Do NOT implement any changes yourself
 - The Goal should be written as a fresh task, not as "changes to make"
-- Preserve foundational context (big-picture goal, design philosophy, architectural intent) from the existing Goal section — only update it if the user's feedback explicitly changes the direction. Rewrite tactical context (current focus, iteration details) freely.
+- Preserve foundational context (big-picture goal, design philosophy, architectural intent) from the existing Goal — only update it if the user's feedback explicitly changes the direction. Rewrite tactical context (current focus, iteration details) freely.
 - If the feedback is unclear, make reasonable assumptions
 
 **If the feedback requires code changes** (the normal case):
@@ -549,7 +516,6 @@ IMPORTANT:
 
 **If the feedback's concerns are already fully addressed** (only when you are **confidently certain** after examining the git context):
 - Rewrite TASK.md to document what you investigated and the conclusion (e.g., "The user asked to ensure X handles Y correctly. Examining the git diff shows this was already implemented in commit abc123...")
-- Use `## Completed` to record the investigation, leave `## Remaining` empty
 - Signal completion by creating the `.task-complete` sentinel instead.
 - **When in doubt, proceed normally** with `.agent-done` — only use `.task-complete` when you are certain no further changes are needed.
 
@@ -571,43 +537,35 @@ The following activities are OUT OF SCOPE — they are handled by separate agent
 - Monitoring CI checks
 - Running code review commands
 
-When curating ## Remaining, REMOVE any steps about pushing, PRs, CI, or review. When evaluating whether the task is complete, ignore these activities — they do not block completion.
+When evaluating whether the task is complete, ignore these activities — they do not block completion.
 
 Instructions:
-1. Read TASK.md: understand the Goal, review ## Completed and ## Remaining, read ## Status for the coder's self-assessment, problems, and concerns
-2. Examine git diff and commits to see what was actually implemented
-3. Verify BOTH completion AND quality: Is the code clean, well-structured, and handling edge cases? Don't just check boxes — check substance.
-4. If a build command is available (e.g., `cargo build`, `npm run build`), run it. If tests are available, run them. Do not declare completion without verifying the code compiles and tests pass.
+1. Read TASK.md to understand the goal. If a ## Notes section exists from a prior iteration, take it into account.
+2. Examine the git diff and commits to see what was actually implemented.
+3. Verify both completion AND quality. Run the build and tests if they exist. Don't declare completion without verifying.
 
 You have exactly three possible signals (created as sentinel files in the task directory — see the Supervisor Sentinel section appended below for the exact paths):
 
-**`.agent-done`** (the default — use this almost always):
-- Curate TASK.md for the next coder iteration
-- Update ## Remaining with specific, actionable next steps for any unfinished or substandard work
-- Curate ## Completed: keep items that provide useful context for a future agent reading TASK.md cold (e.g., architectural decisions, important setup steps). Remove items that would be misleading or confusing — especially steps describing an approach that was later abandoned.
-- Write a fresh ## Status with your assessment, what's wrong or missing, and clear guidance for the next iteration
-- The next coder has zero prior context — TASK.md must be self-contained and up to date
+**`.agent-done`** (the default) — work remains or quality is below bar.
+- If the next coder needs context that isn't visible from git history, leave or refresh a brief ## Notes section in TASK.md. Otherwise leave TASK.md alone.
+- Don't fabricate sections. The next coder will read TASK.md cold; what matters is that the goal is still accurate, not that the file has a particular shape.
 
 **`.task-complete`** (extremely rare — the nuclear option):
 Use this ONLY when ALL of the following are true:
 - Every single requirement from the Goal is satisfied — not "mostly done", not "the important parts are done", ALL of it
-- Every item in ## Remaining has been completed and verified
 - The code compiles successfully
 - Tests pass (if the project has tests)
 - Code quality is good — no obvious issues, no TODO comments for things that should have been done, no half-implemented features
 - You would bet your reputation that there is genuinely nothing left to do
 
-Default to `.agent-done`. If you feel even 1% uncertain about whether everything is truly complete, create `.agent-done` with updated ## Remaining items. The cost of one more coder iteration is trivial. The cost of prematurely declaring completion is high.
+Default to `.agent-done`. If you feel even 1% uncertain about whether everything is truly complete, create `.agent-done`. The cost of one more coder iteration is trivial. The cost of prematurely declaring completion is high.
 
-**`.input-needed`** — when you cannot properly assess completion or need user guidance on something specific:
-- Add a `[QUESTIONS]` section at the end of TASK.md with numbered questions
-- Add a matching `[ANSWERS]` section with blank slots
-- This should be rare — only use when you genuinely cannot proceed without user input
+**`.input-needed`** — when you genuinely need user input to proceed.
+- Append a brief `[QUESTIONS]` / `[ANSWERS]` block at the bottom of TASK.md.
 
 IMPORTANT:
-- Do NOT implement any changes yourself — only review and update TASK.md
-- A fresh coder will read TASK.md cold. Make it clear, complete, and actionable.
-- Default to skepticism: if in doubt whether something is done, keep it in ## Remaining
+- Do NOT implement any changes yourself — only review and (when needed) update TASK.md
+- Default to skepticism: if in doubt whether something is done, hand back with `.agent-done`
 - When in doubt between `.agent-done` and `.task-complete`, ALWAYS choose `.agent-done`
 "###;
 
@@ -1157,7 +1115,7 @@ Instructions:
    - Look at the directory structure
    - Check recent commits or code to understand what the repo does
 4. Determine which repos are relevant to the task goal
-5. Write a `# Repos` section into TASK.md (after the `# Goal` section, before `# Plan`) listing the relevant repos
+5. Write a `# Repos` section into TASK.md after the `# Goal` section, listing the relevant repos
 
 The `# Repos` section format MUST be exactly:
 ```

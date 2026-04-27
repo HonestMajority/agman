@@ -220,7 +220,7 @@ fn create_setup_only_task() {
 
     // TASK.md exists in task directory with empty goal
     let task_content = task.read_task().unwrap();
-    assert_eq!(task_content, "# Goal\n\n# Plan\n");
+    assert_eq!(task_content, "# Goal\n");
 
     // Worktree exists
     assert!(task.meta.primary_repo().worktree_path.exists());

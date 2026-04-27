@@ -52,18 +52,15 @@ src/
 - Status: `working`, `paused`, `done`, `failed`
 
 ### TASK.md Format
+
+TASK.md is the task description. The only convention is a single `# Goal` heading at the top:
+
 ```markdown
 # Goal
-[What we're trying to achieve - the high-level objective]
-
-# Plan
-## Completed
-- [x] Step that was done
-
-## Remaining
-- [ ] Next step to do
-- [ ] Another step
+What the task is, scoped by the PM.
 ```
+
+Agents may append a short `## Notes` section if the next iteration needs context that isn't visible from git history. The refiner rewrites TASK.md on feedback iterations.
 
 ### Flow
 - YAML file in `~/.agman/flows/`
