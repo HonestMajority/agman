@@ -29,7 +29,7 @@ fn agent_build_system_prompt_basic() {
         .unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let prompt = agent.build_system_prompt(&task).unwrap();
+    let prompt = agent.build_system_prompt(&task, false).unwrap();
 
     // Identity content from the prompt template is present
     assert!(prompt.contains("coding agent"));
@@ -61,7 +61,7 @@ fn agent_build_system_prompt_omits_feedback_and_git_context() {
     task.write_feedback("Please fix the bug in main.rs").unwrap();
 
     let agent = Agent::load(&config, "refiner").unwrap();
-    let prompt = agent.build_system_prompt(&task).unwrap();
+    let prompt = agent.build_system_prompt(&task, false).unwrap();
 
     assert!(
         !prompt.contains("Follow-up Feedback"),
@@ -80,7 +80,7 @@ fn agent_build_system_prompt_includes_self_improve_footer() {
     task.write_task("# Goal\nBuild something\n").unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let prompt = agent.build_system_prompt(&task).unwrap();
+    let prompt = agent.build_system_prompt(&task, false).unwrap();
 
     assert!(prompt.contains("# Self-Improvement"));
     assert!(prompt.contains("self-improve"));
@@ -97,7 +97,7 @@ fn agent_build_system_prompt_includes_skill_awareness_footer() {
     task.write_task("# Goal\nBuild something\n").unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let prompt = agent.build_system_prompt(&task).unwrap();
+    let prompt = agent.build_system_prompt(&task, false).unwrap();
 
     assert!(prompt.contains("# Skills"));
     assert!(prompt.contains(".claude/skills/"));
@@ -114,7 +114,7 @@ fn agent_build_system_prompt_includes_supervisor_sentinel_directive() {
     task.write_task("# Goal\nDo something\n").unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let prompt = agent.build_system_prompt(&task).unwrap();
+    let prompt = agent.build_system_prompt(&task, false).unwrap();
 
     // The sentinel section must list all three sentinel files and reference
     // this task's directory so the supervisor can find them.
@@ -143,7 +143,7 @@ fn agent_build_system_prompt_uses_project_as_inbox_sender_tag() {
     task.write_task("# Goal\nDo something\n").unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let prompt = agent.build_system_prompt(&task).unwrap();
+    let prompt = agent.build_system_prompt(&task, false).unwrap();
     assert!(prompt.contains("[Message from agman-ceo-pm]"));
     assert!(!prompt.contains("[Message from supervisor]"));
 }
@@ -163,7 +163,7 @@ fn agent_build_inbox_message_includes_task_md() {
         .unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let msg = agent.build_inbox_message(&task).unwrap();
+    let msg = agent.build_inbox_message(&task, false).unwrap();
 
     assert!(msg.contains("# Current Task"));
     assert!(msg.contains("Build the widget"));
@@ -181,7 +181,7 @@ fn agent_build_inbox_message_includes_feedback_when_present() {
     task.write_feedback("Please fix the bug in main.rs").unwrap();
 
     let agent = Agent::load(&config, "refiner").unwrap();
-    let msg = agent.build_inbox_message(&task).unwrap();
+    let msg = agent.build_inbox_message(&task, false).unwrap();
 
     assert!(msg.contains("Follow-up Feedback"));
     assert!(msg.contains("Please fix the bug in main.rs"));
@@ -199,7 +199,113 @@ fn agent_build_inbox_message_omits_feedback_section_when_empty() {
     task.write_task("# Goal\nDo work\n").unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let msg = agent.build_inbox_message(&task).unwrap();
+    let msg = agent.build_inbox_message(&task, false).unwrap();
 
     assert!(!msg.contains("Follow-up Feedback"));
+}
+
+// ---------------------------------------------------------------------------
+// command_mode = true — stored-command agents (pr-creator, push-rebaser, …)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn agent_command_mode_omits_prompt_template_from_system_prompt() {
+    // For stored-command agents, the prompt template (the "action") moves to
+    // the inbox message. The system prompt must NOT contain it — system
+    // prompts don't trigger work, only user messages do.
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.init_default_files(false).unwrap();
+
+    let task = create_test_task(&config, "repo", "branch");
+    task.write_task("# Goal\nReady to ship\n").unwrap();
+
+    let agent = Agent::load(&config, "pr-creator").unwrap();
+    let prompt = agent.build_system_prompt(&task, true).unwrap();
+
+    // Boilerplate is still present
+    assert!(prompt.contains("## Work Directives"));
+    assert!(prompt.contains("# Skills"));
+    assert!(prompt.contains("# Self-Improvement"));
+    assert!(prompt.contains("# Supervisor Sentinel"));
+    assert!(prompt.contains(".agent-done"));
+
+    // The action instructions must NOT be in the system prompt
+    assert!(
+        !prompt.contains("PR creation agent"),
+        "command-mode system prompt must not embed the prompt template; got:\n{}",
+        prompt
+    );
+    assert!(
+        !prompt.contains("gh pr view"),
+        "action instructions must move to the inbox message in command mode"
+    );
+}
+
+#[test]
+fn agent_command_mode_inbox_message_has_action_then_task_context() {
+    // For stored-command agents, the prompt template IS the action directive.
+    // The inbox message must include it as the primary content under
+    // `# Action`, then TASK.md as `# Task context (for reference)`.
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.init_default_files(false).unwrap();
+
+    let task = create_test_task(&config, "repo", "branch");
+    task.write_task("# Goal\nShip the widget\n## Status\nDone\n")
+        .unwrap();
+
+    let agent = Agent::load(&config, "pr-creator").unwrap();
+    let msg = agent.build_inbox_message(&task, true).unwrap();
+
+    // Action header with the prompt template content
+    assert!(msg.contains("# Action"), "missing # Action header");
+    assert!(
+        msg.contains("PR creation agent"),
+        "prompt template should be in the inbox message under # Action"
+    );
+    assert!(
+        msg.contains("gh pr view"),
+        "action instructions should be in the inbox message"
+    );
+
+    // TASK.md is reference context, not a directive
+    assert!(
+        msg.contains("# Task context (for reference)"),
+        "missing TASK.md context header"
+    );
+    assert!(msg.contains("Ship the widget"));
+
+    // The action must come BEFORE the task context — agents act on the first
+    // directive they see, and the action is the primary directive here.
+    let action_idx = msg.find("# Action").expect("action header missing");
+    let context_idx = msg
+        .find("# Task context (for reference)")
+        .expect("context header missing");
+    assert!(
+        action_idx < context_idx,
+        "action must precede task context in command-mode inbox message"
+    );
+}
+
+#[test]
+fn agent_command_mode_system_prompt_describes_inbox_action_payload() {
+    // Work directives in command mode should tell the agent the inbox
+    // message contains the action — not just "TASK.md and feedback".
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.init_default_files(false).unwrap();
+
+    let task = create_test_task(&config, "repo", "branch");
+    task.write_task("# Goal\nGo\n").unwrap();
+
+    let agent = Agent::load(&config, "pr-merge-agent").unwrap();
+    let prompt = agent.build_system_prompt(&task, true).unwrap();
+
+    assert!(prompt.contains("## Work Directives"));
+    // Wording must hint that the inbox message carries the action directive.
+    assert!(
+        prompt.contains("action"),
+        "command-mode work directives should mention the action payload"
+    );
 }
