@@ -21,27 +21,56 @@ impl Agent {
     }
 
     /// Build the **system prompt** for this agent — the static identity payload
-    /// passed to claude via `--system-prompt-file`. Contains: prompt template,
-    /// skills footer, task-dir paths, multi-repo paths, self-improve footer,
-    /// and the supervisor sentinel directive (sentinel-file paths).
+    /// passed to claude via `--system-prompt-file`.
     ///
-    /// Does **not** contain the dynamic per-launch payload (TASK.md content,
-    /// feedback, git diff, git log) — that lives in
+    /// The shape of the system prompt depends on `command_mode`:
+    ///
+    /// - **Regular flows** (coder/checker/refiner — `command_mode = false`):
+    ///   the agent's `prompt_template` IS the identity ("You are a coder /
+    ///   checker / refiner agent. Read TASK.md, …") and TASK.md is the dynamic
+    ///   work directive delivered through the inbox. The system prompt embeds
+    ///   the prompt template plus shared boilerplate (work directives, skills,
+    ///   task-dir paths, self-improve, sentinel rules).
+    /// - **Stored commands** (pr-creator / pr-merge-agent / push-rebaser etc.
+    ///   — `command_mode = true`): the prompt template IS the action
+    ///   ("Create a draft PR: 1. run `gh pr view` 2. …"). System prompts
+    ///   don't trigger work — claude needs a real user message — so the
+    ///   prompt template moves to the inbox message via
+    ///   [`build_inbox_message`](Self::build_inbox_message). The system prompt
+    ///   keeps only the shared boilerplate, which tells the agent it will
+    ///   receive its work assignment in the inbox.
+    ///
+    /// The dynamic per-launch payload (TASK.md, feedback, git diff, recent
+    /// commits) is never embedded in the system prompt — it lives in
     /// [`build_inbox_message`](Self::build_inbox_message) and is delivered to
     /// the agent via the task inbox once claude is ready.
-    pub fn build_system_prompt(&self, task: &Task) -> Result<String> {
-        let mut prompt = self.prompt_template.clone();
+    pub fn build_system_prompt(&self, task: &Task, command_mode: bool) -> Result<String> {
+        let mut prompt = String::new();
+
+        // Regular flows embed the prompt template as identity-as-instruction.
+        // Stored commands intentionally omit it — the action moves to the
+        // inbox message because system prompts don't trigger claude into
+        // doing work.
+        if !command_mode {
+            prompt.push_str(&self.prompt_template);
+            prompt.push_str("\n\n---\n\n");
+        }
 
         // Work-directives preamble: tell the agent to wait for the inbox
         // message before doing anything. The system prompt is identity only.
         // The sender tag is the project (PM) name when available; falls back
         // to "supervisor" for unassigned tasks.
         let sender = task.meta.project.as_deref().unwrap_or("supervisor");
-        prompt.push_str("\n\n---\n\n");
         prompt.push_str("## Work Directives\n");
-        prompt.push_str(&format!(
-            "You will receive your work assignment as a tmux message tagged\n[Message from {sender}]: containing the current TASK.md, any feedback,\nand current git context. Begin work when that message arrives. Do not act\nbefore then — the system prompt only describes who you are and how to\nfinish, not what to do.\n"
-        ));
+        if command_mode {
+            prompt.push_str(&format!(
+                "You will receive your work assignment as a tmux message tagged\n[Message from {sender}]:. The message contains the action you must perform plus relevant task context. Begin work when that message arrives. Do not act before then — the system prompt only tells you how to finish, not what to do.\n"
+            ));
+        } else {
+            prompt.push_str(&format!(
+                "You will receive your work assignment as a tmux message tagged\n[Message from {sender}]: containing the current TASK.md, any feedback,\nand current git context. Begin work when that message arrives. Do not act\nbefore then — the system prompt only describes who you are and how to\nfinish, not what to do.\n"
+            ));
+        }
 
         // Append skill-awareness footer so the agent sees it early
         prompt.push_str("\n\n---\n\n");
@@ -94,13 +123,26 @@ impl Agent {
 
     /// Build the **inbox message** for this launch — the dynamic per-launch
     /// work payload delivered to the agent's tmux session via the task inbox.
-    /// Contains: the current TASK.md, any pending FEEDBACK.md, the current
-    /// git diff, and the recent commit log.
+    ///
+    /// Shape depends on `command_mode`:
+    ///
+    /// - **Regular flows** (`command_mode = false`): TASK.md is the work
+    ///   directive. The message contains TASK.md, any pending FEEDBACK.md,
+    ///   the current git diff, and recent commits.
+    /// - **Stored commands** (`command_mode = true`): the agent's prompt
+    ///   template IS the work directive (e.g. "Create a draft PR: …").
+    ///   The message starts with the prompt template under `# Action`,
+    ///   followed by TASK.md as `# Task context (for reference)`, plus the
+    ///   current git diff and recent commits.
     ///
     /// This is paired with [`build_system_prompt`](Self::build_system_prompt)
     /// — the system prompt is "who you are and how to finish", and the inbox
     /// message is "what to do right now".
-    pub fn build_inbox_message(&self, task: &Task) -> Result<String> {
+    pub fn build_inbox_message(&self, task: &Task, command_mode: bool) -> Result<String> {
+        if command_mode {
+            return self.build_command_inbox_message(task);
+        }
+
         let task_content = task.read_task()?;
         let feedback = task.read_feedback()?;
 
@@ -145,6 +187,53 @@ impl Agent {
                     msg.push_str(&log);
                     msg.push_str("```\n");
                 }
+            }
+        }
+
+        Ok(msg)
+    }
+
+    /// Inbox message for stored-command agents. The agent's prompt template
+    /// is the action directive; TASK.md and git context are reference only.
+    fn build_command_inbox_message(&self, task: &Task) -> Result<String> {
+        let task_content = task.read_task()?;
+
+        let mut msg = String::new();
+        // The action instructions ARE the work directive for command flows —
+        // they live in the prompt template (e.g. PR_CREATOR_PROMPT) and would
+        // never trigger work if left in the system prompt. Putting them at
+        // the top of the inbox message gets claude to actually act.
+        msg.push_str("# Action\n");
+        msg.push_str(&self.prompt_template);
+        msg.push_str("\n\n");
+
+        // TASK.md is reference context, not a directive. The action above
+        // tells the agent what to do; TASK.md just describes the state of
+        // the task it's operating against.
+        msg.push_str("# Task context (for reference)\n");
+        msg.push_str(&task_content);
+        msg.push_str("\n\n");
+
+        if let Ok(diff) = task.get_git_diff() {
+            if !diff.is_empty() {
+                msg.push_str("# Current Git Diff\n");
+                msg.push_str("```diff\n");
+                if diff.len() > 10000 {
+                    msg.push_str(&diff[..10000]);
+                    msg.push_str("\n... (truncated)\n");
+                } else {
+                    msg.push_str(&diff);
+                }
+                msg.push_str("```\n\n");
+            }
+        }
+
+        if let Ok(log) = task.get_git_log_summary() {
+            if !log.is_empty() {
+                msg.push_str("# Recent Commits\n");
+                msg.push_str("```\n");
+                msg.push_str(&log);
+                msg.push_str("```\n");
             }
         }
 

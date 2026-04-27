@@ -267,12 +267,32 @@ fn wait_for_pane_idle(session_name: &str, timeout: std::time::Duration) -> bool 
     false
 }
 
+/// Returns true when the task's current `flow_name` resolves to a stored
+/// command (`commands_dir/<id>.yaml`) rather than a regular flow
+/// (`flows_dir/<name>.yaml`). When this is true, the agent's prompt template
+/// is the action directive (and must move to the inbox message); when false,
+/// the prompt template is the agent's identity and TASK.md is the directive.
+///
+/// `flows_dir` wins when a name exists in both — same precedence as
+/// `resolve_flow_path`.
+fn is_command_flow(config: &Config, flow_name: &str) -> bool {
+    if config.flow_path(flow_name).exists() {
+        return false;
+    }
+    config.command_path(flow_name).exists()
+}
+
 /// Build the **system prompt** for a step (identity only — no TASK.md,
 /// feedback, or git context) and write it to `<task_dir>/.current-prompt.md`
 /// so `claude --system-prompt-file <path>` can pick it up.
+///
+/// For stored-command flows the prompt template is *not* embedded here — it
+/// moves to the inbox message via `prepare_inbox_message` so claude actually
+/// has a user-message directive to act on.
 fn prepare_system_prompt(config: &Config, task: &Task, agent_name: &str) -> Result<String> {
     let agent = Agent::load(config, agent_name)?;
-    let prompt = agent.build_system_prompt(task)?;
+    let command_mode = is_command_flow(config, &task.meta.flow_name);
+    let prompt = agent.build_system_prompt(task, command_mode)?;
     std::fs::write(task.current_prompt_path(), &prompt)
         .context("failed to write .current-prompt.md")?;
     Ok(prompt)
@@ -282,9 +302,14 @@ fn prepare_system_prompt(config: &Config, task: &Task, agent_name: &str) -> Resu
 /// payload (TASK.md, feedback, git diff, recent commits). Caller is
 /// responsible for delivering it via `inbox::append_message` so the TUI's
 /// inbox poller will inject it once claude is ready.
+///
+/// For stored-command flows the agent's prompt template is the action
+/// directive and is included at the top of the message (`# Action`) with
+/// TASK.md appended below as reference context.
 fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Result<String> {
     let agent = Agent::load(config, agent_name)?;
-    agent.build_inbox_message(task)
+    let command_mode = is_command_flow(config, &task.meta.flow_name);
+    agent.build_inbox_message(task, command_mode)
 }
 
 /// Start an agent step as a fresh interactive claude session.
@@ -1045,8 +1070,14 @@ pub fn wake_if_idle(
 }
 
 /// Honor a `.stop` sentinel: kill the currently-running claude, finish the
-/// live session, and transition the task to Stopped. Idempotent — safe to
-/// call even if the session is already stopped or the sentinel is gone.
+/// live session, restore any pre-command flow snapshot, and transition the
+/// task to Stopped. Idempotent — safe to call even if the session is already
+/// stopped or the sentinel is gone.
+///
+/// This is also the path `use_cases::stop_task` takes for user-initiated
+/// stops, so it must do *all* the cleanup the supervisor would otherwise do
+/// at flow-end (minus archiving — a user stop is not a successful command
+/// completion, so terminal post_actions like `archive_task` do not fire).
 pub fn honor_stop(config: &Config, task: &mut Task) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), "supervisor honoring stop");
     let _ = config; // reserved for future notify/cleanup use
@@ -1057,6 +1088,28 @@ pub fn honor_stop(config: &Config, task: &mut Task) -> Result<()> {
     task.clear_sentinels()?;
     task.finish_last_session(Some("STOPPED".to_string()))?;
     task.update_agent(None)?;
+
+    // If the task was running a stored command, restore the pre-command flow
+    // snapshot taken by `drain_queue` so the task is back to its original
+    // flow position (mirrors the non-terminal branch of
+    // `handle_command_flow_end`). Otherwise the task would stay stranded in
+    // the command flow at some random step the next time it's resumed.
+    if let Some(name) = task.meta.pre_command_flow_name.take() {
+        let step = task.meta.pre_command_flow_step.take().unwrap_or(0);
+        tracing::info!(
+            task_id = %task.meta.task_id(),
+            stopped_command_flow = %task.meta.flow_name,
+            restored_flow = %name,
+            restored_step = step,
+            "restoring pre-command flow state on stop"
+        );
+        task.meta.flow_name = name;
+        task.meta.flow_step = step;
+        task.meta.flow_sub_step = 0;
+    }
+
+    // update_status(Stopped) saves meta, which captures the pre-command
+    // flow restoration above.
     task.update_status(TaskStatus::Stopped)?;
     Ok(())
 }

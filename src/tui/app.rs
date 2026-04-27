@@ -1321,19 +1321,11 @@ impl App {
     }
 
     fn stop_task(&mut self) -> Result<()> {
-        let task_info = self.selected_task().and_then(|t| {
-            // For multi-repo tasks without repos, use the parent session name
-            let tmux_session = if t.meta.has_repos() {
-                t.meta.primary_repo().tmux_session.clone()
-            } else if t.meta.is_multi_repo() {
-                Config::tmux_session_name(&t.meta.name, &t.meta.branch_name)
-            } else {
-                return None;
-            };
-            Some((t.meta.task_id(), tmux_session, t.meta.status))
-        });
+        let task_info = self
+            .selected_task()
+            .map(|t| (t.meta.task_id(), t.meta.status));
 
-        if let Some((task_id, tmux_session, status)) = task_info {
+        if let Some((task_id, status)) = task_info {
             if status == TaskStatus::Stopped {
                 self.set_status(format!("Task already stopped: {}", task_id));
                 return Ok(());
@@ -1342,24 +1334,13 @@ impl App {
             tracing::info!(task_id = %task_id, "TUI: stop task requested");
             self.log_output(format!("Stopping task {}...", task_id));
 
-            // Send Ctrl+C to the agman window to interrupt any running process (side effect)
-            if Tmux::session_exists(&tmux_session) {
-                match Tmux::send_ctrl_c_to_window(&tmux_session, "agman") {
-                    Ok(_) => {
-                        self.log_output("  Sent interrupt signal to agman window".to_string());
-                    }
-                    Err(e) => {
-                        self.log_output(format!(
-                            "  Warning: Could not interrupt agman window: {}",
-                            e
-                        ));
-                    }
-                }
-            }
-
-            // Delegate business logic to use_cases
+            // Delegate business logic to use_cases. `stop_task` routes through
+            // `supervisor::honor_stop`, which kills the live claude in the
+            // agman pane via `/exit` (with Ctrl+C fallback), finalizes the
+            // session, and restores any pre-command flow snapshot.
+            let config = self.config.clone();
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                if let Err(e) = use_cases::stop_task(task) {
+                if let Err(e) = use_cases::stop_task(&config, task) {
                     self.log_output(format!("  Error stopping task: {}", e));
                     self.set_status(format!("Error: {}", e));
                     return Ok(());
@@ -5146,20 +5127,26 @@ impl App {
                 None => return Ok(()),
             };
 
-        // If task is running, stop it first
+        // If task is running, stop it first via the supervisor pathway. This
+        // kills the live claude, finalizes the session, and restores any
+        // pre-command flow snapshot — same as the `s` keybinding.
         if status == TaskStatus::Running {
-            // Inline stop logic (same as stop_task but we already have the info)
-            if Tmux::session_exists(&tmux_session) {
-                let _ = Tmux::send_ctrl_c_to_window(&tmux_session, "agman");
-            }
+            let config = self.config.clone();
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                let _ = task.update_status(TaskStatus::Stopped);
-                task.meta.current_agent = None;
-                let _ = task.save_meta();
+                if let Err(e) = use_cases::stop_task(&config, task) {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        error = %e,
+                        "failed to stop task before rerun"
+                    );
+                }
             }
             tracing::info!(task_id = %task_id, old_status = "running", new_status = "stopped", "stopped task before rerun");
             self.log_output(format!("Stopped {} before rerun", task_id));
         }
+        // tmux_session is no longer used directly here — honor_stop handles
+        // the agman pane. Keep the binding for compile-time clarity.
+        let _ = &tmux_session;
 
         // Load flow to enumerate steps
         let flow_path = self.config.flow_path(&flow_name);
