@@ -494,15 +494,6 @@ pub fn queue_command(
     Ok(count)
 }
 
-/// Write immediate feedback for a stopped task.
-///
-/// Extracts the "stopped" branch of `App::submit_feedback()`.
-/// Does NOT run `agman continue` — that's a side effect handled by the caller.
-pub fn write_immediate_feedback(task: &Task, feedback: &str) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), "writing immediate feedback");
-    task.write_feedback(feedback)
-}
-
 /// Delete a single queued item by index.
 pub fn delete_queue_item(task: &Task, index: usize) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), index, "deleting queued item");
@@ -546,25 +537,6 @@ pub fn restart_task(task: &mut Task, step_index: usize) -> Result<()> {
     task.meta.flow_step = step_index;
     task.update_status(TaskStatus::Running)?;
     Ok(())
-}
-
-/// Pop the first queued item and apply it if it's feedback.
-///
-/// This is the pure business logic behind `App::process_stranded_queue()`.
-/// For `QueueItem::Feedback`, writes FEEDBACK.md. For `QueueItem::Command`, just returns it.
-/// The caller decides what side effects to perform (run continue vs run-command).
-/// Returns the popped item, or None if the queue was empty.
-pub fn pop_and_apply_queue_item(task: &Task) -> Result<Option<QueueItem>> {
-    tracing::info!(task_id = %task.meta.task_id(), "popping and applying queued item");
-    match task.pop_queue()? {
-        Some(item) => {
-            if let QueueItem::Feedback { ref text } = item {
-                task.write_feedback(text)?;
-            }
-            Ok(Some(item))
-        }
-        None => Ok(None),
-    }
 }
 
 /// Action to take for a task after polling its linked PR.

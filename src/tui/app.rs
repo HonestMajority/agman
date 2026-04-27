@@ -1172,10 +1172,10 @@ impl App {
 
     /// Process any stranded queue items for stopped tasks.
     /// This is a safety net: if items were queued while a task was running and
-    /// the agent process exited without draining them (legacy AgentRunner path,
-    /// or supervisor half-state that failed to relaunch), the TUI picks them up
-    /// and routes through the supervisor: ensure tmux → wake_if_idle drains the
-    /// queue and launches the next flow step in the `agman` window.
+    /// the supervisor's relaunch failed to drain them (half-state), the TUI
+    /// picks them up and routes through the supervisor: ensure tmux →
+    /// wake_if_idle drains the queue and launches the next flow step in the
+    /// `agman` window.
     pub fn process_stranded_queue(&mut self) {
         let stranded: Vec<String> = self
             .tasks
@@ -5801,12 +5801,6 @@ impl App {
     /// step if appropriate, and launches the next agent), and logs the result.
     /// For `StopRequested` this honors the `.stop` sentinel by killing the
     /// running claude and transitioning the task to Stopped.
-    ///
-    /// Tasks with a live `AgentRunner` flow (still the default path) never
-    /// produce non-`Idle` outcomes today because legacy agents don't populate
-    /// `.agent-done` or `<MAGIC>:<session_id>` in the pane — so this dispatch
-    /// is wired but dormant until `supervisor::start_agent_step` is the thing
-    /// actually launching agents. Safe to land ahead of that flip.
     fn apply_supervisor_poll_results(&mut self) {
         let output = match self.supervisor_poll_rx.try_recv() {
             Ok(r) => r,
@@ -6595,10 +6589,9 @@ pub fn run_tui(config: Config) -> Result<()> {
             // Check for completed inbox poll results (non-blocking)
             app.apply_inbox_poll_results();
 
-            // Poll task supervisor sentinels every 3 seconds. During this
-            // iteration the poll is observation-only — outcomes are logged
-            // and the flow is still driven by `agman flow-run` / `AgentRunner`
-            // as before. Dispatch wiring comes in a follow-up pass.
+            // Poll task supervisor sentinels every 3 seconds. The supervisor
+            // drives flow progression — `apply_supervisor_poll_results` reacts
+            // to detected stop conditions and calls into `supervisor::advance`.
             if app.last_supervisor_poll.elapsed() >= Duration::from_secs(3) {
                 app.start_supervisor_poll();
                 app.last_supervisor_poll = Instant::now();

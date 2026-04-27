@@ -2,7 +2,6 @@
 //! inside a tmux window (the task session's `agman` window) and advances the
 //! flow based on sentinel files + pane scanning.
 //!
-//! This module replaces the old `AgentRunner` background-subprocess model.
 //! Each step launches a fresh interactive `claude --system-prompt ...
 //! --session-id <uuid>`; the supervisor polls for `<task_dir>/.agent-done`
 //! (written by the agent as its last action) or, as a fallback, scans the
@@ -319,9 +318,8 @@ pub enum AdvanceOutcome {
     InputNeeded,
     /// Flow finished and no queued feedback/command replaced it. Task is Stopped.
     Stopped,
-    /// Flow step is an unsupported shape. The supervisor is observation-only
-    /// for this task; the legacy `AgentRunner` still drives it. Returned
-    /// without mutating task state so callers can log and move on.
+    /// Flow step is an unsupported shape. Returned without mutating task
+    /// state so callers can log and move on.
     Unsupported,
 }
 

@@ -13,34 +13,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Run the entire flow for a task (used internally, runs in tmux)
-    FlowRun {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-    },
-
-    /// Continue a task with follow-up instructions
-    Continue {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-        /// Follow-up instructions or feedback (reads from FEEDBACK.md if not provided)
-        #[arg(allow_hyphen_values = true)]
-        feedback: Option<String>,
-    },
-
     /// Run a stored command on a task
     RunCommand {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-        /// Command identifier (e.g., "create-pr", "address-review")
-        command_id: String,
-        /// Branch name argument (used by commands like rebase)
-        #[arg(long)]
-        branch: Option<String>,
-    },
-
-    /// Run a stored command's flow for a task (used internally, runs in tmux)
-    CommandFlowRun {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
         /// Command identifier (e.g., "create-pr", "address-review")
@@ -174,12 +148,12 @@ EXAMPLES:
     /// Queue feedback on a running task
     #[command(after_help = "\
 EXAMPLES:
-  agman queue-feedback myrepo--fix-bug \"Please also check edge cases\"
-  cat <<'EOF' | agman queue-feedback myrepo--fix-bug -
+  agman feedback myrepo--fix-bug \"Please also check edge cases\"
+  cat <<'EOF' | agman feedback myrepo--fix-bug -
   Multi-line feedback via stdin using the - sentinel.
   EOF
-  agman queue-feedback myrepo--fix-bug @./feedback.md")]
-    QueueFeedback {
+  agman feedback myrepo--fix-bug @./feedback.md")]
+    Feedback {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
         /// Feedback text to queue

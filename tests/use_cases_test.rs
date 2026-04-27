@@ -521,26 +521,8 @@ fn queue_feedback_on_running_task() {
 }
 
 // ---------------------------------------------------------------------------
-// Submit feedback (immediate — stopped task)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn write_immediate_feedback_on_stopped_task() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let mut task = create_test_task(&config, "repo", "branch");
-    task.update_status(TaskStatus::Stopped).unwrap();
-
-    use_cases::write_immediate_feedback(&task, "please fix the bug").unwrap();
-
-    let fb = task.read_feedback().unwrap();
-    assert_eq!(fb, "please fix the bug");
-}
-
-// ---------------------------------------------------------------------------
-// queue_feedback on a Stopped task now drains + wakes via the supervisor
-// (TUI submit_feedback's Stopped branch; replaces the old
-// write_immediate_feedback + `agman continue` shell-out path).
+// queue_feedback on a Stopped task drains + wakes via the supervisor
+// (TUI submit_feedback's Stopped branch).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -641,48 +623,6 @@ fn restart_task_sets_flow_step_and_status() {
     let loaded = Task::load(&config, "repo", "branch").unwrap();
     assert_eq!(loaded.meta.flow_step, 2);
     assert_eq!(loaded.meta.status, TaskStatus::Running);
-}
-
-// ---------------------------------------------------------------------------
-// Pop and apply feedback
-// ---------------------------------------------------------------------------
-
-#[test]
-fn pop_and_apply_queue_item_writes_first_feedback() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
-
-    task.queue_feedback("first feedback").unwrap();
-    task.queue_feedback("second feedback").unwrap();
-
-    let result = use_cases::pop_and_apply_queue_item(&task).unwrap();
-    match result {
-        Some(QueueItem::Feedback { text }) => assert_eq!(text, "first feedback"),
-        _ => panic!("Expected Some(Feedback)"),
-    }
-
-    // FEEDBACK.md written
-    let fb = task.read_feedback().unwrap();
-    assert_eq!(fb, "first feedback");
-
-    // Queue now has one item
-    let queue = task.read_queue();
-    assert_eq!(queue.len(), 1);
-    match &queue[0] {
-        QueueItem::Feedback { text } => assert_eq!(text, "second feedback"),
-        _ => panic!("Expected Feedback item"),
-    }
-}
-
-#[test]
-fn pop_and_apply_queue_item_empty_queue_returns_none() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
-
-    let result = use_cases::pop_and_apply_queue_item(&task).unwrap();
-    assert!(result.is_none());
 }
 
 // ---------------------------------------------------------------------------
