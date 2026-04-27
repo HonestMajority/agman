@@ -54,6 +54,21 @@ pub struct RepoEntry {
     pub tmux_session: String,
 }
 
+/// A single interactive claude session run by the supervisor.
+///
+/// Records enough state to let the user resume the conversation with
+/// `claude --resume <session_id>` after the fact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEntry {
+    pub agent: String,
+    pub session_id: String,
+    pub started_at: DateTime<Utc>,
+    #[serde(default)]
+    pub stopped_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub condition: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMeta {
     /// For single-repo tasks this equals the repo name; for multi-repo tasks
@@ -66,6 +81,11 @@ pub struct TaskMeta {
     pub flow_name: String,
     pub current_agent: Option<String>,
     pub flow_step: usize,
+    /// Index within a `FlowStep::Loop`'s inner `steps`. Zero when the current
+    /// flow step is an `Agent` or when we are entering a loop. Reset whenever
+    /// `flow_step` is advanced or reset.
+    #[serde(default)]
+    pub flow_sub_step: usize,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// The parent directory containing the repo(s), when it differs from `config.repos_dir`.
@@ -106,6 +126,21 @@ pub struct TaskMeta {
     /// The project this task belongs to (None for unassigned/legacy tasks).
     #[serde(default)]
     pub project: Option<String>,
+    /// History of interactive claude sessions run by the supervisor.
+    /// Appended to on every agent step; persists across iterations so the
+    /// user can `claude --resume` any prior session.
+    #[serde(default)]
+    pub session_history: Vec<SessionEntry>,
+    /// Snapshot of `flow_name` captured before a stored command took over via
+    /// `drain_queue`. Restored when the command flow completes without a
+    /// terminal `post_action` (archive/delete). `None` outside of command
+    /// flows.
+    #[serde(default)]
+    pub pre_command_flow_name: Option<String>,
+    /// Companion to `pre_command_flow_name` — the `flow_step` captured before
+    /// the stored command took over. Restored together with `pre_command_flow_name`.
+    #[serde(default)]
+    pub pre_command_flow_step: Option<usize>,
 }
 
 fn default_true() -> bool {
@@ -144,6 +179,7 @@ impl TaskMeta {
             flow_name,
             current_agent: None,
             flow_step: 0,
+            flow_sub_step: 0,
             created_at: now,
             updated_at: now,
             parent_dir: None,
@@ -156,6 +192,9 @@ impl TaskMeta {
             archived_at: None,
             saved: false,
             project: None,
+            session_history: Vec::new(),
+            pre_command_flow_name: None,
+            pre_command_flow_step: None,
         }
     }
 
@@ -175,6 +214,7 @@ impl TaskMeta {
             flow_name,
             current_agent: None,
             flow_step: 0,
+            flow_sub_step: 0,
             created_at: now,
             updated_at: now,
             parent_dir: Some(parent_dir),
@@ -187,6 +227,9 @@ impl TaskMeta {
             archived_at: None,
             saved: false,
             project: None,
+            session_history: Vec::new(),
+            pre_command_flow_name: None,
+            pre_command_flow_step: None,
         }
     }
 
@@ -479,6 +522,14 @@ impl Task {
 
     pub fn advance_flow_step(&mut self) -> Result<()> {
         self.meta.flow_step += 1;
+        self.meta.flow_sub_step = 0;
+        self.meta.updated_at = Utc::now();
+        self.save_meta()
+    }
+
+    /// Update `flow_sub_step` (position within a `FlowStep::Loop`) and persist.
+    pub fn set_flow_sub_step(&mut self, sub_step: usize) -> Result<()> {
+        self.meta.flow_sub_step = sub_step;
         self.meta.updated_at = Utc::now();
         self.save_meta()
     }
@@ -486,76 +537,6 @@ impl Task {
     pub fn write_task(&self, content: &str) -> Result<()> {
         let task_path = self.dir.join("TASK.md");
         std::fs::write(&task_path, content)?;
-        Ok(())
-    }
-
-    /// Ensure REVIEW.md is excluded from git tracking in all repo worktrees.
-    ///
-    /// Adds entries to .git/info/exclude (not tracked, leaves no footprint).
-    /// For worktrees, uses the common git directory since they share info/exclude.
-    /// TASK.md no longer needs excluding since it now lives in the task dir.
-    pub fn ensure_git_excludes_task(&self) -> Result<()> {
-        for repo in &self.meta.repos {
-            self.ensure_git_excludes_for_worktree(&repo.worktree_path)?;
-        }
-        Ok(())
-    }
-
-    /// Ensure REVIEW.md is excluded from git tracking for a specific worktree path.
-    /// Used during multi-repo setup when repos are added after initial task creation.
-    pub fn ensure_git_excludes_for_worktree(&self, worktree_path: &std::path::Path) -> Result<()> {
-        use std::process::Command;
-
-        if !worktree_path.exists() {
-            return Ok(());
-        }
-
-        let output = Command::new("git")
-            .args(["rev-parse", "--git-common-dir"])
-            .current_dir(worktree_path)
-            .output()
-            .context("Failed to get git common directory")?;
-
-        if !output.status.success() {
-            return Ok(());
-        }
-
-        let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let git_common_dir_path = if std::path::Path::new(&git_common_dir).is_absolute() {
-            std::path::PathBuf::from(&git_common_dir)
-        } else {
-            worktree_path.join(&git_common_dir)
-        };
-
-        let exclude_path = git_common_dir_path.join("info").join("exclude");
-        let entry = "REVIEW.md";
-
-        if let Some(info_dir) = exclude_path.parent() {
-            std::fs::create_dir_all(info_dir).context("Failed to create .git/info directory")?;
-        }
-
-        let mut content = if exclude_path.exists() {
-            std::fs::read_to_string(&exclude_path)
-                .context("Failed to read .git/info/exclude")?
-        } else {
-            String::new()
-        };
-
-        let is_excluded = content.lines().any(|line| {
-            let trimmed = line.trim();
-            trimmed == entry || trimmed == format!("/{}", entry)
-        });
-
-        if !is_excluded {
-            if !content.is_empty() && !content.ends_with('\n') {
-                content.push('\n');
-            }
-            content.push_str(entry);
-            content.push('\n');
-            std::fs::write(&exclude_path, &content)
-                .context("Failed to update .git/info/exclude")?;
-        }
-
         Ok(())
     }
 
@@ -1011,8 +992,97 @@ impl Task {
     /// Reset flow step to 0 for re-running
     pub fn reset_flow_step(&mut self) -> Result<()> {
         self.meta.flow_step = 0;
+        self.meta.flow_sub_step = 0;
         self.meta.updated_at = Utc::now();
         self.save_meta()
     }
 
+    // ---------------------------------------------------------------------
+    // Supervisor sentinel files
+    // ---------------------------------------------------------------------
+
+    /// Path to the agent-done sentinel. Agents append to this file with their
+    /// final stop condition; the supervisor polls for it to advance flow steps.
+    pub fn agent_done_path(&self) -> PathBuf {
+        self.dir.join(".agent-done")
+    }
+
+    /// Path to the stop sentinel. The TUI writes this to ask the supervisor
+    /// to cancel the current step gracefully.
+    pub fn stop_path(&self) -> PathBuf {
+        self.dir.join(".stop")
+    }
+
+    /// Path to the current prompt. The supervisor writes each step's
+    /// system-prompt here so it can be passed to `claude --system-prompt`.
+    pub fn current_prompt_path(&self) -> PathBuf {
+        self.dir.join(".current-prompt.md")
+    }
+
+    /// Read and remove the agent-done sentinel. Returns the raw trimmed
+    /// contents (expected to be one of `AGENT_DONE`, `TASK_COMPLETE`,
+    /// `INPUT_NEEDED`, optionally suffixed with `:<session_id>`) if present.
+    pub fn take_agent_done(&self) -> Result<Option<String>> {
+        let path = self.agent_done_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let contents = std::fs::read_to_string(&path)
+            .context("Failed to read .agent-done sentinel")?;
+        let _ = std::fs::remove_file(&path);
+        Ok(Some(contents.trim().to_string()))
+    }
+
+    /// Remove any stale `.agent-done` sentinel before launching a new step.
+    pub fn clear_agent_done(&self) -> Result<()> {
+        let path = self.agent_done_path();
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .context("Failed to remove .agent-done sentinel")?;
+        }
+        Ok(())
+    }
+
+    /// Write the `.stop` sentinel to request supervisor cancellation.
+    pub fn request_stop(&self) -> Result<()> {
+        std::fs::write(self.stop_path(), "")
+            .context("Failed to write .stop sentinel")
+    }
+
+    /// Return true if a `.stop` sentinel is present.
+    pub fn stop_requested(&self) -> bool {
+        self.stop_path().exists()
+    }
+
+    /// Remove the `.stop` sentinel after the supervisor has honored it.
+    pub fn clear_stop(&self) -> Result<()> {
+        let path = self.stop_path();
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .context("Failed to remove .stop sentinel")?;
+        }
+        Ok(())
+    }
+
+    /// Append a session record to `meta.session_history` and persist.
+    pub fn push_session(&mut self, entry: SessionEntry) -> Result<()> {
+        self.meta.session_history.push(entry);
+        self.meta.updated_at = Utc::now();
+        self.save_meta()
+    }
+
+    /// Update the most recent session entry in-place (stopped_at + condition)
+    /// and persist. No-op if `session_history` is empty.
+    pub fn finish_last_session(
+        &mut self,
+        condition: Option<String>,
+    ) -> Result<()> {
+        if let Some(last) = self.meta.session_history.last_mut() {
+            last.stopped_at = Some(Utc::now());
+            last.condition = condition;
+            self.meta.updated_at = Utc::now();
+            self.save_meta()?;
+        }
+        Ok(())
+    }
 }

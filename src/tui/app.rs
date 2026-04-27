@@ -22,11 +22,12 @@ use agman::dismissed_notifications::DismissedNotifications;
 use agman::flow::Flow;
 use agman::git::Git;
 use agman::repo_stats::RepoStats;
-use agman::task::{QueueItem, Task, TaskStatus};
+use agman::task::{Task, TaskStatus};
 use agman::tmux::Tmux;
 use agman::inbox;
 use agman::project::Project;
 use agman::researcher::Researcher;
+use agman::supervisor;
 use agman::use_cases;
 
 use super::ui;
@@ -406,6 +407,29 @@ struct InboxPollOutput {
     stuck_skip_counts: std::collections::HashMap<String, u32>,
 }
 
+/// One supervisor tick result for a single Running task.
+///
+/// Collected in the background by `start_supervisor_poll` and drained in the
+/// main loop by `apply_supervisor_poll_results`. `Tick` carries a `PollOutcome`
+/// from a live session; `NeedsLaunch` signals a half-state task (Running with
+/// a stopped last session) that should re-enter `launch_next_step`.
+#[derive(Debug)]
+enum SupervisorPollItem {
+    Tick {
+        task_id: String,
+        session_id: String,
+        outcome: supervisor::PollOutcome,
+    },
+    NeedsLaunch {
+        task_id: String,
+    },
+}
+
+#[derive(Debug)]
+struct SupervisorPollOutput {
+    items: Vec<SupervisorPollItem>,
+}
+
 /// How many consecutive "skipped" poll cycles (readiness gate refused to
 /// deliver while the inbox still had undelivered messages) qualifies a target
 /// as "stalled" and surfaces a UI indicator. At the 2s poll cadence this is
@@ -717,6 +741,11 @@ pub struct App {
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
     inbox_poll_rx: tokio_mpsc::UnboundedReceiver<InboxPollOutput>,
     inbox_poll_active: bool,
+    // Supervisor polling (drives interactive-claude flow progression)
+    pub last_supervisor_poll: Instant,
+    supervisor_poll_tx: tokio_mpsc::UnboundedSender<SupervisorPollOutput>,
+    supervisor_poll_rx: tokio_mpsc::UnboundedReceiver<SupervisorPollOutput>,
+    supervisor_poll_active: bool,
     stuck_skip_counts: std::collections::HashMap<String, u32>,
     /// Targets we've already emitted a one-shot "stalled" warning for this
     /// episode — prevents a per-cycle warn spam. Cleared when the target
@@ -768,6 +797,7 @@ impl App {
         let (show_prs_poll_tx, show_prs_poll_rx) = tokio_mpsc::unbounded_channel();
         let (keybase_tx, keybase_rx) = tokio_mpsc::unbounded_channel();
         let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
+        let (supervisor_poll_tx, supervisor_poll_rx) = tokio_mpsc::unbounded_channel();
         let (respawn_tx, respawn_rx) = tokio_mpsc::unbounded_channel();
         let (chat_poll_tx, chat_poll_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
@@ -923,6 +953,10 @@ impl App {
             inbox_poll_tx,
             inbox_poll_rx,
             inbox_poll_active: false,
+            last_supervisor_poll: Instant::now(),
+            supervisor_poll_tx,
+            supervisor_poll_rx,
+            supervisor_poll_active: false,
             stuck_skip_counts: std::collections::HashMap::new(),
             stall_warned: std::collections::HashSet::new(),
             respawn_in_progress: None,
@@ -1138,9 +1172,11 @@ impl App {
 
     /// Process any stranded queue items for stopped tasks.
     /// This is a safety net: if items were queued while a task was running and
-    /// the agent process exited without processing them, the TUI picks them up.
+    /// the supervisor's relaunch failed to drain them (half-state), the TUI
+    /// picks them up and routes through the supervisor: ensure tmux →
+    /// wake_if_idle drains the queue and launches the next flow step in the
+    /// `agman` window.
     pub fn process_stranded_queue(&mut self) {
-        // Collect task_ids for stopped tasks with queued items
         let stranded: Vec<String> = self
             .tasks
             .iter()
@@ -1149,94 +1185,34 @@ impl App {
             .collect();
 
         for task_id in stranded {
-            // Pop the first queued item and apply it
-            let item = match self
-                .tasks
-                .iter()
-                .find(|t| t.meta.task_id() == task_id)
-            {
-                Some(task) => match use_cases::pop_and_apply_queue_item(task) {
-                    Ok(Some(item)) => item,
-                    Ok(None) => continue,
-                    Err(e) => {
-                        self.log_output(format!("Error processing queue for {}: {}", task_id, e));
-                        continue;
-                    }
-                },
-                None => continue,
+            let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) else {
+                continue;
             };
 
-            match item {
-                QueueItem::Feedback { .. } => {
+            self.log_output(format!("Waking stopped task {} with queued items...", task_id));
+
+            if let Some(task) = self.tasks.get_mut(idx) {
+                if let Err(e) = supervisor::ensure_task_tmux(task) {
                     self.log_output(format!(
-                        "Processing queued feedback for {}...",
-                        task_id
+                        "Failed to prepare tmux for {}: {}",
+                        task_id, e
                     ));
-
-                    let output = Command::new("agman")
-                        .args(["continue", &task_id])
-                        .output();
-
-                    match output {
-                        Ok(o) if o.status.success() => {
-                            let stdout = String::from_utf8_lossy(&o.stdout);
-                            if !stdout.is_empty() {
-                                for line in stdout.lines() {
-                                    self.log_output(line.to_string());
-                                }
-                            }
-                            self.log_output(format!("Queued feedback processed for {}", task_id));
-                            self.set_status(format!("Processing queued feedback for {}", task_id));
-                        }
-                        Ok(o) => {
-                            let stderr = String::from_utf8_lossy(&o.stderr);
-                            self.log_output(format!(
-                                "Failed to process queued feedback for {}: {}",
-                                task_id, stderr
-                            ));
-                        }
-                        Err(e) => {
-                            self.log_output(format!("Error processing queued feedback: {}", e));
-                        }
-                    }
+                    continue;
                 }
-                QueueItem::Command { command_id, branch } => {
-                    self.log_output(format!(
-                        "Processing queued command '{}' for {}...",
-                        command_id, task_id
-                    ));
-
-                    let mut args = vec!["run-command".to_string(), task_id.clone(), command_id.clone()];
-                    if let Some(ref b) = branch {
-                        args.push("--branch".to_string());
-                        args.push(b.clone());
+                match supervisor::wake_if_idle(&self.config, task) {
+                    Ok(Some(_)) => {
+                        self.log_output(format!(
+                            "Queued item drained and launched for {}",
+                            task_id
+                        ));
+                        self.set_status(format!("Waking stranded task {}", task_id));
                     }
-
-                    let output = Command::new("agman")
-                        .args(&args)
-                        .output();
-
-                    match output {
-                        Ok(o) if o.status.success() => {
-                            let stdout = String::from_utf8_lossy(&o.stdout);
-                            if !stdout.is_empty() {
-                                for line in stdout.lines() {
-                                    self.log_output(line.to_string());
-                                }
-                            }
-                            self.log_output(format!("Queued command '{}' processed for {}", command_id, task_id));
-                            self.set_status(format!("Processing queued command for {}", task_id));
-                        }
-                        Ok(o) => {
-                            let stderr = String::from_utf8_lossy(&o.stderr);
-                            self.log_output(format!(
-                                "Failed to process queued command for {}: {}",
-                                task_id, stderr
-                            ));
-                        }
-                        Err(e) => {
-                            self.log_output(format!("Error processing queued command: {}", e));
-                        }
+                    Ok(None) => {}
+                    Err(e) => {
+                        self.log_output(format!(
+                            "Error waking stranded task {}: {}",
+                            task_id, e
+                        ));
                     }
                 }
             }
@@ -1418,47 +1394,46 @@ impl App {
     }
 
     fn resume_after_answering(&mut self) -> Result<()> {
-        let task_info = self.selected_task().and_then(|t| {
-            let tmux_session = if t.meta.has_repos() {
-                t.meta.primary_repo().tmux_session.clone()
-            } else if t.meta.is_multi_repo() {
-                Config::tmux_session_name(&t.meta.name, &t.meta.branch_name)
-            } else {
-                return None;
-            };
-            Some((t.meta.task_id(), tmux_session, t.meta.status))
-        });
+        let task_info = self
+            .selected_task()
+            .map(|t| (t.meta.task_id(), t.meta.status));
 
-        if let Some((task_id, tmux_session, status)) = task_info {
+        if let Some((task_id, status)) = task_info {
             if status != TaskStatus::InputNeeded {
                 return Ok(());
             }
 
             tracing::info!(task_id = %task_id, "TUI: resume after answering");
-            // Delegate business logic to use_cases
-            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+
+            let launch_error: Option<anyhow::Error> = if let Some(task) =
+                self.tasks.get_mut(self.selected_index)
+            {
                 use_cases::resume_after_answering(task)?;
                 let _ = use_cases::set_review_addressed(task, false);
-            }
-
-            // Side effects: ensure tmux sessions exist for all repos and dispatch flow
-            if let Some(task) = self.selected_task() {
-                for repo in &task.meta.repos {
-                    let _ = Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path);
+                match supervisor::ensure_task_tmux(task)
+                    .and_then(|_| supervisor::launch_next_step(&self.config, task).map(|_| ()))
+                {
+                    Ok(_) => None,
+                    Err(e) => Some(e),
                 }
-                // For multi-repo tasks with no repos yet, ensure the primary session exists
-                if !task.meta.has_repos() && !Tmux::session_exists(&tmux_session) {
-                    if let Some(ref parent) = task.meta.parent_dir {
-                        let _ = Tmux::create_session_with_windows(&tmux_session, parent);
-                    }
+            } else {
+                None
+            };
+
+            match launch_error {
+                None => {
+                    self.log_output(format!(
+                        "Resumed flow for {} — processing your answers",
+                        task_id
+                    ));
+                    self.set_status(format!("Resumed: {}", task_id));
+                }
+                Some(e) => {
+                    tracing::error!(task_id = %task_id, error = %e, "failed to resume via supervisor");
+                    self.log_output(format!("Resume failed: {}", e));
+                    self.set_status(format!("Resume failed: {}", e));
                 }
             }
-
-            let flow_cmd = format!("agman flow-run {}", task_id);
-            let _ = Tmux::send_keys_to_window(&tmux_session, "agman", &flow_cmd);
-
-            self.log_output(format!("Resumed flow for {} — processing your answers", task_id));
-            self.set_status(format!("Resumed: {}", task_id));
             self.refresh_tasks_and_select(&task_id);
         }
 
@@ -1576,57 +1551,35 @@ impl App {
         if is_running {
             // Delegate to use_cases: queue the feedback
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                let queue_count = use_cases::queue_feedback(task, &feedback)?;
+                let queue_count = use_cases::queue_feedback(task, &self.config, &feedback)?;
                 self.log_output(format!("Queued feedback for {} ({} in queue)", task_id, queue_count));
                 self.set_status(format!("Feedback queued ({} in queue)", queue_count));
             }
-        } else {
+        } else if let Some(task) = self.tasks.get_mut(self.selected_index) {
             // Clear review_addressed on user interaction
-            if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                let _ = use_cases::set_review_addressed(task, false);
+            let _ = use_cases::set_review_addressed(task, false);
+
+            // Ensure the task's tmux session + agman window exist before the
+            // supervisor tries to send keys into them.
+            if let Err(e) = supervisor::ensure_task_tmux(task) {
+                self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
+                self.set_status(format!("Feedback failed: {}", e));
+                self.feedback_editor = VimTextArea::new();
+                self.view = View::Preview;
+                self.load_preview();
+                return Ok(());
             }
 
-            // Delegate to use_cases: write immediate feedback
-            if let Some(task) = self.selected_task() {
-                use_cases::write_immediate_feedback(task, &feedback)?;
-            }
-
-            self.log_output(format!("Starting continue flow for {}...", task_id));
-
-            // Run agman continue (reads feedback from FEEDBACK.md)
-            // Capture output to avoid corrupting TUI
-            let output = Command::new("agman")
-                .args(["continue", &task_id])
-                .output();
-
-            match output {
-                Ok(o) if o.status.success() => {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    if !stdout.is_empty() {
-                        for line in stdout.lines() {
-                            self.log_output(line.to_string());
-                        }
-                    }
-                    if !stderr.is_empty() {
-                        for line in stderr.lines() {
-                            self.log_output(format!("[stderr] {}", line));
-                        }
-                    }
-                    self.log_output(format!("Flow started for {}", task_id));
-                    self.set_status(format!("Feedback submitted for {}", task_id));
-                    self.refresh_tasks_and_select(&task_id);
-                }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
-                    self.log_output(format!("Failed to start continue flow: {}", stderr));
-                    self.set_status("Failed to start continue flow".to_string());
-                }
-                Err(e) => {
-                    self.log_output(format!("Error: {}", e));
-                    self.set_status(format!("Error: {}", e));
-                }
-            }
+            // Queue the feedback; wake_if_idle drains it (writes FEEDBACK.md,
+            // switches to `continue` flow, flips to Running) and launches the
+            // first step in the task's agman tmux window.
+            let queue_count = use_cases::queue_feedback(task, &self.config, &feedback)?;
+            self.log_output(format!(
+                "Queued feedback for {} ({} in queue); supervisor waking",
+                task_id, queue_count
+            ));
+            self.set_status(format!("Feedback submitted for {}", task_id));
+            self.refresh_tasks_and_select(&task_id);
         }
 
         self.feedback_editor = VimTextArea::new(); // Clear editor
@@ -1873,9 +1826,13 @@ impl App {
         };
 
         // If task is running, queue the command instead of running it immediately
-        if let Some(task) = self.selected_task() {
-            if task.meta.status == TaskStatus::Running {
-                match use_cases::queue_command(task, &command.id, Some(branch)) {
+        let is_running = self
+            .selected_task()
+            .map(|t| t.meta.status == TaskStatus::Running)
+            .unwrap_or(false);
+        if is_running {
+            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                match use_cases::queue_command(task, &self.config, &command.id, Some(branch)) {
                     Ok(count) => {
                         self.set_status(format!("Command queued: {} → {} ({} in queue)", command.name, branch, count));
                     }
@@ -1883,9 +1840,9 @@ impl App {
                         self.set_status(format!("Failed to queue command: {}", e));
                     }
                 }
-                self.view = View::Preview;
-                return Ok(());
             }
+            self.view = View::Preview;
+            return Ok(());
         }
 
         self.log_output(format!(
@@ -1893,32 +1850,26 @@ impl App {
             command.name, branch, task_id
         ));
 
-        let output = Command::new("agman")
-            .args(["run-command", &task_id, &command.id, "--branch", branch])
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                if !stdout.is_empty() {
-                    for line in stdout.lines() {
-                        self.log_output(line.to_string());
-                    }
+        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+            if let Err(e) = supervisor::ensure_task_tmux(task) {
+                self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
+                self.set_status(format!("Failed to run {}: {}", command.name, e));
+                self.view = View::Preview;
+                self.load_preview();
+                return Ok(());
+            }
+            match use_cases::queue_command(task, &self.config, &command.id, Some(branch)) {
+                Ok(_count) => {
+                    self.set_status(format!("Started: {} onto {}", command.name, branch));
                 }
-                self.refresh_tasks_and_select(&task_id);
-                self.set_status(format!("Started: {} onto {}", command.name, branch));
-            }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                self.log_output(format!("Failed: {}", stderr));
-                self.set_status(format!("Failed to run {}", command.name));
-            }
-            Err(e) => {
-                self.log_output(format!("Error: {}", e));
-                self.set_status(format!("Error: {}", e));
+                Err(e) => {
+                    self.log_output(format!("Failed: {}", e));
+                    self.set_status(format!("Failed to run {}: {}", command.name, e));
+                }
             }
         }
 
+        self.refresh_tasks_and_select(&task_id);
         self.view = View::Preview;
         self.load_preview();
         Ok(())
@@ -1971,9 +1922,13 @@ impl App {
         };
 
         // If task is running, queue the command instead of running it immediately
-        if let Some(task) = self.selected_task() {
-            if task.meta.status == TaskStatus::Running {
-                match use_cases::queue_command(task, &command.id, None) {
+        let is_running = self
+            .selected_task()
+            .map(|t| t.meta.status == TaskStatus::Running)
+            .unwrap_or(false);
+        if is_running {
+            if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                match use_cases::queue_command(task, &self.config, &command.id, None) {
                     Ok(count) => {
                         self.set_status(format!("Command queued: {} ({} in queue)", command.name, count));
                     }
@@ -1981,9 +1936,9 @@ impl App {
                         self.set_status(format!("Failed to queue command: {}", e));
                     }
                 }
-                self.view = View::Preview;
-                return Ok(());
             }
+            self.view = View::Preview;
+            return Ok(());
         }
 
         // Guard: refuse create-pr if a PR is already linked
@@ -2002,41 +1957,31 @@ impl App {
             command.name, task_id
         ));
 
-        // Run agman run-command in background
-        let output = Command::new("agman")
-            .args(["run-command", &task_id, &command.id])
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                if !stdout.is_empty() {
-                    for line in stdout.lines() {
-                        self.log_output(line.to_string());
-                    }
-                }
-                // Update review_addressed flag based on which command was run
-                if let Some(task) = self.tasks.iter_mut().find(|t| t.meta.task_id() == task_id) {
+        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+            if let Err(e) = supervisor::ensure_task_tmux(task) {
+                self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
+                self.set_status(format!("Failed to run {}: {}", command.name, e));
+                self.view = View::Preview;
+                self.load_preview();
+                return Ok(());
+            }
+            match use_cases::queue_command(task, &self.config, &command.id, None) {
+                Ok(_count) => {
                     if command.id == "address-review" {
                         let _ = use_cases::set_review_addressed(task, true);
                     } else {
                         let _ = use_cases::set_review_addressed(task, false);
                     }
+                    self.set_status(format!("Started: {}", command.name));
                 }
-                self.refresh_tasks_and_select(&task_id);
-                self.set_status(format!("Started: {}", command.name));
-            }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                self.log_output(format!("Failed: {}", stderr));
-                self.set_status(format!("Failed to run {}", command.name));
-            }
-            Err(e) => {
-                self.log_output(format!("Error: {}", e));
-                self.set_status(format!("Error: {}", e));
+                Err(e) => {
+                    self.log_output(format!("Failed: {}", e));
+                    self.set_status(format!("Failed to run {}: {}", command.name, e));
+                }
             }
         }
 
+        self.refresh_tasks_and_select(&task_id);
         self.view = View::Preview;
         self.load_preview();
         Ok(())
@@ -2251,7 +2196,7 @@ impl App {
         if is_multi {
             // Multi-repo path: use the path directly from the directory picker
             let parent_dir = repo_path;
-            let task = match use_cases::create_multi_repo_task(
+            let mut task = match use_cases::create_multi_repo_task(
                 &self.config,
                 &name,
                 &branch_name,
@@ -2272,22 +2217,18 @@ impl App {
                 }
             };
 
-            // Create a temporary tmux session for the repo-inspector to run in
-            // (working dir = parent directory)
-            let tmux_session = Config::tmux_session_name(&name, &branch_name);
-            self.log_output("  Creating tmux session for repo-inspector...".to_string());
-            if let Err(e) = Tmux::create_session_with_windows(&tmux_session, &parent_dir) {
-                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to create tmux session for multi-repo task");
+            let task_id = task.meta.task_id();
+            self.log_output("  Launching flow via supervisor...".to_string());
+            if let Err(e) = supervisor::ensure_task_tmux(&task)
+                .and_then(|_| supervisor::launch_next_step(&self.config, &mut task).map(|_| ()))
+            {
+                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch multi-repo task flow");
                 self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
-                    w.error_message = Some(format!("Failed to create tmux session: {}", e));
+                    w.error_message = Some(format!("Failed to launch flow: {}", e));
                 }
                 return Ok(());
             }
-
-            let task_id = task.meta.task_id();
-            let flow_cmd = format!("agman flow-run {}", task_id);
-            let _ = Tmux::send_keys_to_window(&tmux_session, "agman", &flow_cmd);
 
             // Success - close wizard and refresh
             self.wizard = None;
@@ -2308,7 +2249,7 @@ impl App {
                 }
             });
 
-            let task = match use_cases::create_task(
+            let mut task = match use_cases::create_task(
                 &self.config,
                 &name,
                 &branch_name,
@@ -2330,23 +2271,18 @@ impl App {
                 }
             };
 
-            // Side effects: create tmux session and start flow
-            let worktree_path = task.meta.primary_repo().worktree_path.clone();
-            self.log_output("  Creating tmux session...".to_string());
-            if let Err(e) = Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path) {
-                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to create tmux session");
+            let task_id = task.meta.task_id();
+            self.log_output("  Launching flow via supervisor...".to_string());
+            if let Err(e) = supervisor::ensure_task_tmux(&task)
+                .and_then(|_| supervisor::launch_next_step(&self.config, &mut task).map(|_| ()))
+            {
+                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch task flow");
                 self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
-                    w.error_message = Some(format!("Failed to create tmux session: {}", e));
+                    w.error_message = Some(format!("Failed to launch flow: {}", e));
                 }
                 return Ok(());
             }
-
-            let _ = Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path);
-
-            let task_id = task.meta.task_id();
-            let flow_cmd = format!("agman flow-run {}", task_id);
-            let _ = Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &flow_cmd);
 
             // Success - close wizard and refresh
             self.wizard = None;
@@ -2435,8 +2371,6 @@ impl App {
             }
             return Ok(());
         }
-
-        let _ = Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path);
 
         // No flow-run command sent — this is the key difference from create_task_from_wizard
 
@@ -2634,8 +2568,6 @@ impl App {
             }
             return Ok(());
         }
-
-        Tmux::add_review_window(&task.meta.primary_repo().tmux_session, &worktree_path)?;
 
         let task_id = task.meta.task_id();
         let review_cmd = format!("agman run-command {} review-pr", task_id);
@@ -5563,10 +5495,10 @@ impl App {
 
         // Enumerate delivery targets from disk so polling does not depend on
         // whichever TUI view the user has visited.
-        let targets: Vec<(String, PathBuf, PathBuf, String)> =
+        let targets: Vec<(String, PathBuf, PathBuf, String, Option<String>)> =
             use_cases::collect_inbox_poll_targets(&self.config, |s| Tmux::session_exists(s))
                 .into_iter()
-                .map(|t| (t.name, t.inbox_path, t.seq_path, t.session_name))
+                .map(|t| (t.name, t.inbox_path, t.seq_path, t.session_name, t.window))
                 .collect();
 
         if targets.is_empty() {
@@ -5583,7 +5515,8 @@ impl App {
                 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
                 let mut results = Vec::new();
-                for (target, inbox_path, seq_path, session_name) in targets {
+                for (target, inbox_path, seq_path, session_name, window) in targets {
+                    let window_ref = window.as_deref();
                     let undelivered = match inbox::read_undelivered(&inbox_path, &seq_path) {
                         Ok(msgs) => msgs,
                         Err(e) => {
@@ -5612,7 +5545,7 @@ impl App {
                     // Decision 5: already-pasted rescue BEFORE readiness gate
                     let first_msg = &undelivered[0];
                     let first_snippet = format!("[msg:{}:{}]", first_msg.from, first_msg.seq);
-                    let already_pasted = Tmux::capture_pane(&session_name)
+                    let already_pasted = Tmux::capture_pane_window(&session_name, window_ref)
                         .map(|content| content.contains(&first_snippet))
                         .unwrap_or(false);
 
@@ -5623,9 +5556,9 @@ impl App {
                             seq = first_msg.seq,
                             "already-pasted rescue: message visible in pane, sending Enter"
                         );
-                        let _ = Tmux::send_enter(&session_name);
+                        let _ = Tmux::send_enter_to(&session_name, window_ref);
                         std::thread::sleep(std::time::Duration::from_millis(200));
-                        let verified = Tmux::capture_pane(&session_name)
+                        let verified = Tmux::capture_pane_window(&session_name, window_ref)
                             .map(|content| content.contains(&first_snippet))
                             .unwrap_or(false);
                         if verified {
@@ -5647,7 +5580,7 @@ impl App {
                     }
 
                     // Readiness gate (process-only check; no UI scraping)
-                    match Tmux::is_session_ready(&session_name) {
+                    match Tmux::is_session_ready_in(&session_name, window_ref) {
                         Ok((false, cmd)) => {
                             tracing::info!(
                                 target_name = &target,
@@ -5689,7 +5622,7 @@ impl App {
                         let formatted_snippet = format!("[msg:{}:{}]", msg.from, msg.seq);
 
                         for attempt in 0..MAX_RETRIES {
-                            let already_pasted = Tmux::capture_pane(&session_name)
+                            let already_pasted = Tmux::capture_pane_window(&session_name, window_ref)
                                 .map(|content| content.contains(&formatted_snippet))
                                 .unwrap_or(false);
 
@@ -5698,7 +5631,7 @@ impl App {
                                     target = &target, seq = msg.seq, attempt = attempt,
                                     "message text already in pane, retrying Enter"
                                 );
-                                if let Err(e) = Tmux::send_enter(&session_name) {
+                                if let Err(e) = Tmux::send_enter_to(&session_name, window_ref) {
                                     tracing::warn!(
                                         target = &target, seq = msg.seq, error = %e,
                                         "failed to send Enter retry"
@@ -5707,7 +5640,7 @@ impl App {
                                     continue;
                                 }
                             } else {
-                                if let Err(e) = Tmux::inject_message(&session_name, &msg.from, &msg.message, msg.seq) {
+                                if let Err(e) = Tmux::inject_message_to(&session_name, window_ref, &msg.from, &msg.message, msg.seq) {
                                     tracing::warn!(
                                         target = &target, seq = msg.seq, attempt = attempt, error = %e,
                                         "inject_message failed"
@@ -5718,7 +5651,7 @@ impl App {
                             }
 
                             std::thread::sleep(std::time::Duration::from_millis(200));
-                            let verified = Tmux::capture_pane(&session_name)
+                            let verified = Tmux::capture_pane_window(&session_name, window_ref)
                                 .map(|content| content.contains(&formatted_snippet))
                                 .unwrap_or(false);
 
@@ -5807,6 +5740,180 @@ impl App {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Supervisor polling (drives flow progression for interactive-claude tasks)
+    // -----------------------------------------------------------------------
+
+    /// Spawn a background poll of every Running task's supervisor sentinel.
+    /// For each task with a live session (`meta.session_history.last()`),
+    /// call `supervisor::poll` and collect the outcome so the main loop can
+    /// log it. Dispatch (advance flow, launch next agent, notify PM) is NOT
+    /// wired yet — this iteration is observation-only.
+    fn start_supervisor_poll(&mut self) {
+        if self.supervisor_poll_active {
+            return;
+        }
+        self.supervisor_poll_active = true;
+        let config = self.config.clone();
+        let tx = self.supervisor_poll_tx.clone();
+
+        self.rt.spawn(async move {
+            let output = tokio::task::spawn_blocking(move || {
+                let mut items = Vec::new();
+                for task in Task::list_all(&config) {
+                    match supervisor::classify(&task) {
+                        supervisor::PollTarget::Skip => continue,
+                        supervisor::PollTarget::LiveSession { session_id } => {
+                            match supervisor::poll(&task, &session_id) {
+                                Ok(outcome) => items.push(SupervisorPollItem::Tick {
+                                    task_id: task.meta.task_id(),
+                                    session_id,
+                                    outcome,
+                                }),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        task_id = %task.meta.task_id(),
+                                        error = %e,
+                                        "supervisor poll failed"
+                                    );
+                                }
+                            }
+                        }
+                        supervisor::PollTarget::NeedsLaunch => {
+                            items.push(SupervisorPollItem::NeedsLaunch {
+                                task_id: task.meta.task_id(),
+                            });
+                        }
+                    }
+                }
+                SupervisorPollOutput { items }
+            })
+            .await
+            .unwrap_or_else(|_| SupervisorPollOutput { items: Vec::new() });
+            let _ = tx.send(output);
+        });
+    }
+
+    /// Drain any completed supervisor poll and dispatch outcomes.
+    ///
+    /// For `Condition(_)` this reloads the task from disk, calls
+    /// `supervisor::advance` (which applies the condition, advances the flow
+    /// step if appropriate, and launches the next agent), and logs the result.
+    /// For `StopRequested` this honors the `.stop` sentinel by killing the
+    /// running claude and transitioning the task to Stopped.
+    fn apply_supervisor_poll_results(&mut self) {
+        let output = match self.supervisor_poll_rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        self.supervisor_poll_active = false;
+
+        for item in output.items {
+            match item {
+                SupervisorPollItem::Tick {
+                    task_id,
+                    session_id,
+                    outcome,
+                } => match outcome {
+                    supervisor::PollOutcome::Idle => {}
+                    supervisor::PollOutcome::StopRequested => {
+                        tracing::info!(
+                            task_id = %task_id,
+                            session_id = %session_id,
+                            "supervisor poll: honoring stop sentinel"
+                        );
+                        let mut task = match Task::load_by_id(&self.config, &task_id) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    error = %e,
+                                    "failed to reload task for stop dispatch"
+                                );
+                                continue;
+                            }
+                        };
+                        if let Err(e) = supervisor::honor_stop(&self.config, &mut task) {
+                            tracing::error!(
+                                task_id = %task_id,
+                                error = %e,
+                                "supervisor honor_stop failed"
+                            );
+                        }
+                    }
+                    supervisor::PollOutcome::Condition(cond) => {
+                        tracing::info!(
+                            task_id = %task_id,
+                            session_id = %session_id,
+                            condition = %cond,
+                            "supervisor poll: dispatching condition"
+                        );
+                        let mut task = match Task::load_by_id(&self.config, &task_id) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    error = %e,
+                                    "failed to reload task for advance dispatch"
+                                );
+                                continue;
+                            }
+                        };
+                        match supervisor::advance(&self.config, &mut task, cond) {
+                            Ok(outcome) => {
+                                tracing::info!(
+                                    task_id = %task_id,
+                                    outcome = ?outcome,
+                                    "supervisor advance completed"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    task_id = %task_id,
+                                    error = %e,
+                                    "supervisor advance failed"
+                                );
+                            }
+                        }
+                    }
+                },
+                SupervisorPollItem::NeedsLaunch { task_id } => {
+                    tracing::info!(
+                        task_id = %task_id,
+                        "supervisor poll: half-state detected, retrying launch_next_step"
+                    );
+                    let mut task = match Task::load_by_id(&self.config, &task_id) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = %task_id,
+                                error = %e,
+                                "failed to reload task for relaunch"
+                            );
+                            continue;
+                        }
+                    };
+                    match supervisor::launch_next_step(&self.config, &mut task) {
+                        Ok(outcome) => {
+                            tracing::info!(
+                                task_id = %task_id,
+                                outcome = ?outcome,
+                                "supervisor relaunch completed"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                task_id = %task_id,
+                                error = %e,
+                                "supervisor relaunch failed"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn apply_respawn_results(&mut self) {
         let result = match self.respawn_rx.try_recv() {
             Ok(r) => r,
@@ -5891,38 +5998,34 @@ impl App {
                     {
                         let _ = use_cases::update_last_review_count(task, result.review_count);
                         let _ = use_cases::set_review_addressed(task, false);
-                    }
 
-                    let output = Command::new("agman")
-                        .args(["run-command", &result.task_id, "address-review"])
-                        .output();
-
-                    match output {
-                        Ok(o) if o.status.success() => {
+                        if let Err(e) = supervisor::ensure_task_tmux(task) {
                             self.log_output(format!(
-                                "Auto-triggered address-review for {}: new review on PR #{}",
-                                result.task_id, result.pr_number
-                            ));
-                            if let Some(task) = self
-                                .tasks
-                                .iter_mut()
-                                .find(|t| t.meta.task_id() == result.task_id)
-                            {
-                                let _ = use_cases::set_review_addressed(task, true);
-                            }
-                        }
-                        Ok(o) => {
-                            let stderr = String::from_utf8_lossy(&o.stderr);
-                            self.log_output(format!(
-                                "Failed to auto-trigger address-review for {}: {}",
-                                result.task_id, stderr
-                            ));
-                        }
-                        Err(e) => {
-                            self.log_output(format!(
-                                "Error triggering address-review for {}: {}",
+                                "Failed to prepare tmux for {}: {}",
                                 result.task_id, e
                             ));
+                            continue;
+                        }
+
+                        match use_cases::queue_command(
+                            task,
+                            &self.config,
+                            "address-review",
+                            None,
+                        ) {
+                            Ok(_) => {
+                                let _ = use_cases::set_review_addressed(task, true);
+                                self.log_output(format!(
+                                    "Auto-triggered address-review for {}: new review on PR #{}",
+                                    result.task_id, result.pr_number
+                                ));
+                            }
+                            Err(e) => {
+                                self.log_output(format!(
+                                    "Failed to auto-trigger address-review for {}: {}",
+                                    result.task_id, e
+                                ));
+                            }
                         }
                     }
                 }
@@ -6261,44 +6364,41 @@ impl App {
         };
 
         let task_meta = &self.tasks[task_idx].meta;
-        let (tmux_session, working_dir) = if task_meta.has_repos() {
-            (
-                task_meta.primary_repo().tmux_session.clone(),
-                task_meta.primary_repo().worktree_path.clone(),
-            )
-        } else if task_meta.is_multi_repo() {
-            (
-                Config::tmux_session_name(&task_meta.name, &task_meta.branch_name),
-                task_meta.parent_dir.clone().unwrap_or_default(),
-            )
-        } else {
+        if !task_meta.has_repos() && !task_meta.is_multi_repo() {
             self.set_status(format!("Task {} has no repos configured", task_id));
             self.restart_wizard = None;
             self.view = View::TaskList;
             return Ok(());
-        };
-
-        // Set flow_step and status
-        use_cases::restart_task(&mut self.tasks[task_idx], selected_step_index)?;
-        // Clear review_addressed on restart
-        let _ = use_cases::set_review_addressed(&mut self.tasks[task_idx], false);
-
-        // Ensure tmux session exists
-        if self.tasks[task_idx].meta.has_repos() {
-            let _ = Tmux::ensure_session(&tmux_session, &working_dir);
-        } else if !Tmux::session_exists(&tmux_session) {
-            let _ = Tmux::create_session_with_windows(&tmux_session, &working_dir);
         }
 
-        // Dispatch flow-run
-        let flow_cmd = format!("agman flow-run {}", task_id);
-        let _ = Tmux::send_keys_to_window(&tmux_session, "agman", &flow_cmd);
+        // Set flow_step and status, then launch via supervisor.
+        use_cases::restart_task(&mut self.tasks[task_idx], selected_step_index)?;
+        let _ = use_cases::set_review_addressed(&mut self.tasks[task_idx], false);
 
-        // Clean up wizard
+        let task = &mut self.tasks[task_idx];
+        let launch_error = match supervisor::ensure_task_tmux(task)
+            .and_then(|_| supervisor::launch_next_step(&self.config, task).map(|_| ()))
+        {
+            Ok(_) => None,
+            Err(e) => Some(e),
+        };
+
+        match launch_error {
+            None => {
+                self.set_status(format!(
+                    "Rerun: {} from step {}",
+                    task_id, selected_step_index
+                ));
+            }
+            Some(e) => {
+                tracing::error!(task_id = %task_id, error = %e, "failed to relaunch via supervisor");
+                self.set_status(format!("Rerun failed: {}", e));
+            }
+        }
+
         self.restart_wizard = None;
         self.view = View::TaskList;
         self.refresh_tasks_and_select(&task_id);
-        self.set_status(format!("Rerun: {} from step {}", task_id, selected_step_index));
 
         Ok(())
     }
@@ -6488,6 +6588,15 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed inbox poll results (non-blocking)
             app.apply_inbox_poll_results();
+
+            // Poll task supervisor sentinels every 3 seconds. The supervisor
+            // drives flow progression — `apply_supervisor_poll_results` reacts
+            // to detected stop conditions and calls into `supervisor::advance`.
+            if app.last_supervisor_poll.elapsed() >= Duration::from_secs(3) {
+                app.start_supervisor_poll();
+                app.last_supervisor_poll = Instant::now();
+            }
+            app.apply_supervisor_poll_results();
 
             // Check for completed respawn results (non-blocking)
             app.apply_respawn_results();

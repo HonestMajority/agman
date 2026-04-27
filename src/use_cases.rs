@@ -12,6 +12,7 @@ use crate::inbox;
 use crate::project::Project;
 use crate::repo_stats::RepoStats;
 use crate::researcher::{Researcher, ResearcherStatus};
+use crate::supervisor;
 use crate::task::{QueueItem, RepoEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
 
@@ -185,9 +186,6 @@ pub fn create_task(
     if project.is_some() {
         task.meta.project = project;
     }
-
-    // Ensure TASK.md is excluded from git tracking
-    let _ = task.ensure_git_excludes_task();
 
     // Save if any optional fields were set after creation
     if task.meta.parent_dir.is_some() || task.meta.review_after || task.meta.project.is_some() {
@@ -370,11 +368,14 @@ pub fn list_archived_tasks(config: &Config) -> Vec<(Task, String)> {
 ///
 /// This is the pure business logic behind `App::stop_task()`.
 /// It does NOT send Ctrl+C to tmux — that's a side effect handled by the caller.
+/// It DOES write the `.stop` sentinel file so the supervisor (if running) can
+/// kill the live `claude` session on its next poll tick.
 pub fn stop_task(task: &mut Task) -> Result<()> {
     if task.meta.status == TaskStatus::Stopped {
         return Ok(());
     }
     tracing::info!(task_id = %task.meta.task_id(), old_status = %task.meta.status, new_status = "stopped", "stopping task");
+    task.request_stop()?;
     task.update_status(TaskStatus::Stopped)?;
     task.meta.current_agent = None;
     task.save_meta()?;
@@ -448,30 +449,49 @@ pub fn resume_after_answering(task: &mut Task) -> Result<()> {
     Ok(())
 }
 
-/// Queue feedback on a running task.
+/// Queue feedback for a task and, if the task is currently idle (Stopped),
+/// wake the supervisor so it drains the queue and launches the next step.
 ///
-/// Extracts the "running" branch of `App::submit_feedback()`.
-pub fn queue_feedback(task: &Task, feedback: &str) -> Result<usize> {
+/// If `wake_if_idle` fails (for example, tmux is unavailable) the error is
+/// logged but *not* propagated — the feedback is already persisted in the
+/// queue, so the user's action should still be reported as successful.
+/// A subsequent supervisor poll or user action can retry the launch.
+pub fn queue_feedback(task: &mut Task, config: &Config, feedback: &str) -> Result<usize> {
     tracing::info!(task_id = %task.meta.task_id(), "queuing feedback");
     task.append_feedback_to_log(feedback)?;
     task.queue_feedback(feedback)?;
-    Ok(task.queued_item_count())
+    let count = task.queued_item_count();
+    if let Err(e) = supervisor::wake_if_idle(config, task) {
+        tracing::warn!(
+            task_id = %task.meta.task_id(),
+            error = %e,
+            "wake_if_idle failed after queuing feedback"
+        );
+    }
+    Ok(count)
 }
 
-/// Queue a command on a running task.
-pub fn queue_command(task: &Task, command_id: &str, branch: Option<&str>) -> Result<usize> {
+/// Queue a command for a task and, if the task is currently idle (Stopped),
+/// wake the supervisor so it drains the queue and launches the command flow.
+///
+/// Error-swallowing semantics match `queue_feedback`.
+pub fn queue_command(
+    task: &mut Task,
+    config: &Config,
+    command_id: &str,
+    branch: Option<&str>,
+) -> Result<usize> {
     tracing::info!(task_id = %task.meta.task_id(), command_id, "queuing command");
     task.queue_command(command_id, branch)?;
-    Ok(task.queued_item_count())
-}
-
-/// Write immediate feedback for a stopped task.
-///
-/// Extracts the "stopped" branch of `App::submit_feedback()`.
-/// Does NOT run `agman continue` — that's a side effect handled by the caller.
-pub fn write_immediate_feedback(task: &Task, feedback: &str) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), "writing immediate feedback");
-    task.write_feedback(feedback)
+    let count = task.queued_item_count();
+    if let Err(e) = supervisor::wake_if_idle(config, task) {
+        tracing::warn!(
+            task_id = %task.meta.task_id(),
+            error = %e,
+            "wake_if_idle failed after queuing command"
+        );
+    }
+    Ok(count)
 }
 
 /// Delete a single queued item by index.
@@ -517,25 +537,6 @@ pub fn restart_task(task: &mut Task, step_index: usize) -> Result<()> {
     task.meta.flow_step = step_index;
     task.update_status(TaskStatus::Running)?;
     Ok(())
-}
-
-/// Pop the first queued item and apply it if it's feedback.
-///
-/// This is the pure business logic behind `App::process_stranded_queue()`.
-/// For `QueueItem::Feedback`, writes FEEDBACK.md. For `QueueItem::Command`, just returns it.
-/// The caller decides what side effects to perform (run continue vs run-command).
-/// Returns the popped item, or None if the queue was empty.
-pub fn pop_and_apply_queue_item(task: &Task) -> Result<Option<QueueItem>> {
-    tracing::info!(task_id = %task.meta.task_id(), "popping and applying queued item");
-    match task.pop_queue()? {
-        Some(item) => {
-            if let QueueItem::Feedback { ref text } = item {
-                task.write_feedback(text)?;
-            }
-            Ok(Some(item))
-        }
-        None => Ok(None),
-    }
 }
 
 /// Action to take for a task after polling its linked PR.
@@ -669,9 +670,6 @@ pub fn create_setup_only_task(
 
     // Write a minimal TASK.md (empty goal, ready for user to fill via feedback)
     task.write_task("# Goal\n\n# Plan\n")?;
-
-    // Ensure TASK.md is excluded from git tracking
-    let _ = task.ensure_git_excludes_task();
 
     // Increment repo usage stats
     let stats_path = config.repo_stats_path();
@@ -920,13 +918,8 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task, skip_tmux: boo
         if !skip_tmux && !Tmux::session_exists(&tmux_session) {
             if let Err(e) = Tmux::create_session_with_windows(&tmux_session, &worktree_path) {
                 tracing::warn!(repo = repo_name, error = %e, "failed to create tmux session (non-fatal)");
-            } else {
-                let _ = Tmux::add_review_window(&tmux_session, &worktree_path);
             }
         }
-
-        // Ensure REVIEW.md is excluded from git tracking
-        let _ = task.ensure_git_excludes_for_worktree(&worktree_path);
 
         entries.push(RepoEntry {
             repo_name: repo_name.clone(),
@@ -2205,10 +2198,11 @@ pub enum SendTarget {
     Telegram,
     Project(String),
     Researcher { project: String, name: String },
+    Task(String),
 }
 
 const VALID_TARGETS_HINT: &str =
-    "valid targets: ceo, telegram, <project>, researcher:<project>--<name>";
+    "valid targets: ceo, telegram, <project>, researcher:<project>--<name>, task:<repo>--<branch>";
 
 pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     if target.is_empty() {
@@ -2246,6 +2240,20 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
             project: project.to_string(),
             name: name.to_string(),
         });
+    }
+
+    if let Some(task_id) = target.strip_prefix("task:") {
+        if task_id.is_empty() {
+            anyhow::bail!("invalid task id '': expected 'task:<repo>--<branch>'");
+        }
+        let dir = config.tasks_dir.join(task_id);
+        if !dir.exists() {
+            anyhow::bail!(
+                "unknown task '{task_id}' — no task found at {}",
+                dir.display()
+            );
+        }
+        return Ok(SendTarget::Task(task_id.to_string()));
     }
 
     if target.contains(':') {
@@ -2289,6 +2297,7 @@ pub fn agent_inbox_path(config: &Config, id: &str) -> Result<PathBuf> {
         SendTarget::Telegram => config.telegram_outbox(),
         SendTarget::Project(name) => config.project_inbox(&name),
         SendTarget::Researcher { project, name } => config.researcher_inbox(&project, &name),
+        SendTarget::Task(task_id) => config.task_inbox(&task_id),
     })
 }
 
@@ -2817,11 +2826,15 @@ pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<(
 /// and which tmux session to deliver them to.
 #[derive(Debug, Clone)]
 pub struct InboxPollTarget {
-    /// `"ceo"`, `"<project>"`, or `"researcher:<project>--<name>"`.
+    /// `"ceo"`, `"<project>"`, `"researcher:<project>--<name>"`, or `"task:<id>"`.
     pub name: String,
     pub inbox_path: PathBuf,
     pub seq_path: PathBuf,
     pub session_name: String,
+    /// Optional window within `session_name` where delivery should happen.
+    /// `None` for single-window sessions (CEO/PM/researcher); `Some("agman")`
+    /// for task sessions whose interactive claude lives in the `agman` window.
+    pub window: Option<String>,
 }
 
 /// Enumerate all inbox delivery targets from disk.
@@ -2844,6 +2857,7 @@ pub fn collect_inbox_poll_targets(
             inbox_path: config.ceo_inbox(),
             seq_path: config.ceo_seq(),
             session_name: ceo_session,
+            window: None,
         });
     }
 
@@ -2858,6 +2872,7 @@ pub fn collect_inbox_poll_targets(
                         inbox_path: config.project_inbox(&p.meta.name),
                         seq_path: config.project_seq(&p.meta.name),
                         session_name,
+                        window: None,
                     });
                 }
             }
@@ -2881,6 +2896,7 @@ pub fn collect_inbox_poll_targets(
                         inbox_path: config.researcher_inbox(&r.meta.project, &r.meta.name),
                         seq_path: config.researcher_seq(&r.meta.project, &r.meta.name),
                         session_name,
+                        window: None,
                     });
                 }
             }
@@ -2888,6 +2904,35 @@ pub fn collect_inbox_poll_targets(
         Err(e) => {
             tracing::warn!(error = %e, "collect_inbox_poll_targets: failed to list researchers, skipping researcher targets");
         }
+    }
+
+    // Task targets. Tasks host their interactive claude in the `agman` window
+    // of their session (single-repo: primary repo's session; multi-repo:
+    // parent-dir session). `session_name` carries only the session; the
+    // caller must deliver to the `agman` window specifically via the
+    // window-aware tmux APIs.
+    for task in Task::list_all(config) {
+        if task.meta.status != TaskStatus::Running {
+            continue;
+        }
+        let session_name = if task.meta.is_multi_repo() {
+            Config::tmux_session_name(&task.meta.name, &task.meta.branch_name)
+        } else if task.meta.has_repos() {
+            task.meta.primary_repo().tmux_session.clone()
+        } else {
+            continue;
+        };
+        if !session_exists(&session_name) {
+            continue;
+        }
+        let task_id = task.meta.task_id();
+        targets.push(InboxPollTarget {
+            name: format!("task:{task_id}"),
+            inbox_path: config.task_inbox(&task_id),
+            seq_path: config.task_inbox_seq(&task_id),
+            session_name,
+            window: Some(crate::supervisor::AGMAN_WINDOW.to_string()),
+        });
     }
 
     targets

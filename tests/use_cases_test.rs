@@ -433,6 +433,12 @@ fn stop_task() {
     assert_eq!(task.meta.status, TaskStatus::Stopped);
     assert!(task.meta.current_agent.is_none());
 
+    // .stop sentinel is written so a live supervisor can kill its claude.
+    assert!(
+        task.stop_path().exists(),
+        ".stop sentinel should exist after stop_task"
+    );
+
     // Persisted to disk
     let loaded = Task::load(&config, "repo", "branch").unwrap();
     assert_eq!(loaded.meta.status, TaskStatus::Stopped);
@@ -488,13 +494,13 @@ fn resume_after_answering_not_input_needed_is_noop() {
 fn queue_feedback_on_running_task() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
+    let mut task = create_test_task(&config, "repo", "branch");
     // task starts as Running
 
-    let count = use_cases::queue_feedback(&task, "fix the button").unwrap();
+    let count = use_cases::queue_feedback(&mut task, &config, "fix the button").unwrap();
     assert_eq!(count, 1);
 
-    let count2 = use_cases::queue_feedback(&task, "also fix the header").unwrap();
+    let count2 = use_cases::queue_feedback(&mut task, &config, "also fix the header").unwrap();
     assert_eq!(count2, 2);
 
     let queue = task.read_queue();
@@ -515,20 +521,38 @@ fn queue_feedback_on_running_task() {
 }
 
 // ---------------------------------------------------------------------------
-// Submit feedback (immediate — stopped task)
+// queue_feedback on a Stopped task drains + wakes via the supervisor
+// (TUI submit_feedback's Stopped branch).
 // ---------------------------------------------------------------------------
 
 #[test]
-fn write_immediate_feedback_on_stopped_task() {
+fn queue_feedback_on_stopped_task_drains_and_wakes() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     let mut task = create_test_task(&config, "repo", "branch");
     task.update_status(TaskStatus::Stopped).unwrap();
+    // Simulate an earlier run leaving the task on some flow past step 0.
+    task.meta.flow_name = "new".to_string();
+    task.meta.flow_step = 3;
+    task.save_meta().unwrap();
 
-    use_cases::write_immediate_feedback(&task, "please fix the bug").unwrap();
+    // queue_feedback on a Stopped task should drain (writing FEEDBACK.md,
+    // switching to the `continue` flow, resetting the step, flipping to
+    // Running) and then attempt to launch the next step. The launch itself
+    // errors in the test env because no tmux is available — wake_if_idle's
+    // error is warn-and-swallowed so queue_feedback still returns Ok.
+    let _ = use_cases::queue_feedback(&mut task, &config, "please address the review").unwrap();
 
+    // Queue was drained, not left pending.
+    assert_eq!(task.read_queue().len(), 0);
+    // Flow was switched to `continue` and reset to step 0.
+    assert_eq!(task.meta.flow_name, "continue");
+    assert_eq!(task.meta.flow_step, 0);
+    // Task was flipped to Running by drain_queue.
+    assert_eq!(task.meta.status, TaskStatus::Running);
+    // Feedback was persisted to FEEDBACK.md for the refiner agent to read.
     let fb = task.read_feedback().unwrap();
-    assert_eq!(fb, "please fix the bug");
+    assert_eq!(fb, "please address the review");
 }
 
 // ---------------------------------------------------------------------------
@@ -602,48 +626,6 @@ fn restart_task_sets_flow_step_and_status() {
 }
 
 // ---------------------------------------------------------------------------
-// Pop and apply feedback
-// ---------------------------------------------------------------------------
-
-#[test]
-fn pop_and_apply_queue_item_writes_first_feedback() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
-
-    task.queue_feedback("first feedback").unwrap();
-    task.queue_feedback("second feedback").unwrap();
-
-    let result = use_cases::pop_and_apply_queue_item(&task).unwrap();
-    match result {
-        Some(QueueItem::Feedback { text }) => assert_eq!(text, "first feedback"),
-        _ => panic!("Expected Some(Feedback)"),
-    }
-
-    // FEEDBACK.md written
-    let fb = task.read_feedback().unwrap();
-    assert_eq!(fb, "first feedback");
-
-    // Queue now has one item
-    let queue = task.read_queue();
-    assert_eq!(queue.len(), 1);
-    match &queue[0] {
-        QueueItem::Feedback { text } => assert_eq!(text, "second feedback"),
-        _ => panic!("Expected Feedback item"),
-    }
-}
-
-#[test]
-fn pop_and_apply_queue_item_empty_queue_returns_none() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
-
-    let result = use_cases::pop_and_apply_queue_item(&task).unwrap();
-    assert!(result.is_none());
-}
-
-// ---------------------------------------------------------------------------
 // Queue command
 // ---------------------------------------------------------------------------
 
@@ -651,9 +633,9 @@ fn pop_and_apply_queue_item_empty_queue_returns_none() {
 fn queue_command_on_task() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
+    let mut task = create_test_task(&config, "repo", "branch");
 
-    let count = use_cases::queue_command(&task, "rebase", Some("main")).unwrap();
+    let count = use_cases::queue_command(&mut task, &config, "rebase", Some("main")).unwrap();
     assert_eq!(count, 1);
 
     let queue = task.read_queue();
@@ -675,9 +657,9 @@ fn queue_command_on_task() {
 fn queue_command_without_branch() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
+    let mut task = create_test_task(&config, "repo", "branch");
 
-    let count = use_cases::queue_command(&task, "create-pr", None).unwrap();
+    let count = use_cases::queue_command(&mut task, &config, "create-pr", None).unwrap();
     assert_eq!(count, 1);
 
     let queue = task.read_queue();
@@ -689,6 +671,45 @@ fn queue_command_without_branch() {
         }
         _ => panic!("Expected Command item"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// queue_command on a Stopped task drains via the supervisor and switches
+// the task to the command flow (TUI run_branch_command / run_selected_command
+// Stopped branches; replaces the old `agman run-command` shell-out path).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn queue_command_on_stopped_task_drains_and_wakes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+
+    std::fs::write(
+        config.command_path("rebase"),
+        "name: Rebase\nid: rebase\ndescription: test\nrequires_arg: branch\nsteps:\n  - agent: rebaser\n    until: AGENT_DONE\n",
+    )
+    .unwrap();
+
+    task.update_status(TaskStatus::Stopped).unwrap();
+    task.meta.flow_name = "new".to_string();
+    task.meta.flow_step = 2;
+    task.save_meta().unwrap();
+
+    // queue_command on a Stopped task should drain (snapshot the prior flow,
+    // switch flow_name to the command id, write .branch-target if required,
+    // flip to Running) and then attempt to launch. The launch errors in the
+    // test env (no tmux); wake_if_idle warn-and-swallows so this returns Ok.
+    let _ = use_cases::queue_command(&mut task, &config, "rebase", Some("main")).unwrap();
+
+    assert_eq!(task.read_queue().len(), 0);
+    assert_eq!(task.meta.flow_name, "rebase");
+    assert_eq!(task.meta.flow_step, 0);
+    assert_eq!(task.meta.status, TaskStatus::Running);
+    assert_eq!(task.meta.pre_command_flow_name.as_deref(), Some("new"));
+    assert_eq!(task.meta.pre_command_flow_step, Some(2));
+    let branch_target = std::fs::read_to_string(task.dir.join(".branch-target")).unwrap();
+    assert_eq!(branch_target, "main");
 }
 
 // ---------------------------------------------------------------------------
@@ -2732,10 +2753,40 @@ fn use_case_send_message_rejects_unknown_prefix() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    let result = use_cases::send_message(&config, "task:xyz", "pm", "hello");
+    let result = use_cases::send_message(&config, "bogus:xyz", "pm", "hello");
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("unknown target"));
+}
+
+#[test]
+fn use_case_send_message_rejects_nonexistent_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let result = use_cases::send_message(&config, "task:ghost--branch", "pm", "hello");
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("unknown task"));
+}
+
+#[test]
+fn use_case_send_message_to_task_appends_to_task_inbox() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let task = create_test_task(&config, "repo", "feature");
+    let task_id = task.meta.task_id();
+
+    let target = format!("task:{task_id}");
+    use_cases::send_message(&config, &target, "pm", "nudge from pm").unwrap();
+
+    let messages =
+        agman::inbox::read_messages(&config.task_inbox(&task_id)).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "pm");
+    assert_eq!(messages[0].message, "nudge from pm");
 }
 
 #[test]
@@ -3403,6 +3454,40 @@ fn collect_inbox_poll_targets_enumerates_disk() {
             other => panic!("unexpected target: {other}"),
         }
     }
+}
+
+#[test]
+fn collect_inbox_poll_targets_scopes_task_to_agman_window() {
+    // Non-task targets (CEO, PM, researcher) carry `window = None` — their
+    // sessions have a single window so window scoping is irrelevant.
+    // Task targets carry `window = Some("agman")` because the interactive
+    // claude lives in the `agman` window of the task's tmux session.
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    let task = create_test_task(&config, "myrepo", "feat-x");
+    let task_session = task.meta.primary_repo().tmux_session.clone();
+    let task_id = task.meta.task_id();
+
+    let targets = use_cases::collect_inbox_poll_targets(&config, |s| {
+        s == agman::config::Config::ceo_tmux_session() || s == task_session
+    });
+
+    let ceo = targets
+        .iter()
+        .find(|t| t.name == "ceo")
+        .expect("CEO target should be present");
+    assert_eq!(ceo.window, None, "CEO target must not be window-scoped");
+
+    let task_target = targets
+        .iter()
+        .find(|t| t.name == format!("task:{task_id}"))
+        .expect("task target should be present for Running task");
+    assert_eq!(
+        task_target.window.as_deref(),
+        Some("agman"),
+        "task target must be scoped to the `agman` window"
+    );
 }
 
 // ---------------------------------------------------------------------------
