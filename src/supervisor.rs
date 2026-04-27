@@ -162,7 +162,7 @@ pub fn classify(task: &Task) -> PollTarget {
     }
 }
 
-/// Kill the `claude` process currently running in a session's `agman` window
+/// Quit the `claude` process currently running in a session's `agman` window
 /// and wait until the pane is back at a shell prompt.
 ///
 /// This must be reliable: the inbox poller will paste-inject the next agent's
@@ -170,62 +170,83 @@ pub fn classify(task: &Task) -> PollTarget {
 /// the agman pane. If the prior `claude` is still alive when we queue the
 /// next agent's work, the wrong agent receives it.
 ///
+/// We do **not** signal the pane's pid. `tmux display-message #{pane_pid}`
+/// returns the pane's *shell* (zsh/bash), not the claude child running inside
+/// it. SIGTERM-ing the shell tears down the entire tmux window — in testing
+/// this killed both the agman window and the adjacent nvim window, leaving
+/// the supervisor with no pane to drive. Instead, we use claude's own
+/// `/exit` slash command, which shuts it down gracefully and returns control
+/// to the still-running shell, leaving the window intact.
+///
 /// Sequence:
-/// 1. Resolve the pane pid via `tmux display-message #{pane_pid}`.
-/// 2. If no pid (typically because the tmux session itself is gone), send a
-///    best-effort Ctrl+C×2 and return Ok — there is nothing meaningful to
-///    kill, and the caller will fail on its subsequent `send-keys` attempt.
-/// 3. SIGTERM the pid and poll `is_claude_running_in` until the foreground
-///    is back to a shell (claude is gone) or a 3-second deadline expires.
-/// 4. If SIGTERM didn't take, escalate to SIGKILL and re-check.
-/// 5. Bail with an error if the pane is *still* not back to a shell — the
+/// 1. If `is_claude_running_in` already reports a shell (or the tmux pane
+///    isn't queryable at all), there's nothing to do — return early.
+/// 2. Send `/exit` + Enter to the agman pane. Poll `is_claude_running_in`
+///    until the foreground is back to a shell or a 5-second deadline expires.
+/// 3. If `/exit` didn't take (claude is wedged in a state that won't accept
+///    slash commands), fall back to Ctrl+C × 2 — but never SIGTERM/SIGKILL
+///    the pane pid.
+/// 4. Bail with an error if the pane is *still* not back to a shell — the
 ///    caller must not launch the next agent into a pane that's still
 ///    occupied.
 pub fn kill_current_claude(session_name: &str) -> Result<()> {
-    let pid = Tmux::pane_pid(session_name, Some(AGMAN_WINDOW))?;
-
-    let pid = match pid {
-        Some(pid) => pid,
-        None => {
+    // If we can't even query the foreground process (typically because the
+    // tmux session/window is gone), there is nothing meaningful to kill —
+    // the caller will fail naturally on its subsequent send-keys attempt.
+    let still_running = match Tmux::is_claude_running_in(session_name, Some(AGMAN_WINDOW)) {
+        Ok((running, _)) => running,
+        Err(e) => {
             tracing::debug!(
                 session = session_name,
-                "no pane pid; tmux session likely missing — best-effort Ctrl+C x2"
+                error = %e,
+                "kill_current_claude: pane not queryable; nothing to kill"
             );
-            let _ = Tmux::send_ctrl_c_to_window(session_name, AGMAN_WINDOW);
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            let _ = Tmux::send_ctrl_c_to_window(session_name, AGMAN_WINDOW);
             return Ok(());
         }
     };
 
-    tracing::debug!(session = session_name, pid, "SIGTERM-ing pane pid");
-    let _ = Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .output();
-
-    if wait_for_pane_idle(session_name, std::time::Duration::from_secs(3)) {
-        tracing::debug!(session = session_name, "pane back to shell after SIGTERM");
+    if !still_running {
+        tracing::debug!(
+            session = session_name,
+            "kill_current_claude: pane already at shell; no-op"
+        );
         return Ok(());
     }
 
-    tracing::warn!(
-        session = session_name,
-        pid,
-        "SIGTERM did not land within 3s; escalating to SIGKILL"
-    );
-    let _ = Command::new("kill")
-        .arg("-KILL")
-        .arg(pid.to_string())
-        .output();
+    tracing::debug!(session = session_name, "sending /exit to agman pane");
+    match Tmux::send_keys_to_window(session_name, AGMAN_WINDOW, "/exit") {
+        Ok(()) => {
+            if wait_for_pane_idle(session_name, std::time::Duration::from_secs(5)) {
+                tracing::debug!(session = session_name, "pane back to shell after /exit");
+                return Ok(());
+            }
+            tracing::warn!(
+                session = session_name,
+                "/exit did not return pane to shell within 5s; escalating to Ctrl+C x2"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                session = session_name,
+                error = %e,
+                "failed to send /exit; escalating to Ctrl+C x2"
+            );
+        }
+    }
+
+    // Last-resort escalation: Ctrl+C twice. We deliberately never signal
+    // `pane_pid` — that's the shell, and killing it destroys the tmux window.
+    let _ = Tmux::send_ctrl_c_to_window(session_name, AGMAN_WINDOW);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let _ = Tmux::send_ctrl_c_to_window(session_name, AGMAN_WINDOW);
 
     if wait_for_pane_idle(session_name, std::time::Duration::from_secs(2)) {
-        tracing::debug!(session = session_name, "pane back to shell after SIGKILL");
+        tracing::debug!(session = session_name, "pane back to shell after Ctrl+C x2");
         return Ok(());
     }
 
     anyhow::bail!(
-        "failed to kill claude in pane '{}:{}' after SIGTERM+SIGKILL",
+        "failed to quit claude in pane '{}:{}' after /exit + Ctrl+C x2",
         session_name,
         AGMAN_WINDOW
     )
