@@ -1854,14 +1854,21 @@ pub fn fetch_show_prs_data() -> ShowPrsData {
 // ---------------------------------------------------------------------------
 
 /// Create a new project with the given name and description.
-pub fn create_project(config: &Config, name: &str, description: &str) -> Result<Project> {
+pub fn create_project(
+    config: &Config,
+    name: &str,
+    description: &str,
+    initial_message: Option<&str>,
+) -> Result<Project> {
     tracing::info!(project = name, "creating project");
     let project = Project::create(config, name, description)?;
 
-    if !description.is_empty() {
+    // Only the explicit initial-message goes to the PM. The description is a
+    // human label only — never auto-sent.
+    if let Some(msg) = initial_message.map(str::trim).filter(|m| !m.is_empty()) {
         let inbox_path = config.project_inbox(name);
-        crate::inbox::append_message(&inbox_path, "ceo", description)?;
-        tracing::debug!(project = name, "queued initial directive to project inbox");
+        crate::inbox::append_message(&inbox_path, "ceo", msg)?;
+        tracing::debug!(project = name, "queued initial message to project inbox");
     }
 
     // Eagerly start PM session for the new project
@@ -3329,9 +3336,20 @@ const DEFAULT_CEO_PROMPT: &str = r#"You are the CEO agent — the strategic orch
 ## Available Commands (use via Bash tool)
 
 ### Project Management
-- `agman create-project <name> --description "<desc>"` — Create a new project with a PM
+- `agman create-project <name> --description "<label>" [--initial-message <text|@file|->]` — Create a new project with a PM. `--description` is the human label shown in lists. `--initial-message` is the brief the PM receives on spawn (optional).
 - `agman list-projects` — List all projects with PM status and task counts
 - `agman project-status <name>` — Get detailed status of a project
+
+### Project Templates
+Templates are pre-written briefs for recurring orchestration patterns.
+- `agman list-templates` — see available templates
+- `agman get-template <name>` — print template body
+- When a user's request matches a template, fetch it to a scratch file,
+  edit it to fit the instance, then pass it as `--initial-message`:
+    agman get-template <name> > /tmp/brief.md
+    # edit /tmp/brief.md
+    agman create-project <proj> --description "<label>" --initial-message @/tmp/brief.md
+- Never edit a template just to customize one project. Modify the scratch file instead.
 
 ### Communication
 - Send a message to a PM (use heredoc to avoid shell escaping issues):

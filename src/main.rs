@@ -90,15 +90,32 @@ fn main() -> Result<()> {
             from,
         }) => cmd_send_message(&config, &target, message.as_deref(), file.as_deref(), from.as_deref()),
 
-        Some(Commands::CreateProject { name, description }) => {
-            cmd_create_project(&config, &name, description.as_deref())
-        }
+        Some(Commands::CreateProject {
+            name,
+            description,
+            initial_message,
+            file,
+        }) => cmd_create_project(
+            &config,
+            &name,
+            description.as_deref(),
+            initial_message.as_deref(),
+            file.as_deref(),
+        ),
 
         Some(Commands::ListProjects) => cmd_list_projects(&config),
 
         Some(Commands::ProjectStatus { name }) => cmd_project_status(&config, &name),
 
         Some(Commands::DeleteProject { name }) => cmd_delete_project(&config, &name),
+
+        Some(Commands::ListTemplates) => cmd_list_templates(&config),
+
+        Some(Commands::GetTemplate { name }) => cmd_get_template(&config, &name),
+
+        Some(Commands::CreateTemplate { name, body, file }) => {
+            cmd_create_template(&config, &name, body.as_deref(), file.as_deref())
+        }
 
         Some(Commands::StopTask { task_id }) => cmd_stop_task(&config, &task_id),
 
@@ -269,10 +286,71 @@ fn cmd_send_message(
     Ok(())
 }
 
-fn cmd_create_project(config: &Config, name: &str, description: Option<&str>) -> Result<()> {
+fn cmd_create_project(
+    config: &Config,
+    name: &str,
+    description: Option<&str>,
+    initial_message: Option<&str>,
+    file: Option<&std::path::Path>,
+) -> Result<()> {
     let desc = description.unwrap_or("");
-    let project = use_cases::create_project(config, name, desc)?;
+
+    // Resolve --initial-message / --file. The user may pass neither (project starts
+    // with empty inbox), or one of inline text / @path / - / --file.
+    let initial_owned: Option<String> = if initial_message.is_some() || file.is_some() {
+        let resolved = resolve_text_arg(initial_message, file, "initial-message")?;
+        Some(resolved)
+    } else {
+        None
+    };
+    let initial_trimmed: Option<&str> = initial_owned
+        .as_deref()
+        .map(|s| s.trim_end())
+        .filter(|s| !s.is_empty());
+
+    let project = use_cases::create_project(config, name, desc, initial_trimmed)?;
     println!("Project '{}' created at {}", project.meta.name, project.dir.display());
+    if initial_trimmed.is_some() {
+        println!("Initial message queued to PM inbox.");
+    }
+    Ok(())
+}
+
+fn cmd_list_templates(config: &Config) -> Result<()> {
+    let templates = agman::templates::list_templates(config)?;
+    if templates.is_empty() {
+        println!("No templates. Add one with `agman create-template <name> --file <path>`.");
+        println!("Templates live in {}", config.templates_dir().display());
+        return Ok(());
+    }
+
+    println!("{:<24} {}", "NAME", "DESCRIPTION");
+    println!("{}", "-".repeat(60));
+    for t in &templates {
+        println!("{:<24} {}", t.name, t.description);
+    }
+    Ok(())
+}
+
+fn cmd_get_template(config: &Config, name: &str) -> Result<()> {
+    let body = agman::templates::read_template(config, name)?;
+    print!("{body}");
+    Ok(())
+}
+
+fn cmd_create_template(
+    config: &Config,
+    name: &str,
+    body: Option<&str>,
+    file: Option<&std::path::Path>,
+) -> Result<()> {
+    let resolved = resolve_text_arg(body, file, "template body")?;
+    agman::templates::write_template(config, name, &resolved)?;
+    println!(
+        "Template '{}' saved to {}",
+        name,
+        config.template_path(name).display()
+    );
     Ok(())
 }
 

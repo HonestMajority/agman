@@ -329,6 +329,18 @@ impl Config {
         format!("agman-researcher-{project}--{name}")
     }
 
+    // --- Project template paths ---
+
+    /// Directory where project templates are stored: ~/.agman/project-templates/
+    pub fn templates_dir(&self) -> PathBuf {
+        self.base_dir.join("project-templates")
+    }
+
+    /// Path for a single template: ~/.agman/project-templates/<name>.md
+    pub fn template_path(&self, name: &str) -> PathBuf {
+        self.templates_dir().join(format!("{name}.md"))
+    }
+
     pub fn init_default_files(&self, force: bool) -> Result<()> {
         self.ensure_dirs()?;
 
