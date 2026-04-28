@@ -4165,11 +4165,13 @@ fn draw_archive_preview(f: &mut Frame, app: &mut App) {
 fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
     let break_mins = app.break_interval.as_secs() / 60;
     let retention_days = app.archive_retention_days;
+    let harness_kind = app.config.harness_kind();
 
     let selected_style = Style::default().bg(Color::Rgb(40, 40, 50));
 
     let break_display = format!("  Break interval      \u{25C0}  {} min  \u{25B6}", break_mins);
     let retention_display = format!("  Archive retention   \u{25C0}  {} days \u{25B6}", retention_days);
+    let harness_display = format!("  Harness             \u{25C0}  {:<6} \u{25B6}", harness_kind.as_str());
 
     // Telegram token display: mask all but last 4 chars
     let token_text: String = app.telegram_token_editor.lines().join("");
@@ -4188,9 +4190,10 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
         chat_id_text.clone()
     };
 
-    // If editing a telegram field, we render the TextArea separately
-    let editing_token = app.settings_editing && app.settings_selected == 2;
-    let editing_chat_id = app.settings_editing && app.settings_selected == 3;
+    // If editing a telegram field, we render the TextArea separately. Token
+    // is now at row 3 (after break/retention/harness); chat-id at 4.
+    let editing_token = app.settings_editing && app.settings_selected == 3;
+    let editing_chat_id = app.settings_editing && app.settings_selected == 4;
 
     let token_row_text = format!("  Telegram bot token  {}", if editing_token { "" } else { &token_display });
     let chat_id_row_text = format!("  Telegram chat ID    {}", if editing_chat_id { "" } else { &chat_id_display });
@@ -4207,6 +4210,14 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
         ]))
         .style(if app.settings_selected == 1 { selected_style } else { Style::default() }),
         ListItem::new(Line::from(vec![
+            Span::styled(&harness_display, Style::default().fg(Color::White)),
+            Span::styled(
+                "    (h/l to switch \u{2014} applies to newly-spawned agents only)",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]))
+        .style(if app.settings_selected == 2 { selected_style } else { Style::default() }),
+        ListItem::new(Line::from(vec![
             Span::styled(&token_row_text, Style::default().fg(Color::White)),
             if !editing_token {
                 Span::styled("    (Enter to edit)", Style::default().fg(Color::DarkGray))
@@ -4214,7 +4225,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::raw("")
             },
         ]))
-        .style(if app.settings_selected == 2 { selected_style } else { Style::default() }),
+        .style(if app.settings_selected == 3 { selected_style } else { Style::default() }),
         ListItem::new(Line::from(vec![
             Span::styled(&chat_id_row_text, Style::default().fg(Color::White)),
             if !editing_chat_id {
@@ -4223,7 +4234,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::raw("")
             },
         ]))
-        .style(if app.settings_selected == 3 { selected_style } else { Style::default() }),
+        .style(if app.settings_selected == 4 { selected_style } else { Style::default() }),
     ];
 
     let block = Block::default()
@@ -4241,7 +4252,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Overlay TextArea widget when editing a telegram field
     if editing_token || editing_chat_id {
-        let row_index = if editing_token { 2 } else { 3 };
+        let row_index = if editing_token { 3 } else { 4 };
         // The label prefix is 22 chars ("  Telegram bot token  " / "  Telegram chat ID    ")
         let label_width = 22u16;
         if inner_area.height > row_index && inner_area.width > label_width {

@@ -181,14 +181,14 @@ fn main() -> Result<()> {
             config.ensure_dirs()?;
 
             // Check that all required tools are on $PATH
-            let missing = agman::use_cases::check_dependencies();
+            let missing = agman::use_cases::check_dependencies(&config);
             if !missing.is_empty() {
                 eprintln!("Error: the following required tools are not installed:\n");
                 for tool in &missing {
                     eprintln!(
                         "  - {}  ({})",
                         tool,
-                        agman::use_cases::install_hint(tool)
+                        agman::use_cases::install_hint(&config, tool)
                     );
                 }
                 eprintln!("\nPlease install the missing tools and try again.");
@@ -763,7 +763,7 @@ fn cmd_create_researcher(
         branch,
         task,
     )?;
-    use_cases::start_researcher_session(config, project, name)?;
+    use_cases::start_researcher_session(config, project, name, false)?;
     println!(
         "Researcher '{}' created for project '{}' (tmux: {})",
         researcher.meta.name,

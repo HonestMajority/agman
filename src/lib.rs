@@ -5,6 +5,7 @@ pub mod config;
 pub mod dismissed_notifications;
 pub mod flow;
 pub mod git;
+pub mod harness;
 pub mod inbox;
 pub mod migration;
 pub mod project;

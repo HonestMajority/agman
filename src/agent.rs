@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::config::Config;
+use crate::harness::Harness;
 use crate::task::Task;
 
 pub struct Agent {
@@ -21,7 +22,8 @@ impl Agent {
     }
 
     /// Build the **system prompt** for this agent — the static identity payload
-    /// passed to claude via `--system-prompt-file`.
+    /// delivered inline by the configured harness (claude `--system-prompt`,
+    /// codex `developer_instructions`).
     ///
     /// The shape of the system prompt depends on `command_mode`:
     ///
@@ -44,7 +46,12 @@ impl Agent {
     /// commits) is never embedded in the system prompt — it lives in
     /// [`build_inbox_message`](Self::build_inbox_message) and is delivered to
     /// the agent via the task inbox once claude is ready.
-    pub fn build_system_prompt(&self, task: &Task, command_mode: bool) -> Result<String> {
+    pub fn build_system_prompt(
+        &self,
+        task: &Task,
+        command_mode: bool,
+        harness: &dyn Harness,
+    ) -> Result<String> {
         let mut prompt = String::new();
 
         // Regular flows embed the prompt template as identity-as-instruction.
@@ -72,10 +79,17 @@ impl Agent {
             ));
         }
 
-        // Append skill-awareness footer so the agent sees it early
-        prompt.push_str("\n\n---\n\n");
-        prompt.push_str("# Skills\n");
-        prompt.push_str("Before starting, check if the repository has Claude Code skills defined in `.claude/skills/` or `.claude/commands/`. If any are relevant to your task, use them.\n");
+        // Append skill-awareness footer so the agent sees it early. The
+        // wording is harness-specific (claude knows about `.claude/skills/`,
+        // codex has no equivalent today). Skip the section entirely when
+        // the harness's hint is empty.
+        let skill_hint = harness.skill_hint();
+        if !skill_hint.is_empty() {
+            prompt.push_str("\n\n---\n\n");
+            prompt.push_str("# Skills\n");
+            prompt.push_str(skill_hint);
+            prompt.push('\n');
+        }
 
         // Add task directory info so agents know where TASK.md lives
         prompt.push_str("\n\n---\n\n");
@@ -97,10 +111,13 @@ impl Agent {
             }
         }
 
-        // Append self-improve footer to all prompts
-        prompt.push_str("\n\n---\n\n");
-        prompt.push_str("# Self-Improvement\n");
-        prompt.push_str("**Before completing**, check if the repository has a self-improvement skill (commonly named \"self-improve\" or similar) in `.claude/skills/` or `.claude/commands/`. If one exists, run it. This helps keep project documentation and conventions up to date.\n");
+        // Append self-improve footer to all prompts (claude only — codex's
+        // skill hint is empty so we skip this for codex).
+        if !skill_hint.is_empty() {
+            prompt.push_str("\n\n---\n\n");
+            prompt.push_str("# Self-Improvement\n");
+            prompt.push_str("**Before completing**, check if the repository has a self-improvement skill (commonly named \"self-improve\" or similar) in `.claude/skills/` or `.claude/commands/`. If one exists, run it. This helps keep project documentation and conventions up to date.\n");
+        }
 
         // Sentinel footer: the supervisor detects completion purely by file
         // existence. The agent's LAST action is to `touch` ONE of three

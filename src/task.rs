@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 use crate::flow::StopCondition;
+use crate::harness::HarnessKind;
 
 /// A single item in the task queue (feedback or command).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,14 +56,19 @@ pub struct RepoEntry {
     pub tmux_session: String,
 }
 
-/// A single interactive claude session run by the supervisor.
+/// A single interactive agent session run by the supervisor.
 ///
-/// Records enough state to let the user resume the conversation with
-/// `claude --resume <session_id>` after the fact.
+/// Records the deterministic session name passed to the harness at launch
+/// (`claude --name <name>` / `codex` post-launch `/rename <name>`) so the
+/// user can manually reattach with `claude --resume <name>` or `codex resume
+/// <name>` from a shell.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
     pub agent: String,
-    pub session_id: String,
+    /// Deterministic session name (e.g. `agman-task-<task-id>-step-<n>`).
+    /// Renamed from `session_id` when agman dropped programmatic resume.
+    #[serde(alias = "session_id")]
+    pub name: String,
     pub started_at: DateTime<Utc>,
     #[serde(default)]
     pub stopped_at: Option<DateTime<Utc>>,
@@ -127,11 +133,17 @@ pub struct TaskMeta {
     /// The project this task belongs to (None for unassigned/legacy tasks).
     #[serde(default)]
     pub project: Option<String>,
-    /// History of interactive claude sessions run by the supervisor.
+    /// History of interactive agent sessions run by the supervisor.
     /// Appended to on every agent step; persists across iterations so the
-    /// user can `claude --resume` any prior session.
+    /// user can `claude --resume <name>` / `codex resume <name>` any prior
+    /// session manually from a shell.
     #[serde(default)]
     pub session_history: Vec<SessionEntry>,
+    /// Which harness this task uses (claude or codex). Stamped at task-create
+    /// time and read by the supervisor at every spawn site so a global
+    /// setting flip can't change the harness mid-task.
+    #[serde(default)]
+    pub harness: HarnessKind,
     /// Snapshot of `flow_name` captured before a stored command took over via
     /// `drain_queue`. Restored when the command flow completes without a
     /// terminal `post_action` (archive/delete). `None` outside of command
@@ -194,6 +206,7 @@ impl TaskMeta {
             saved: false,
             project: None,
             session_history: Vec::new(),
+            harness: HarnessKind::default(),
             pre_command_flow_name: None,
             pre_command_flow_step: None,
         }
@@ -229,6 +242,7 @@ impl TaskMeta {
             saved: false,
             project: None,
             session_history: Vec::new(),
+            harness: HarnessKind::default(),
             pre_command_flow_name: None,
             pre_command_flow_step: None,
         }
@@ -281,12 +295,13 @@ impl Task {
         let dir = config.task_dir(name, branch_name);
         std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
 
-        let meta = TaskMeta::new(
+        let mut meta = TaskMeta::new(
             name.to_string(),
             branch_name.to_string(),
             worktree_path.clone(),
             flow_name.to_string(),
         );
+        meta.harness = config.harness_kind();
 
         let task = Self { meta, dir };
         task.save_meta()?;
@@ -312,12 +327,13 @@ impl Task {
         let dir = config.task_dir(name, branch_name);
         std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
 
-        let meta = TaskMeta::new_multi(
+        let mut meta = TaskMeta::new_multi(
             name.to_string(),
             branch_name.to_string(),
             parent_dir,
             flow_name.to_string(),
         );
+        meta.harness = config.harness_kind();
 
         let task = Self { meta, dir };
         task.save_meta()?;
@@ -1025,15 +1041,6 @@ impl Task {
     /// to cancel the current step gracefully.
     pub fn stop_path(&self) -> PathBuf {
         self.dir.join(".stop")
-    }
-
-    /// Path to the current prompt. The supervisor writes each step's
-    /// **system prompt** (identity-only — no TASK.md, feedback, or git
-    /// context) here so it can be loaded by claude via
-    /// `--system-prompt-file <path>`. The dynamic per-launch payload is
-    /// delivered separately through the task inbox.
-    pub fn current_prompt_path(&self) -> PathBuf {
-        self.dir.join(".current-prompt.md")
     }
 
     /// Check the three sentinel files in priority order and, if any exist,

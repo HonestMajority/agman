@@ -467,7 +467,7 @@ fn stop_task_finalizes_live_session() {
     let mut task = create_test_task(&config, "repo", "branch");
     task.push_session(SessionEntry {
         agent: "coder".to_string(),
-        session_id: "sid-live".to_string(),
+        name: "sid-live".to_string(),
         started_at: chrono::Utc::now(),
         stopped_at: None,
         condition: None,
@@ -1640,6 +1640,7 @@ fn save_and_load_config_file_roundtrip() {
         archive_retention_days: None,
         telegram_bot_token: None,
         telegram_chat_id: None,
+        harness: None,
     };
     agman::config::save_config_file(&base_dir, &cf).unwrap();
 
@@ -1691,7 +1692,9 @@ fn save_and_load_telegram_config() {
 
 #[test]
 fn check_dependencies_finds_git() {
-    let missing = use_cases::check_dependencies();
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let missing = use_cases::check_dependencies(&config);
     // `git` is always available in test environments
     assert!(!missing.contains(&"git".to_string()));
 }
@@ -3353,11 +3356,8 @@ fn handoff_file_mechanics() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    // Create Chief of Staff dir with a fake session-id
     let cos_dir = config.chief_of_staff_dir();
     std::fs::create_dir_all(&cos_dir).unwrap();
-    let session_id_path = config.chief_of_staff_session_id();
-    std::fs::write(&session_id_path, "fake-session-id-123").unwrap();
 
     // Write a handoff.md as if the agent wrote it
     let handoff_path = cos_dir.join("handoff.md");
@@ -3372,11 +3372,6 @@ fn handoff_file_mechanics() {
     assert!(content.contains("project alpha"));
     assert!(content.contains("task-42"));
 
-    // Verify session-id exists then delete it (simulating respawn cleanup)
-    assert!(session_id_path.exists());
-    std::fs::remove_file(&session_id_path).unwrap();
-    assert!(!session_id_path.exists());
-
     // Verify handoff cleanup
     std::fs::remove_file(&handoff_path).unwrap();
     assert!(!handoff_path.exists());
@@ -3388,34 +3383,40 @@ fn handoff_file_mechanics() {
 
 #[test]
 fn chat_unread_via_transcript_and_mark_viewed() {
+    use agman::harness::{self, HarnessKind};
+
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
-    let claude_projects_tmp = tempfile::tempdir().unwrap();
-    std::env::set_var("AGMAN_CLAUDE_PROJECTS_DIR", claude_projects_tmp.path());
+    // Use a per-test claude home tempdir threaded explicitly through the
+    // test seam — no env-var mutation, so this stays parallel-safe.
+    let claude_home_tmp = tempfile::tempdir().unwrap();
+    let claude_home = claude_home_tmp.path();
 
     let project_name = "test-project";
     let project_dir = config.project_dir(project_name);
     std::fs::create_dir_all(&project_dir).unwrap();
 
-    let session_id = "test-session-abc";
-    let session_id_path = config.project_session_id(project_name);
-    std::fs::write(&session_id_path, session_id).unwrap();
+    // Create a transcript file under the harness home keyed by project_dir.
+    let escaped_cwd = project_dir.to_string_lossy().replace('/', "-");
+    let transcript_dir = claude_home.join("projects").join(&escaped_cwd);
+    std::fs::create_dir_all(&transcript_dir).unwrap();
+    let transcript_path = transcript_dir.join("session-abc.jsonl");
 
-    let transcript_path =
-        use_cases::claude_transcript_path(claude_projects_tmp.path(), &project_dir, session_id);
-    std::fs::create_dir_all(transcript_path.parent().unwrap()).unwrap();
-
-    // User-only transcript — no unread
+    // User-only transcript — no unread (no assistant marker).
     std::fs::write(
         &transcript_path,
         "{\"type\":\"user\",\"uuid\":\"u1\",\"timestamp\":\"2026-01-01T00:00:00Z\"}\n",
     )
     .unwrap();
-    let result = use_cases::count_unread_chat_messages(&config);
+    let result = use_cases::count_unread_chat_messages_for_test(
+        &config,
+        Some(claude_home),
+        None,
+    );
     assert!(result.unread_names.is_empty());
 
-    // Append assistant line — project appears as unread
+    // Append assistant line — project appears as unread.
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
         .append(true)
@@ -3427,16 +3428,31 @@ fn chat_unread_via_transcript_and_mark_viewed() {
     )
     .unwrap();
     drop(f);
-    let result = use_cases::count_unread_chat_messages(&config);
+    let result = use_cases::count_unread_chat_messages_for_test(
+        &config,
+        Some(claude_home),
+        None,
+    );
     assert_eq!(result.unread_names, vec!["test-project".to_string()]);
 
-    // Mark viewed — no longer unread
+    // Mark viewed — no longer unread.
     let agent_key = format!("project:{project_name}");
-    use_cases::mark_chat_viewed(&config, &agent_key).unwrap();
-    let result = use_cases::count_unread_chat_messages(&config);
+    use_cases::mark_chat_viewed_for_test(&config, &agent_key, Some(claude_home), None).unwrap();
+    let result = use_cases::count_unread_chat_messages_for_test(
+        &config,
+        Some(claude_home),
+        None,
+    );
     assert!(result.unread_names.is_empty());
 
-    // Append another assistant line — unread again
+    // Sanity-check the harness lookup directly: it finds the same transcript.
+    assert_eq!(
+        harness::latest_transcript_for_test(HarnessKind::Claude, claude_home, &project_dir)
+            .unwrap(),
+        transcript_path
+    );
+
+    // Append another assistant line — unread again.
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .open(&transcript_path)
@@ -3447,10 +3463,12 @@ fn chat_unread_via_transcript_and_mark_viewed() {
     )
     .unwrap();
     drop(f);
-    let result = use_cases::count_unread_chat_messages(&config);
+    let result = use_cases::count_unread_chat_messages_for_test(
+        &config,
+        Some(claude_home),
+        None,
+    );
     assert_eq!(result.unread_names, vec!["test-project".to_string()]);
-
-    std::env::remove_var("AGMAN_CLAUDE_PROJECTS_DIR");
 }
 
 #[test]
@@ -3862,9 +3880,15 @@ fn start_agent_step_queues_inbox_work_directive() {
         "inbox message should contain the Current Task heading"
     );
 
-    // The system prompt that was written to .current-prompt.md must NOT
-    // contain the TASK.md body — that lives in the inbox.
-    let system_prompt = std::fs::read_to_string(task.current_prompt_path()).unwrap();
+    // The system prompt is no longer written to disk — it's passed inline
+    // to the harness via build_session_command. Verify the inline shape
+    // directly via Agent::build_system_prompt.
+    use agman::agent::Agent;
+    use agman::harness::HarnessKind;
+    let agent = Agent::load(&config, "coder").unwrap();
+    let system_prompt = agent
+        .build_system_prompt(&task, false, HarnessKind::Claude.select().as_ref())
+        .unwrap();
     assert!(
         !system_prompt.contains("Do the inbox-delivered work"),
         "system prompt must not embed TASK.md content"
@@ -3931,4 +3955,330 @@ fn get_template_returns_body() {
 
     let read_back = agman::templates::read_template(&config, "my-template").unwrap();
     assert_eq!(read_back, body);
+}
+
+// ---------------------------------------------------------------------------
+// Long-lived agent resume support (CEO/PM/researcher)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn long_lived_first_launch_claude_stamps_session_id() {
+    // First launch under claude mints a UUID and writes it to
+    // <state_dir>/session-id, returning Pin(uuid) so the launch command
+    // pins claude's session via --session-id <uuid>.
+    use agman::harness::{HarnessKind, LaunchContext, SessionKey};
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    let cwd = tmp.path();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        cwd,
+        HarnessKind::Claude,
+        false,
+        None,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "pin");
+    assert!(prep.is_first_launch);
+    let uuid = prep.handle.expect("claude first launch must have a uuid");
+
+    // session-id stamped on disk and matches the returned handle.
+    let id_path = state_dir.join("session-id");
+    assert!(id_path.exists(), "claude session-id must be stamped");
+    let stamped = std::fs::read_to_string(&id_path).unwrap();
+    assert_eq!(stamped.trim(), uuid);
+
+    // Build the launch command with the right session_key and assert
+    // shape — proves the first-launch path threads through correctly.
+    let h = HarnessKind::Claude.select();
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-chief-of-staff",
+        cwd: &prep.cwd,
+        skip_git_repo_check: true,
+        no_alt_screen: false,
+        session_key: SessionKey::Pin(&uuid),
+    });
+    assert!(cmd.contains(&format!("--session-id '{uuid}'")));
+}
+
+#[test]
+fn long_lived_first_launch_codex_stamps_launch_cwd() {
+    // First launch under codex stamps <state_dir>/launch-cwd with the
+    // resolved cwd and returns Auto (no launch-time pin; the
+    // deterministic name is registered post-launch via /rename).
+    use agman::harness::HarnessKind;
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    // Point the codex home at an empty per-test tempdir so
+    // codex_has_session returns false (no prior session). Threaded
+    // through the test seam — no env-var mutation.
+    let codex_home = tempfile::tempdir().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    let cwd = tmp.path();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        cwd,
+        HarnessKind::Codex,
+        false,
+        Some(codex_home.path()),
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "auto");
+    assert!(prep.is_first_launch);
+    assert!(prep.handle.is_none());
+
+    let cwd_path = state_dir.join("launch-cwd");
+    assert!(cwd_path.exists(), "codex launch-cwd must be stamped");
+    let stamped = std::fs::read_to_string(&cwd_path).unwrap();
+    assert_eq!(stamped.trim(), cwd.to_string_lossy());
+}
+
+#[test]
+fn long_lived_resume_claude_emits_resume_flag() {
+    // Pre-stamp <state_dir>/session-id and expect Resume(uuid).
+    use agman::harness::{HarnessKind, LaunchContext, SessionKey};
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let pinned_uuid = "deadbeef-1234-5678-9abc-def012345678";
+    std::fs::write(state_dir.join("session-id"), pinned_uuid).unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        tmp.path(),
+        HarnessKind::Claude,
+        false,
+        None,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "resume");
+    assert!(!prep.is_first_launch);
+    assert_eq!(prep.handle.as_deref(), Some(pinned_uuid));
+
+    let h = HarnessKind::Claude.select();
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-chief-of-staff",
+        cwd: &prep.cwd,
+        skip_git_repo_check: true,
+        no_alt_screen: false,
+        session_key: SessionKey::Resume(pinned_uuid),
+    });
+    assert!(cmd.contains(&format!("--resume '{pinned_uuid}'")));
+    assert!(!cmd.contains("--system-prompt"));
+}
+
+#[test]
+fn long_lived_resume_codex_emits_resume_subcommand() {
+    // Seed session_index.jsonl with a thread_name entry and assert that
+    // prepare returns Resume + the launch command emits `codex resume <name>`.
+    use agman::harness::{HarnessKind, LaunchContext, SessionKey};
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        "{\"thread_name\":\"agman-chief-of-staff\",\"id\":\"x\"}\n",
+    )
+    .unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    // Pre-stamp launch-cwd to a real directory so the resume picks it up.
+    let stamped_cwd = tmp.path().join("worktree");
+    std::fs::create_dir_all(&stamped_cwd).unwrap();
+    std::fs::write(
+        state_dir.join("launch-cwd"),
+        stamped_cwd.to_string_lossy().as_ref(),
+    )
+    .unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        tmp.path(), // freshly-resolved cwd, should be ignored in favour of stamped
+        HarnessKind::Codex,
+        false,
+        Some(codex_home.path()),
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "resume");
+    assert!(!prep.is_first_launch);
+    assert_eq!(prep.handle.as_deref(), Some("agman-chief-of-staff"));
+    assert_eq!(prep.cwd, stamped_cwd);
+
+    let h = HarnessKind::Codex.select();
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-chief-of-staff",
+        cwd: &prep.cwd,
+        skip_git_repo_check: true,
+        no_alt_screen: true,
+        session_key: SessionKey::Resume("agman-chief-of-staff"),
+    });
+    assert!(cmd.contains(" resume 'agman-chief-of-staff'"));
+    assert!(cmd.contains(&format!(" -C '{}'", stamped_cwd.to_string_lossy())));
+    assert!(!cmd.contains("developer_instructions"));
+}
+
+#[test]
+fn respawn_wipes_session_handles_then_fresh_launch_mints_new() {
+    // Pre-stamp <state_dir>/session-id and <state_dir>/launch-cwd. Run
+    // the respawn cleanup, assert both are gone, then run a fresh
+    // prepare and assert the next launch is FRESH (new uuid, no resume).
+    use agman::harness::HarnessKind;
+    use agman::use_cases::{prepare_long_lived_launch_for_test, wipe_long_lived_session_handles};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(state_dir.join("session-id"), "old-stale-uuid").unwrap();
+    std::fs::write(state_dir.join("launch-cwd"), "/old/path").unwrap();
+
+    wipe_long_lived_session_handles(&state_dir);
+    assert!(!state_dir.join("session-id").exists());
+    assert!(!state_dir.join("launch-cwd").exists());
+
+    // Idempotent on the second call (no panic when files are gone).
+    wipe_long_lived_session_handles(&state_dir);
+
+    // Subsequent prepare for claude must mint a fresh uuid (never
+    // reuses the stale one).
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        tmp.path(),
+        HarnessKind::Claude,
+        false,
+        None,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "pin");
+    assert!(prep.is_first_launch);
+    let new_uuid = prep.handle.unwrap();
+    assert_ne!(new_uuid, "old-stale-uuid");
+}
+
+#[test]
+fn long_lived_force_fresh_ignores_stamped_handle() {
+    // force_fresh = true (used by respawn_agent) skips the resume
+    // detection on both harnesses. Claude re-mints a UUID; codex falls
+    // back to Auto and re-stamps launch-cwd.
+    use agman::harness::HarnessKind;
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    // --- Claude path ---
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let stale_uuid = "stale-uuid-aaaa-bbbb-cccc-dddddddddddd";
+    std::fs::write(state_dir.join("session-id"), stale_uuid).unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        tmp.path(),
+        HarnessKind::Claude,
+        true,
+        None,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "pin");
+    assert!(prep.is_first_launch);
+    let new_uuid = prep.handle.expect("force_fresh must mint a new uuid");
+    assert_ne!(new_uuid, stale_uuid, "force_fresh must NOT reuse stale uuid");
+
+    // --- Codex path ---
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        "{\"thread_name\":\"agman-chief-of-staff\",\"id\":\"x\"}\n",
+    )
+    .unwrap();
+    let codex_state = tmp.path().join("codex-ceo");
+    std::fs::create_dir_all(&codex_state).unwrap();
+    std::fs::write(codex_state.join("launch-cwd"), "/old/path").unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &codex_state,
+        "agman-chief-of-staff",
+        tmp.path(),
+        HarnessKind::Codex,
+        true,
+        Some(codex_home.path()),
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "auto");
+    assert!(prep.is_first_launch);
+    let stamped = std::fs::read_to_string(codex_state.join("launch-cwd")).unwrap();
+    assert_eq!(stamped.trim(), tmp.path().to_string_lossy());
+}
+
+#[test]
+fn long_lived_resume_codex_falls_back_when_stamped_cwd_missing() {
+    // Partial-state robustness: if `<state_dir>/launch-cwd` points at a
+    // directory that no longer exists, the resume path must still take the
+    // resume branch but fall back to the freshly-resolved `cwd` argument
+    // (not pass codex a non-existent directory). This pins the
+    // `.filter(|p| p.exists())` fallback in `prepare_long_lived_launch_inner`.
+    use agman::harness::HarnessKind;
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        "{\"thread_name\":\"agman-chief-of-staff\",\"id\":\"x\"}\n",
+    )
+    .unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    // Build a path under tmp that exists, then remove it so the stamp
+    // points at a guaranteed-missing directory. The enclosing `TempDir`
+    // is already unique to this test, so no extra uniqueness is needed.
+    let deleted_cwd = tmp.path().join("agman-deleted-launch-cwd");
+    std::fs::create_dir_all(&deleted_cwd).unwrap();
+    std::fs::remove_dir_all(&deleted_cwd).unwrap();
+    assert!(!deleted_cwd.exists());
+    std::fs::write(
+        state_dir.join("launch-cwd"),
+        deleted_cwd.to_string_lossy().as_ref(),
+    )
+    .unwrap();
+
+    // Pass a real, existing cwd as the freshly-resolved argument.
+    let live_cwd = tmp.path().join("live-worktree");
+    std::fs::create_dir_all(&live_cwd).unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        &live_cwd,
+        HarnessKind::Codex,
+        false,
+        Some(codex_home.path()),
+    )
+    .unwrap();
+
+    assert_eq!(prep.mode, "resume", "session_index hit -> resume path");
+    assert_eq!(
+        prep.cwd, live_cwd,
+        "stamped launch-cwd points at a deleted dir; must fall back to the live cwd argument, not the stamped path"
+    );
+    assert_ne!(prep.cwd, deleted_cwd);
 }
