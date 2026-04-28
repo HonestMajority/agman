@@ -828,14 +828,14 @@ impl App {
         }
 
         // Auto-start the Chief of Staff agent session in the background
-        if let Err(e) = use_cases::start_chief_of_staff_session(&config) {
+        if let Err(e) = use_cases::start_chief_of_staff_session(&config, false) {
             tracing::error!(error = %e, "failed to auto-start Chief of Staff session on launch");
         }
 
         // Auto-start PM sessions for all projects
         if let Ok(projects) = use_cases::list_projects(&config) {
             for project in &projects {
-                if let Err(e) = use_cases::start_pm_session(&config, &project.meta.name) {
+                if let Err(e) = use_cases::start_pm_session(&config, &project.meta.name, false) {
                     tracing::error!(project = %project.meta.name, error = %e, "failed to auto-start PM session on launch");
                 }
             }
@@ -3504,9 +3504,12 @@ impl App {
                         Ok(_researcher) => {
                             tracing::info!(project = %project, name = %name, "created researcher via wizard");
                             // Start the session
-                            if let Err(e) =
-                                use_cases::start_researcher_session(&self.config, &project, &name)
-                            {
+                            if let Err(e) = use_cases::start_researcher_session(
+                                &self.config,
+                                &project,
+                                &name,
+                                false,
+                            ) {
                                 tracing::warn!(
                                     project = %project, name = %name, error = %e,
                                     "failed to start researcher session"

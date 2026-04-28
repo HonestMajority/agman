@@ -1,4 +1,4 @@
-use agman::harness::{Harness, HarnessKind, LaunchContext};
+use agman::harness::{HarnessKind, LaunchContext, SessionKey};
 
 fn cwd() -> std::path::PathBuf {
     std::env::temp_dir()
@@ -23,6 +23,7 @@ fn claude_build_session_command_emits_system_prompt_and_name() {
         cwd: &cwd(),
         skip_git_repo_check: true,
         no_alt_screen: false,
+        session_key: SessionKey::Auto,
     });
     assert!(cmd.starts_with("claude"));
     assert!(cmd.contains("--dangerously-skip-permissions"));
@@ -30,6 +31,7 @@ fn claude_build_session_command_emits_system_prompt_and_name() {
     assert!(cmd.contains("--name 'agman-task-myrepo--feat-x-step-1'"));
     assert!(!cmd.contains("--system-prompt-file"));
     assert!(!cmd.contains("--resume"));
+    assert!(!cmd.contains("--session-id"));
 }
 
 #[test]
@@ -41,9 +43,54 @@ fn claude_build_session_command_escapes_inner_single_quotes() {
         cwd: &cwd(),
         skip_git_repo_check: true,
         no_alt_screen: false,
+        session_key: SessionKey::Auto,
     });
     // Single-quote escape in shell: ' becomes '\''
     assert!(cmd.contains("It'\\''s a body with '\\''quotes'\\''"));
+}
+
+#[test]
+fn claude_build_session_command_pins_session_id_when_provided() {
+    // Long-lived first launch: claude pins the supplied UUID via
+    // --session-id so a later --resume <uuid> lands directly in
+    // interactive mode (not the picker).
+    let h = HarnessKind::Claude.select();
+    let uuid = "11111111-2222-3333-4444-555555555555";
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-ceo",
+        cwd: &cwd(),
+        skip_git_repo_check: true,
+        no_alt_screen: false,
+        session_key: SessionKey::Pin(uuid),
+    });
+    assert!(cmd.contains(&format!("--session-id '{uuid}'")));
+    assert!(cmd.contains("--system-prompt 'Identity body'"));
+    assert!(cmd.contains("--name 'agman-ceo'"));
+    assert!(!cmd.contains("--resume"));
+}
+
+#[test]
+fn claude_build_session_command_resumes_when_provided() {
+    // Long-lived resume: --resume <uuid> AND no --system-prompt (the
+    // saved thread keeps its original prompt).
+    let h = HarnessKind::Claude.select();
+    let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-ceo",
+        cwd: &cwd(),
+        skip_git_repo_check: true,
+        no_alt_screen: false,
+        session_key: SessionKey::Resume(uuid),
+    });
+    assert!(cmd.contains(&format!("--resume '{uuid}'")));
+    assert!(cmd.contains("--name 'agman-ceo'"));
+    assert!(
+        !cmd.contains("--system-prompt"),
+        "resume must NOT pass --system-prompt: {cmd}"
+    );
+    assert!(!cmd.contains("--session-id"));
 }
 
 #[test]
@@ -55,6 +102,7 @@ fn codex_build_session_command_emits_developer_instructions_and_no_alt_screen() 
         cwd: &cwd(),
         skip_git_repo_check: true,
         no_alt_screen: true,
+        session_key: SessionKey::Auto,
     });
     assert!(cmd.starts_with("codex"));
     assert!(cmd.contains("--skip-git-repo-check"));
@@ -63,6 +111,36 @@ fn codex_build_session_command_emits_developer_instructions_and_no_alt_screen() 
     // Codex doesn't take --name; the name is registered post-launch via /rename.
     assert!(!cmd.contains("--name"));
     assert!(!cmd.contains("--resume"));
+    assert!(!cmd.contains(" resume "));
+}
+
+#[test]
+fn codex_build_session_command_emits_resume_subcommand() {
+    // Long-lived resume: `codex resume <name>` shape with -C <cwd> and
+    // --no-alt-screen. Skips developer_instructions (the saved thread
+    // keeps its original prompt) and the git-repo guard.
+    let h = HarnessKind::Codex.select();
+    let work_dir = cwd();
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-ceo",
+        cwd: &work_dir,
+        skip_git_repo_check: true,
+        no_alt_screen: true,
+        session_key: SessionKey::Resume("agman-ceo"),
+    });
+    assert!(cmd.starts_with("codex"));
+    assert!(cmd.contains(" resume 'agman-ceo'"));
+    assert!(cmd.contains(&format!(" -C '{}'", work_dir.to_string_lossy())));
+    assert!(cmd.contains("--no-alt-screen"));
+    assert!(
+        !cmd.contains("developer_instructions"),
+        "resume must NOT pass developer_instructions: {cmd}"
+    );
+    assert!(
+        !cmd.contains("--skip-git-repo-check"),
+        "resume omits --skip-git-repo-check: {cmd}"
+    );
 }
 
 #[test]
@@ -76,6 +154,7 @@ fn codex_build_session_command_escapes_triple_quotes_in_body() {
         cwd: &cwd(),
         skip_git_repo_check: false,
         no_alt_screen: false,
+        session_key: SessionKey::Auto,
     });
     assert!(cmd.contains("Pre \\\"\\\"\\\" mid"));
     assert!(!cmd.contains("Pre \"\"\" mid"));
@@ -161,6 +240,42 @@ fn codex_find_last_assistant_marker_returns_timestamp() {
         h.find_last_assistant_marker(&p),
         Some("2026-01-01T00:03:00Z".to_string())
     );
+}
+
+#[test]
+fn codex_session_index_walker_matches_thread_name() {
+    // Regression: codex writes `thread_name` (not `name`) in
+    // session_index.jsonl. The walker that backs both the post-/rename
+    // poll AND the pre-resume existence check must match it.
+    use agman::harness::poll_session_index_for_test;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    let index_path = codex_home.path().join("session_index.jsonl");
+    let name = "agman-ceo";
+
+    std::fs::write(
+        &index_path,
+        format!("{{\"thread_name\": \"{name}\", \"id\": \"abc-123\"}}\n"),
+    )
+    .unwrap();
+
+    assert!(
+        poll_session_index_for_test(&index_path, name, std::time::Duration::from_secs(2)),
+        "walker must match `thread_name` (codex's actual key)"
+    );
+
+    // Forward-compat: still matches `name`.
+    let other_idx = codex_home.path().join("session_index_v2.jsonl");
+    std::fs::write(
+        &other_idx,
+        format!("{{\"name\": \"{name}\", \"id\": \"def-456\"}}\n"),
+    )
+    .unwrap();
+    assert!(poll_session_index_for_test(
+        &other_idx,
+        name,
+        std::time::Duration::from_secs(2)
+    ));
 }
 
 #[test]

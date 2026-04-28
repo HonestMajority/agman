@@ -3941,3 +3941,274 @@ fn get_template_returns_body() {
     let read_back = agman::templates::read_template(&config, "my-template").unwrap();
     assert_eq!(read_back, body);
 }
+
+// ---------------------------------------------------------------------------
+// Long-lived agent resume support (CEO/PM/researcher)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn long_lived_first_launch_claude_stamps_session_id() {
+    // First launch under claude mints a UUID and writes it to
+    // <state_dir>/session-id, returning Pin(uuid) so the launch command
+    // pins claude's session via --session-id <uuid>.
+    use agman::harness::{HarnessKind, LaunchContext, SessionKey};
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    let cwd = tmp.path();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-ceo",
+        cwd,
+        HarnessKind::Claude,
+        false,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "pin");
+    assert!(prep.is_first_launch);
+    let uuid = prep.handle.expect("claude first launch must have a uuid");
+
+    // session-id stamped on disk and matches the returned handle.
+    let id_path = state_dir.join("session-id");
+    assert!(id_path.exists(), "claude session-id must be stamped");
+    let stamped = std::fs::read_to_string(&id_path).unwrap();
+    assert_eq!(stamped.trim(), uuid);
+
+    // Build the launch command with the right session_key and assert
+    // shape — proves the first-launch path threads through correctly.
+    let h = HarnessKind::Claude.select();
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-ceo",
+        cwd: &prep.cwd,
+        skip_git_repo_check: true,
+        no_alt_screen: false,
+        session_key: SessionKey::Pin(&uuid),
+    });
+    assert!(cmd.contains(&format!("--session-id '{uuid}'")));
+}
+
+#[test]
+fn long_lived_first_launch_codex_stamps_launch_cwd() {
+    // First launch under codex stamps <state_dir>/launch-cwd with the
+    // resolved cwd and returns Auto (no launch-time pin; the
+    // deterministic name is registered post-launch via /rename).
+    use agman::harness::HarnessKind;
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    // Point AGMAN_CODEX_HOME at an empty dir so codex_has_session
+    // returns false (no prior session).
+    let codex_home = tempfile::tempdir().unwrap();
+    std::env::set_var("AGMAN_CODEX_HOME", codex_home.path());
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    let cwd = tmp.path();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-ceo",
+        cwd,
+        HarnessKind::Codex,
+        false,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "auto");
+    assert!(prep.is_first_launch);
+    assert!(prep.handle.is_none());
+
+    let cwd_path = state_dir.join("launch-cwd");
+    assert!(cwd_path.exists(), "codex launch-cwd must be stamped");
+    let stamped = std::fs::read_to_string(&cwd_path).unwrap();
+    assert_eq!(stamped.trim(), cwd.to_string_lossy());
+
+    std::env::remove_var("AGMAN_CODEX_HOME");
+}
+
+#[test]
+fn long_lived_resume_claude_emits_resume_flag() {
+    // Pre-stamp <state_dir>/session-id and expect Resume(uuid).
+    use agman::harness::{HarnessKind, LaunchContext, SessionKey};
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let pinned_uuid = "deadbeef-1234-5678-9abc-def012345678";
+    std::fs::write(state_dir.join("session-id"), pinned_uuid).unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-ceo",
+        tmp.path(),
+        HarnessKind::Claude,
+        false,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "resume");
+    assert!(!prep.is_first_launch);
+    assert_eq!(prep.handle.as_deref(), Some(pinned_uuid));
+
+    let h = HarnessKind::Claude.select();
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-ceo",
+        cwd: &prep.cwd,
+        skip_git_repo_check: true,
+        no_alt_screen: false,
+        session_key: SessionKey::Resume(pinned_uuid),
+    });
+    assert!(cmd.contains(&format!("--resume '{pinned_uuid}'")));
+    assert!(!cmd.contains("--system-prompt"));
+}
+
+#[test]
+fn long_lived_resume_codex_emits_resume_subcommand() {
+    // Seed session_index.jsonl with a thread_name entry and assert that
+    // prepare returns Resume + the launch command emits `codex resume <name>`.
+    use agman::harness::{HarnessKind, LaunchContext, SessionKey};
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    std::env::set_var("AGMAN_CODEX_HOME", codex_home.path());
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        "{\"thread_name\":\"agman-ceo\",\"id\":\"x\"}\n",
+    )
+    .unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    // Pre-stamp launch-cwd to a real directory so the resume picks it up.
+    let stamped_cwd = tmp.path().join("worktree");
+    std::fs::create_dir_all(&stamped_cwd).unwrap();
+    std::fs::write(
+        state_dir.join("launch-cwd"),
+        stamped_cwd.to_string_lossy().as_ref(),
+    )
+    .unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-ceo",
+        tmp.path(), // freshly-resolved cwd, should be ignored in favour of stamped
+        HarnessKind::Codex,
+        false,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "resume");
+    assert!(!prep.is_first_launch);
+    assert_eq!(prep.handle.as_deref(), Some("agman-ceo"));
+    assert_eq!(prep.cwd, stamped_cwd);
+
+    let h = HarnessKind::Codex.select();
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-ceo",
+        cwd: &prep.cwd,
+        skip_git_repo_check: true,
+        no_alt_screen: true,
+        session_key: SessionKey::Resume("agman-ceo"),
+    });
+    assert!(cmd.contains(" resume 'agman-ceo'"));
+    assert!(cmd.contains(&format!(" -C '{}'", stamped_cwd.to_string_lossy())));
+    assert!(!cmd.contains("developer_instructions"));
+
+    std::env::remove_var("AGMAN_CODEX_HOME");
+}
+
+#[test]
+fn respawn_wipes_session_handles_then_fresh_launch_mints_new() {
+    // Pre-stamp <state_dir>/session-id and <state_dir>/launch-cwd. Run
+    // the respawn cleanup, assert both are gone, then run a fresh
+    // prepare and assert the next launch is FRESH (new uuid, no resume).
+    use agman::harness::HarnessKind;
+    use agman::use_cases::{prepare_long_lived_launch_for_test, wipe_long_lived_session_handles};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(state_dir.join("session-id"), "old-stale-uuid").unwrap();
+    std::fs::write(state_dir.join("launch-cwd"), "/old/path").unwrap();
+
+    wipe_long_lived_session_handles(&state_dir);
+    assert!(!state_dir.join("session-id").exists());
+    assert!(!state_dir.join("launch-cwd").exists());
+
+    // Idempotent on the second call (no panic when files are gone).
+    wipe_long_lived_session_handles(&state_dir);
+
+    // Subsequent prepare for claude must mint a fresh uuid (never
+    // reuses the stale one).
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-ceo",
+        tmp.path(),
+        HarnessKind::Claude,
+        false,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "pin");
+    assert!(prep.is_first_launch);
+    let new_uuid = prep.handle.unwrap();
+    assert_ne!(new_uuid, "old-stale-uuid");
+}
+
+#[test]
+fn long_lived_force_fresh_ignores_stamped_handle() {
+    // force_fresh = true (used by respawn_agent) skips the resume
+    // detection on both harnesses. Claude re-mints a UUID; codex falls
+    // back to Auto and re-stamps launch-cwd.
+    use agman::harness::HarnessKind;
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    // --- Claude path ---
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let stale_uuid = "stale-uuid-aaaa-bbbb-cccc-dddddddddddd";
+    std::fs::write(state_dir.join("session-id"), stale_uuid).unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-ceo",
+        tmp.path(),
+        HarnessKind::Claude,
+        true,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "pin");
+    assert!(prep.is_first_launch);
+    let new_uuid = prep.handle.expect("force_fresh must mint a new uuid");
+    assert_ne!(new_uuid, stale_uuid, "force_fresh must NOT reuse stale uuid");
+
+    // --- Codex path ---
+    let codex_home = tempfile::tempdir().unwrap();
+    std::env::set_var("AGMAN_CODEX_HOME", codex_home.path());
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        "{\"thread_name\":\"agman-ceo\",\"id\":\"x\"}\n",
+    )
+    .unwrap();
+    let codex_state = tmp.path().join("codex-ceo");
+    std::fs::create_dir_all(&codex_state).unwrap();
+    std::fs::write(codex_state.join("launch-cwd"), "/old/path").unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &codex_state,
+        "agman-ceo",
+        tmp.path(),
+        HarnessKind::Codex,
+        true,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "auto");
+    assert!(prep.is_first_launch);
+    let stamped = std::fs::read_to_string(codex_state.join("launch-cwd")).unwrap();
+    assert_eq!(stamped.trim(), tmp.path().to_string_lossy());
+
+    std::env::remove_var("AGMAN_CODEX_HOME");
+}

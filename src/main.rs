@@ -763,7 +763,7 @@ fn cmd_create_researcher(
         branch,
         task,
     )?;
-    use_cases::start_researcher_session(config, project, name)?;
+    use_cases::start_researcher_session(config, project, name, false)?;
     println!(
         "Researcher '{}' created for project '{}' (tmux: {})",
         researcher.meta.name,

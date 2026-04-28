@@ -93,12 +93,37 @@ pub fn read_or_stamp(state_dir: &Path, default_kind: HarnessKind) -> Result<Harn
     Ok(default_kind)
 }
 
+/// How the upcoming launch maps to a harness session id/name.
+///
+/// Task agents always use `Auto` (every flow step is a fresh session;
+/// agman never resumes them). Long-lived agents (CEO/PM/researcher) use
+/// `Pin` on first launch and `Resume` on subsequent launches.
+///
+/// The `'a` lifetime borrows the stamped session-id (claude) or
+/// deterministic name (codex) from the caller.
+#[derive(Debug, Clone, Copy)]
+pub enum SessionKey<'a> {
+    /// No resume, no pin. Claude generates its own UUID; codex auto-names
+    /// (and may be renamed post-launch via `/rename`).
+    Auto,
+    /// First launch of a long-lived agent. Claude pins the supplied UUID
+    /// via `--session-id <uuid>`. Codex has no launch-time pin and treats
+    /// this like `Auto` (the deterministic name is registered post-launch).
+    Pin(&'a str),
+    /// Resume an existing long-lived session. Claude resumes by UUID
+    /// (`--resume <uuid>`); codex resumes by deterministic name
+    /// (`codex resume <name>`).
+    Resume(&'a str),
+}
+
 /// Static input for `Harness::build_session_command`. Names follow the
 /// harness's resume / session-listing convention so the user can reattach
 /// manually from a shell (`claude --resume <name>` / `codex resume <name>`).
 pub struct LaunchContext<'a> {
     /// Inline system-prompt body. Passed to claude via `--system-prompt` and
-    /// to codex via `-c 'developer_instructions="""..."""'`.
+    /// to codex via `-c 'developer_instructions="""..."""'`. Skipped on
+    /// `SessionKey::Resume` for both harnesses (the resumed thread already
+    /// has its system prompt baked in).
     pub identity: &'a str,
     /// Stable, deterministic session name (e.g. `agman-ceo`,
     /// `agman-pm-<project>`, `agman-r-<project>--<name>`,
@@ -112,6 +137,9 @@ pub struct LaunchContext<'a> {
     /// pane content (needed by the inbox snippet-verification loop). Claude
     /// ignores.
     pub no_alt_screen: bool,
+    /// Whether this launch pins a fresh session, resumes a prior one, or
+    /// neither. See `SessionKey` for the per-variant behaviour.
+    pub session_key: SessionKey<'a>,
 }
 
 /// Static input for `Harness::register_session_name`. Used by codex's

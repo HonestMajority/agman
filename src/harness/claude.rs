@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::{Harness, HarnessKind, LaunchContext, RegisterContext};
+use super::{Harness, HarnessKind, LaunchContext, RegisterContext, SessionKey};
 use crate::tmux::Tmux;
 
 pub struct ClaudeHarness;
@@ -27,18 +27,41 @@ impl Harness for ClaudeHarness {
     }
 
     /// Build the launch command string. The system prompt is passed inline
-    /// (`--system-prompt '<body>'`) for ALL agent kinds — there is no
-    /// `--system-prompt-file` path.
+    /// (`--system-prompt '<body>'`) on fresh launches; resumed sessions
+    /// drop `--system-prompt` (the prompt is already baked into the saved
+    /// thread).
     ///
     /// `--name <name>` registers the deterministic session name so the user
     /// can reattach manually with `claude --resume <name>` from a shell.
+    /// On `SessionKey::Pin` the session is also pinned to a known UUID via
+    /// `--session-id <uuid>` so a later `--resume <uuid>` lands directly in
+    /// interactive mode (resuming by name opens a picker).
     fn build_session_command(&self, ctx: &LaunchContext) -> String {
-        let escaped_prompt = ctx.identity.replace('\'', "'\\''");
         let escaped_name = ctx.name.replace('\'', "'\\''");
-        format!(
-            "claude --dangerously-skip-permissions --name '{}' --system-prompt '{}'",
-            escaped_name, escaped_prompt
-        )
+
+        let mut cmd = String::from("claude --dangerously-skip-permissions");
+        cmd.push_str(&format!(" --name '{}'", escaped_name));
+
+        match ctx.session_key {
+            SessionKey::Auto => {
+                let escaped_prompt = ctx.identity.replace('\'', "'\\''");
+                cmd.push_str(&format!(" --system-prompt '{}'", escaped_prompt));
+            }
+            SessionKey::Pin(uuid) => {
+                let escaped_uuid = uuid.replace('\'', "'\\''");
+                let escaped_prompt = ctx.identity.replace('\'', "'\\''");
+                cmd.push_str(&format!(" --session-id '{}'", escaped_uuid));
+                cmd.push_str(&format!(" --system-prompt '{}'", escaped_prompt));
+            }
+            SessionKey::Resume(uuid) => {
+                let escaped_uuid = uuid.replace('\'', "'\\''");
+                // Resumed sessions keep their original prompt; do NOT pass
+                // --system-prompt (it would be ignored or worse, replace
+                // the saved one).
+                cmd.push_str(&format!(" --resume '{}'", escaped_uuid));
+            }
+        }
+        cmd
     }
 
     fn register_session_name(&self, _ctx: &RegisterContext) -> Result<()> {

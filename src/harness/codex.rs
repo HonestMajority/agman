@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::{Harness, HarnessKind, LaunchContext, RegisterContext};
+use super::{Harness, HarnessKind, LaunchContext, RegisterContext, SessionKey};
 
 pub struct CodexHarness;
 
@@ -27,6 +27,25 @@ impl Harness for CodexHarness {
     }
 
     fn build_session_command(&self, ctx: &LaunchContext) -> String {
+        // Resume short-circuits: `codex resume <name>` keeps the saved
+        // thread's developer_instructions, so we skip the `-c ...` arg.
+        // Pass the working directory via `-C <cwd>` so codex doesn't
+        // prompt a directory picker when launch cwd differs from saved.
+        if let SessionKey::Resume(name) = ctx.session_key {
+            let cwd_str = ctx.cwd.to_string_lossy().replace('\'', "'\\''");
+            let escaped_name = name.replace('\'', "'\\''");
+            let mut cmd = String::from("codex");
+            if ctx.no_alt_screen {
+                cmd.push_str(" --no-alt-screen");
+            }
+            cmd.push_str(&format!(" -C '{}'", cwd_str));
+            cmd.push_str(&format!(" resume '{}'", escaped_name));
+            return cmd;
+        }
+
+        // Auto and Pin: identical fresh-launch shape. Codex doesn't accept
+        // a launch-time session-id pin; the deterministic name is
+        // registered post-launch via `/rename`.
         // Codex consumes identity via TOML `developer_instructions`. Use
         // triple-quoted strings so newlines are preserved verbatim. Defensive
         // escape literal `"""` in the body.
@@ -266,9 +285,8 @@ pub(crate) fn poll_session_index_for(index_path: &Path, name: &str, timeout: Dur
 }
 
 /// Return true when a session_index.jsonl line declares the given `name`.
-/// Handles both flat (`{"name": "..."}`) and nested (`{"session": {"name":
-/// "..."}}`) shapes by walking JSON values for any `name` field whose value
-/// matches.
+/// Handles both flat and nested shapes by walking JSON values for any
+/// `thread_name` (codex's actual key) or `name` field whose value matches.
 fn line_names_match(line: &str, name: &str) -> bool {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
         return false;
@@ -279,9 +297,13 @@ fn line_names_match(line: &str, name: &str) -> bool {
 fn json_contains_name(v: &serde_json::Value, name: &str) -> bool {
     match v {
         serde_json::Value::Object(map) => {
-            if let Some(serde_json::Value::String(s)) = map.get("name") {
-                if s == name {
-                    return true;
+            // Codex writes `thread_name` in session_index.jsonl. Accept
+            // `name` too as a forward-compat fallback.
+            for key in ["thread_name", "name"] {
+                if let Some(serde_json::Value::String(s)) = map.get(key) {
+                    if s == name {
+                        return true;
+                    }
                 }
             }
             map.values().any(|child| json_contains_name(child, name))
@@ -289,6 +311,18 @@ fn json_contains_name(v: &serde_json::Value, name: &str) -> bool {
         serde_json::Value::Array(arr) => arr.iter().any(|child| json_contains_name(child, name)),
         _ => false,
     }
+}
+
+/// Check whether `~/.codex/session_index.jsonl` already contains a thread
+/// named `name`. Used to decide between a fresh codex launch and `codex
+/// resume <name>` for long-lived agents. Reuses the same walker as the
+/// post-`/rename` poll, so a fix to one benefits both paths.
+pub fn codex_has_session(harness_home: &Path, name: &str) -> bool {
+    let index_path = harness_home.join("session_index.jsonl");
+    let Ok(content) = std::fs::read_to_string(&index_path) else {
+        return false;
+    };
+    content.lines().any(|line| line_names_match(line, name))
 }
 
 /// Paste `text` into a tmux target as a single block followed by Enter,

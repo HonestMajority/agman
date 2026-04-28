@@ -37,7 +37,7 @@ use crate::agent::Agent;
 use crate::command::StoredCommand;
 use crate::config::Config;
 use crate::flow::{Flow, FlowStep, LoopStep, StopCondition};
-use crate::harness::{self, HarnessKind, LaunchContext, RegisterContext};
+use crate::harness::{self, HarnessKind, LaunchContext, RegisterContext, SessionKey};
 use crate::inbox;
 use crate::task::{QueueItem, SessionEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
@@ -334,6 +334,8 @@ pub fn start_agent_step(
         // standalone git checkout (multi-repo tasks use a parent dir).
         skip_git_repo_check: true,
         no_alt_screen: matches!(task.meta.harness, HarnessKind::Codex),
+        // Task agents are disposable: every step is a fresh session.
+        session_key: SessionKey::Auto,
     });
 
     // Re-arm the inbox cold-start buffer BEFORE launching the new agent.
@@ -1157,7 +1159,7 @@ mod tests {
     fn claude_session_command_emits_inline_system_prompt_and_name() {
         // Claude sessions launch with --system-prompt and --name. There is
         // no --system-prompt-file path and no programmatic --resume.
-        use crate::harness::{HarnessKind, LaunchContext};
+        use crate::harness::{HarnessKind, LaunchContext, SessionKey};
         let cwd = std::env::temp_dir();
         let h = HarnessKind::Claude.select();
         let cmd = h.build_session_command(&LaunchContext {
@@ -1166,6 +1168,7 @@ mod tests {
             cwd: &cwd,
             skip_git_repo_check: true,
             no_alt_screen: false,
+            session_key: SessionKey::Auto,
         });
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--system-prompt 'Identity body'"));
@@ -1176,7 +1179,7 @@ mod tests {
 
     #[test]
     fn codex_session_command_emits_developer_instructions_and_no_alt_screen() {
-        use crate::harness::{HarnessKind, LaunchContext};
+        use crate::harness::{HarnessKind, LaunchContext, SessionKey};
         let cwd = std::env::temp_dir();
         let h = HarnessKind::Codex.select();
         let cmd = h.build_session_command(&LaunchContext {
@@ -1185,6 +1188,7 @@ mod tests {
             cwd: &cwd,
             skip_git_repo_check: true,
             no_alt_screen: true,
+            session_key: SessionKey::Auto,
         });
         assert!(cmd.starts_with("codex"));
         assert!(cmd.contains("--skip-git-repo-check"));

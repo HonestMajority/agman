@@ -270,12 +270,32 @@ impl Config {
         self.chief_of_staff_dir().join("inbox.seq")
     }
 
+    /// Pinned claude session UUID for the Chief of Staff. Written on first
+    /// launch and re-read on subsequent launches so `--resume <uuid>` lands
+    /// the user directly back in the prior conversation.
+    pub fn chief_of_staff_session_id(&self) -> PathBuf {
+        self.chief_of_staff_dir().join("session-id")
+    }
+
     pub fn project_inbox(&self, name: &str) -> PathBuf {
         self.project_dir(name).join("inbox.jsonl")
     }
 
     pub fn project_seq(&self, name: &str) -> PathBuf {
         self.project_dir(name).join("inbox.seq")
+    }
+
+    /// Pinned claude session UUID for a project's PM agent.
+    pub fn project_session_id(&self, name: &str) -> PathBuf {
+        self.project_dir(name).join("session-id")
+    }
+
+    /// Stamped working directory for a long-lived codex session, captured
+    /// on first launch. Reused as `-C <cwd>` on resume so codex doesn't
+    /// pop a directory picker when the cwd doesn't match the saved
+    /// `session_meta.payload.cwd`.
+    pub fn launch_cwd_path(state_dir: &Path) -> PathBuf {
+        state_dir.join("launch-cwd")
     }
 
     pub fn chief_of_staff_tmux_session() -> &'static str {
@@ -331,6 +351,11 @@ impl Config {
 
     pub fn researcher_seq(&self, project: &str, name: &str) -> PathBuf {
         self.researcher_dir(project, name).join("inbox.seq")
+    }
+
+    /// Pinned claude session UUID for a researcher.
+    pub fn researcher_session_id(&self, project: &str, name: &str) -> PathBuf {
+        self.researcher_dir(project, name).join("session-id")
     }
 
     pub fn researcher_tmux_session(project: &str, name: &str) -> String {
