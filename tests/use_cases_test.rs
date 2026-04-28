@@ -3999,7 +3999,6 @@ fn long_lived_first_launch_claude_stamps_session_id() {
         identity: "Identity body",
         name: "agman-chief-of-staff",
         cwd: &prep.cwd,
-        skip_git_repo_check: true,
         no_alt_screen: false,
         session_key: SessionKey::Pin(&uuid),
     });
@@ -4072,7 +4071,6 @@ fn long_lived_resume_claude_emits_resume_flag() {
         identity: "Identity body",
         name: "agman-chief-of-staff",
         cwd: &prep.cwd,
-        skip_git_repo_check: true,
         no_alt_screen: false,
         session_key: SessionKey::Resume(pinned_uuid),
     });
@@ -4125,7 +4123,6 @@ fn long_lived_resume_codex_emits_resume_subcommand() {
         identity: "Identity body",
         name: "agman-chief-of-staff",
         cwd: &prep.cwd,
-        skip_git_repo_check: true,
         no_alt_screen: true,
         session_key: SessionKey::Resume("agman-chief-of-staff"),
     });

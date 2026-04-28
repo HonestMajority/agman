@@ -76,6 +76,16 @@ impl Harness for ClaudeHarness {
         Ok(())
     }
 
+    /// Pre-stamp workspace trust in `~/.claude.json` so the interactive
+    /// "trust this folder?" dialog does not block first launch in `cwd`.
+    ///
+    /// `~/.claude.json` is a root-level dot file (NOT inside `~/.claude/`).
+    /// Tests can bypass `dirs::home_dir()` via the
+    /// `harness::ensure_workspace_trusted_for_test` explicit-path seam.
+    fn ensure_workspace_trusted(&self, cwd: &Path) -> Result<()> {
+        ensure_workspace_trusted_in(&claude_trust_file_path(), cwd)
+    }
+
     fn kill_pane(&self, session: &str, window: Option<&str>) -> Result<()> {
         kill_pane_via_slash(session, window, "/exit", 2)
     }
@@ -221,4 +231,129 @@ fn wait_for_pane_idle(session: &str, window: Option<&str>, timeout: Duration) ->
         std::thread::sleep(Duration::from_millis(150));
     }
     false
+}
+
+/// Resolve the path to claude's per-user trust/state file (`~/.claude.json`,
+/// a root-level dot file — NOT inside `~/.claude/`). Tests bypass this via
+/// the explicit-path `ensure_workspace_trusted_in` overload.
+fn claude_trust_file_path() -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    home.join(".claude.json")
+}
+
+/// Ensure `projects["<cwd>"].hasTrustDialogAccepted == true` is present in
+/// the claude per-user JSON file at `trust_file` (typically
+/// `~/.claude.json`). Tests pass an explicit `TempDir`-backed path.
+///
+/// Behavior:
+/// - File doesn't exist → create one with just the trust entry.
+/// - File exists but has no `projects` key → add it.
+/// - `projects[<cwd>]` exists but is missing `hasTrustDialogAccepted` (or
+///   it's `false`) → set to `true`, leave all other sub-keys
+///   (`allowedTools`, `mcpServers`, etc.) untouched.
+/// - `projects[<cwd>].hasTrustDialogAccepted` already `true` → no-op
+///   (file untouched, mtime unchanged).
+///
+/// All other keys (root-level + other project entries) are preserved
+/// byte-for-byte across the read/write round-trip — `serde_json` re-emits
+/// the value tree, but only entries we don't touch ride through unchanged
+/// (within JSON's value-equivalence — formatting may differ).
+pub fn ensure_workspace_trusted_in(trust_file: &Path, cwd: &Path) -> Result<()> {
+    use anyhow::Context;
+
+    let cwd_str = cwd.to_string_lossy().to_string();
+
+    // Parse existing JSON or start from `{}`.
+    let mut root: serde_json::Value = if trust_file.exists() {
+        let text = std::fs::read_to_string(trust_file)
+            .with_context(|| format!("read claude trust file at {}", trust_file.display()))?;
+        if text.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&text).with_context(|| {
+                format!(
+                    "parse claude trust file at {} as JSON",
+                    trust_file.display()
+                )
+            })?
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    let obj = root.as_object_mut().ok_or_else(|| {
+        anyhow::anyhow!(
+            "claude trust file at {} is not a JSON object",
+            trust_file.display()
+        )
+    })?;
+
+    // Idempotent fast-path: peek before mutating so we can skip the write
+    // when the entry is already trusted (preserves mtime).
+    let already_trusted = obj
+        .get("projects")
+        .and_then(|p| p.as_object())
+        .and_then(|p| p.get(&cwd_str))
+        .and_then(|v| v.as_object())
+        .and_then(|t| t.get("hasTrustDialogAccepted"))
+        .and_then(|v| v.as_bool())
+        == Some(true);
+    if already_trusted {
+        return Ok(());
+    }
+
+    // Walk into projects.<cwd>.hasTrustDialogAccepted and set it.
+    if !obj.contains_key("projects") {
+        obj.insert("projects".to_string(), serde_json::json!({}));
+    }
+    let projects = obj
+        .get_mut("projects")
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "claude trust file at {} has non-object `projects`",
+                trust_file.display()
+            )
+        })?;
+
+    if !projects.contains_key(&cwd_str) {
+        projects.insert(cwd_str.clone(), serde_json::json!({}));
+    }
+    let project = projects
+        .get_mut(&cwd_str)
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "claude trust file at {} has non-object `projects[\"{}\"]`",
+                trust_file.display(),
+                cwd_str
+            )
+        })?;
+
+    project.insert(
+        "hasTrustDialogAccepted".to_string(),
+        serde_json::Value::Bool(true),
+    );
+
+    let serialized = serde_json::to_vec_pretty(&root)?;
+    write_atomically(trust_file, &serialized)
+}
+
+/// Write `bytes` to `dest` atomically: write to `<dest>.tmp`, fsync, rename.
+/// Creates `dest`'s parent directory if missing.
+fn write_atomically(dest: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut tmp_path = dest.as_os_str().to_owned();
+    tmp_path.push(".tmp");
+    let tmp_path = PathBuf::from(tmp_path);
+    {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp_path, dest)?;
+    Ok(())
 }

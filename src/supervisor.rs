@@ -325,14 +325,22 @@ pub fn start_agent_step(
     let name = format!("agman-task-{}-step-{}", task.meta.task_id(), step_n);
 
     let working_dir = step_working_dir(task)?;
+    // Pre-stamp workspace trust for the worktree so the harness's first-
+    // launch trust dialog doesn't block. Idempotent and cheap; failure is
+    // fatal because the dialog is unrecoverable.
+    harness
+        .ensure_workspace_trusted(&working_dir)
+        .with_context(|| {
+            format!(
+                "failed to pre-stamp workspace trust for task '{}' at {}",
+                task.meta.task_id(),
+                working_dir.display()
+            )
+        })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &identity,
         name: &name,
         cwd: &working_dir,
-        // Task agents always launch in a worktree; codex's repo guard would
-        // normally pass, but be permissive in case the worktree isn't a
-        // standalone git checkout (multi-repo tasks use a parent dir).
-        skip_git_repo_check: true,
         no_alt_screen: matches!(task.meta.harness, HarnessKind::Codex),
         // Task agents are disposable: every step is a fresh session.
         session_key: SessionKey::Auto,
@@ -1166,7 +1174,6 @@ mod tests {
             identity: "Identity body",
             name: "agman-task-myrepo--feat-x-step-1",
             cwd: &cwd,
-            skip_git_repo_check: true,
             no_alt_screen: false,
             session_key: SessionKey::Auto,
         });
@@ -1178,6 +1185,36 @@ mod tests {
     }
 
     #[test]
+    fn codex_build_session_command_does_not_emit_skip_git_repo_check() {
+        // Regression: codex 0.125.0 dropped `--skip-git-repo-check`. The
+        // launch command builder must NOT emit it on any session_key; doing
+        // so causes codex to exit immediately with `error: unexpected
+        // argument '--skip-git-repo-check' found`, the tmux pane drops to
+        // shell, and downstream `/rename` paste-injects run as shell
+        // commands.
+        use crate::harness::{HarnessKind, LaunchContext, SessionKey};
+        let cwd = std::env::temp_dir();
+        let h = HarnessKind::Codex.select();
+        for key in [
+            SessionKey::Auto,
+            SessionKey::Pin("agman-pin"),
+            SessionKey::Resume("agman-resume"),
+        ] {
+            let cmd = h.build_session_command(&LaunchContext {
+                identity: "Identity body",
+                name: "agman-task-myrepo--feat-x-step-1",
+                cwd: &cwd,
+                no_alt_screen: true,
+                session_key: key,
+            });
+            assert!(
+                !cmd.contains("--skip-git-repo-check"),
+                "codex 0.125.0 dropped this flag; got: {cmd}"
+            );
+        }
+    }
+
+    #[test]
     fn codex_session_command_emits_developer_instructions_and_no_alt_screen() {
         use crate::harness::{HarnessKind, LaunchContext, SessionKey};
         let cwd = std::env::temp_dir();
@@ -1186,12 +1223,14 @@ mod tests {
             identity: "Identity body",
             name: "agman-task-myrepo--feat-x-step-1",
             cwd: &cwd,
-            skip_git_repo_check: true,
             no_alt_screen: true,
             session_key: SessionKey::Auto,
         });
         assert!(cmd.starts_with("codex"));
-        assert!(cmd.contains("--skip-git-repo-check"));
+        assert!(
+            !cmd.contains("--skip-git-repo-check"),
+            "codex 0.125.0 dropped this flag: {cmd}"
+        );
         assert!(cmd.contains("--no-alt-screen"));
         assert!(cmd.contains("developer_instructions=\"\"\"Identity body\"\"\""));
         assert!(!cmd.contains("--resume"));

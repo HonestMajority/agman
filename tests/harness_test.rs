@@ -21,7 +21,6 @@ fn claude_build_session_command_emits_system_prompt_and_name() {
         identity: "Identity body",
         name: "agman-task-myrepo--feat-x-step-1",
         cwd: &cwd(),
-        skip_git_repo_check: true,
         no_alt_screen: false,
         session_key: SessionKey::Auto,
     });
@@ -41,7 +40,6 @@ fn claude_build_session_command_escapes_inner_single_quotes() {
         identity: "It's a body with 'quotes'",
         name: "agman-x",
         cwd: &cwd(),
-        skip_git_repo_check: true,
         no_alt_screen: false,
         session_key: SessionKey::Auto,
     });
@@ -60,7 +58,6 @@ fn claude_build_session_command_pins_session_id_when_provided() {
         identity: "Identity body",
         name: "agman-chief-of-staff",
         cwd: &cwd(),
-        skip_git_repo_check: true,
         no_alt_screen: false,
         session_key: SessionKey::Pin(uuid),
     });
@@ -80,7 +77,6 @@ fn claude_build_session_command_resumes_when_provided() {
         identity: "Identity body",
         name: "agman-chief-of-staff",
         cwd: &cwd(),
-        skip_git_repo_check: true,
         no_alt_screen: false,
         session_key: SessionKey::Resume(uuid),
     });
@@ -107,18 +103,49 @@ fn codex_build_session_command_emits_developer_instructions_and_no_alt_screen() 
         identity: "Identity body",
         name: "agman-task-myrepo--feat-x-step-1",
         cwd: &cwd(),
-        skip_git_repo_check: true,
         no_alt_screen: true,
         session_key: SessionKey::Auto,
     });
     assert!(cmd.starts_with("codex"));
-    assert!(cmd.contains("--skip-git-repo-check"));
+    assert!(
+        !cmd.contains("--skip-git-repo-check"),
+        "codex 0.125.0 dropped this flag: {cmd}"
+    );
     assert!(cmd.contains("--no-alt-screen"));
     assert!(cmd.contains("developer_instructions=\"\"\"Identity body\"\"\""));
     // Codex doesn't take --name; the name is registered post-launch via /rename.
     assert!(!cmd.contains("--name"));
     assert!(!cmd.contains("--resume"));
     assert!(!cmd.contains(" resume "));
+}
+
+#[test]
+fn codex_build_session_command_does_not_emit_skip_git_repo_check() {
+    // Regression: codex 0.125.0 dropped `--skip-git-repo-check`. Emitting
+    // it causes `error: unexpected argument '--skip-git-repo-check'` at
+    // launch, dropping the tmux pane to a shell prompt and breaking the
+    // downstream `/rename` paste-inject (which then runs as a shell command:
+    // `zsh: no such file or directory: /rename`). Verify the flag is absent
+    // for every session-key shape the codex builder emits.
+    let h = HarnessKind::Codex.select();
+    let work_dir = cwd();
+    for key in [
+        SessionKey::Auto,
+        SessionKey::Pin("agman-pin"),
+        SessionKey::Resume("agman-resume"),
+    ] {
+        let cmd = h.build_session_command(&LaunchContext {
+            identity: "Identity body",
+            name: "agman-task-myrepo--feat-x-step-1",
+            cwd: &work_dir,
+            no_alt_screen: true,
+            session_key: key,
+        });
+        assert!(
+            !cmd.contains("--skip-git-repo-check"),
+            "codex 0.125.0 dropped this flag; got: {cmd}"
+        );
+    }
 }
 
 #[test]
@@ -132,7 +159,6 @@ fn codex_build_session_command_emits_resume_subcommand() {
         identity: "Identity body",
         name: "agman-chief-of-staff",
         cwd: &work_dir,
-        skip_git_repo_check: true,
         no_alt_screen: true,
         session_key: SessionKey::Resume("agman-chief-of-staff"),
     });
@@ -159,7 +185,6 @@ fn codex_build_session_command_escapes_triple_quotes_in_body() {
         identity: "Pre \"\"\" mid",
         name: "x",
         cwd: &cwd(),
-        skip_git_repo_check: false,
         no_alt_screen: false,
         session_key: SessionKey::Auto,
     });
@@ -317,4 +342,311 @@ fn codex_register_session_name_polls_session_index() {
         "agman-other",
         std::time::Duration::from_millis(300)
     ));
+}
+
+// ---------------------------------------------------------------------------
+// `ensure_workspace_trusted` — claude (`~/.claude.json`) and codex
+// (`~/.codex/config.toml`).
+//
+// Tests use the explicit-path `ensure_workspace_trusted_for_test` seam so
+// no process-global env var is mutated, keeping them parallel-safe.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn claude_ensure_workspace_trusted_creates_entry() {
+    use agman::harness::{ensure_workspace_trusted_for_test, HarnessKind};
+
+    let claude_home = tempfile::tempdir().unwrap();
+    let trust_file = claude_home.path().join(".claude.json");
+    // File doesn't exist yet — helper must create it.
+    let cwd = tempfile::tempdir().unwrap();
+
+    ensure_workspace_trusted_for_test(HarnessKind::Claude, &trust_file, cwd.path()).unwrap();
+
+    let text = std::fs::read_to_string(&trust_file).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let cwd_str = cwd.path().to_string_lossy().to_string();
+    assert_eq!(
+        v.get("projects")
+            .and_then(|p| p.get(&cwd_str))
+            .and_then(|p| p.get("hasTrustDialogAccepted")),
+        Some(&serde_json::Value::Bool(true))
+    );
+}
+
+#[test]
+fn claude_ensure_workspace_trusted_preserves_other_keys() {
+    use agman::harness::{ensure_workspace_trusted_for_test, HarnessKind};
+
+    let claude_home = tempfile::tempdir().unwrap();
+    let trust_file = claude_home.path().join(".claude.json");
+
+    // Pre-populate with several unrelated keys.
+    let other_cwd = "/some/other/project";
+    let pre = serde_json::json!({
+        "anonymousId": "abc-123",
+        "editorMode": "vim",
+        "projects": {
+            other_cwd: {
+                "hasTrustDialogAccepted": true,
+                "allowedTools": ["Bash", "Read"],
+                "mcpServers": { "foo": { "command": "foo" } },
+                "lastCost": 1.23,
+            }
+        }
+    });
+    std::fs::write(&trust_file, serde_json::to_string_pretty(&pre).unwrap()).unwrap();
+
+    let cwd = tempfile::tempdir().unwrap();
+    ensure_workspace_trusted_for_test(HarnessKind::Claude, &trust_file, cwd.path()).unwrap();
+
+    let text = std::fs::read_to_string(&trust_file).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+    // Root-level keys preserved.
+    assert_eq!(v.get("anonymousId").and_then(|x| x.as_str()), Some("abc-123"));
+    assert_eq!(v.get("editorMode").and_then(|x| x.as_str()), Some("vim"));
+
+    // Other project entry preserved verbatim.
+    let other = v
+        .get("projects")
+        .and_then(|p| p.get(other_cwd))
+        .expect("other project preserved");
+    assert_eq!(
+        other.get("hasTrustDialogAccepted"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    assert_eq!(
+        other.get("allowedTools"),
+        Some(&serde_json::json!(["Bash", "Read"]))
+    );
+    assert_eq!(
+        other.get("mcpServers"),
+        Some(&serde_json::json!({ "foo": { "command": "foo" } }))
+    );
+    assert_eq!(other.get("lastCost").and_then(|x| x.as_f64()), Some(1.23));
+
+    // Our cwd added with hasTrustDialogAccepted=true.
+    let cwd_str = cwd.path().to_string_lossy().to_string();
+    let ours = v
+        .get("projects")
+        .and_then(|p| p.get(&cwd_str))
+        .expect("our cwd added");
+    assert_eq!(
+        ours.get("hasTrustDialogAccepted"),
+        Some(&serde_json::Value::Bool(true))
+    );
+}
+
+#[test]
+fn claude_ensure_workspace_trusted_idempotent() {
+    use agman::harness::{ensure_workspace_trusted_for_test, HarnessKind};
+
+    let claude_home = tempfile::tempdir().unwrap();
+    let trust_file = claude_home.path().join(".claude.json");
+    let cwd = tempfile::tempdir().unwrap();
+
+    ensure_workspace_trusted_for_test(HarnessKind::Claude, &trust_file, cwd.path()).unwrap();
+    let bytes_before = std::fs::read(&trust_file).unwrap();
+    let mtime_before = std::fs::metadata(&trust_file)
+        .and_then(|m| m.modified())
+        .unwrap();
+
+    // Sleep just enough that any rewrite would bump the mtime.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    ensure_workspace_trusted_for_test(HarnessKind::Claude, &trust_file, cwd.path()).unwrap();
+    let bytes_after = std::fs::read(&trust_file).unwrap();
+    let mtime_after = std::fs::metadata(&trust_file)
+        .and_then(|m| m.modified())
+        .unwrap();
+
+    assert_eq!(
+        bytes_before, bytes_after,
+        "second call must not rewrite the file"
+    );
+    assert_eq!(
+        mtime_before, mtime_after,
+        "second call must not bump mtime"
+    );
+}
+
+#[test]
+fn claude_ensure_workspace_trusted_upgrades_false_to_true() {
+    use agman::harness::{ensure_workspace_trusted_for_test, HarnessKind};
+
+    let claude_home = tempfile::tempdir().unwrap();
+    let trust_file = claude_home.path().join(".claude.json");
+    let cwd = tempfile::tempdir().unwrap();
+    let cwd_str = cwd.path().to_string_lossy().to_string();
+
+    let pre = serde_json::json!({
+        "projects": {
+            &cwd_str: {
+                "hasTrustDialogAccepted": false,
+                "allowedTools": ["Bash"]
+            }
+        }
+    });
+    std::fs::write(&trust_file, serde_json::to_string_pretty(&pre).unwrap()).unwrap();
+
+    ensure_workspace_trusted_for_test(HarnessKind::Claude, &trust_file, cwd.path()).unwrap();
+
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&trust_file).unwrap()).unwrap();
+    let project = v
+        .get("projects")
+        .and_then(|p| p.get(&cwd_str))
+        .expect("project entry preserved");
+    assert_eq!(
+        project.get("hasTrustDialogAccepted"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    // Other sub-keys preserved untouched.
+    assert_eq!(
+        project.get("allowedTools"),
+        Some(&serde_json::json!(["Bash"]))
+    );
+}
+
+#[test]
+fn codex_ensure_workspace_trusted_creates_entry() {
+    use agman::harness::{ensure_workspace_trusted_for_test, HarnessKind};
+
+    let codex_home = tempfile::tempdir().unwrap();
+    let trust_file = codex_home.path().join("config.toml");
+    let cwd = tempfile::tempdir().unwrap();
+
+    ensure_workspace_trusted_for_test(HarnessKind::Codex, &trust_file, cwd.path()).unwrap();
+
+    let text = std::fs::read_to_string(&trust_file).unwrap();
+    let v: toml::Value = toml::from_str(&text).unwrap();
+    let cwd_str = cwd.path().to_string_lossy().to_string();
+    let trust_level = v
+        .get("projects")
+        .and_then(|p| p.as_table())
+        .and_then(|p| p.get(&cwd_str))
+        .and_then(|p| p.get("trust_level"))
+        .and_then(|s| s.as_str());
+    assert_eq!(trust_level, Some("trusted"));
+}
+
+#[test]
+fn codex_ensure_workspace_trusted_preserves_other_keys() {
+    use agman::harness::{ensure_workspace_trusted_for_test, HarnessKind};
+
+    let codex_home = tempfile::tempdir().unwrap();
+    let trust_file = codex_home.path().join("config.toml");
+
+    let pre = r#"
+model = "gpt-5"
+sandbox_mode = "workspace-write"
+
+[projects."/some/other/project"]
+trust_level = "trusted"
+
+[projects."/yet/another"]
+trust_level = "untrusted"
+"#;
+    std::fs::write(&trust_file, pre).unwrap();
+
+    let cwd = tempfile::tempdir().unwrap();
+    ensure_workspace_trusted_for_test(HarnessKind::Codex, &trust_file, cwd.path()).unwrap();
+
+    let v: toml::Value = toml::from_str(&std::fs::read_to_string(&trust_file).unwrap()).unwrap();
+
+    // Root-level keys preserved.
+    assert_eq!(v.get("model").and_then(|x| x.as_str()), Some("gpt-5"));
+    assert_eq!(
+        v.get("sandbox_mode").and_then(|x| x.as_str()),
+        Some("workspace-write")
+    );
+
+    // Other project tables preserved verbatim.
+    let projects = v.get("projects").and_then(|p| p.as_table()).unwrap();
+    assert_eq!(
+        projects
+            .get("/some/other/project")
+            .and_then(|p| p.get("trust_level"))
+            .and_then(|s| s.as_str()),
+        Some("trusted")
+    );
+    assert_eq!(
+        projects
+            .get("/yet/another")
+            .and_then(|p| p.get("trust_level"))
+            .and_then(|s| s.as_str()),
+        Some("untrusted"),
+        "untrusted entry for an unrelated cwd must not be touched"
+    );
+
+    // Our cwd added with trust_level=trusted.
+    let cwd_str = cwd.path().to_string_lossy().to_string();
+    assert_eq!(
+        projects
+            .get(&cwd_str)
+            .and_then(|p| p.get("trust_level"))
+            .and_then(|s| s.as_str()),
+        Some("trusted")
+    );
+}
+
+#[test]
+fn codex_ensure_workspace_trusted_idempotent() {
+    use agman::harness::{ensure_workspace_trusted_for_test, HarnessKind};
+
+    let codex_home = tempfile::tempdir().unwrap();
+    let trust_file = codex_home.path().join("config.toml");
+    let cwd = tempfile::tempdir().unwrap();
+
+    ensure_workspace_trusted_for_test(HarnessKind::Codex, &trust_file, cwd.path()).unwrap();
+    let bytes_before = std::fs::read(&trust_file).unwrap();
+    let mtime_before = std::fs::metadata(&trust_file)
+        .and_then(|m| m.modified())
+        .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    ensure_workspace_trusted_for_test(HarnessKind::Codex, &trust_file, cwd.path()).unwrap();
+    let bytes_after = std::fs::read(&trust_file).unwrap();
+    let mtime_after = std::fs::metadata(&trust_file)
+        .and_then(|m| m.modified())
+        .unwrap();
+
+    assert_eq!(
+        bytes_before, bytes_after,
+        "second call must not rewrite the file"
+    );
+    assert_eq!(
+        mtime_before, mtime_after,
+        "second call must not bump mtime"
+    );
+}
+
+#[test]
+fn codex_ensure_workspace_trusted_upgrades_untrusted_to_trusted() {
+    use agman::harness::{ensure_workspace_trusted_for_test, HarnessKind};
+
+    let codex_home = tempfile::tempdir().unwrap();
+    let trust_file = codex_home.path().join("config.toml");
+    let cwd = tempfile::tempdir().unwrap();
+    let cwd_str = cwd.path().to_string_lossy().to_string();
+
+    let pre = format!(
+        "[projects.\"{}\"]\ntrust_level = \"untrusted\"\n",
+        cwd_str
+    );
+    std::fs::write(&trust_file, pre).unwrap();
+
+    ensure_workspace_trusted_for_test(HarnessKind::Codex, &trust_file, cwd.path()).unwrap();
+
+    let v: toml::Value = toml::from_str(&std::fs::read_to_string(&trust_file).unwrap()).unwrap();
+    let trust_level = v
+        .get("projects")
+        .and_then(|p| p.get(&cwd_str))
+        .and_then(|p| p.get("trust_level"))
+        .and_then(|s| s.as_str());
+    assert_eq!(
+        trust_level,
+        Some("trusted"),
+        "untrusted should be upgraded to trusted on launch"
+    );
 }
