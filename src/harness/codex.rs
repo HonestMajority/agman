@@ -36,6 +36,11 @@ impl Harness for CodexHarness {
             let cwd_str = ctx.cwd.to_string_lossy().replace('\'', "'\\''");
             let escaped_name = name.replace('\'', "'\\''");
             let mut cmd = String::from("codex");
+            // Always run codex with full approval+sandbox bypass. Mirrors
+            // claude's `--dangerously-skip-permissions`. Without this, codex
+            // prompts before privileged-feeling shell commands (`git add`,
+            // etc.), which deadlocks autonomous agman flows.
+            cmd.push_str(" --dangerously-bypass-approvals-and-sandbox");
             if ctx.no_alt_screen {
                 cmd.push_str(" --no-alt-screen");
             }
@@ -59,6 +64,11 @@ impl Harness for CodexHarness {
         let dev_arg_escaped = dev_instructions.replace('\'', "'\\''");
 
         let mut cmd = String::from("codex");
+        // Always run codex with full approval+sandbox bypass. Mirrors
+        // claude's `--dangerously-skip-permissions`. Without this, codex
+        // prompts before privileged-feeling shell commands (`git add`, etc.),
+        // which deadlocks autonomous agman flows.
+        cmd.push_str(" --dangerously-bypass-approvals-and-sandbox");
         if ctx.no_alt_screen {
             cmd.push_str(" --no-alt-screen");
         }
