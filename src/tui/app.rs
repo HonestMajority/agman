@@ -5635,7 +5635,7 @@ impl App {
                             let ready_since = *first_ready_at
                                 .entry(target.clone())
                                 .or_insert_with(Instant::now);
-                            if ready_since.elapsed() < Duration::from_secs(3) {
+                            if ready_since.elapsed() < Duration::from_secs(5) {
                                 results.push(InboxPollResult {
                                     target,
                                     delivered: 0,
