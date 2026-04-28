@@ -30,6 +30,18 @@ pub fn poll_session_index_for_test(
     codex::poll_session_index_for(index_path, name, timeout)
 }
 
+/// Test-only entrypoint that resolves the most-recently-modified transcript
+/// for `cwd` under an explicit `home` directory. Avoids the env-var-based
+/// dispatch that backs the trait method, so concurrent tests can each point
+/// at their own `TempDir` without serializing on a process-global env var.
+#[doc(hidden)]
+pub fn latest_transcript_for_test(kind: HarnessKind, home: &Path, cwd: &Path) -> Option<PathBuf> {
+    match kind {
+        HarnessKind::Claude => claude::latest_transcript_in(home, cwd),
+        HarnessKind::Codex => codex::latest_transcript_in(home, cwd),
+    }
+}
+
 /// Identifies which harness to use. Persisted in config + per-agent stamps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

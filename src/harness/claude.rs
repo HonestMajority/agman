@@ -75,28 +75,7 @@ impl Harness for ClaudeHarness {
     }
 
     fn latest_transcript(&self, cwd: &Path) -> Option<PathBuf> {
-        let projects_dir = super::harness_home(HarnessKind::Claude).join("projects");
-        let escaped_cwd = cwd.to_string_lossy().replace('/', "-");
-        let agent_dir = projects_dir.join(escaped_cwd);
-        if !agent_dir.exists() {
-            return None;
-        }
-        let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
-        for entry in std::fs::read_dir(&agent_dir).ok()?.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let mtime = match entry.metadata().and_then(|m| m.modified()) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            match &newest {
-                Some((_, prev)) if *prev >= mtime => {}
-                _ => newest = Some((path, mtime)),
-            }
-        }
-        newest.map(|(p, _)| p)
+        latest_transcript_in(&super::harness_home(HarnessKind::Claude), cwd)
     }
 
     fn find_last_assistant_marker(&self, transcript: &Path) -> Option<String> {
@@ -115,6 +94,35 @@ impl Harness for ClaudeHarness {
         }
         last_uuid
     }
+}
+
+/// Resolve claude's most-recently-modified transcript for `cwd` under an
+/// explicit `home` directory. Production goes through the trait method which
+/// reads `home` from `harness_home(Claude)` (env-var-aware). Tests call this
+/// directly with a `TempDir` to avoid mutating process-global env vars.
+pub fn latest_transcript_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
+    let projects_dir = home.join("projects");
+    let escaped_cwd = cwd.to_string_lossy().replace('/', "-");
+    let agent_dir = projects_dir.join(escaped_cwd);
+    if !agent_dir.exists() {
+        return None;
+    }
+    let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+    for entry in std::fs::read_dir(&agent_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let mtime = match entry.metadata().and_then(|m| m.modified()) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        match &newest {
+            Some((_, prev)) if *prev >= mtime => {}
+            _ => newest = Some((path, mtime)),
+        }
+    }
+    newest.map(|(p, _)| p)
 }
 
 /// Kill ladder shared by both harnesses: send a slash command, wait for the

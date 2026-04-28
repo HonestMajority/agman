@@ -119,69 +119,7 @@ impl Harness for CodexHarness {
     /// for performance) and return the most-recently-modified file whose
     /// first line declares a matching `cwd`.
     fn latest_transcript(&self, cwd: &Path) -> Option<PathBuf> {
-        let sessions_root = super::harness_home(HarnessKind::Codex).join("sessions");
-        if !sessions_root.exists() {
-            return None;
-        }
-        let cwd_canonical = std::fs::canonicalize(cwd)
-            .ok()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| cwd.to_string_lossy().to_string());
-
-        // Collect candidate rollout files from at most the last 7 day-buckets.
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        for year_entry in std::fs::read_dir(&sessions_root).ok()?.flatten() {
-            let year_path = year_entry.path();
-            if !year_path.is_dir() {
-                continue;
-            }
-            for month_entry in std::fs::read_dir(&year_path).ok().into_iter().flatten().flatten() {
-                let month_path = month_entry.path();
-                if !month_path.is_dir() {
-                    continue;
-                }
-                for day_entry in std::fs::read_dir(&month_path).ok().into_iter().flatten().flatten() {
-                    let day_path = day_entry.path();
-                    if !day_path.is_dir() {
-                        continue;
-                    }
-                    for file_entry in std::fs::read_dir(&day_path).ok().into_iter().flatten().flatten() {
-                        let p = file_entry.path();
-                        if p.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                            candidates.push(p);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Sort newest-first by mtime and short-circuit on cwd match.
-        candidates.sort_by_key(|p| {
-            std::fs::metadata(p)
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-        });
-        candidates.reverse();
-
-        // Cap to a reasonable horizon to avoid scanning huge histories.
-        let now = std::time::SystemTime::now();
-        let max_age = Duration::from_secs(7 * 24 * 60 * 60);
-
-        for path in candidates {
-            if let Ok(meta) = std::fs::metadata(&path) {
-                if let Ok(mtime) = meta.modified() {
-                    if let Ok(age) = now.duration_since(mtime) {
-                        if age > max_age {
-                            continue;
-                        }
-                    }
-                }
-            }
-            if rollout_cwd_matches(&path, &cwd_canonical, cwd) {
-                return Some(path);
-            }
-        }
-        None
+        latest_transcript_in(&super::harness_home(HarnessKind::Codex), cwd)
     }
 
     /// Last `event_msg` with `type=agent_message` — return its `timestamp`
@@ -226,6 +164,76 @@ impl Harness for CodexHarness {
         }
         last
     }
+}
+
+/// Resolve codex's most-recently-modified rollout for `cwd` under an explicit
+/// `home` directory. Production goes through the trait method which reads
+/// `home` from `harness_home(Codex)` (env-var-aware). Tests call this directly
+/// with a `TempDir` to avoid mutating process-global env vars.
+pub fn latest_transcript_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
+    let sessions_root = home.join("sessions");
+    if !sessions_root.exists() {
+        return None;
+    }
+    let cwd_canonical = std::fs::canonicalize(cwd)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| cwd.to_string_lossy().to_string());
+
+    // Collect candidate rollout files from at most the last 7 day-buckets.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for year_entry in std::fs::read_dir(&sessions_root).ok()?.flatten() {
+        let year_path = year_entry.path();
+        if !year_path.is_dir() {
+            continue;
+        }
+        for month_entry in std::fs::read_dir(&year_path).ok().into_iter().flatten().flatten() {
+            let month_path = month_entry.path();
+            if !month_path.is_dir() {
+                continue;
+            }
+            for day_entry in std::fs::read_dir(&month_path).ok().into_iter().flatten().flatten() {
+                let day_path = day_entry.path();
+                if !day_path.is_dir() {
+                    continue;
+                }
+                for file_entry in std::fs::read_dir(&day_path).ok().into_iter().flatten().flatten() {
+                    let p = file_entry.path();
+                    if p.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                        candidates.push(p);
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort newest-first by mtime and short-circuit on cwd match.
+    candidates.sort_by_key(|p| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    });
+    candidates.reverse();
+
+    // Cap to a reasonable horizon to avoid scanning huge histories.
+    let now = std::time::SystemTime::now();
+    let max_age = Duration::from_secs(7 * 24 * 60 * 60);
+
+    for path in candidates {
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if let Ok(mtime) = meta.modified() {
+                if let Ok(age) = now.duration_since(mtime) {
+                    if age > max_age {
+                        continue;
+                    }
+                }
+            }
+        }
+        if rollout_cwd_matches(&path, &cwd_canonical, cwd) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Read the first line of a rollout file and decide whether its declared

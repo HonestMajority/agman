@@ -192,8 +192,11 @@ fn cli_binaries_match_kinds() {
 
 #[test]
 fn claude_latest_transcript_picks_newest_jsonl_for_cwd() {
+    use agman::harness;
+
+    // Per-test claude home tempdir threaded explicitly through the test
+    // seam — no env-var mutation, so this stays parallel-safe.
     let claude_home = tempfile::tempdir().unwrap();
-    std::env::set_var("AGMAN_CLAUDE_HOME", claude_home.path());
 
     let cwd = tempfile::tempdir().unwrap();
     let escaped = cwd.path().to_string_lossy().replace('/', "-");
@@ -206,11 +209,10 @@ fn claude_latest_transcript_picks_newest_jsonl_for_cwd() {
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(&newer, "{}\n").unwrap();
 
-    let h = HarnessKind::Claude.select();
-    let pick = h.latest_transcript(cwd.path()).unwrap();
+    let pick =
+        harness::latest_transcript_for_test(HarnessKind::Claude, claude_home.path(), cwd.path())
+            .unwrap();
     assert_eq!(pick, newer);
-
-    std::env::remove_var("AGMAN_CLAUDE_HOME");
 }
 
 #[test]

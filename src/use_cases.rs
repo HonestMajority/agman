@@ -2626,8 +2626,11 @@ pub struct LongLivedLaunchForTest {
     pub is_first_launch: bool,
 }
 
-/// Test-only entrypoint mirroring `prepare_long_lived_launch`. See
-/// `LongLivedLaunchForTest`.
+/// Test-only entrypoint mirroring `prepare_long_lived_launch`, with an
+/// explicit `codex_home_override` so tests don't have to mutate the global
+/// `AGMAN_CODEX_HOME` env var (which collides under default `cargo test`
+/// parallelism). Pass `None` to use the env-var-resolved default.
+/// See `LongLivedLaunchForTest`.
 #[doc(hidden)]
 pub fn prepare_long_lived_launch_for_test(
     state_dir: &Path,
@@ -2635,8 +2638,16 @@ pub fn prepare_long_lived_launch_for_test(
     cwd: &Path,
     kind: HarnessKind,
     force_fresh: bool,
+    codex_home_override: Option<&Path>,
 ) -> Result<LongLivedLaunchForTest> {
-    let prep = prepare_long_lived_launch(state_dir, base_name, cwd, kind, force_fresh)?;
+    let prep = prepare_long_lived_launch_inner(
+        state_dir,
+        base_name,
+        cwd,
+        kind,
+        force_fresh,
+        codex_home_override,
+    )?;
     let mode = match prep.mode {
         LaunchMode::Auto => "auto",
         LaunchMode::Pin => "pin",
@@ -2708,6 +2719,22 @@ fn prepare_long_lived_launch(
     kind: HarnessKind,
     force_fresh: bool,
 ) -> Result<LongLivedLaunch> {
+    prepare_long_lived_launch_inner(state_dir, base_name, cwd, kind, force_fresh, None)
+}
+
+/// Inner implementation shared by production callers and the test seam. The
+/// `codex_home_override` parameter lets tests inject a `TempDir` for the
+/// codex home directory without touching the process-global `AGMAN_CODEX_HOME`
+/// env var. Production passes `None` and resolves the path via
+/// `harness::harness_home(Codex)` exactly as before.
+fn prepare_long_lived_launch_inner(
+    state_dir: &Path,
+    base_name: &str,
+    cwd: &Path,
+    kind: HarnessKind,
+    force_fresh: bool,
+    codex_home_override: Option<&Path>,
+) -> Result<LongLivedLaunch> {
     std::fs::create_dir_all(state_dir).context("failed to create agent state dir")?;
 
     match kind {
@@ -2739,8 +2766,10 @@ fn prepare_long_lived_launch(
         }
         HarnessKind::Codex => {
             let cwd_path = Config::launch_cwd_path(state_dir);
-            let harness_home = harness::harness_home(HarnessKind::Codex);
-            let has_session = !force_fresh && codex::codex_has_session(&harness_home, base_name);
+            let resolved_home: PathBuf = codex_home_override
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| harness::harness_home(HarnessKind::Codex));
+            let has_session = !force_fresh && codex::codex_has_session(&resolved_home, base_name);
 
             if has_session {
                 // Prefer the stamped launch-cwd if it still exists;
@@ -3480,6 +3509,18 @@ fn check_agent_unread(
     let Some(transcript) = harness.latest_transcript(cwd) else {
         return false;
     };
+    check_agent_unread_with_transcript(harness, last_viewed, agent_key, transcript)
+}
+
+/// Test-friendly variant of `check_agent_unread` that takes the resolved
+/// transcript path directly, bypassing the env-var-aware
+/// `harness.latest_transcript()` lookup.
+fn check_agent_unread_with_transcript(
+    harness: &dyn crate::harness::Harness,
+    last_viewed: &ChatLastViewed,
+    agent_key: &str,
+    transcript: PathBuf,
+) -> bool {
     let Some(marker) = harness.find_last_assistant_marker(&transcript) else {
         return false;
     };
@@ -3496,6 +3537,26 @@ fn check_agent_unread(
 /// Collect names of agents with unread assistant messages
 /// (Chief of Staff + all projects).
 pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
+    count_unread_chat_messages_inner(config, None, None)
+}
+
+/// Test-only variant that accepts explicit harness home overrides so tests
+/// can isolate transcript lookups to a `TempDir` without touching the
+/// process-global `AGMAN_CLAUDE_HOME` / `AGMAN_CODEX_HOME` env vars.
+#[doc(hidden)]
+pub fn count_unread_chat_messages_for_test(
+    config: &Config,
+    claude_home: Option<&Path>,
+    codex_home: Option<&Path>,
+) -> ChatPollResult {
+    count_unread_chat_messages_inner(config, claude_home, codex_home)
+}
+
+fn count_unread_chat_messages_inner(
+    config: &Config,
+    claude_home_override: Option<&Path>,
+    codex_home_override: Option<&Path>,
+) -> ChatPollResult {
     let last_viewed = ChatLastViewed::load(&config.chat_last_viewed_path());
     let mut unread_names: Vec<String> = Vec::new();
 
@@ -3504,7 +3565,15 @@ pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
     if cos_dir.exists() {
         let kind = agent_harness_kind(config, &cos_dir);
         let harness = kind.select();
-        if check_agent_unread(harness.as_ref(), &last_viewed, "chief-of-staff", &cos_dir) {
+        if agent_unread_with_overrides(
+            harness.as_ref(),
+            kind,
+            &last_viewed,
+            "chief-of-staff",
+            &cos_dir,
+            claude_home_override,
+            codex_home_override,
+        ) {
             unread_names.push("CoS".to_string());
         }
     }
@@ -3523,7 +3592,15 @@ pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
             let kind = agent_harness_kind(config, &cwd);
             let harness = kind.select();
             let agent_key = format!("project:{project_name}");
-            if check_agent_unread(harness.as_ref(), &last_viewed, &agent_key, &cwd) {
+            if agent_unread_with_overrides(
+                harness.as_ref(),
+                kind,
+                &last_viewed,
+                &agent_key,
+                &cwd,
+                claude_home_override,
+                codex_home_override,
+            ) {
                 unread_names.push(project_name);
             }
         }
@@ -3533,10 +3610,58 @@ pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
     ChatPollResult { unread_names }
 }
 
+/// Resolve unread state for a single agent, optionally overriding the
+/// harness home directory. Production callers pass `None`/`None` and fall
+/// back to the env-var-aware trait method; tests pass an explicit `TempDir`.
+fn agent_unread_with_overrides(
+    harness: &dyn crate::harness::Harness,
+    kind: HarnessKind,
+    last_viewed: &ChatLastViewed,
+    agent_key: &str,
+    cwd: &Path,
+    claude_home_override: Option<&Path>,
+    codex_home_override: Option<&Path>,
+) -> bool {
+    let override_home = match kind {
+        HarnessKind::Claude => claude_home_override,
+        HarnessKind::Codex => codex_home_override,
+    };
+    match override_home {
+        Some(home) => {
+            let Some(transcript) = harness::latest_transcript_for_test(kind, home, cwd) else {
+                return false;
+            };
+            check_agent_unread_with_transcript(harness, last_viewed, agent_key, transcript)
+        }
+        None => check_agent_unread(harness, last_viewed, agent_key, cwd),
+    }
+}
+
 /// Mark a chat agent as viewed by recording the current transcript path
 /// and last-assistant marker keyed by `agent_key` (`"ceo"` or
 /// `"project:<name>"`).
 pub fn mark_chat_viewed(config: &Config, agent_key: &str) -> Result<()> {
+    mark_chat_viewed_inner(config, agent_key, None, None)
+}
+
+/// Test-only variant that accepts explicit harness home overrides. See
+/// `count_unread_chat_messages_for_test` for the rationale.
+#[doc(hidden)]
+pub fn mark_chat_viewed_for_test(
+    config: &Config,
+    agent_key: &str,
+    claude_home: Option<&Path>,
+    codex_home: Option<&Path>,
+) -> Result<()> {
+    mark_chat_viewed_inner(config, agent_key, claude_home, codex_home)
+}
+
+fn mark_chat_viewed_inner(
+    config: &Config,
+    agent_key: &str,
+    claude_home_override: Option<&Path>,
+    codex_home_override: Option<&Path>,
+) -> Result<()> {
     let cwd = if agent_key == "chief-of-staff" {
         config.chief_of_staff_dir()
     } else if let Some(name) = agent_key.strip_prefix("project:") {
@@ -3551,7 +3676,15 @@ pub fn mark_chat_viewed(config: &Config, agent_key: &str) -> Result<()> {
     let kind = agent_harness_kind(config, &cwd);
     let harness = kind.select();
 
-    let transcript = match harness.latest_transcript(&cwd) {
+    let override_home = match kind {
+        HarnessKind::Claude => claude_home_override,
+        HarnessKind::Codex => codex_home_override,
+    };
+    let transcript = match override_home {
+        Some(home) => harness::latest_transcript_for_test(kind, home, &cwd),
+        None => harness.latest_transcript(&cwd),
+    };
+    let transcript = match transcript {
         Some(t) => t,
         None => return Ok(()),
     };
