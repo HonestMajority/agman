@@ -36,6 +36,16 @@ use super::vim::{VimMode, VimTextArea};
 pub const BREAK_WARNING_SECS: u64 = 5 * 60;
 pub const BREAK_PERSIST_MAX_AGE: Duration = Duration::from_secs(2 * 60 * 60);
 
+/// Telegram watchdog: how often the main loop checks the bot heartbeat.
+const TELEGRAM_WATCHDOG_INTERVAL: Duration = Duration::from_secs(5);
+/// Telegram watchdog: heartbeat age past which the bot thread is considered
+/// stalled and gets respawned. The bot writes its heartbeat once per poll
+/// cycle (~1s), so 60s means ~60 missed cycles.
+const TELEGRAM_STALL_THRESHOLD_SECS: u64 = 60;
+/// Telegram watchdog: cooldown after a respawn before another can fire.
+/// Gives the new thread time to warm up and write its first heartbeat.
+const TELEGRAM_RESPAWN_COOLDOWN: Duration = Duration::from_secs(90);
+
 /// Open a URL in the default browser, cross-platform (macOS / Linux).
 fn open_url(url: &str) {
     let cmd = if cfg!(target_os = "macos") {
@@ -770,6 +780,10 @@ pub struct App {
     // a heartbeat atomic the TUI reads to render a health indicator, and the
     // join handle (held only for potential future clean shutdown).
     pub telegram: Option<agman::telegram::TelegramHandle>,
+    /// Throttle for the telegram-bot watchdog heartbeat check.
+    last_telegram_watchdog: Instant,
+    /// Most recent watchdog-driven respawn, used for the cooldown guard.
+    last_telegram_respawn_at: Option<Instant>,
     // Sleep inhibition (macOS: caffeinate -s for system sleep assertion only)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
@@ -974,6 +988,8 @@ impl App {
             respawn_confirm_is_ceo: false,
             respawn_confirm_return_view: View::ProjectList,
             telegram,
+            last_telegram_watchdog: Instant::now(),
+            last_telegram_respawn_at: None,
             #[cfg(target_os = "macos")]
             caffeinate_process: std::process::Command::new("caffeinate")
                 .arg("-s")
@@ -1023,6 +1039,43 @@ impl App {
         let mut editor = TextArea::default();
         editor.set_cursor_line_style(ratatui::style::Style::default());
         editor
+    }
+
+    /// Check the Telegram bot heartbeat and respawn the thread if it has
+    /// stalled. The bot bumps its `heartbeat` atomic (epoch seconds) once
+    /// per poll cycle; a stale value means the thread is parked in a
+    /// syscall `catch_unwind` can't recover from (e.g. macOS `getaddrinfo`
+    /// with no timeout) and only a respawn will unblock the bridge.
+    ///
+    /// The stuck thread leaks — `cancel` is set inside `restart_telegram_bot`
+    /// but the syscall blocks indefinitely. One leaked thread per stall
+    /// episode is the accepted cost.
+    fn check_telegram_watchdog(&mut self) {
+        let Some(ref handle) = self.telegram else {
+            return;
+        };
+        if self
+            .last_telegram_respawn_at
+            .is_some_and(|at| at.elapsed() < TELEGRAM_RESPAWN_COOLDOWN)
+        {
+            return;
+        }
+        let last_beat = handle.heartbeat.load(Ordering::Relaxed);
+        if last_beat == 0 {
+            // No cycle has completed yet — give the bot a chance to start.
+            return;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let age_secs = now.saturating_sub(last_beat);
+        if age_secs <= TELEGRAM_STALL_THRESHOLD_SECS {
+            return;
+        }
+        tracing::warn!(age_secs, "telegram bot stalled, respawning");
+        self.restart_telegram_bot();
+        self.last_telegram_respawn_at = Some(Instant::now());
     }
 
     fn restart_telegram_bot(&mut self) {
@@ -6616,6 +6669,11 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed respawn results (non-blocking)
             app.apply_respawn_results();
+
+            if app.last_telegram_watchdog.elapsed() >= TELEGRAM_WATCHDOG_INTERVAL {
+                app.check_telegram_watchdog();
+                app.last_telegram_watchdog = Instant::now();
+            }
 
             // Check for restart signal (written by release.sh or `agman restart`)
             #[cfg(unix)]

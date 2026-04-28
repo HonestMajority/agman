@@ -138,8 +138,10 @@ pub struct TelegramHandle {
 /// for a doomed thread. The thread:
 /// - Catches per-iteration panics (`drain_outbox` / `poll_updates`), logs them,
 ///   sleeps 5s, and continues.
-/// - Catches setup panics (e.g. during `BotCtx` construction), retries up to 3
-///   times with a 10s gap between attempts, then exits cleanly.
+/// - Catches setup panics (e.g. during `BotCtx` construction), logs them,
+///   sleeps 10s, and retries forever — the thread only exits cleanly when
+///   `cancel` is set. Combined with the TUI watchdog (which sets `cancel` and
+///   respawns on stalls), this closes the "thread gone forever" gap.
 /// - Bumps the `heartbeat` atomic each loop iteration so the TUI can show
 ///   liveness independent of network success.
 pub fn start(config: &Config, token: String, chat_id: String) -> Option<TelegramHandle> {
@@ -166,11 +168,12 @@ pub fn start(config: &Config, token: String, chat_id: String) -> Option<Telegram
     let heartbeat_thread = Arc::clone(&heartbeat);
 
     let join = std::thread::spawn(move || {
-        for attempt in 1..=3u32 {
+        let mut attempt: u32 = 0;
+        loop {
             if cancel_thread.load(Ordering::Relaxed) {
                 break;
             }
-            // Each retry attempt gets fresh clones; cancel/heartbeat are Arc clones.
+            attempt = attempt.saturating_add(1);
             let token = token.clone();
             let chat_id = chat_id.clone();
             let whisper_model = whisper_model.clone();
@@ -212,13 +215,10 @@ pub fn start(config: &Config, token: String, chat_id: String) -> Option<Telegram
                         &panic_log_path,
                         &format!("setup panic (attempt {attempt}): {msg}"),
                     );
-                    if attempt < 3 {
-                        std::thread::sleep(Duration::from_secs(10));
-                    }
+                    std::thread::sleep(Duration::from_secs(10));
                 }
             }
         }
-        tracing::error!("telegram bot: abandoning after 3 setup panics");
     });
 
     Some(TelegramHandle { cancel, heartbeat, join })
