@@ -21,6 +21,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::inbox;
+use crate::researcher::{Researcher, ResearcherStatus};
 use crate::use_cases;
 
 // ---------------------------------------------------------------------------
@@ -339,7 +340,8 @@ fn poll_updates(ctx: &BotCtx, offset: &mut i64) {
         // Handle voice messages.
         if msg.get("voice").is_some() {
             if let Some(file_id) = msg["voice"]["file_id"].as_str() {
-                handle_voice(ctx, file_id);
+                let reply_text = msg["reply_to_message"]["text"].as_str();
+                handle_voice(ctx, file_id, reply_text);
             }
             continue;
         }
@@ -385,17 +387,164 @@ fn poll_updates(ctx: &BotCtx, offset: &mut i64) {
             _ => {}
         }
 
-        let inbox_path = current_inbox(ctx);
-        let current = ctx
-            .current_agent
-            .read()
-            .map(|g| g.clone())
-            .unwrap_or_else(|p| p.into_inner().clone());
-        tracing::info!(text_len = text.len(), agent = %current, "telegram: received message");
-        if let Err(e) = inbox::append_message(&inbox_path, "telegram", text) {
-            tracing::warn!(error = %e, agent = %current, "telegram: failed to write to agent inbox");
+        let reply_text = msg["reply_to_message"]["text"].as_str();
+        let (inbox_path, agent_label, payload) = route_inbound_message(ctx, reply_text, text);
+        tracing::info!(text_len = text.len(), agent = %agent_label, "telegram: received message");
+        if let Err(e) = inbox::append_message(&inbox_path, "telegram", &payload) {
+            tracing::warn!(error = %e, agent = %agent_label, "telegram: failed to write to agent inbox");
         }
     }
+}
+
+/// Extract the leading `[TAG]` from a bot-formatted message.
+///
+/// Returns the inner tag (without brackets) when `text` starts with `[` and
+/// has a closing `]` later in the string. Returns `None` for plain text or
+/// unbalanced brackets.
+pub fn parse_sender_tag(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('[')?;
+    let close = rest.find(']')?;
+    Some(&rest[..close])
+}
+
+/// Resolve a sender tag (e.g. `"CEO"`, `"PM:foo"`, `"R:bar"`) back to a
+/// send-target agent id usable with [`use_cases::agent_inbox_path`].
+///
+/// - `"CEO"` → `Some("ceo")`
+/// - `"PM:<id>"` → `Some(id)` if the project agent exists
+/// - `"R:<name>"` → `Some("researcher:<project>--<name>")` when exactly one
+///   running researcher matches; `None` for zero or multiple matches
+///   (ambiguous matches are logged via `tracing::warn`).
+///
+/// Defensively returns `None` if the resolved id is `"telegram"` to prevent
+/// the bot from looping messages back to itself.
+pub fn resolve_tag_to_agent(config: &Config, tag: &str) -> Option<String> {
+    let resolved = if tag == "CEO" {
+        Some("ceo".to_string())
+    } else if let Some(id) = tag.strip_prefix("PM:") {
+        if !id.is_empty() && use_cases::agent_exists(config, id) {
+            Some(id.to_string())
+        } else {
+            None
+        }
+    } else if let Some(name) = tag.strip_prefix("R:") {
+        if name.is_empty() {
+            None
+        } else {
+            match Researcher::list_all(config) {
+                Ok(researchers) => {
+                    let matches: Vec<&Researcher> = researchers
+                        .iter()
+                        .filter(|r| {
+                            r.meta.name == name && r.meta.status == ResearcherStatus::Running
+                        })
+                        .collect();
+                    match matches.len() {
+                        1 => {
+                            let r = matches[0];
+                            Some(format!("researcher:{}--{}", r.meta.project, r.meta.name))
+                        }
+                        0 => None,
+                        n => {
+                            tracing::warn!(
+                                tag = %name,
+                                count = n,
+                                "telegram: ambiguous researcher tag, falling back"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "telegram: failed to list researchers for tag resolution");
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    }?;
+
+    if resolved == "telegram" {
+        return None;
+    }
+    Some(resolved)
+}
+
+/// Build the inbox payload for a reply: a one-line context snippet of the
+/// original bot message followed by a blank line and the user's body.
+///
+/// The leading `[TAG]` is stripped from the original (if present) and the
+/// snippet is truncated to ~140 chars (UTF-8 safe), with an ellipsis appended
+/// when the snippet was cut short.
+pub fn format_reply_message(original: &str, body: &str) -> String {
+    let stripped = if let Some(tag) = parse_sender_tag(original) {
+        // Skip past `[TAG]` — `[` + tag bytes + `]`.
+        &original[1 + tag.len() + 1..]
+    } else {
+        original
+    };
+    let stripped = stripped.trim_start();
+
+    const SNIPPET_CHARS: usize = 140;
+    let snippet: String = stripped.chars().take(SNIPPET_CHARS).collect();
+    let snippet = if stripped.chars().count() > SNIPPET_CHARS {
+        format!("{snippet}…")
+    } else {
+        snippet
+    };
+
+    format!("In reply to: \"{snippet}\"\n\n{body}")
+}
+
+/// Snapshot the current agent id from the shared `RwLock`, recovering from
+/// poison by cloning the inner value.
+fn read_current_agent(ctx: &BotCtx) -> String {
+    ctx.current_agent
+        .read()
+        .map(|g| g.clone())
+        .unwrap_or_else(|p| p.into_inner().clone())
+}
+
+/// Decide where an inbound user message should be delivered.
+///
+/// If the message is a reply to a bot-tagged message that resolves to a known
+/// agent, route to that agent's inbox with reply context. Otherwise fall back
+/// to the user's current agent. Routing is one-shot — the current-agent
+/// setting is *not* mutated.
+///
+/// Returns `(inbox_path, agent_id_for_logging, payload_to_write)`.
+fn route_inbound_message(
+    ctx: &BotCtx,
+    reply_text: Option<&str>,
+    body: &str,
+) -> (PathBuf, String, String) {
+    let routed = reply_text
+        .and_then(parse_sender_tag)
+        .and_then(|tag| resolve_tag_to_agent(&ctx.config, tag));
+
+    if let Some(target) = routed {
+        match use_cases::agent_inbox_path(&ctx.config, &target) {
+            Ok(path) => {
+                let original = reply_text.unwrap_or("");
+                let payload = format_reply_message(original, body);
+                tracing::info!(
+                    target = %target,
+                    "telegram: routing reply to tagged agent"
+                );
+                return (path, target, payload);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target = %target,
+                    error = %e,
+                    "telegram: routed agent inbox lookup failed, falling back to current agent"
+                );
+            }
+        }
+    }
+
+    (current_inbox(ctx), read_current_agent(ctx), body.to_string())
 }
 
 fn handle_callback_query(ctx: &BotCtx, cq: &Value) {
@@ -754,8 +903,10 @@ fn check_voice_deps() -> Option<String> {
     None
 }
 
-/// Process an incoming voice message: download, transcribe locally, forward to CEO.
-fn handle_voice(ctx: &BotCtx, file_id: &str) {
+/// Process an incoming voice message: download, transcribe locally, forward
+/// to the routed agent (when the voice was sent as a reply to a tagged bot
+/// message) or the user's current agent.
+fn handle_voice(ctx: &BotCtx, file_id: &str, reply_text: Option<&str>) {
     if let Some(binary) = check_voice_deps() {
         tracing::warn!(binary = %binary, "telegram: voice dependency not found");
         let _ = tg_send(
@@ -778,9 +929,13 @@ fn handle_voice(ctx: &BotCtx, file_id: &str) {
         Some(text) if !text.is_empty() => {
             tracing::info!(text_len = text.len(), "telegram: transcribed voice message");
             let _ = tg_send(ctx, &format!("🎤 {text}"));
-            let inbox_path = current_inbox(ctx);
-            if let Err(e) = inbox::append_message(&inbox_path, "telegram", &text) {
-                tracing::warn!(error = %e, "telegram: failed to write transcription to agent inbox");
+            let (inbox_path, agent_label, payload) = route_inbound_message(ctx, reply_text, &text);
+            if let Err(e) = inbox::append_message(&inbox_path, "telegram", &payload) {
+                tracing::warn!(
+                    error = %e,
+                    agent = %agent_label,
+                    "telegram: failed to write transcription to agent inbox"
+                );
             }
         }
         _ => {
