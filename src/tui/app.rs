@@ -5542,10 +5542,19 @@ impl App {
 
         // Enumerate delivery targets from disk so polling does not depend on
         // whichever TUI view the user has visited.
-        let targets: Vec<(String, PathBuf, PathBuf, String, Option<String>)> =
+        let targets: Vec<(String, PathBuf, PathBuf, String, Option<String>, Option<PathBuf>)> =
             use_cases::collect_inbox_poll_targets(&self.config, |s| Tmux::session_exists(s))
                 .into_iter()
-                .map(|t| (t.name, t.inbox_path, t.seq_path, t.session_name, t.window))
+                .map(|t| {
+                    (
+                        t.name,
+                        t.inbox_path,
+                        t.seq_path,
+                        t.session_name,
+                        t.window,
+                        t.rearm_path,
+                    )
+                })
                 .collect();
 
         if targets.is_empty() {
@@ -5563,8 +5572,29 @@ impl App {
                 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
                 let mut results = Vec::new();
-                for (target, inbox_path, seq_path, session_name, window) in targets {
+                for (target, inbox_path, seq_path, session_name, window, rearm_path) in targets {
                     let window_ref = window.as_deref();
+
+                    // Cold-start re-arm: the supervisor touches `.inbox-rearm`
+                    // across kill→relaunch transitions because the gap between
+                    // the dying and freshly launched claude (~500ms) is shorter
+                    // than the poll interval (~2s), so the poller almost never
+                    // observes the brief shell state. Drop the stale
+                    // `first_ready_at` entry and delete the marker so the next
+                    // observed-ready tick restarts the 5s buffer from zero.
+                    if let Some(path) = rearm_path.as_ref() {
+                        if path.exists() {
+                            first_ready_at.remove(&target);
+                            if let Err(e) = std::fs::remove_file(path) {
+                                tracing::debug!(
+                                    target_name = &target,
+                                    error = %e,
+                                    "failed to remove .inbox-rearm marker"
+                                );
+                            }
+                        }
+                    }
+
                     let undelivered = match inbox::read_undelivered(&inbox_path, &seq_path) {
                         Ok(msgs) => msgs,
                         Err(e) => {

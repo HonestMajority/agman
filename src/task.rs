@@ -1098,6 +1098,38 @@ impl Task {
         Ok(())
     }
 
+    /// Path to the `.inbox-rearm` marker. The supervisor touches this file
+    /// after killing the prior claude and before launching a new one. The
+    /// inbox poll worker checks for it on each tick: if present, it drops the
+    /// in-memory `first_ready_at` entry for this target and deletes the file,
+    /// forcing the cold-start ready-buffer to restart from zero.
+    ///
+    /// This exists because the supervisor's kill→relaunch transition is
+    /// faster (~500ms) than the inbox poll interval (~2s), so the poller
+    /// rarely observes the brief shell state between the dying and freshly
+    /// launched claude. Without this marker the prior `first_ready_at` value
+    /// persists, the buffer is bypassed, and messages get pasted into a
+    /// still-mounting Ink UI.
+    pub fn rearm_path(&self) -> PathBuf {
+        self.dir.join(".inbox-rearm")
+    }
+
+    /// Touch the `.inbox-rearm` marker (create the file, contents irrelevant).
+    pub fn touch_rearm(&self) -> Result<()> {
+        std::fs::write(self.rearm_path(), "")
+            .context("Failed to write .inbox-rearm marker")
+    }
+
+    /// Remove the `.inbox-rearm` marker if present.
+    pub fn clear_rearm(&self) -> Result<()> {
+        let path = self.rearm_path();
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .context("Failed to remove .inbox-rearm marker")?;
+        }
+        Ok(())
+    }
+
     /// Append a session record to `meta.session_history` and persist.
     pub fn push_session(&mut self, entry: SessionEntry) -> Result<()> {
         self.meta.session_history.push(entry);
