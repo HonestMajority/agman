@@ -192,7 +192,7 @@ impl Tmux {
     }
 
     /// Create a simple agent tmux session with a single window running an interactive
-    /// `claude` session. Used for CEO and PM agents (no nvim/lazygit/shell windows).
+    /// `claude` session. Used for Chief of Staff and PM agents (no nvim/lazygit/shell windows).
     pub fn create_agent_session(
         session_name: &str,
         system_prompt: &str,
@@ -315,7 +315,7 @@ impl Tmux {
     /// a file via `--system-prompt-file` and pins claude's session id to a
     /// caller-supplied UUID via `--session-id`.
     ///
-    /// Pinning the session id (same pattern CEO/PM/researcher use on first
+    /// Pinning the session id (same pattern Chief of Staff/PM/researcher use on first
     /// launch) lets us store claude's actual session id in `session_history`,
     /// so the user can `claude --resume <id>` from the worktree to revisit a
     /// historical conversation. Without `--session-id`, claude would generate

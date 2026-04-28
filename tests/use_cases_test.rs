@@ -2665,9 +2665,9 @@ fn inbox_append_and_read() {
     let tmp = tempfile::tempdir().unwrap();
     let inbox_path = tmp.path().join("inbox.jsonl");
 
-    let msg1 = agman::inbox::append_message(&inbox_path, "ceo", "Hello PM").unwrap();
+    let msg1 = agman::inbox::append_message(&inbox_path, "chief-of-staff", "Hello PM").unwrap();
     assert_eq!(msg1.seq, 1);
-    assert_eq!(msg1.from, "ceo");
+    assert_eq!(msg1.from, "chief-of-staff");
 
     let msg2 = agman::inbox::append_message(&inbox_path, "user", "Do this").unwrap();
     assert_eq!(msg2.seq, 2);
@@ -2684,9 +2684,9 @@ fn inbox_undelivered_and_mark_delivered() {
     let inbox_path = tmp.path().join("inbox.jsonl");
     let seq_path = tmp.path().join("inbox.seq");
 
-    agman::inbox::append_message(&inbox_path, "ceo", "msg1").unwrap();
-    agman::inbox::append_message(&inbox_path, "ceo", "msg2").unwrap();
-    agman::inbox::append_message(&inbox_path, "ceo", "msg3").unwrap();
+    agman::inbox::append_message(&inbox_path, "chief-of-staff", "msg1").unwrap();
+    agman::inbox::append_message(&inbox_path, "chief-of-staff", "msg2").unwrap();
+    agman::inbox::append_message(&inbox_path, "chief-of-staff", "msg3").unwrap();
 
     // All should be undelivered
     let undelivered = agman::inbox::read_undelivered(&inbox_path, &seq_path).unwrap();
@@ -2767,10 +2767,10 @@ fn create_project_with_initial_message_seeds_inbox() {
     .unwrap();
     assert_eq!(project.meta.name, "briefed-proj");
 
-    // Initial-message lands in the PM inbox tagged from `ceo`.
+    // Initial-message lands in the PM inbox tagged from `chief-of-staff`.
     let messages = agman::inbox::read_messages(&config.project_inbox("briefed-proj")).unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].from, "ceo");
+    assert_eq!(messages[0].from, "chief-of-staff");
     assert_eq!(messages[0].message, "Kick off with the design doc");
 }
 
@@ -2796,14 +2796,14 @@ fn create_project_without_initial_message_leaves_inbox_empty() {
 }
 
 #[test]
-fn use_case_send_message_to_ceo() {
+fn use_case_send_message_to_chief_of_staff() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    use_cases::send_message(&config, "ceo", "pm-frontend", "Task complete").unwrap();
+    use_cases::send_message(&config, "chief-of-staff", "pm-frontend", "Task complete").unwrap();
 
-    let messages = agman::inbox::read_messages(&config.ceo_inbox()).unwrap();
+    let messages = agman::inbox::read_messages(&config.chief_of_staff_inbox()).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].from, "pm-frontend");
     assert_eq!(messages[0].message, "Task complete");
@@ -2818,11 +2818,11 @@ fn use_case_send_message_to_project() {
     // Create the project directory first. Description is a label only — inbox stays empty.
     use_cases::create_project(&config, "frontend", "Frontend project", None).unwrap();
 
-    use_cases::send_message(&config, "frontend", "ceo", "Please start work").unwrap();
+    use_cases::send_message(&config, "frontend", "chief-of-staff", "Please start work").unwrap();
 
     let messages = agman::inbox::read_messages(&config.project_inbox("frontend")).unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].from, "ceo");
+    assert_eq!(messages[0].from, "chief-of-staff");
     assert_eq!(messages[0].message, "Please start work");
 }
 
@@ -2874,7 +2874,7 @@ fn use_case_send_message_rejects_nonexistent_project() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    let result = use_cases::send_message(&config, "nonexistent", "ceo", "hello");
+    let result = use_cases::send_message(&config, "nonexistent", "chief-of-staff", "hello");
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("unknown project"));
@@ -3284,19 +3284,19 @@ fn use_case_send_message_to_researcher() {
 }
 
 // ---------------------------------------------------------------------------
-// CEO-level researchers
+// Chief of Staff-level researchers
 // ---------------------------------------------------------------------------
 
 #[test]
-fn use_case_create_ceo_researcher() {
+fn use_case_create_chief_of_staff_researcher() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
-    // No project directory created — CEO researchers don't need one
+    // No project directory created — CoS researchers don't need one
 
     let researcher = use_cases::create_researcher(
         &config,
-        "ceo",
+        "chief-of-staff",
         "my-researcher",
         "research question",
         None,
@@ -3307,7 +3307,7 @@ fn use_case_create_ceo_researcher() {
 
     assert!(researcher.dir.join("meta.json").exists());
     assert_eq!(researcher.meta.name, "my-researcher");
-    assert_eq!(researcher.meta.project, "ceo");
+    assert_eq!(researcher.meta.project, "chief-of-staff");
     assert_eq!(researcher.meta.description, "research question");
     assert_eq!(
         researcher.meta.status,
@@ -3315,7 +3315,7 @@ fn use_case_create_ceo_researcher() {
     );
 
     // Verify that the research description was written to the inbox
-    let inbox_path = config.researcher_inbox("ceo", "my-researcher");
+    let inbox_path = config.researcher_inbox("chief-of-staff", "my-researcher");
     let messages = agman::inbox::read_messages(&inbox_path).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].from, "user");
@@ -3332,18 +3332,18 @@ fn request_handoff_appends_inbox_message() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    // Create CEO dir and inbox
-    let ceo_dir = config.ceo_dir();
-    std::fs::create_dir_all(&ceo_dir).unwrap();
-    let inbox_path = config.ceo_inbox();
+    // Create Chief of Staff dir and inbox
+    let cos_dir = config.chief_of_staff_dir();
+    std::fs::create_dir_all(&cos_dir).unwrap();
+    let inbox_path = config.chief_of_staff_inbox();
 
     // Request handoff
-    use_cases::request_handoff(&inbox_path, "system", &ceo_dir).unwrap();
+    use_cases::request_handoff(&inbox_path, "system", &cos_dir).unwrap();
 
     // Verify inbox contains the handoff request with state_dir path
     let contents = std::fs::read_to_string(&inbox_path).unwrap();
     assert!(contents.contains("[HANDOFF REQUEST]"));
-    assert!(contents.contains(&ceo_dir.display().to_string()));
+    assert!(contents.contains(&cos_dir.display().to_string()));
     assert!(contents.contains("system"));
 }
 
@@ -3353,14 +3353,14 @@ fn handoff_file_mechanics() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    // Create CEO dir with a fake session-id
-    let ceo_dir = config.ceo_dir();
-    std::fs::create_dir_all(&ceo_dir).unwrap();
-    let session_id_path = config.ceo_session_id();
+    // Create Chief of Staff dir with a fake session-id
+    let cos_dir = config.chief_of_staff_dir();
+    std::fs::create_dir_all(&cos_dir).unwrap();
+    let session_id_path = config.chief_of_staff_session_id();
     std::fs::write(&session_id_path, "fake-session-id-123").unwrap();
 
     // Write a handoff.md as if the agent wrote it
-    let handoff_path = ceo_dir.join("handoff.md");
+    let handoff_path = cos_dir.join("handoff.md");
     std::fs::write(
         &handoff_path,
         "# Handoff Summary\n\nCurrently monitoring project alpha.\nPending: review task-42 results.\n",
@@ -3484,7 +3484,10 @@ fn collect_inbox_poll_targets_enumerates_disk() {
     let targets = use_cases::collect_inbox_poll_targets(&config, |_| true);
 
     let names: Vec<&str> = targets.iter().map(|t| t.name.as_str()).collect();
-    assert!(names.contains(&"ceo"), "expected CEO target, got {names:?}");
+    assert!(
+        names.contains(&"chief-of-staff"),
+        "expected Chief of Staff target, got {names:?}"
+    );
     assert!(names.contains(&"alpha"), "expected alpha PM target, got {names:?}");
     assert!(names.contains(&"beta"), "expected beta PM target, got {names:?}");
     assert!(
@@ -3499,10 +3502,10 @@ fn collect_inbox_poll_targets_enumerates_disk() {
     // Paths match what Config returns for each name.
     for t in &targets {
         match t.name.as_str() {
-            "ceo" => {
-                assert_eq!(t.inbox_path, config.ceo_inbox());
-                assert_eq!(t.seq_path, config.ceo_seq());
-                assert_eq!(t.session_name, Config::ceo_tmux_session());
+            "chief-of-staff" => {
+                assert_eq!(t.inbox_path, config.chief_of_staff_inbox());
+                assert_eq!(t.seq_path, config.chief_of_staff_seq());
+                assert_eq!(t.session_name, Config::chief_of_staff_tmux_session());
             }
             "alpha" => {
                 assert_eq!(t.inbox_path, config.project_inbox("alpha"));
@@ -3537,8 +3540,8 @@ fn collect_inbox_poll_targets_enumerates_disk() {
 
 #[test]
 fn collect_inbox_poll_targets_scopes_task_to_agman_window() {
-    // Non-task targets (CEO, PM, researcher) carry `window = None` — their
-    // sessions have a single window so window scoping is irrelevant.
+    // Non-task targets (Chief of Staff, PM, researcher) carry `window = None`
+    // — their sessions have a single window so window scoping is irrelevant.
     // Task targets carry `window = Some("agman")` because the interactive
     // claude lives in the `agman` window of the task's tmux session.
     let tmp = tempfile::tempdir().unwrap();
@@ -3549,14 +3552,14 @@ fn collect_inbox_poll_targets_scopes_task_to_agman_window() {
     let task_id = task.meta.task_id();
 
     let targets = use_cases::collect_inbox_poll_targets(&config, |s| {
-        s == agman::config::Config::ceo_tmux_session() || s == task_session
+        s == agman::config::Config::chief_of_staff_tmux_session() || s == task_session
     });
 
-    let ceo = targets
+    let cos = targets
         .iter()
-        .find(|t| t.name == "ceo")
-        .expect("CEO target should be present");
-    assert_eq!(ceo.window, None, "CEO target must not be window-scoped");
+        .find(|t| t.name == "chief-of-staff")
+        .expect("Chief of Staff target should be present");
+    assert_eq!(cos.window, None, "Chief of Staff target must not be window-scoped");
 
     let task_target = targets
         .iter()
@@ -3580,12 +3583,15 @@ fn stalled_targets_from_counts_honors_threshold() {
     let mut counts: HashMap<String, u32> = HashMap::new();
     counts.insert("alpha".to_string(), 2);
     counts.insert("beta".to_string(), 5);
-    counts.insert("ceo".to_string(), 6);
+    counts.insert("chief-of-staff".to_string(), 6);
 
     let stalled = use_cases::stalled_targets_from_counts(&counts, 5);
 
     assert!(stalled.contains(&"beta"), "expected beta, got {stalled:?}");
-    assert!(stalled.contains(&"ceo"), "expected ceo, got {stalled:?}");
+    assert!(
+        stalled.contains(&"chief-of-staff"),
+        "expected chief-of-staff, got {stalled:?}"
+    );
     assert!(
         !stalled.contains(&"alpha"),
         "alpha is below threshold, got {stalled:?}"
@@ -3675,7 +3681,7 @@ fn append_message_concurrent_seqs() {
 }
 
 #[test]
-fn relative_agent_list_from_ceo() {
+fn relative_agent_list_from_chief_of_staff() {
     use agman::researcher::{Researcher, ResearcherStatus};
 
     let tmp = tempfile::tempdir().unwrap();
@@ -3683,21 +3689,21 @@ fn relative_agent_list_from_ceo() {
 
     create_test_project(&config, "alpha");
     create_test_project(&config, "beta");
-    helpers::create_test_researcher(&config, "ceo", "live");
-    let mut archived = helpers::create_test_researcher(&config, "ceo", "old");
+    helpers::create_test_researcher(&config, "chief-of-staff", "live");
+    let mut archived = helpers::create_test_researcher(&config, "chief-of-staff", "old");
     archived.meta.status = ResearcherStatus::Archived;
     archived.save_meta().unwrap();
 
     // Sanity-check the helper left the archived researcher archived.
     let archived_reload =
-        Researcher::load(config.researcher_dir("ceo", "old")).unwrap();
+        Researcher::load(config.researcher_dir("chief-of-staff", "old")).unwrap();
     assert_eq!(archived_reload.meta.status, ResearcherStatus::Archived);
 
-    let agents = use_cases::relative_agent_list(&config, "ceo");
+    let agents = use_cases::relative_agent_list(&config, "chief-of-staff");
     let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
     assert!(ids.contains(&"alpha"));
     assert!(ids.contains(&"beta"));
-    assert!(ids.contains(&"researcher:ceo--live"));
+    assert!(ids.contains(&"researcher:chief-of-staff--live"));
     assert!(!ids.iter().any(|id| id.contains("old")));
     assert_eq!(agents.len(), 3);
 }
@@ -3718,7 +3724,7 @@ fn relative_agent_list_from_pm() {
     let agents = use_cases::relative_agent_list(&config, "alpha");
     let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
     assert!(ids.contains(&"researcher:alpha--live"));
-    assert!(ids.contains(&"ceo"));
+    assert!(ids.contains(&"chief-of-staff"));
     assert!(!ids.iter().any(|id| id.contains("old")));
     assert_eq!(agents.len(), 2);
 }
@@ -3733,37 +3739,37 @@ fn relative_agent_list_from_researcher() {
 
     let agents = use_cases::relative_agent_list(&config, "researcher:alpha--live");
     let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
-    assert_eq!(ids, vec!["alpha", "ceo"]);
+    assert_eq!(ids, vec!["alpha", "chief-of-staff"]);
 }
 
 #[test]
-fn relative_agent_list_from_ceo_researcher_no_duplicate_ceo() {
+fn relative_agent_list_from_chief_of_staff_researcher_no_duplicate() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
-    helpers::create_test_researcher(&config, "ceo", "live");
+    helpers::create_test_researcher(&config, "chief-of-staff", "live");
 
-    let agents = use_cases::relative_agent_list(&config, "researcher:ceo--live");
-    let ceo_count = agents.iter().filter(|a| a.id == "ceo").count();
-    assert_eq!(ceo_count, 1, "ceo must appear exactly once");
+    let agents = use_cases::relative_agent_list(&config, "researcher:chief-of-staff--live");
+    let cos_count = agents.iter().filter(|a| a.id == "chief-of-staff").count();
+    assert_eq!(cos_count, 1, "chief-of-staff must appear exactly once");
 }
 
 #[test]
-fn read_current_agent_missing_falls_back_to_ceo() {
+fn read_current_agent_missing_falls_back_to_chief_of_staff() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    assert_eq!(use_cases::read_current_agent(&config), "ceo");
+    assert_eq!(use_cases::read_current_agent(&config), "chief-of-staff");
 }
 
 #[test]
-fn read_current_agent_stale_falls_back_to_ceo() {
+fn read_current_agent_stale_falls_back_to_chief_of_staff() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     let path = config.telegram_current_agent_path();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "nonexistent-project").unwrap();
 
-    assert_eq!(use_cases::read_current_agent(&config), "ceo");
+    assert_eq!(use_cases::read_current_agent(&config), "chief-of-staff");
 }
 
 #[test]
@@ -3802,10 +3808,10 @@ fn researcher_prompt_includes_correct_from() {
         "expected project researcher prompt to include --from \"researcher:proj--bar\", got:\n{proj_prompt}"
     );
 
-    let ceo_prompt = use_cases::build_researcher_prompt(true, "ceo", "baz");
+    let cos_prompt = use_cases::build_researcher_prompt(true, "chief-of-staff", "baz");
     assert!(
-        ceo_prompt.contains(r#"--from "researcher:ceo--baz""#),
-        "expected ceo researcher prompt to include --from \"researcher:ceo--baz\", got:\n{ceo_prompt}"
+        cos_prompt.contains(r#"--from "researcher:chief-of-staff--baz""#),
+        "expected chief-of-staff researcher prompt to include --from \"researcher:chief-of-staff--baz\", got:\n{cos_prompt}"
     );
 }
 
@@ -3815,7 +3821,7 @@ fn researcher_prompt_includes_correct_from() {
 
 #[test]
 fn start_agent_step_queues_inbox_work_directive() {
-    // The task agent launch flow follows the CEO/PM/researcher pattern: the
+    // The task agent launch flow follows the Chief of Staff/PM/researcher pattern: the
     // system prompt holds identity, while the dynamic per-launch payload
     // (TASK.md, feedback, git context) is delivered through the task inbox.
     // This test verifies that `start_agent_step` queues exactly one

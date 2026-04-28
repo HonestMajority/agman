@@ -7,13 +7,13 @@
 //! <task_dir>/.current-prompt.md`. Task agents are disposable: every flow
 //! transition kills the prior `claude` and starts a fresh one with the next
 //! agent's system prompt. We never `--resume` task agents — that lifecycle
-//! belongs to the long-lived CEO/PM/researcher.
+//! belongs to the long-lived Chief of Staff/PM/researcher.
 //!
 //! The system prompt holds **identity only** — who the agent is and how to
 //! finish — while the dynamic per-launch payload (current TASK.md, any
 //! feedback, git diff, recent commits) is delivered separately through the
 //! task inbox once claude is ready to receive messages. This mirrors the
-//! CEO/PM/researcher launch flow.
+//! Chief of Staff/PM/researcher launch flow.
 //!
 //! Completion is detected purely by file existence. The agent's last action
 //! is to `touch` one of three sentinel files in `<task_dir>`:
@@ -316,11 +316,11 @@ fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Resu
 ///
 /// Task agents are disposable. Every flow transition launches a brand-new
 /// `claude` process with the next agent's system prompt — there is no
-/// `--resume`. The long-lived CEO/PM/researcher lifecycle (which always
+/// `--resume`. The long-lived Chief of Staff/PM/researcher lifecycle (which always
 /// resumes the same session) does not apply here.
 ///
 /// We DO mint a fresh UUID and pass it via `--session-id` on every launch
-/// (the same way CEO/PM/researcher do on their first launch). That pins
+/// (the same way Chief of Staff/PM/researcher do on their first launch). That pins
 /// claude's session id to a value we know, so the entry in `session_history`
 /// is the *real* claude session id and the user can run `claude --resume
 /// <id>` to revisit a historical conversation. Without this, claude would
@@ -424,7 +424,7 @@ pub fn start_agent_step(
     }
 
     // Mint claude's session id locally and pin it via `--session-id`. This
-    // is the same pattern CEO/PM/researcher use on their first launch — we
+    // is the same pattern Chief of Staff/PM/researcher use on their first launch — we
     // know the id because we set it, so `session_history.session_id` IS
     // claude's real, resumable session id.
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -1213,7 +1213,7 @@ mod tests {
     fn claude_command_pins_session_id_and_loads_prompt_from_file() {
         // Task agents always start fresh, but we still pass --session-id so
         // claude's session id matches what we store in session_history (this
-        // is the same pattern CEO/PM use on their first launch). Resume is
+        // is the same pattern Chief of Staff/PM use on their first launch). Resume is
         // never used for task agents.
         let tmp = tempfile::tempdir().unwrap();
         let (_cfg, task) = build_task(&tmp);

@@ -34,13 +34,13 @@ pub enum Commands {
     /// Send a message to an agent's inbox
     #[command(after_help = "\
 EXAMPLES:
-  agman send-message ceo \"Check the deploy status\"
-  cat <<'EOF' | agman send-message ceo -
+  agman send-message chief-of-staff \"Check the deploy status\"
+  cat <<'EOF' | agman send-message chief-of-staff -
   Multi-line message via stdin using the - sentinel.
   EOF
-  agman send-message ceo @./message.md")]
+  agman send-message chief-of-staff @./message.md")]
     SendMessage {
-        /// Target: "ceo", "telegram", "researcher:<project>--<name>", or a project name (for the PM)
+        /// Target: "chief-of-staff", "telegram", "researcher:<project>--<name>", or a project name (for the PM)
         target: String,
         /// Message text (can also be provided via stdin or --file)
         #[arg(allow_hyphen_values = true)]
@@ -207,7 +207,7 @@ EXAMPLES:
         file: Option<std::path::PathBuf>,
     },
 
-    /// Create a researcher (defaults to CEO-level when --project is omitted)
+    /// Create a researcher (defaults to Chief of Staff-level when --project is omitted)
     #[command(after_help = "\
 EXAMPLES:
   agman create-researcher my-research --description \"Investigate the API latency\"
@@ -218,7 +218,7 @@ EXAMPLES:
     CreateResearcher {
         /// Researcher name (alphanumeric + hyphens)
         name: String,
-        /// Project name (defaults to "ceo" for CEO-level researchers)
+        /// Project name (defaults to "chief-of-staff" for CoS-level researchers)
         #[arg(long)]
         project: Option<String>,
         /// Repository name (for working directory context)
@@ -240,23 +240,23 @@ EXAMPLES:
         /// Filter by project name
         #[arg(long)]
         project: Option<String>,
-        /// Show only CEO-level researchers
+        /// Show only Chief of Staff-level researchers
         #[arg(long)]
-        ceo: bool,
+        cos: bool,
     },
 
-    /// Archive a researcher (defaults to CEO-level when --project is omitted)
+    /// Archive a researcher (defaults to Chief of Staff-level when --project is omitted)
     ArchiveResearcher {
         /// Researcher name
         name: String,
-        /// Project name (defaults to "ceo" for CEO-level researchers)
+        /// Project name (defaults to "chief-of-staff" for CoS-level researchers)
         #[arg(long)]
         project: Option<String>,
     },
 
-    /// Respawn an agent with a fresh session (CEO or PM)
+    /// Respawn an agent with a fresh session (Chief of Staff or PM)
     RespawnAgent {
-        /// Target: "ceo" or a project name (for the PM)
+        /// Target: "chief-of-staff" or a project name (for the PM)
         target: String,
         /// Skip graceful handoff — kill and restart immediately
         #[arg(long, default_value_t = false)]

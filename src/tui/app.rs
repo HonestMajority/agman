@@ -88,7 +88,7 @@ pub enum View {
 /// Which persistent session a tmux popup is currently attached to.
 /// Determines the side-effects dispatched when the popup closes.
 enum PopupKind {
-    Ceo,
+    ChiefOfStaff,
     Pm { project: String },
     Researcher,
 }
@@ -407,7 +407,7 @@ struct PrPollResult {
 }
 
 struct InboxPollResult {
-    target: String, // "ceo" or project name
+    target: String, // "chief-of-staff" or project name
     delivered: usize,
     errors: Vec<String>,
 }
@@ -730,7 +730,7 @@ pub struct App {
     pub archive_list_state: ListState,
     pub archive_preview: Option<String>,
     pub archive_scroll: u16,
-    // Project list (CEO/PM hierarchy)
+    // Project list (Chief of Staff/PM hierarchy)
     pub projects: Vec<Project>,
     pub selected_project_index: usize,
     pub current_project: Option<String>,
@@ -774,7 +774,7 @@ pub struct App {
     // Respawn confirmation dialog
     pub respawn_confirm_target: Option<String>,
     pub respawn_confirm_index: usize,
-    pub respawn_confirm_is_ceo: bool,
+    pub respawn_confirm_is_chief_of_staff: bool,
     pub respawn_confirm_return_view: View,
     // Telegram bot handle (None when not configured). Carries the cancel flag,
     // a heartbeat atomic the TUI reads to render a health indicator, and the
@@ -787,7 +787,7 @@ pub struct App {
     // Sleep inhibition (macOS: caffeinate -s for system sleep assertion only)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
-    // Active tmux popup (CEO/PM chat, researcher attach). Polled each main-loop
+    // Active tmux popup (CoS/PM chat, researcher attach). Polled each main-loop
     // tick so inbox delivery, PR polls, and chat polls keep running while a
     // popup is open.
     popup: Option<ActivePopup>,
@@ -827,9 +827,9 @@ impl App {
             dismissed_notifs.save(&config.dismissed_notifications_path());
         }
 
-        // Auto-start the CEO agent session in the background
-        if let Err(e) = use_cases::start_ceo_session(&config) {
-            tracing::error!(error = %e, "failed to auto-start CEO session on launch");
+        // Auto-start the Chief of Staff agent session in the background
+        if let Err(e) = use_cases::start_chief_of_staff_session(&config) {
+            tracing::error!(error = %e, "failed to auto-start Chief of Staff session on launch");
         }
 
         // Auto-start PM sessions for all projects
@@ -985,7 +985,7 @@ impl App {
             respawn_rx,
             respawn_confirm_target: None,
             respawn_confirm_index: 0,
-            respawn_confirm_is_ceo: false,
+            respawn_confirm_is_chief_of_staff: false,
             respawn_confirm_return_view: View::ProjectList,
             telegram,
             last_telegram_watchdog: Instant::now(),
@@ -1016,9 +1016,9 @@ impl App {
     fn on_popup_closed(&mut self) {
         if let Some(popup) = self.popup.take() {
             match popup.kind {
-                PopupKind::Ceo => {
-                    if let Err(e) = use_cases::mark_chat_viewed(&self.config, "ceo") {
-                        tracing::error!(error = %e, "failed to mark CEO chat as viewed");
+                PopupKind::ChiefOfStaff => {
+                    if let Err(e) = use_cases::mark_chat_viewed(&self.config, "chief-of-staff") {
+                        tracing::error!(error = %e, "failed to mark Chief of Staff chat as viewed");
                     }
                     self.last_chat_poll = Instant::now() - Duration::from_secs(10);
                 }
@@ -2704,21 +2704,21 @@ impl App {
                     }
                 }
                 KeyCode::Char('c') => {
-                    // Open CEO chat as a tmux popup (non-blocking)
+                    // Open Chief of Staff chat as a tmux popup (non-blocking)
                     if self.popup.is_some() {
                         return Ok(false);
                     }
-                    match use_cases::open_ceo_popup(&self.config) {
+                    match use_cases::open_chief_of_staff_popup(&self.config) {
                         Ok(child) => {
-                            tracing::info!("opened CEO popup");
+                            tracing::info!("opened Chief of Staff popup");
                             self.popup = Some(ActivePopup {
                                 child,
-                                kind: PopupKind::Ceo,
+                                kind: PopupKind::ChiefOfStaff,
                             });
                         }
                         Err(e) => {
-                            tracing::error!(error = %e, "failed to open CEO popup");
-                            self.set_status(format!("Failed to open CEO chat: {e}"));
+                            tracing::error!(error = %e, "failed to open Chief of Staff popup");
+                            self.set_status(format!("Failed to open Chief of Staff chat: {e}"));
                         }
                     }
                 }
@@ -2821,17 +2821,17 @@ impl App {
                     }
                 }
                 KeyCode::Char('e') => {
-                    // Show respawn confirmation for CEO
+                    // Show respawn confirmation for Chief of Staff
                     if self.respawn_in_progress.is_none() {
-                        self.respawn_confirm_target = Some("ceo".to_string());
+                        self.respawn_confirm_target = Some("chief-of-staff".to_string());
                         self.respawn_confirm_index = 0;
-                        self.respawn_confirm_is_ceo = true;
+                        self.respawn_confirm_is_chief_of_staff = true;
                         self.respawn_confirm_return_view = View::ProjectList;
                         self.view = View::RespawnConfirm;
                     }
                 }
                 KeyCode::Char('w') => {
-                    self.current_project = Some("ceo".to_string());
+                    self.current_project = Some("chief-of-staff".to_string());
                     self.researcher_list_index = 0;
                     self.refresh_researchers();
                     self.view = View::ResearcherList;
@@ -3034,7 +3034,7 @@ impl App {
                         if project_name != "(unassigned)" && self.respawn_in_progress.is_none() {
                             self.respawn_confirm_target = Some(project_name.clone());
                             self.respawn_confirm_index = 0;
-                            self.respawn_confirm_is_ceo = false;
+                            self.respawn_confirm_is_chief_of_staff = false;
                             self.respawn_confirm_return_view = View::TaskList;
                             self.view = View::RespawnConfirm;
                         }
@@ -4127,53 +4127,53 @@ impl App {
                     self.respawn_confirm_index = if self.respawn_confirm_index == 0 { 1 } else { 0 };
                 }
                 KeyCode::Enter => {
-                    if self.respawn_confirm_is_ceo {
+                    if self.respawn_confirm_is_chief_of_staff {
                         match self.respawn_confirm_index {
                             0 => {
-                                // CEO only
-                                let target = "ceo".to_string();
-                                tracing::info!(target = %target, "respawn confirmed: ceo only");
+                                // Chief of Staff only
+                                let target = "chief-of-staff".to_string();
+                                tracing::info!(target = %target, "respawn confirmed: chief-of-staff only");
                                 self.respawn_in_progress = Some(target.clone());
-                                self.set_status("respawning ceo...".to_string());
+                                self.set_status("respawning chief-of-staff...".to_string());
                                 let tx = self.respawn_tx.clone();
                                 let config = self.config.clone();
                                 self.rt.spawn(async move {
                                     let result = tokio::task::spawn_blocking(move || {
-                                        use_cases::respawn_agent(&config, "ceo", false, 120)
+                                        use_cases::respawn_agent(&config, "chief-of-staff", false, 120)
                                     })
                                     .await
                                     .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
                                     let msg = match result {
-                                        Ok(()) => Ok("ceo".to_string()),
+                                        Ok(()) => Ok("chief-of-staff".to_string()),
                                         Err(e) => Err(format!("{e}")),
                                     };
                                     let _ = tx.send(msg);
                                 });
                             }
                             1 => {
-                                // CEO + all PMs
+                                // Chief of Staff + all PMs
                                 let project_names: Vec<String> = self
                                     .projects
                                     .iter()
                                     .map(|p| p.meta.name.clone())
                                     .collect();
                                 let pm_count = project_names.len();
-                                tracing::info!(pm_count = pm_count, "respawn confirmed: ceo + all pms");
-                                self.respawn_in_progress = Some("ceo+pms".to_string());
-                                self.set_status("respawning ceo + all pms...".to_string());
+                                tracing::info!(pm_count = pm_count, "respawn confirmed: cos + all pms");
+                                self.respawn_in_progress = Some("cos+pms".to_string());
+                                self.set_status("respawning chief-of-staff + all pms...".to_string());
                                 let tx = self.respawn_tx.clone();
                                 let config = self.config.clone();
                                 self.rt.spawn(async move {
-                                    // Respawn CEO first
-                                    let ceo_result = tokio::task::spawn_blocking({
+                                    // Respawn Chief of Staff first
+                                    let cos_result = tokio::task::spawn_blocking({
                                         let config = config.clone();
-                                        move || use_cases::respawn_agent(&config, "ceo", false, 120)
+                                        move || use_cases::respawn_agent(&config, "chief-of-staff", false, 120)
                                     })
                                     .await
                                     .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
 
-                                    if let Err(e) = ceo_result {
-                                        let _ = tx.send(Err(format!("ceo respawn failed: {e}")));
+                                    if let Err(e) = cos_result {
+                                        let _ = tx.send(Err(format!("chief-of-staff respawn failed: {e}")));
                                         return;
                                     }
 
@@ -4197,7 +4197,7 @@ impl App {
                                     }
 
                                     if failures.is_empty() {
-                                        let _ = tx.send(Ok(format!("ceo+pms:{pm_count}")));
+                                        let _ = tx.send(Ok(format!("cos+pms:{pm_count}")));
                                     } else {
                                         let _ = tx.send(Err(format!(
                                             "some respawns failed: {}",
@@ -5526,7 +5526,7 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
-    // Inbox polling (CEO & PM message delivery)
+    // Inbox polling (Chief of Staff & PM message delivery)
     // -----------------------------------------------------------------------
 
     /// Targets whose consecutive-skip count has reached `STALL_THRESHOLD`.
@@ -5990,10 +5990,10 @@ impl App {
         };
         let target = self.respawn_in_progress.take().unwrap_or_default();
         match result {
-            Ok(msg) if msg.starts_with("ceo+pms:") => {
-                let pm_count = msg.strip_prefix("ceo+pms:").unwrap_or("0");
-                tracing::info!(target = %target, pm_count = %pm_count, "ceo + all pms respawned successfully");
-                self.set_status(format!("respawned ceo + {pm_count} pms"));
+            Ok(msg) if msg.starts_with("cos+pms:") => {
+                let pm_count = msg.strip_prefix("cos+pms:").unwrap_or("0");
+                tracing::info!(target = %target, pm_count = %pm_count, "cos + all pms respawned successfully");
+                self.set_status(format!("respawned chief-of-staff + {pm_count} pms"));
             }
             Ok(_) => {
                 tracing::info!(target = %target, "agent respawned successfully");
