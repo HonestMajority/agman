@@ -95,6 +95,12 @@ Codex respects `AGENTS.md` in the worktree the same way claude respects `CLAUDE.
 
 **Restart-after-tmux-loss.** When agman *and* tmux both die, agman no longer auto-restores conversational context for CEO/PM. The `respawn_agent` handoff path (handoff.md + inbox.jsonl) is unchanged for in-process respawns. To recover full context after a tmux loss, manually `claude --resume` / `codex resume` from a shell and pick the agman session by name.
 
+**Workspace trust is pre-stamped.** Both harnesses gate first launch in any new directory behind a "trust this folder?" dialog that the `--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox` flags do NOT bypass. Before sending the launch command to tmux, agman calls `Harness::ensure_workspace_trusted(cwd)` to register the directory as trusted in the harness's user-global config:
+- Claude: `~/.claude.json` → `projects[<cwd>].hasTrustDialogAccepted = true` (root-level dot file, NOT inside `~/.claude/`).
+- Codex: `~/.codex/config.toml` → `[projects."<cwd>"] trust_level = "trusted"`.
+
+The helper is idempotent (no-op when the entry is already trusted; preserves mtime), tolerates missing files/dirs, and preserves all other keys in the config. Failure is fatal: a launch that hits the trust dialog never reaches a usable agent state and downstream `/rename` paste-injects would run as shell commands.
+
 Storage layout for harness stamps:
 ```
 ~/.agman/

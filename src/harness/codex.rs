@@ -59,14 +59,18 @@ impl Harness for CodexHarness {
         let dev_arg_escaped = dev_instructions.replace('\'', "'\\''");
 
         let mut cmd = String::from("codex");
-        if ctx.skip_git_repo_check {
-            cmd.push_str(" --skip-git-repo-check");
-        }
         if ctx.no_alt_screen {
             cmd.push_str(" --no-alt-screen");
         }
         cmd.push_str(&format!(" -c '{}'", dev_arg_escaped));
         cmd
+    }
+
+    /// Pre-stamp workspace trust in `~/.codex/config.toml` so the
+    /// interactive trust dialog does not block first launch in `cwd`.
+    fn ensure_workspace_trusted(&self, cwd: &Path) -> Result<()> {
+        let trust_file = super::harness_home(HarnessKind::Codex).join("config.toml");
+        ensure_workspace_trusted_in(&trust_file, cwd)
     }
 
     /// Paste-inject `/rename <name>` post-launch and verify the entry shows
@@ -411,5 +415,125 @@ fn paste_text(target: &str, text: &str) -> Result<()> {
             String::from_utf8_lossy(&enter.stderr)
         );
     }
+    Ok(())
+}
+
+/// Ensure `[projects."<cwd>"] trust_level = "trusted"` is present in the
+/// codex config TOML at `trust_file` (typically `~/.codex/config.toml`).
+/// Tests pass an explicit `TempDir`-backed path; production calls into
+/// `harness_home(Codex).join("config.toml")` which honors `AGMAN_CODEX_HOME`.
+///
+/// Behavior:
+/// - File doesn't exist → create one with just the trust entry.
+/// - File exists, no `[projects."<cwd>"]` table → add it.
+/// - Table exists but no `trust_level` → set it to `"trusted"`.
+/// - `trust_level` already `"trusted"` → no-op (file untouched).
+/// - `trust_level` is `"untrusted"` → upgrade to `"trusted"`.
+///
+/// Other keys (root-level + other project tables) are preserved. Layout /
+/// comments may be rewritten by `toml::to_string` — acceptable here because
+/// the codex config is mostly machine-generated.
+pub fn ensure_workspace_trusted_in(trust_file: &Path, cwd: &Path) -> Result<()> {
+    use anyhow::Context;
+
+    let cwd_str = cwd.to_string_lossy().to_string();
+
+    // Parse the existing TOML or start from an empty table.
+    let mut doc: toml::Value = if trust_file.exists() {
+        let text = std::fs::read_to_string(trust_file)
+            .with_context(|| format!("read codex trust file at {}", trust_file.display()))?;
+        if text.trim().is_empty() {
+            toml::Value::Table(toml::value::Table::new())
+        } else {
+            toml::from_str(&text).with_context(|| {
+                format!(
+                    "parse codex trust file at {} as TOML",
+                    trust_file.display()
+                )
+            })?
+        }
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let root = doc.as_table_mut().ok_or_else(|| {
+        anyhow::anyhow!(
+            "codex trust file at {} is not a TOML table",
+            trust_file.display()
+        )
+    })?;
+
+    // Idempotent fast-path: peek before mutating so we can skip the write
+    // when the entry is already trusted (preserves mtime).
+    let already_trusted = root
+        .get("projects")
+        .and_then(|p| p.as_table())
+        .and_then(|p| p.get(&cwd_str))
+        .and_then(|v| v.as_table())
+        .and_then(|t| t.get("trust_level"))
+        .and_then(|v| v.as_str())
+        == Some("trusted");
+    if already_trusted {
+        return Ok(());
+    }
+
+    // Walk into projects.<cwd>.trust_level and set it.
+    if !root.contains_key("projects") {
+        root.insert(
+            "projects".to_string(),
+            toml::Value::Table(toml::value::Table::new()),
+        );
+    }
+    let projects = root
+        .get_mut("projects")
+        .and_then(|v| v.as_table_mut())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "codex trust file at {} has non-table `projects`",
+                trust_file.display()
+            )
+        })?;
+
+    if !projects.contains_key(&cwd_str) {
+        projects.insert(
+            cwd_str.clone(),
+            toml::Value::Table(toml::value::Table::new()),
+        );
+    }
+    let project = projects
+        .get_mut(&cwd_str)
+        .and_then(|v| v.as_table_mut())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "codex trust file at {} has non-table `projects.\"{}\"`",
+                trust_file.display(),
+                cwd_str
+            )
+        })?;
+
+    project.insert(
+        "trust_level".to_string(),
+        toml::Value::String("trusted".to_string()),
+    );
+
+    write_atomically(trust_file, toml::to_string(&doc)?.as_bytes())
+}
+
+/// Write `bytes` to `dest` atomically: write to `<dest>.tmp`, fsync, rename.
+/// Creates `dest`'s parent directory if missing.
+fn write_atomically(dest: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut tmp_path = dest.as_os_str().to_owned();
+    tmp_path.push(".tmp");
+    let tmp_path = PathBuf::from(tmp_path);
+    {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp_path, dest)?;
     Ok(())
 }

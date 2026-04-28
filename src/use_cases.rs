@@ -2824,11 +2824,19 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
     tracing::info!(session = session_name, telegram_enabled, harness = %kind, force_fresh, "starting Chief of Staff session");
 
     let prep = prepare_long_lived_launch(&cos_dir, &agent_name, &cos_dir, kind, force_fresh)?;
+    // Pre-stamp workspace trust so the harness's first-launch trust dialog
+    // doesn't block. Idempotent and cheap; failure is fatal because the
+    // dialog is unrecoverable (the agent never reaches a usable state).
+    harness.ensure_workspace_trusted(&prep.cwd).with_context(|| {
+        format!(
+            "failed to pre-stamp workspace trust for Chief of Staff at {}",
+            prep.cwd.display()
+        )
+    })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &prompt,
         name: &agent_name,
         cwd: &prep.cwd,
-        skip_git_repo_check: true,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
         session_key: prep.session_key(),
     });
@@ -2903,11 +2911,17 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
 
     let prep =
         prepare_long_lived_launch(&project_dir, &agent_name, &project_dir, kind, force_fresh)?;
+    harness.ensure_workspace_trusted(&prep.cwd).with_context(|| {
+        format!(
+            "failed to pre-stamp workspace trust for PM '{}' at {}",
+            project_name,
+            prep.cwd.display()
+        )
+    })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &prompt,
         name: &agent_name,
         cwd: &prep.cwd,
-        skip_git_repo_check: true,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
         session_key: prep.session_key(),
     });
@@ -3001,11 +3015,18 @@ pub fn start_researcher_session(
 
     let cwd = work_dir.as_deref().unwrap_or(&dir);
     let prep = prepare_long_lived_launch(&dir, &agent_name, cwd, kind, force_fresh)?;
+    harness.ensure_workspace_trusted(&prep.cwd).with_context(|| {
+        format!(
+            "failed to pre-stamp workspace trust for researcher '{}--{}' at {}",
+            project,
+            name,
+            prep.cwd.display()
+        )
+    })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &prompt,
         name: &agent_name,
         cwd: &prep.cwd,
-        skip_git_repo_check: true,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
         session_key: prep.session_key(),
     });

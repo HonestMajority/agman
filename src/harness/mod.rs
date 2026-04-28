@@ -42,6 +42,23 @@ pub fn latest_transcript_for_test(kind: HarnessKind, home: &Path, cwd: &Path) ->
     }
 }
 
+/// Test-only entrypoint that pre-stamps workspace trust against an explicit
+/// trust-file path (`.claude.json` for claude, `config.toml` for codex).
+/// Avoids the env-var-based dispatch that backs the trait method, so
+/// concurrent tests can each point at their own `TempDir` without
+/// serializing on a process-global env var.
+#[doc(hidden)]
+pub fn ensure_workspace_trusted_for_test(
+    kind: HarnessKind,
+    trust_file: &Path,
+    cwd: &Path,
+) -> Result<()> {
+    match kind {
+        HarnessKind::Claude => claude::ensure_workspace_trusted_in(trust_file, cwd),
+        HarnessKind::Codex => codex::ensure_workspace_trusted_in(trust_file, cwd),
+    }
+}
+
 /// Identifies which harness to use. Persisted in config + per-agent stamps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -143,8 +160,6 @@ pub struct LaunchContext<'a> {
     pub name: &'a str,
     /// Working directory for the launched process.
     pub cwd: &'a Path,
-    /// Codex-only: skip its git-repo guard. Claude ignores.
-    pub skip_git_repo_check: bool,
     /// Codex-only: pass `--no-alt-screen` so `tmux capture-pane` can read
     /// pane content (needed by the inbox snippet-verification loop). Claude
     /// ignores.
@@ -175,6 +190,21 @@ pub trait Harness: Send + Sync {
 
     /// Build the shell command string handed to `tmux send-keys`.
     fn build_session_command(&self, ctx: &LaunchContext) -> String;
+
+    /// Ensure `cwd` is registered as a trusted workspace in the harness's
+    /// user-global config so the interactive trust dialog does not block the
+    /// launch. Idempotent. Tolerates missing config file/dir (creates as
+    /// needed). MUST NOT clobber other entries in the same config file —
+    /// claude in particular stores many per-project keys we don't own.
+    ///
+    /// SIDE EFFECT — kept distinct from `build_session_command` (which is a
+    /// pure command-string builder). Call sites must invoke this before
+    /// sending the launch command to tmux.
+    ///
+    /// Failing the trust-stamp fails the launch: a launch that hits the
+    /// trust dialog is unrecoverable for agman (the agent never reaches a
+    /// usable state and `/rename` paste-injects run as shell commands).
+    fn ensure_workspace_trusted(&self, cwd: &Path) -> Result<()>;
 
     /// Post-launch step. Called once `is_session_ready_in` reports the
     /// foreground process is no longer a shell.
