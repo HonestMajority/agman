@@ -2648,14 +2648,14 @@ pub fn prepare_long_lived_launch_for_test(
         force_fresh,
         codex_home_override,
     )?;
-    let mode = match prep.mode {
-        LaunchMode::Auto => "auto",
-        LaunchMode::Pin => "pin",
-        LaunchMode::Resume => "resume",
+    let (mode, handle) = match &prep.mode {
+        LaunchMode::Auto => ("auto", None),
+        LaunchMode::Pin(h) => ("pin", Some(h.clone())),
+        LaunchMode::Resume(h) => ("resume", Some(h.clone())),
     };
     Ok(LongLivedLaunchForTest {
         mode,
-        handle: prep.handle,
+        handle,
         cwd: prep.cwd,
         is_first_launch: prep.is_first_launch,
     })
@@ -2665,10 +2665,10 @@ pub fn prepare_long_lived_launch_for_test(
 /// `Harness::build_session_command` and whether to run the post-launch
 /// registration step (`/rename` for codex; no-op for claude).
 struct LongLivedLaunch {
+    /// Mode + the owned UUID/name backing the borrowed `SessionKey` returned
+    /// by `session_key`. The handle lives inside the variant, so a `Pin` /
+    /// `Resume` without a handle is unrepresentable.
     mode: LaunchMode,
-    /// Owned UUID/name backing the borrowed `SessionKey` returned by
-    /// `session_key`. `None` for `LaunchMode::Auto`.
-    handle: Option<String>,
     /// Working directory to actually launch in. Equals the stamped
     /// `<state_dir>/launch-cwd` when codex is resuming; otherwise the
     /// caller-supplied cwd.
@@ -2678,19 +2678,19 @@ struct LongLivedLaunch {
     is_first_launch: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum LaunchMode {
     Auto,
-    Pin,
-    Resume,
+    Pin(String),
+    Resume(String),
 }
 
 impl LongLivedLaunch {
     fn session_key(&self) -> SessionKey<'_> {
-        match (self.mode, self.handle.as_deref()) {
-            (LaunchMode::Pin, Some(h)) => SessionKey::Pin(h),
-            (LaunchMode::Resume, Some(h)) => SessionKey::Resume(h),
-            _ => SessionKey::Auto,
+        match &self.mode {
+            LaunchMode::Auto => SessionKey::Auto,
+            LaunchMode::Pin(h) => SessionKey::Pin(h),
+            LaunchMode::Resume(h) => SessionKey::Resume(h),
         }
     }
 }
@@ -2745,8 +2745,7 @@ fn prepare_long_lived_launch_inner(
                     let trimmed = raw.trim();
                     if !trimmed.is_empty() {
                         return Ok(LongLivedLaunch {
-                            mode: LaunchMode::Resume,
-                            handle: Some(trimmed.to_string()),
+                            mode: LaunchMode::Resume(trimmed.to_string()),
                             cwd: cwd.to_path_buf(),
                             is_first_launch: false,
                         });
@@ -2758,8 +2757,7 @@ fn prepare_long_lived_launch_inner(
             std::fs::write(&id_path, &uuid)
                 .with_context(|| format!("failed to write {}", id_path.display()))?;
             Ok(LongLivedLaunch {
-                mode: LaunchMode::Pin,
-                handle: Some(uuid),
+                mode: LaunchMode::Pin(uuid),
                 cwd: cwd.to_path_buf(),
                 is_first_launch: true,
             })
@@ -2780,8 +2778,7 @@ fn prepare_long_lived_launch_inner(
                     .filter(|p| p.exists())
                     .unwrap_or_else(|| cwd.to_path_buf());
                 Ok(LongLivedLaunch {
-                    mode: LaunchMode::Resume,
-                    handle: Some(base_name.to_string()),
+                    mode: LaunchMode::Resume(base_name.to_string()),
                     cwd: resume_cwd,
                     is_first_launch: false,
                 })
@@ -2796,7 +2793,6 @@ fn prepare_long_lived_launch_inner(
                 }
                 Ok(LongLivedLaunch {
                     mode: LaunchMode::Auto,
-                    handle: None,
                     cwd: cwd.to_path_buf(),
                     is_first_launch: true,
                 })

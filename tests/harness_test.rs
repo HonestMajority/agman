@@ -58,7 +58,7 @@ fn claude_build_session_command_pins_session_id_when_provided() {
     let uuid = "11111111-2222-3333-4444-555555555555";
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
-        name: "agman-ceo",
+        name: "agman-chief-of-staff",
         cwd: &cwd(),
         skip_git_repo_check: true,
         no_alt_screen: false,
@@ -66,7 +66,7 @@ fn claude_build_session_command_pins_session_id_when_provided() {
     });
     assert!(cmd.contains(&format!("--session-id '{uuid}'")));
     assert!(cmd.contains("--system-prompt 'Identity body'"));
-    assert!(cmd.contains("--name 'agman-ceo'"));
+    assert!(cmd.contains("--name 'agman-chief-of-staff'"));
     assert!(!cmd.contains("--resume"));
 }
 
@@ -78,14 +78,21 @@ fn claude_build_session_command_resumes_when_provided() {
     let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
-        name: "agman-ceo",
+        name: "agman-chief-of-staff",
         cwd: &cwd(),
         skip_git_repo_check: true,
         no_alt_screen: false,
         session_key: SessionKey::Resume(uuid),
     });
     assert!(cmd.contains(&format!("--resume '{uuid}'")));
-    assert!(cmd.contains("--name 'agman-ceo'"));
+    // Resume must NOT pass --name: claude reattaches by stored name and
+    // re-passing it on every resume risks overwriting the display name (and
+    // would silently drift if the deterministic name ever changed between
+    // launches).
+    assert!(
+        !cmd.contains("--name"),
+        "resume must NOT pass --name: {cmd}"
+    );
     assert!(
         !cmd.contains("--system-prompt"),
         "resume must NOT pass --system-prompt: {cmd}"
@@ -123,14 +130,14 @@ fn codex_build_session_command_emits_resume_subcommand() {
     let work_dir = cwd();
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
-        name: "agman-ceo",
+        name: "agman-chief-of-staff",
         cwd: &work_dir,
         skip_git_repo_check: true,
         no_alt_screen: true,
-        session_key: SessionKey::Resume("agman-ceo"),
+        session_key: SessionKey::Resume("agman-chief-of-staff"),
     });
     assert!(cmd.starts_with("codex"));
-    assert!(cmd.contains(" resume 'agman-ceo'"));
+    assert!(cmd.contains(" resume 'agman-chief-of-staff'"));
     assert!(cmd.contains(&format!(" -C '{}'", work_dir.to_string_lossy())));
     assert!(cmd.contains("--no-alt-screen"));
     assert!(
@@ -253,7 +260,7 @@ fn codex_session_index_walker_matches_thread_name() {
 
     let codex_home = tempfile::tempdir().unwrap();
     let index_path = codex_home.path().join("session_index.jsonl");
-    let name = "agman-ceo";
+    let name = "agman-chief-of-staff";
 
     std::fs::write(
         &index_path,
@@ -290,7 +297,7 @@ fn codex_register_session_name_polls_session_index() {
 
     let codex_home = tempfile::tempdir().unwrap();
     let index_path = codex_home.path().join("session_index.jsonl");
-    let name = "agman-ceo";
+    let name = "agman-chief-of-staff";
 
     // Write the entry. The harness should observe it via the polling helper.
     std::fs::write(

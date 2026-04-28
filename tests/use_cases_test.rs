@@ -3975,7 +3975,7 @@ fn long_lived_first_launch_claude_stamps_session_id() {
 
     let prep = prepare_long_lived_launch_for_test(
         &state_dir,
-        "agman-ceo",
+        "agman-chief-of-staff",
         cwd,
         HarnessKind::Claude,
         false,
@@ -3997,7 +3997,7 @@ fn long_lived_first_launch_claude_stamps_session_id() {
     let h = HarnessKind::Claude.select();
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
-        name: "agman-ceo",
+        name: "agman-chief-of-staff",
         cwd: &prep.cwd,
         skip_git_repo_check: true,
         no_alt_screen: false,
@@ -4025,7 +4025,7 @@ fn long_lived_first_launch_codex_stamps_launch_cwd() {
 
     let prep = prepare_long_lived_launch_for_test(
         &state_dir,
-        "agman-ceo",
+        "agman-chief-of-staff",
         cwd,
         HarnessKind::Codex,
         false,
@@ -4056,7 +4056,7 @@ fn long_lived_resume_claude_emits_resume_flag() {
 
     let prep = prepare_long_lived_launch_for_test(
         &state_dir,
-        "agman-ceo",
+        "agman-chief-of-staff",
         tmp.path(),
         HarnessKind::Claude,
         false,
@@ -4070,7 +4070,7 @@ fn long_lived_resume_claude_emits_resume_flag() {
     let h = HarnessKind::Claude.select();
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
-        name: "agman-ceo",
+        name: "agman-chief-of-staff",
         cwd: &prep.cwd,
         skip_git_repo_check: true,
         no_alt_screen: false,
@@ -4090,7 +4090,7 @@ fn long_lived_resume_codex_emits_resume_subcommand() {
     let codex_home = tempfile::tempdir().unwrap();
     std::fs::write(
         codex_home.path().join("session_index.jsonl"),
-        "{\"thread_name\":\"agman-ceo\",\"id\":\"x\"}\n",
+        "{\"thread_name\":\"agman-chief-of-staff\",\"id\":\"x\"}\n",
     )
     .unwrap();
 
@@ -4108,7 +4108,7 @@ fn long_lived_resume_codex_emits_resume_subcommand() {
 
     let prep = prepare_long_lived_launch_for_test(
         &state_dir,
-        "agman-ceo",
+        "agman-chief-of-staff",
         tmp.path(), // freshly-resolved cwd, should be ignored in favour of stamped
         HarnessKind::Codex,
         false,
@@ -4117,19 +4117,19 @@ fn long_lived_resume_codex_emits_resume_subcommand() {
     .unwrap();
     assert_eq!(prep.mode, "resume");
     assert!(!prep.is_first_launch);
-    assert_eq!(prep.handle.as_deref(), Some("agman-ceo"));
+    assert_eq!(prep.handle.as_deref(), Some("agman-chief-of-staff"));
     assert_eq!(prep.cwd, stamped_cwd);
 
     let h = HarnessKind::Codex.select();
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
-        name: "agman-ceo",
+        name: "agman-chief-of-staff",
         cwd: &prep.cwd,
         skip_git_repo_check: true,
         no_alt_screen: true,
-        session_key: SessionKey::Resume("agman-ceo"),
+        session_key: SessionKey::Resume("agman-chief-of-staff"),
     });
-    assert!(cmd.contains(" resume 'agman-ceo'"));
+    assert!(cmd.contains(" resume 'agman-chief-of-staff'"));
     assert!(cmd.contains(&format!(" -C '{}'", stamped_cwd.to_string_lossy())));
     assert!(!cmd.contains("developer_instructions"));
 }
@@ -4159,7 +4159,7 @@ fn respawn_wipes_session_handles_then_fresh_launch_mints_new() {
     // reuses the stale one).
     let prep = prepare_long_lived_launch_for_test(
         &state_dir,
-        "agman-ceo",
+        "agman-chief-of-staff",
         tmp.path(),
         HarnessKind::Claude,
         false,
@@ -4189,7 +4189,7 @@ fn long_lived_force_fresh_ignores_stamped_handle() {
 
     let prep = prepare_long_lived_launch_for_test(
         &state_dir,
-        "agman-ceo",
+        "agman-chief-of-staff",
         tmp.path(),
         HarnessKind::Claude,
         true,
@@ -4205,7 +4205,7 @@ fn long_lived_force_fresh_ignores_stamped_handle() {
     let codex_home = tempfile::tempdir().unwrap();
     std::fs::write(
         codex_home.path().join("session_index.jsonl"),
-        "{\"thread_name\":\"agman-ceo\",\"id\":\"x\"}\n",
+        "{\"thread_name\":\"agman-chief-of-staff\",\"id\":\"x\"}\n",
     )
     .unwrap();
     let codex_state = tmp.path().join("codex-ceo");
@@ -4214,7 +4214,7 @@ fn long_lived_force_fresh_ignores_stamped_handle() {
 
     let prep = prepare_long_lived_launch_for_test(
         &codex_state,
-        "agman-ceo",
+        "agman-chief-of-staff",
         tmp.path(),
         HarnessKind::Codex,
         true,
@@ -4225,4 +4225,60 @@ fn long_lived_force_fresh_ignores_stamped_handle() {
     assert!(prep.is_first_launch);
     let stamped = std::fs::read_to_string(codex_state.join("launch-cwd")).unwrap();
     assert_eq!(stamped.trim(), tmp.path().to_string_lossy());
+}
+
+#[test]
+fn long_lived_resume_codex_falls_back_when_stamped_cwd_missing() {
+    // Partial-state robustness: if `<state_dir>/launch-cwd` points at a
+    // directory that no longer exists, the resume path must still take the
+    // resume branch but fall back to the freshly-resolved `cwd` argument
+    // (not pass codex a non-existent directory). This pins the
+    // `.filter(|p| p.exists())` fallback in `prepare_long_lived_launch_inner`.
+    use agman::harness::HarnessKind;
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        "{\"thread_name\":\"agman-chief-of-staff\",\"id\":\"x\"}\n",
+    )
+    .unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    // Build a path under tmp that exists, then remove it so the stamp
+    // points at a guaranteed-missing directory. The enclosing `TempDir`
+    // is already unique to this test, so no extra uniqueness is needed.
+    let deleted_cwd = tmp.path().join("agman-deleted-launch-cwd");
+    std::fs::create_dir_all(&deleted_cwd).unwrap();
+    std::fs::remove_dir_all(&deleted_cwd).unwrap();
+    assert!(!deleted_cwd.exists());
+    std::fs::write(
+        state_dir.join("launch-cwd"),
+        deleted_cwd.to_string_lossy().as_ref(),
+    )
+    .unwrap();
+
+    // Pass a real, existing cwd as the freshly-resolved argument.
+    let live_cwd = tmp.path().join("live-worktree");
+    std::fs::create_dir_all(&live_cwd).unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        &live_cwd,
+        HarnessKind::Codex,
+        false,
+        Some(codex_home.path()),
+    )
+    .unwrap();
+
+    assert_eq!(prep.mode, "resume", "session_index hit -> resume path");
+    assert_eq!(
+        prep.cwd, live_cwd,
+        "stamped launch-cwd points at a deleted dir; must fall back to the live cwd argument, not the stamped path"
+    );
+    assert_ne!(prep.cwd, deleted_cwd);
 }

@@ -1,6 +1,7 @@
 //! Codex (OpenAI Codex CLI) harness implementation.
 
 use anyhow::Result;
+use chrono::{Duration as ChronoDuration, NaiveDate, Utc};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -180,6 +181,13 @@ pub fn latest_transcript_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| cwd.to_string_lossy().to_string());
 
+    // Prune by directory name during the walk: skip any `YYYY/MM/DD` subtree
+    // older than 7 days before recursing into it. This avoids scanning months
+    // of history on users with long-running codex installs. The per-file
+    // mtime check below stays as a backstop for cases where directory names
+    // lie or a file's mtime is fresher/staler than its enclosing date.
+    let cutoff_date = (Utc::now() - ChronoDuration::days(7)).date_naive();
+
     // Collect candidate rollout files from at most the last 7 day-buckets.
     let mut candidates: Vec<PathBuf> = Vec::new();
     for year_entry in std::fs::read_dir(&sessions_root).ok()?.flatten() {
@@ -187,14 +195,29 @@ pub fn latest_transcript_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
         if !year_path.is_dir() {
             continue;
         }
+        let Some(year) = parse_dir_component(&year_path) else {
+            continue;
+        };
         for month_entry in std::fs::read_dir(&year_path).ok().into_iter().flatten().flatten() {
             let month_path = month_entry.path();
             if !month_path.is_dir() {
                 continue;
             }
+            let Some(month) = parse_dir_component(&month_path) else {
+                continue;
+            };
             for day_entry in std::fs::read_dir(&month_path).ok().into_iter().flatten().flatten() {
                 let day_path = day_entry.path();
                 if !day_path.is_dir() {
+                    continue;
+                }
+                let Some(day) = parse_dir_component(&day_path) else {
+                    continue;
+                };
+                let Some(date) = NaiveDate::from_ymd_opt(year, month, day) else {
+                    continue;
+                };
+                if date < cutoff_date {
                     continue;
                 }
                 for file_entry in std::fs::read_dir(&day_path).ok().into_iter().flatten().flatten() {
@@ -215,7 +238,8 @@ pub fn latest_transcript_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
     });
     candidates.reverse();
 
-    // Cap to a reasonable horizon to avoid scanning huge histories.
+    // Backstop: enforce the same 7-day horizon at file granularity in case
+    // directory names lie about contained mtimes.
     let now = std::time::SystemTime::now();
     let max_age = Duration::from_secs(7 * 24 * 60 * 60);
 
@@ -234,6 +258,14 @@ pub fn latest_transcript_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Parse a `YYYY` / `MM` / `DD` directory leaf as `i32` / `u32` / `u32` (the
+/// types `NaiveDate::from_ymd_opt` wants). Returns `None` for non-numeric
+/// names so unrelated directories under `~/.codex/sessions/` are silently
+/// skipped.
+fn parse_dir_component<T: std::str::FromStr>(path: &Path) -> Option<T> {
+    path.file_name()?.to_str()?.parse::<T>().ok()
 }
 
 /// Read the first line of a rollout file and decide whether its declared

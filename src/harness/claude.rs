@@ -32,32 +32,38 @@ impl Harness for ClaudeHarness {
     /// thread).
     ///
     /// `--name <name>` registers the deterministic session name so the user
-    /// can reattach manually with `claude --resume <name>` from a shell.
-    /// On `SessionKey::Pin` the session is also pinned to a known UUID via
-    /// `--session-id <uuid>` so a later `--resume <uuid>` lands directly in
-    /// interactive mode (resuming by name opens a picker).
+    /// can reattach manually with `claude --resume <name>` from a shell. It
+    /// is passed on `SessionKey::Auto` and `SessionKey::Pin` only — on
+    /// `Resume` the session already has a stored name, and re-passing
+    /// `--name` would risk overwriting it. On `SessionKey::Pin` the session
+    /// is also pinned to a known UUID via `--session-id <uuid>` so a later
+    /// `--resume <uuid>` lands directly in interactive mode (resuming by
+    /// name opens a picker).
     fn build_session_command(&self, ctx: &LaunchContext) -> String {
-        let escaped_name = ctx.name.replace('\'', "'\\''");
-
         let mut cmd = String::from("claude --dangerously-skip-permissions");
-        cmd.push_str(&format!(" --name '{}'", escaped_name));
 
         match ctx.session_key {
             SessionKey::Auto => {
+                let escaped_name = ctx.name.replace('\'', "'\\''");
                 let escaped_prompt = ctx.identity.replace('\'', "'\\''");
+                cmd.push_str(&format!(" --name '{}'", escaped_name));
                 cmd.push_str(&format!(" --system-prompt '{}'", escaped_prompt));
             }
             SessionKey::Pin(uuid) => {
+                let escaped_name = ctx.name.replace('\'', "'\\''");
                 let escaped_uuid = uuid.replace('\'', "'\\''");
                 let escaped_prompt = ctx.identity.replace('\'', "'\\''");
+                cmd.push_str(&format!(" --name '{}'", escaped_name));
                 cmd.push_str(&format!(" --session-id '{}'", escaped_uuid));
                 cmd.push_str(&format!(" --system-prompt '{}'", escaped_prompt));
             }
             SessionKey::Resume(uuid) => {
                 let escaped_uuid = uuid.replace('\'', "'\\''");
-                // Resumed sessions keep their original prompt; do NOT pass
-                // --system-prompt (it would be ignored or worse, replace
-                // the saved one).
+                // Resumed sessions keep their original prompt and stored
+                // name; do NOT pass --system-prompt or --name (the former
+                // would be ignored or replace the saved prompt; the latter
+                // would risk rewriting the display name and silently drift
+                // if the deterministic name ever changed).
                 cmd.push_str(&format!(" --resume '{}'", escaped_uuid));
             }
         }
@@ -178,7 +184,14 @@ pub(crate) fn kill_pane_via_slash(
         }
     }
 
-    for _ in 0..ctrl_c_count {
+    for i in 0..ctrl_c_count {
+        // Before the 2nd through Nth Ctrl-C, give the agent a brief window
+        // to actually quit from the previous press. If the pane is already
+        // idle we'd otherwise be over-pressing into the freshly-revealed
+        // shell.
+        if i > 0 && wait_for_pane_idle(session, window, Duration::from_millis(150)) {
+            return Ok(());
+        }
         let _ = match window {
             Some(w) => Tmux::send_ctrl_c_to_window(session, w),
             None => Tmux::send_ctrl_c_to_session(session),

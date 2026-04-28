@@ -137,7 +137,7 @@ pub struct LaunchContext<'a> {
     /// `SessionKey::Resume` for both harnesses (the resumed thread already
     /// has its system prompt baked in).
     pub identity: &'a str,
-    /// Stable, deterministic session name (e.g. `agman-ceo`,
+    /// Stable, deterministic session name (e.g. `agman-chief-of-staff`,
     /// `agman-pm-<project>`, `agman-r-<project>--<name>`,
     /// `agman-task-<task-id>-step-<n>`).
     pub name: &'a str,
