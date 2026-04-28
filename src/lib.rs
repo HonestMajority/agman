@@ -12,5 +12,6 @@ pub mod researcher;
 pub mod supervisor;
 pub mod task;
 pub mod telegram;
+pub mod templates;
 pub mod tmux;
 pub mod use_cases;

@@ -2739,32 +2739,60 @@ fn use_case_create_project() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    let project = use_cases::create_project(&config, "my-proj", "A test project").unwrap();
+    // No initial-message → description is a human label only, inbox stays empty.
+    let project = use_cases::create_project(&config, "my-proj", "A test project", None).unwrap();
     assert_eq!(project.meta.name, "my-proj");
     assert_eq!(project.meta.description, "A test project");
 
     // Project directory and meta should exist
     assert!(config.project_dir("my-proj").join("meta.json").exists());
 
-    // Initial directive should be in the project inbox
+    // Description is no longer auto-sent to the inbox.
     let messages = agman::inbox::read_messages(&config.project_inbox("my-proj")).unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].from, "ceo");
-    assert_eq!(messages[0].message, "A test project");
+    assert_eq!(messages.len(), 0);
 }
 
 #[test]
-fn use_case_create_project_empty_description() {
+fn create_project_with_initial_message_seeds_inbox() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    let project = use_cases::create_project(&config, "empty-proj", "").unwrap();
+    let project = use_cases::create_project(
+        &config,
+        "briefed-proj",
+        "Briefed project",
+        Some("Kick off with the design doc"),
+    )
+    .unwrap();
+    assert_eq!(project.meta.name, "briefed-proj");
+
+    // Initial-message lands in the PM inbox tagged from `ceo`.
+    let messages = agman::inbox::read_messages(&config.project_inbox("briefed-proj")).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "ceo");
+    assert_eq!(messages[0].message, "Kick off with the design doc");
+}
+
+#[test]
+fn create_project_without_initial_message_leaves_inbox_empty() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    // Both an empty description and no initial message → inbox stays empty.
+    let project = use_cases::create_project(&config, "empty-proj", "", None).unwrap();
     assert_eq!(project.meta.name, "empty-proj");
 
-    // No inbox file should be created for empty description
     let messages = agman::inbox::read_messages(&config.project_inbox("empty-proj")).unwrap();
     assert_eq!(messages.len(), 0);
+
+    // Even with a description, a missing initial-message means no inbox seed.
+    let project2 =
+        use_cases::create_project(&config, "labeled-proj", "Just a label", None).unwrap();
+    assert_eq!(project2.meta.description, "Just a label");
+    let messages2 = agman::inbox::read_messages(&config.project_inbox("labeled-proj")).unwrap();
+    assert_eq!(messages2.len(), 0);
 }
 
 #[test]
@@ -2787,17 +2815,15 @@ fn use_case_send_message_to_project() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    // Create the project directory first
-    use_cases::create_project(&config, "frontend", "Frontend project").unwrap();
+    // Create the project directory first. Description is a label only — inbox stays empty.
+    use_cases::create_project(&config, "frontend", "Frontend project", None).unwrap();
 
     use_cases::send_message(&config, "frontend", "ceo", "Please start work").unwrap();
 
     let messages = agman::inbox::read_messages(&config.project_inbox("frontend")).unwrap();
-    assert_eq!(messages.len(), 2);
+    assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].from, "ceo");
-    assert_eq!(messages[0].message, "Frontend project");
-    assert_eq!(messages[1].from, "ceo");
-    assert_eq!(messages[1].message, "Please start work");
+    assert_eq!(messages[0].message, "Please start work");
 }
 
 #[test]
@@ -3841,4 +3867,62 @@ fn start_agent_step_queues_inbox_work_directive() {
         system_prompt.contains("Work Directives"),
         "system prompt should include the work-directives preamble"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Project templates
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_template_writes_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    let body = "Release cleanup template\n\nUse this when shipping a feature flag.\n";
+    agman::templates::write_template(&config, "release-cleanup", body).unwrap();
+
+    let path = config.template_path("release-cleanup");
+    assert!(path.exists());
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(on_disk, body);
+}
+
+#[test]
+fn list_templates_returns_name_and_description() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    agman::templates::write_template(
+        &config,
+        "alpha",
+        "Alpha description line\n\nMore detail below.\n",
+    )
+    .unwrap();
+    agman::templates::write_template(
+        &config,
+        "beta",
+        "\n   \nBeta description line\n",
+    )
+    .unwrap();
+
+    let summaries = agman::templates::list_templates(&config).unwrap();
+    assert_eq!(summaries.len(), 2);
+    // Sorted by name.
+    assert_eq!(summaries[0].name, "alpha");
+    assert_eq!(summaries[0].description, "Alpha description line");
+    assert_eq!(summaries[1].name, "beta");
+    // First non-empty trimmed line wins, even after blank/whitespace lines.
+    assert_eq!(summaries[1].description, "Beta description line");
+}
+
+#[test]
+fn get_template_returns_body() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    let body = "# Template\n\nFull body, multiple lines.\n";
+    agman::templates::write_template(&config, "my-template", body).unwrap();
+
+    let read_back = agman::templates::read_template(&config, "my-template").unwrap();
+    assert_eq!(read_back, body);
 }

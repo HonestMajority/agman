@@ -3328,7 +3328,7 @@ impl App {
                         return Ok(false);
                     }
 
-                    match use_cases::create_project(&self.config, &name, &desc) {
+                    match use_cases::create_project(&self.config, &name, &desc, None) {
                         Ok(_project) => {
                             tracing::info!(project = %name, "created project via wizard");
                             self.set_status(format!("Created project: {name}"));

@@ -54,12 +54,27 @@ EXAMPLES:
     },
 
     /// Create a new project with a PM
+    #[command(after_help = "\
+EXAMPLES:
+  agman create-project myproj --description \"Frontend rewrite\"
+  agman create-project myproj --description \"Frontend rewrite\" --initial-message \"Kick off with the design doc at ./brief.md\"
+  agman create-project myproj --description \"Frontend rewrite\" --initial-message @./brief.md
+  cat <<'EOF' | agman create-project myproj --description \"Frontend rewrite\" --initial-message -
+  Multi-line brief via stdin using the - sentinel.
+  EOF")]
     CreateProject {
         /// Project name (alphanumeric + hyphens)
         name: String,
-        /// Project description
+        /// Human label for the project (shown in lists). Not sent to the PM.
         #[arg(long)]
         description: Option<String>,
+        /// Initial brief queued to the PM's inbox on spawn
+        /// (accepts inline text, @path, or - for stdin)
+        #[arg(long, allow_hyphen_values = true)]
+        initial_message: Option<String>,
+        /// Read the initial message from a file
+        #[arg(short = 'F', long)]
+        file: Option<std::path::PathBuf>,
     },
 
     /// List all projects
@@ -75,6 +90,34 @@ EXAMPLES:
     DeleteProject {
         /// Project name
         name: String,
+    },
+
+    /// List available project templates
+    ListTemplates,
+
+    /// Print a template's body to stdout
+    GetTemplate {
+        /// Template name (filename without .md)
+        name: String,
+    },
+
+    /// Save a new project template
+    #[command(after_help = "\
+EXAMPLES:
+  agman create-template release-cleanup --file ./templates/release-cleanup.md
+  cat <<'EOF' | agman create-template release-cleanup -
+  Multi-line template via stdin using the - sentinel.
+  EOF
+  agman create-template release-cleanup @./templates/release-cleanup.md")]
+    CreateTemplate {
+        /// Template name (alphanumeric + hyphens; becomes the filename)
+        name: String,
+        /// Template body (inline text, @path, or - for stdin)
+        #[arg(allow_hyphen_values = true)]
+        body: Option<String>,
+        /// Read template body from a file
+        #[arg(short = 'F', long)]
+        file: Option<std::path::PathBuf>,
     },
 
     /// Stop a running task
