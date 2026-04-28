@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::harness::{Harness, HarnessKind};
+
 /// Replace `/` with `-` in branch names so task directories stay flat.
 /// The real branch name is preserved in `meta.json`; the task ID is just a
 /// filesystem-safe lookup key.
@@ -35,6 +37,9 @@ pub struct ConfigFile {
     pub archive_retention_days: Option<u64>,
     pub telegram_bot_token: Option<String>,
     pub telegram_chat_id: Option<String>,
+    /// Which agent harness to use for newly-spawned agents. `"claude"` or
+    /// `"codex"`. Defaults to `"claude"` when absent.
+    pub harness: Option<String>,
 }
 
 /// Read `<base_dir>/config.toml`, returning defaults if missing or unparseable.
@@ -223,14 +228,20 @@ impl Config {
         self.base_dir.join("chat_last_viewed.json")
     }
 
-    pub fn claude_projects_dir(&self) -> PathBuf {
-        if let Ok(dir) = std::env::var("AGMAN_CLAUDE_PROJECTS_DIR") {
-            return PathBuf::from(dir);
-        }
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".claude")
-            .join("projects")
+    /// Resolve the configured harness kind. Falls back to `Claude` when the
+    /// `harness` config key is absent or unparseable.
+    pub fn harness_kind(&self) -> HarnessKind {
+        let cf = load_config_file(&self.base_dir);
+        cf.harness
+            .as_deref()
+            .and_then(HarnessKind::from_str)
+            .unwrap_or(HarnessKind::Claude)
+    }
+
+    /// Return the configured harness as a trait object. Used at spawn sites
+    /// for newly-launched long-lived agents.
+    pub fn default_harness(&self) -> Box<dyn Harness> {
+        self.harness_kind().select()
     }
 
     pub fn break_state_path(&self) -> PathBuf {
@@ -259,20 +270,12 @@ impl Config {
         self.chief_of_staff_dir().join("inbox.seq")
     }
 
-    pub fn chief_of_staff_session_id(&self) -> PathBuf {
-        self.chief_of_staff_dir().join("session-id")
-    }
-
     pub fn project_inbox(&self, name: &str) -> PathBuf {
         self.project_dir(name).join("inbox.jsonl")
     }
 
     pub fn project_seq(&self, name: &str) -> PathBuf {
         self.project_dir(name).join("inbox.seq")
-    }
-
-    pub fn project_session_id(&self, name: &str) -> PathBuf {
-        self.project_dir(name).join("session-id")
     }
 
     pub fn chief_of_staff_tmux_session() -> &'static str {
@@ -328,10 +331,6 @@ impl Config {
 
     pub fn researcher_seq(&self, project: &str, name: &str) -> PathBuf {
         self.researcher_dir(project, name).join("inbox.seq")
-    }
-
-    pub fn researcher_session_id(&self, project: &str, name: &str) -> PathBuf {
-        self.researcher_dir(project, name).join("session-id")
     }
 
     pub fn researcher_tmux_session(project: &str, name: &str) -> String {
@@ -509,10 +508,9 @@ Don't impose a fixed structure. For most follow-ups, `# Goal` alone is enough. I
 
 Instructions:
 1. Read and understand all the context provided.
-2. Check for Claude Code skills in the repo (`.claude/skills/*/SKILL.md` and `.claude/commands/*.md`). If any exist, mention relevant skills in the rewritten goal where appropriate.
-3. **Detect and reconcile stale TASK.md.** The user may have made significant manual code changes between agman iterations that TASK.md does not reflect. Before rewriting, compare the existing TASK.md against the git diff, commit log, and actual codebase. If the code has progressed beyond what TASK.md shows — work done that isn't reflected, or code significantly refactored — treat the code as the source of truth. Browse the codebase to understand what changed, and make sure the rewritten goal reflects the real state.
-4. Focus primarily on the NEW FEEDBACK — this is what matters now.
-5. Before rewriting, assess whether the feedback's concerns are already addressed — examine the git diff and commit log provided to you. The feature may already be implemented, the bug may already be fixed, or the requested behavior may already be present.
+2. **Detect and reconcile stale TASK.md.** The user may have made significant manual code changes between agman iterations that TASK.md does not reflect. Before rewriting, compare the existing TASK.md against the git diff, commit log, and actual codebase. If the code has progressed beyond what TASK.md shows — work done that isn't reflected, or code significantly refactored — treat the code as the source of truth. Browse the codebase to understand what changed, and make sure the rewritten goal reflects the real state.
+3. Focus primarily on the NEW FEEDBACK — this is what matters now.
+4. Before rewriting, assess whether the feedback's concerns are already addressed — examine the git diff and commit log provided to you. The feature may already be implemented, the bug may already be fixed, or the requested behavior may already be present.
 
 ## Referencing Other Tasks
 

@@ -467,7 +467,7 @@ fn stop_task_finalizes_live_session() {
     let mut task = create_test_task(&config, "repo", "branch");
     task.push_session(SessionEntry {
         agent: "coder".to_string(),
-        session_id: "sid-live".to_string(),
+        name: "sid-live".to_string(),
         started_at: chrono::Utc::now(),
         stopped_at: None,
         condition: None,
@@ -1640,6 +1640,7 @@ fn save_and_load_config_file_roundtrip() {
         archive_retention_days: None,
         telegram_bot_token: None,
         telegram_chat_id: None,
+        harness: None,
     };
     agman::config::save_config_file(&base_dir, &cf).unwrap();
 
@@ -1691,7 +1692,9 @@ fn save_and_load_telegram_config() {
 
 #[test]
 fn check_dependencies_finds_git() {
-    let missing = use_cases::check_dependencies();
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let missing = use_cases::check_dependencies(&config);
     // `git` is always available in test environments
     assert!(!missing.contains(&"git".to_string()));
 }
@@ -3353,11 +3356,8 @@ fn handoff_file_mechanics() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    // Create Chief of Staff dir with a fake session-id
     let cos_dir = config.chief_of_staff_dir();
     std::fs::create_dir_all(&cos_dir).unwrap();
-    let session_id_path = config.chief_of_staff_session_id();
-    std::fs::write(&session_id_path, "fake-session-id-123").unwrap();
 
     // Write a handoff.md as if the agent wrote it
     let handoff_path = cos_dir.join("handoff.md");
@@ -3372,11 +3372,6 @@ fn handoff_file_mechanics() {
     assert!(content.contains("project alpha"));
     assert!(content.contains("task-42"));
 
-    // Verify session-id exists then delete it (simulating respawn cleanup)
-    assert!(session_id_path.exists());
-    std::fs::remove_file(&session_id_path).unwrap();
-    assert!(!session_id_path.exists());
-
     // Verify handoff cleanup
     std::fs::remove_file(&handoff_path).unwrap();
     assert!(!handoff_path.exists());
@@ -3388,25 +3383,26 @@ fn handoff_file_mechanics() {
 
 #[test]
 fn chat_unread_via_transcript_and_mark_viewed() {
+    use agman::harness::HarnessKind;
+
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
-    let claude_projects_tmp = tempfile::tempdir().unwrap();
-    std::env::set_var("AGMAN_CLAUDE_PROJECTS_DIR", claude_projects_tmp.path());
+    // Redirect ~/.claude to a tempdir so we don't touch the real one.
+    let claude_home_tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("AGMAN_CLAUDE_HOME", claude_home_tmp.path());
 
     let project_name = "test-project";
     let project_dir = config.project_dir(project_name);
     std::fs::create_dir_all(&project_dir).unwrap();
 
-    let session_id = "test-session-abc";
-    let session_id_path = config.project_session_id(project_name);
-    std::fs::write(&session_id_path, session_id).unwrap();
+    // Create a transcript file under the harness home keyed by project_dir.
+    let escaped_cwd = project_dir.to_string_lossy().replace('/', "-");
+    let transcript_dir = claude_home_tmp.path().join("projects").join(&escaped_cwd);
+    std::fs::create_dir_all(&transcript_dir).unwrap();
+    let transcript_path = transcript_dir.join("session-abc.jsonl");
 
-    let transcript_path =
-        use_cases::claude_transcript_path(claude_projects_tmp.path(), &project_dir, session_id);
-    std::fs::create_dir_all(transcript_path.parent().unwrap()).unwrap();
-
-    // User-only transcript — no unread
+    // User-only transcript — no unread (no assistant marker).
     std::fs::write(
         &transcript_path,
         "{\"type\":\"user\",\"uuid\":\"u1\",\"timestamp\":\"2026-01-01T00:00:00Z\"}\n",
@@ -3415,7 +3411,7 @@ fn chat_unread_via_transcript_and_mark_viewed() {
     let result = use_cases::count_unread_chat_messages(&config);
     assert!(result.unread_names.is_empty());
 
-    // Append assistant line — project appears as unread
+    // Append assistant line — project appears as unread.
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new()
         .append(true)
@@ -3430,13 +3426,20 @@ fn chat_unread_via_transcript_and_mark_viewed() {
     let result = use_cases::count_unread_chat_messages(&config);
     assert_eq!(result.unread_names, vec!["test-project".to_string()]);
 
-    // Mark viewed — no longer unread
+    // Mark viewed — no longer unread.
     let agent_key = format!("project:{project_name}");
     use_cases::mark_chat_viewed(&config, &agent_key).unwrap();
     let result = use_cases::count_unread_chat_messages(&config);
     assert!(result.unread_names.is_empty());
 
-    // Append another assistant line — unread again
+    // Sanity-check the harness directly: it finds the same transcript.
+    let h = HarnessKind::Claude.select();
+    assert_eq!(
+        h.latest_transcript(&project_dir).unwrap(),
+        transcript_path
+    );
+
+    // Append another assistant line — unread again.
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .open(&transcript_path)
@@ -3450,7 +3453,7 @@ fn chat_unread_via_transcript_and_mark_viewed() {
     let result = use_cases::count_unread_chat_messages(&config);
     assert_eq!(result.unread_names, vec!["test-project".to_string()]);
 
-    std::env::remove_var("AGMAN_CLAUDE_PROJECTS_DIR");
+    std::env::remove_var("AGMAN_CLAUDE_HOME");
 }
 
 #[test]
@@ -3862,9 +3865,15 @@ fn start_agent_step_queues_inbox_work_directive() {
         "inbox message should contain the Current Task heading"
     );
 
-    // The system prompt that was written to .current-prompt.md must NOT
-    // contain the TASK.md body — that lives in the inbox.
-    let system_prompt = std::fs::read_to_string(task.current_prompt_path()).unwrap();
+    // The system prompt is no longer written to disk — it's passed inline
+    // to the harness via build_session_command. Verify the inline shape
+    // directly via Agent::build_system_prompt.
+    use agman::agent::Agent;
+    use agman::harness::HarnessKind;
+    let agent = Agent::load(&config, "coder").unwrap();
+    let system_prompt = agent
+        .build_system_prompt(&task, false, HarnessKind::Claude.select().as_ref())
+        .unwrap();
     assert!(
         !system_prompt.contains("Do the inbox-delivered work"),
         "system prompt must not embed TASK.md content"

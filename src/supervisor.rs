@@ -1,18 +1,19 @@
-//! Task supervisor: runs agent flow steps as interactive `claude` sessions
-//! inside a tmux window (the task session's `agman` window) and advances the
-//! flow based on sentinel files.
+//! Task supervisor: runs agent flow steps as interactive agent sessions
+//! (claude or codex per the configured harness) inside a tmux window (the
+//! task session's `agman` window) and advances the flow based on sentinel
+//! files.
 //!
-//! Each step launches a fresh interactive `claude
-//! --dangerously-skip-permissions --system-prompt-file
-//! <task_dir>/.current-prompt.md`. Task agents are disposable: every flow
-//! transition kills the prior `claude` and starts a fresh one with the next
-//! agent's system prompt. We never `--resume` task agents — that lifecycle
-//! belongs to the long-lived Chief of Staff/PM/researcher.
+//! Each step launches a fresh interactive agent process via the configured
+//! `Harness::build_session_command`. Task agents are disposable: every flow
+//! transition kills the prior process and starts a fresh one with the next
+//! agent's system prompt. agman never resumes any session programmatically —
+//! the user can manually `claude --resume <name>` / `codex resume <name>`
+//! from a shell to revisit a historical conversation.
 //!
 //! The system prompt holds **identity only** — who the agent is and how to
 //! finish — while the dynamic per-launch payload (current TASK.md, any
 //! feedback, git diff, recent commits) is delivered separately through the
-//! task inbox once claude is ready to receive messages. This mirrors the
+//! task inbox once the agent is ready to receive messages. This mirrors the
 //! Chief of Staff/PM/researcher launch flow.
 //!
 //! Completion is detected purely by file existence. The agent's last action
@@ -36,6 +37,7 @@ use crate::agent::Agent;
 use crate::command::StoredCommand;
 use crate::config::Config;
 use crate::flow::{Flow, FlowStep, LoopStep, StopCondition};
+use crate::harness::{self, HarnessKind, LaunchContext, RegisterContext};
 use crate::inbox;
 use crate::task::{QueueItem, SessionEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
@@ -128,7 +130,9 @@ pub enum PollOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PollTarget {
     /// Task has a live supervisor session; poll it for a stop condition.
-    LiveSession { session_id: String },
+    /// `session_name` is the harness session name (e.g.
+    /// `agman-task-<id>-step-<n>`), used for logging only.
+    LiveSession { session_name: String },
     /// Task is Running but its last supervisor session already stopped —
     /// the caller should re-enter `launch_next_step` to recover. This is
     /// the "half-state" case (e.g. `wake_if_idle` drained the queue but a
@@ -155,111 +159,36 @@ pub fn classify(task: &Task) -> PollTarget {
     }
     match task.meta.session_history.last() {
         Some(entry) if entry.stopped_at.is_none() => PollTarget::LiveSession {
-            session_id: entry.session_id.clone(),
+            session_name: entry.name.clone(),
         },
         Some(_) => PollTarget::NeedsLaunch,
         None => PollTarget::NeedsLaunch,
     }
 }
 
-/// Quit the `claude` process currently running in a session's `agman` window
-/// and wait until the pane is back at a shell prompt.
+/// Quit the foreground agent process currently running in a session's
+/// `agman` window and wait until the pane is back at a shell prompt.
 ///
-/// This must be reliable: the inbox poller will paste-inject the next agent's
-/// work directive into whatever process happens to be in the foreground of
-/// the agman pane. If the prior `claude` is still alive when we queue the
-/// next agent's work, the wrong agent receives it.
+/// This must be reliable: the inbox poller will paste-inject the next
+/// agent's work directive into whatever process happens to be in the
+/// foreground of the agman pane. If the prior agent is still alive when we
+/// queue the next agent's work, the wrong agent receives it.
 ///
-/// We do **not** signal the pane's pid. `tmux display-message #{pane_pid}`
-/// returns the pane's *shell* (zsh/bash), not the claude child running inside
-/// it. SIGTERM-ing the shell tears down the entire tmux window — in testing
-/// this killed both the agman window and the adjacent nvim window, leaving
-/// the supervisor with no pane to drive. Instead, we use claude's own
-/// `/exit` slash command, which shuts it down gracefully and returns control
-/// to the still-running shell, leaving the window intact.
-///
-/// Sequence:
-/// 1. If `is_claude_running_in` already reports a shell (or the tmux pane
-///    isn't queryable at all), there's nothing to do — return early.
-/// 2. Send `/exit` + Enter to the agman pane. Poll `is_claude_running_in`
-///    until the foreground is back to a shell or a 5-second deadline expires.
-/// 3. If `/exit` didn't take (claude is wedged in a state that won't accept
-///    slash commands), fall back to Ctrl+C × 2 — but never SIGTERM/SIGKILL
-///    the pane pid.
-/// 4. Bail with an error if the pane is *still* not back to a shell — the
-///    caller must not launch the next agent into a pane that's still
-///    occupied.
-pub fn kill_current_claude(session_name: &str) -> Result<()> {
-    // If we can't even query the foreground process (typically because the
-    // tmux session/window is gone), there is nothing meaningful to kill —
-    // the caller will fail naturally on its subsequent send-keys attempt.
-    let still_running = match Tmux::is_claude_running_in(session_name, Some(AGMAN_WINDOW)) {
-        Ok((running, _)) => running,
-        Err(e) => {
-            tracing::debug!(
-                session = session_name,
-                error = %e,
-                "kill_current_claude: pane not queryable; nothing to kill"
-            );
-            return Ok(());
-        }
-    };
-
-    if !still_running {
-        tracing::debug!(
-            session = session_name,
-            "kill_current_claude: pane already at shell; no-op"
-        );
-        return Ok(());
-    }
-
-    tracing::debug!(session = session_name, "sending /exit to agman pane");
-    match Tmux::send_keys_to_window(session_name, AGMAN_WINDOW, "/exit") {
-        Ok(()) => {
-            if wait_for_pane_idle(session_name, std::time::Duration::from_secs(5)) {
-                tracing::debug!(session = session_name, "pane back to shell after /exit");
-                return Ok(());
-            }
-            tracing::warn!(
-                session = session_name,
-                "/exit did not return pane to shell within 5s; escalating to Ctrl+C x2"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                session = session_name,
-                error = %e,
-                "failed to send /exit; escalating to Ctrl+C x2"
-            );
-        }
-    }
-
-    // Last-resort escalation: Ctrl+C twice. We deliberately never signal
-    // `pane_pid` — that's the shell, and killing it destroys the tmux window.
-    let _ = Tmux::send_ctrl_c_to_window(session_name, AGMAN_WINDOW);
-    std::thread::sleep(std::time::Duration::from_millis(150));
-    let _ = Tmux::send_ctrl_c_to_window(session_name, AGMAN_WINDOW);
-
-    if wait_for_pane_idle(session_name, std::time::Duration::from_secs(2)) {
-        tracing::debug!(session = session_name, "pane back to shell after Ctrl+C x2");
-        return Ok(());
-    }
-
-    anyhow::bail!(
-        "failed to quit claude in pane '{}:{}' after /exit + Ctrl+C x2",
-        session_name,
-        AGMAN_WINDOW
-    )
+/// We delegate to the harness's `kill_pane` impl which uses the harness's
+/// own quit slash command (`/exit` for claude, `/quit` for codex) and falls
+/// back to Ctrl-C — but never SIGTERM/SIGKILL the pane pid (that destroys
+/// the tmux window).
+pub fn kill_current_agent(harness: &dyn crate::harness::Harness, session_name: &str) -> Result<()> {
+    harness.kill_pane(session_name, Some(AGMAN_WINDOW))
 }
 
-/// Poll `Tmux::is_claude_running_in` for up to `timeout`, returning `true`
-/// once the foreground process is a shell (i.e. claude has exited) and
-/// `false` if the deadline expires first. Used by `kill_current_claude` to
-/// verify a kill landed before the caller launches the next agent.
-fn wait_for_pane_idle(session_name: &str, timeout: std::time::Duration) -> bool {
+/// Wait until the foreground process is NOT a shell — i.e. the agent has
+/// taken over the pane. Used by `start_agent_step` after `send-keys` to
+/// drive harness-specific post-launch registration (codex `/rename`).
+fn wait_for_agent_ready(session_name: &str, timeout: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
-        if let Ok((false, _)) = Tmux::is_claude_running_in(session_name, Some(AGMAN_WINDOW)) {
+        if let Ok((true, _)) = Tmux::is_agent_running_in(session_name, Some(AGMAN_WINDOW)) {
             return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(150));
@@ -282,20 +211,24 @@ fn is_command_flow(config: &Config, flow_name: &str) -> bool {
     config.command_path(flow_name).exists()
 }
 
-/// Build the **system prompt** for a step (identity only — no TASK.md,
-/// feedback, or git context) and write it to `<task_dir>/.current-prompt.md`
-/// so `claude --system-prompt-file <path>` can pick it up.
+/// Build the **system prompt** body for a step (identity only — no TASK.md,
+/// feedback, or git context). Returned inline; the caller passes it to the
+/// harness's `build_session_command` so it ends up on the launch command
+/// line (claude `--system-prompt`) or the harness config (`codex -c
+/// developer_instructions=...`).
 ///
 /// For stored-command flows the prompt template is *not* embedded here — it
-/// moves to the inbox message via `prepare_inbox_message` so claude actually
-/// has a user-message directive to act on.
-fn prepare_system_prompt(config: &Config, task: &Task, agent_name: &str) -> Result<String> {
+/// moves to the inbox message via `prepare_inbox_message` so the agent
+/// actually has a user-message directive to act on.
+fn prepare_system_prompt(
+    config: &Config,
+    task: &Task,
+    agent_name: &str,
+    harness: &dyn crate::harness::Harness,
+) -> Result<String> {
     let agent = Agent::load(config, agent_name)?;
     let command_mode = is_command_flow(config, &task.meta.flow_name);
-    let prompt = agent.build_system_prompt(task, command_mode)?;
-    std::fs::write(task.current_prompt_path(), &prompt)
-        .context("failed to write .current-prompt.md")?;
-    Ok(prompt)
+    agent.build_system_prompt(task, command_mode, harness)
 }
 
 /// Build the **inbox message** for a step — the dynamic per-launch work
@@ -312,66 +245,45 @@ fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Resu
     agent.build_inbox_message(task, command_mode)
 }
 
-/// Start an agent step as a fresh interactive claude session.
+/// Start an agent step as a fresh interactive agent session.
 ///
 /// Task agents are disposable. Every flow transition launches a brand-new
-/// `claude` process with the next agent's system prompt — there is no
-/// `--resume`. The long-lived Chief of Staff/PM/researcher lifecycle (which always
-/// resumes the same session) does not apply here.
-///
-/// We DO mint a fresh UUID and pass it via `--session-id` on every launch
-/// (the same way Chief of Staff/PM/researcher do on their first launch). That pins
-/// claude's session id to a value we know, so the entry in `session_history`
-/// is the *real* claude session id and the user can run `claude --resume
-/// <id>` to revisit a historical conversation. Without this, claude would
-/// mint its own session id internally and we'd have no easy way to learn it.
+/// agent process with the next agent's system prompt — agman never resumes
+/// programmatically. The user can manually `claude --resume <name>` /
+/// `codex resume <name>` from a shell to revisit a historical conversation.
 ///
 /// Sequence:
 /// 1. Reconcile any prior live session entry whose `stopped_at` was never
 ///    stamped (defensive — caller normally does this via
-///    `finish_last_session`). Without this, `classify` could route a
-///    relaunched task to `LiveSession` for a session id whose claude is
-///    already dead.
-/// 2. Kill the prior `claude` in the agman pane and wait until the shell
-///    prompt is back. Bails if the kill couldn't be verified — we must not
-///    launch the next agent into a pane that's still occupied.
+///    `finish_last_session`).
+/// 2. Kill the prior agent in the agman pane and wait until the shell
+///    prompt is back.
 /// 3. Clear all three sentinel files (`.agent-done`, `.task-complete`,
 ///    `.input-needed`) so the new step starts from a clean slate.
-/// 4. Write the new agent's system prompt to `.current-prompt.md`.
-/// 5. Queue the dynamic per-launch work directive (TASK.md, feedback, git
-///    diff, recent commits) onto the task inbox tagged with the project
-///    name. The TUI's inbox poller delivers it to the new claude once the
-///    pane's foreground process indicates claude is ready — the readiness
-///    gate prevents delivery during the (now-empty) shell-only window.
-/// 6. `send-keys` the `claude` launch command to `<session>:agman`.
+/// 4. Build the agent's system prompt body inline.
+/// 5. Queue the dynamic per-launch work directive onto the task inbox.
+/// 6. `send-keys` the harness-built launch command to `<session>:agman`.
 /// 7. Push a `SessionEntry` and update the displayed agent.
-///
-/// The `send-keys` call happens *before* any session-history mutation so
-/// that a tmux failure leaves the task in a clean half-state (previous
-/// session state untouched) that the supervisor's `classify` can recover
-/// from on the next tick. If the push happened first and send-keys failed,
-/// `classify` would see `LiveSession` for a claude that never launched and
-/// `poll` would never observe a sentinel.
-///
-/// Callers must run `ensure_task_tmux(task)` before reaching this function
-/// — `start_agent_step` targets `<session>:agman` via `send-keys` and will
-/// fail if the session or window doesn't exist. It is intentionally not
-/// self-ensuring so tests can exercise the state-machine layer without
-/// creating real tmux sessions.
+/// 8. Wait for the pane to flip from shell → agent, then run the harness's
+///    post-launch `register_session_name` step (codex `/rename`; claude
+///    no-ops because `--name` already registered the name).
 pub fn start_agent_step(
     config: &Config,
     task: &mut Task,
     agent_name: &str,
 ) -> Result<String> {
     let session_name = supervisor_session(task)?;
+    // Per-task harness pin (set at task-create time). This insulates
+    // in-flight tasks from a global config flip.
+    let _ = config;
+    let harness = task.meta.harness.select();
 
-    // Reconcile any prior session that wasn't cleanly closed — task agents
-    // never resume, so a stale live entry would only confuse `classify`.
+    // Reconcile any prior session that wasn't cleanly closed.
     if let Some(last) = task.meta.session_history.last() {
         if last.stopped_at.is_none() {
             tracing::warn!(
                 task_id = %task.meta.task_id(),
-                stale_session_id = %last.session_id,
+                stale_session_name = %last.name,
                 stale_agent = %last.agent,
                 "start_agent_step: prior session not finished by caller; reconciling before relaunch"
             );
@@ -379,34 +291,17 @@ pub fn start_agent_step(
         }
     }
 
-    // Kill the prior claude and wait for the pane to be idle. This MUST
-    // happen before queuing the inbox message — otherwise the inbox poller
-    // could paste the next agent's work directive into the dying claude.
-    kill_current_claude(&session_name)?;
+    // Kill the prior agent and wait for the pane to be idle.
+    kill_current_agent(harness.as_ref(), &session_name)?;
 
     // Wipe all sentinel files so the new agent's signal can't be confused
     // with stale state from the previous step.
     task.clear_sentinels()?;
 
-    // Each fresh launch needs its system prompt on disk for
-    // `--system-prompt-file <path>`.
-    prepare_system_prompt(config, task, agent_name)?;
+    // Build the system prompt body inline.
+    let identity = prepare_system_prompt(config, task, agent_name, harness.as_ref())?;
 
-    // Queue the work directive onto the inbox BEFORE sending keys. The TUI's
-    // inbox poller is window-scoped (`Some("agman")`) and will only deliver
-    // once claude is ready (foreground process != shell), so it's harmless
-    // if send_keys fails afterward — the message just waits. Queuing first
-    // also keeps `inbox::append_message` failures from leaking a
-    // launched-but-unmessaged claude.
-    //
-    // The sender tag is the project name (the PM that owns the task) so the
-    // agent sees `[Message from <project>]:`. "supervisor" is an internal
-    // implementation detail and would be confusing to the agent.
-    //
-    // Edge case: a send_keys failure followed by a `NeedsLaunch` retry will
-    // queue a second copy of the same work payload. This is preferable to
-    // the alternative (claude launches but never gets its work directive),
-    // and the agent simply seeing TASK.md twice is benign.
+    // Queue the work directive onto the inbox BEFORE sending keys.
     let inbox_msg = prepare_inbox_message(config, task, agent_name)?;
     let inbox_path = config.task_inbox(&task.meta.task_id());
     let sender = task
@@ -423,18 +318,28 @@ pub fn start_agent_step(
         );
     }
 
-    // Mint claude's session id locally and pin it via `--session-id`. This
-    // is the same pattern Chief of Staff/PM/researcher use on their first launch — we
-    // know the id because we set it, so `session_history.session_id` IS
-    // claude's real, resumable session id.
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let cmd =
-        Tmux::build_claude_command_with_prompt_file(&task.current_prompt_path(), &session_id);
+    // Deterministic name: `agman-task-<task-id>-step-<n>` where <n> is one
+    // greater than the current session_history length (the entry we are
+    // about to push will sit at index N-1, so step-1 is the first launch).
+    let step_n = task.meta.session_history.len() + 1;
+    let name = format!("agman-task-{}-step-{}", task.meta.task_id(), step_n);
 
-    // Re-arm the inbox cold-start buffer BEFORE launching the new claude.
+    let working_dir = step_working_dir(task)?;
+    let cmd = harness.build_session_command(&LaunchContext {
+        identity: &identity,
+        name: &name,
+        cwd: &working_dir,
+        // Task agents always launch in a worktree; codex's repo guard would
+        // normally pass, but be permissive in case the worktree isn't a
+        // standalone git checkout (multi-repo tasks use a parent dir).
+        skip_git_repo_check: true,
+        no_alt_screen: matches!(task.meta.harness, HarnessKind::Codex),
+    });
+
+    // Re-arm the inbox cold-start buffer BEFORE launching the new agent.
     // The kill→relaunch gap (~500ms) is shorter than the inbox poll interval
     // (~2s), so the poller almost never sees the brief shell state between
-    // the dying and freshly launched claude. Without this marker, the prior
+    // the dying and freshly launched agent. Without this marker, the prior
     // `first_ready_at` entry persists and the 5s buffer is bypassed,
     // delivering into a still-mounting Ink UI. The poll worker checks for
     // this file on each tick and drops the stale `first_ready_at` entry.
@@ -450,7 +355,7 @@ pub fn start_agent_step(
 
     let entry = SessionEntry {
         agent: agent_name.to_string(),
-        session_id: session_id.clone(),
+        name: name.clone(),
         started_at: chrono::Utc::now(),
         stopped_at: None,
         condition: None,
@@ -458,15 +363,36 @@ pub fn start_agent_step(
     task.push_session(entry)?;
     task.update_agent(Some(agent_name.to_string()))?;
 
+    // Post-launch registration. Wait for the pane to flip to the agent
+    // (foreground process != shell), then call the harness hook. For
+    // claude this is a no-op (--name already registered the session); for
+    // codex this paste-injects /rename and tails session_index.jsonl.
+    if wait_for_agent_ready(&session_name, std::time::Duration::from_secs(10)) {
+        let harness_home = harness::harness_home(task.meta.harness);
+        let _ = harness.register_session_name(&RegisterContext {
+            session: &session_name,
+            window: Some(AGMAN_WINDOW),
+            name: &name,
+            harness_home: &harness_home,
+        });
+    } else {
+        tracing::warn!(
+            task_id = %task.meta.task_id(),
+            session = %session_name,
+            "agent did not become foreground within 10s; skipping post-launch registration"
+        );
+    }
+
     tracing::info!(
         task_id = %task.meta.task_id(),
         agent = agent_name,
-        session_id = %session_id,
+        session_name = %name,
         sender = %sender,
+        harness = %task.meta.harness,
         "supervisor launched fresh agent step"
     );
 
-    Ok(session_id)
+    Ok(name)
 }
 
 /// One supervisor tick. Reads `.stop` first, then checks the three sentinel
@@ -498,8 +424,9 @@ pub fn poll(task: &Task) -> Result<PollOutcome> {
 /// follow-up work (e.g. refresh the TUI task list after a status change).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdvanceOutcome {
-    /// The supervisor launched a new claude session; the poller will pick it up.
-    Launched { session_id: String },
+    /// The supervisor launched a new agent session; the poller will pick it up.
+    /// `session_name` is the harness's deterministic session name.
+    Launched { session_name: String },
     /// Task entered a waiting state (input needed from the user).
     InputNeeded,
     /// Flow finished and no queued feedback/command replaced it. Task is Stopped.
@@ -898,8 +825,8 @@ pub fn launch_next_step(config: &Config, task: &mut Task) -> Result<AdvanceOutco
                         }
                     }
                 }
-                let session_id = start_agent_step(config, task, &agent_step.agent)?;
-                return Ok(AdvanceOutcome::Launched { session_id });
+                let session_name = start_agent_step(config, task, &agent_step.agent)?;
+                return Ok(AdvanceOutcome::Launched { session_name });
             }
             Some(FlowStep::Loop(loop_step)) => {
                 if loop_step.steps.is_empty() {
@@ -936,8 +863,8 @@ pub fn launch_next_step(config: &Config, task: &mut Task) -> Result<AdvanceOutco
                         }
                     }
                 }
-                let session_id = start_agent_step(config, task, &inner.agent)?;
-                return Ok(AdvanceOutcome::Launched { session_id });
+                let session_name = start_agent_step(config, task, &inner.agent)?;
+                return Ok(AdvanceOutcome::Launched { session_name });
             }
         }
     }
@@ -1098,7 +1025,8 @@ pub fn honor_stop(config: &Config, task: &mut Task) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), "supervisor honoring stop");
     let _ = config; // reserved for future notify/cleanup use
     if let Ok(session) = supervisor_session(task) {
-        let _ = kill_current_claude(&session);
+        let harness = task.meta.harness.select();
+        let _ = kill_current_agent(harness.as_ref(), &session);
     }
     task.clear_stop()?;
     task.clear_sentinels()?;
@@ -1226,22 +1154,43 @@ mod tests {
     }
 
     #[test]
-    fn claude_command_pins_session_id_and_loads_prompt_from_file() {
-        // Task agents always start fresh, but we still pass --session-id so
-        // claude's session id matches what we store in session_history (this
-        // is the same pattern Chief of Staff/PM use on their first launch). Resume is
-        // never used for task agents.
-        let tmp = tempfile::tempdir().unwrap();
-        let (_cfg, task) = build_task(&tmp);
-        let cmd = Tmux::build_claude_command_with_prompt_file(
-            &task.current_prompt_path(),
-            "abc-123",
-        );
-        assert!(cmd.contains(".current-prompt.md"));
+    fn claude_session_command_emits_inline_system_prompt_and_name() {
+        // Claude sessions launch with --system-prompt and --name. There is
+        // no --system-prompt-file path and no programmatic --resume.
+        use crate::harness::{HarnessKind, LaunchContext};
+        let cwd = std::env::temp_dir();
+        let h = HarnessKind::Claude.select();
+        let cmd = h.build_session_command(&LaunchContext {
+            identity: "Identity body",
+            name: "agman-task-myrepo--feat-x-step-1",
+            cwd: &cwd,
+            skip_git_repo_check: true,
+            no_alt_screen: false,
+        });
         assert!(cmd.contains("--dangerously-skip-permissions"));
-        assert!(cmd.contains("--system-prompt-file"));
-        assert!(cmd.contains("--session-id abc-123"));
-        assert!(!cmd.contains("--resume"), "task agents never resume");
+        assert!(cmd.contains("--system-prompt 'Identity body'"));
+        assert!(cmd.contains("--name 'agman-task-myrepo--feat-x-step-1'"));
+        assert!(!cmd.contains("--resume"), "agman never resumes programmatically");
+        assert!(!cmd.contains("--system-prompt-file"));
+    }
+
+    #[test]
+    fn codex_session_command_emits_developer_instructions_and_no_alt_screen() {
+        use crate::harness::{HarnessKind, LaunchContext};
+        let cwd = std::env::temp_dir();
+        let h = HarnessKind::Codex.select();
+        let cmd = h.build_session_command(&LaunchContext {
+            identity: "Identity body",
+            name: "agman-task-myrepo--feat-x-step-1",
+            cwd: &cwd,
+            skip_git_repo_check: true,
+            no_alt_screen: true,
+        });
+        assert!(cmd.starts_with("codex"));
+        assert!(cmd.contains("--skip-git-repo-check"));
+        assert!(cmd.contains("--no-alt-screen"));
+        assert!(cmd.contains("developer_instructions=\"\"\"Identity body\"\"\""));
+        assert!(!cmd.contains("--resume"));
     }
 
     /// Helper: push a session onto history so `finish_last_session` has
@@ -1249,7 +1198,7 @@ mod tests {
     fn push_session(task: &mut Task, agent: &str, session_id: &str) {
         task.push_session(SessionEntry {
             agent: agent.to_string(),
-            session_id: session_id.to_string(),
+            name: session_id.to_string(),
             started_at: chrono::Utc::now(),
             stopped_at: None,
             condition: None,
@@ -1857,7 +1806,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_live_session_returns_session_id() {
+    fn classify_live_session_returns_session_name() {
         let tmp = tempfile::tempdir().unwrap();
         let (_cfg, mut task) = build_task(&tmp);
         push_session(&mut task, "coder", "sid-live");
@@ -1865,7 +1814,7 @@ mod tests {
         assert_eq!(
             classify(&task),
             PollTarget::LiveSession {
-                session_id: "sid-live".to_string()
+                session_name: "sid-live".to_string()
             }
         );
     }

@@ -38,6 +38,10 @@ src/
 ├── flow.rs      # Flow/step parsing from YAML
 ├── git.rs       # Worktree operations
 ├── tmux.rs      # Tmux session management
+├── harness/     # Pluggable AI CLI harness (claude / codex)
+│   ├── mod.rs   # Harness trait, HarnessKind, LaunchContext
+│   ├── claude.rs
+│   └── codex.rs
 └── tui/
     ├── mod.rs
     ├── app.rs   # TUI state and event handling
@@ -69,8 +73,36 @@ Agents may append a short `## Notes` section if the next iteration needs context
 
 ### Agent
 - Prompt template in `~/.agman/prompts/<name>.md`
-- Executed via `claude -p --dangerously-skip-permissions`
+- Executed via the configured **harness** (`claude` or `codex`) — see "Harnesses" below
 - Outputs magic strings: `AGENT_DONE`, `TASK_COMPLETE`, `INPUT_NEEDED`
+
+### Harnesses
+
+agman supports two interactive AI agent CLIs, selected at runtime:
+
+- **claude** (Anthropic Claude Code) — default
+- **codex** (OpenAI Codex CLI)
+
+The choice is set in the TUI settings view (`,` from the task list) on the **Harness** row (h/l to switch). It persists to `~/.agman/config.toml` as `harness = "..."` and applies to **newly-spawned agents only**. In-flight agents keep using the harness they were spawned with — each long-lived agent (CEO/PM/researcher) stamps its choice in `<state_dir>/harness` on first spawn, and tasks pin it on `TaskMeta.harness` at task-create time.
+
+agman never resumes sessions programmatically. To revisit a historical conversation, the user runs the harness's resume command directly from a shell:
+- `claude --resume agman-ceo` (or any name from `~/.agman/tasks/<id>/meta.json` `session_history[].name`)
+- `codex resume agman-ceo`
+
+Codex respects `AGENTS.md` in the worktree the same way claude respects `CLAUDE.md` — that's project-conventional, not agman's responsibility.
+
+**Keep codex up to date.** Older codex versions display an update prompt at startup that blocks the TUI. agman registers the session name post-launch by paste-injecting `/rename <name>`; if codex is sitting on the update prompt, the rename gets swallowed and the session won't be resume-by-name. The session is still usable; just keep codex current.
+
+**Restart-after-tmux-loss.** When agman *and* tmux both die, agman no longer auto-restores conversational context for CEO/PM. The `respawn_agent` handoff path (handoff.md + inbox.jsonl) is unchanged for in-process respawns. To recover full context after a tmux loss, manually `claude --resume` / `codex resume` from a shell and pick the agman session by name.
+
+Storage layout for harness stamps:
+```
+~/.agman/
+  ceo/harness                       ← "claude" | "codex"
+  projects/<name>/harness           ← "claude" | "codex"
+  researchers/<project>--<n>/harness ← "claude" | "codex"
+  tasks/<id>/meta.json              ← "harness": "claude" | "codex"
+```
 
 ### Stop Conditions
 - `AGENT_DONE` - Agent finished its work, advance to next step
@@ -94,6 +126,8 @@ Agents may append a short `## Notes` section if the next iteration needs context
 ### Default file upgrades
 
 `agman init` (run implicitly on first launch) only writes embedded default flows and prompts when the target file is *absent* — it never overwrites existing files. So when the embedded defaults change (e.g. a retired flow stage or a reworked prompt), users who ran agman before the change keep their stale copies on disk. To pick up new defaults, run `agman init --force` to re-materialize everything, or delete the specific file under `~/.agman/flows/` or `~/.agman/prompts/` and re-run `agman init`. Obsolete files from retired stages (e.g. `prompts/prompt-builder.md`, `prompts/planner.md`) are harmless but can be deleted manually — there is no automatic cleanup.
+
+User-installed prompts in `~/.agman/prompts/` (`refiner.md`, `prompt-builder.md`, `planner.md`) carry hard-coded references to claude-specific concepts (e.g. `.claude/skills/`). Run `agman init --force` to refresh these after upgrading agman if you want them harness-neutral. The built-in `coder` / `checker` / `reviewer` prompts are sourced from the binary at runtime and updated automatically on each release.
 
 ## Common Modifications
 

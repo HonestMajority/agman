@@ -428,7 +428,7 @@ struct InboxPollOutput {
 enum SupervisorPollItem {
     Tick {
         task_id: String,
-        session_id: String,
+        session_name: String,
         outcome: supervisor::PollOutcome,
     },
     NeedsLaunch {
@@ -3208,8 +3208,8 @@ impl App {
                     }
                     _ => {
                         match self.settings_selected {
-                            2 => { self.telegram_token_editor.input(event); }
-                            3 => { self.telegram_chat_id_editor.input(event); }
+                            3 => { self.telegram_token_editor.input(event); }
+                            4 => { self.telegram_chat_id_editor.input(event); }
                             _ => {}
                         }
                     }
@@ -3225,7 +3225,7 @@ impl App {
                     self.view = View::TaskList;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    if self.settings_selected < 3 {
+                    if self.settings_selected < 4 {
                         self.settings_selected += 1;
                     }
                 }
@@ -3236,10 +3236,10 @@ impl App {
                 }
                 KeyCode::Enter => {
                     // Enter editing mode for text fields
-                    if self.settings_selected == 2 || self.settings_selected == 3 {
+                    if self.settings_selected == 3 || self.settings_selected == 4 {
                         self.settings_editing = true;
                         // Move cursor to end of current value
-                        let editor = if self.settings_selected == 2 {
+                        let editor = if self.settings_selected == 3 {
                             &mut self.telegram_token_editor
                         } else {
                             &mut self.telegram_chat_id_editor
@@ -3275,6 +3275,10 @@ impl App {
                                 }
                             }
                         }
+                        2 => {
+                            // Cycle harness left through HarnessKind::ALL
+                            self.cycle_harness(-1);
+                        }
                         _ => {}
                     }
                 }
@@ -3305,6 +3309,10 @@ impl App {
                                 }
                             }
                         }
+                        2 => {
+                            // Cycle harness right through HarnessKind::ALL
+                            self.cycle_harness(1);
+                        }
                         _ => {}
                     }
                 }
@@ -3312,6 +3320,32 @@ impl App {
             }
         }
         Ok(false)
+    }
+
+    /// Cycle the configured harness by `delta` (typically -1 / +1).
+    fn cycle_harness(&mut self, delta: i32) {
+        use agman::harness::HarnessKind;
+        let all = HarnessKind::ALL;
+        let current = self.config.harness_kind();
+        let pos = all.iter().position(|k| *k == current).unwrap_or(0);
+        let new_pos = ((pos as i32 + delta).rem_euclid(all.len() as i32)) as usize;
+        let new_kind = all[new_pos];
+        if new_kind == current {
+            return;
+        }
+        match use_cases::save_harness(&self.config, new_kind) {
+            Ok(()) => {
+                tracing::info!(harness = %new_kind, "harness setting changed");
+                self.set_status(format!(
+                    "Harness set to {} (applies to newly-spawned agents)",
+                    new_kind
+                ));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to save harness");
+                self.set_status(format!("Failed to save harness: {e}"));
+            }
+        }
     }
 
     /// Return indices into `self.archive_tasks` that match the current search query.
@@ -5862,11 +5896,11 @@ impl App {
                 for task in Task::list_all(&config) {
                     match supervisor::classify(&task) {
                         supervisor::PollTarget::Skip => continue,
-                        supervisor::PollTarget::LiveSession { session_id } => {
+                        supervisor::PollTarget::LiveSession { session_name } => {
                             match supervisor::poll(&task) {
                                 Ok(outcome) => items.push(SupervisorPollItem::Tick {
                                     task_id: task.meta.task_id(),
-                                    session_id,
+                                    session_name,
                                     outcome,
                                 }),
                                 Err(e) => {
@@ -5911,14 +5945,14 @@ impl App {
             match item {
                 SupervisorPollItem::Tick {
                     task_id,
-                    session_id,
+                    session_name,
                     outcome,
                 } => match outcome {
                     supervisor::PollOutcome::Idle => {}
                     supervisor::PollOutcome::StopRequested => {
                         tracing::info!(
                             task_id = %task_id,
-                            session_id = %session_id,
+                            session_name = %session_name,
                             "supervisor poll: honoring stop sentinel"
                         );
                         let mut task = match Task::load_by_id(&self.config, &task_id) {
@@ -5943,7 +5977,7 @@ impl App {
                     supervisor::PollOutcome::Condition(cond) => {
                         tracing::info!(
                             task_id = %task_id,
-                            session_id = %session_id,
+                            session_name = %session_name,
                             condition = %cond,
                             "supervisor poll: dispatching condition"
                         );

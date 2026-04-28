@@ -18,7 +18,8 @@ impl Tmux {
     /// - nvim: starts nvim
     /// - lazygit: starts lazygit
     /// - shell: runs git status
-    /// - agman: shell where the supervisor launches an interactive claude
+    /// - agman: shell where the supervisor launches an interactive agent
+    ///   (claude or codex, per the configured harness)
     pub fn create_session_with_windows(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
             tracing::debug!(session = session_name, "tmux session already exists, skipping creation");
@@ -74,7 +75,7 @@ impl Tmux {
         )?;
 
         // Create agman window (just a shell; the supervisor launches an
-        // interactive claude here when the task starts)
+        // interactive agent here when the task starts)
         let _ = Command::new("tmux")
             .args(["new-window", "-t", session_name, "-n", "agman", "-c", wd])
             .output();
@@ -162,11 +163,19 @@ impl Tmux {
 
     /// Send Ctrl+C to a specific window to interrupt any running process
     pub fn send_ctrl_c_to_window(session_name: &str, window_name: &str) -> Result<()> {
-        let target = format!("{}:{}", session_name, window_name);
+        Self::send_ctrl_c_target(&Self::tmux_target(session_name, Some(window_name)))
+    }
+
+    /// Send Ctrl+C to a session's currently-focused pane (no window scope).
+    pub fn send_ctrl_c_to_session(session_name: &str) -> Result<()> {
+        Self::send_ctrl_c_target(session_name)
+    }
+
+    fn send_ctrl_c_target(target: &str) -> Result<()> {
         let output = Command::new("tmux")
-            .args(["send-keys", "-t", &target, "C-c"])
+            .args(["send-keys", "-t", target, "C-c"])
             .output()
-            .context("Failed to send Ctrl+C to tmux window")?;
+            .context("Failed to send Ctrl+C to tmux target")?;
 
         if !output.status.success() {
             anyhow::bail!(
@@ -191,13 +200,16 @@ impl Tmux {
         Ok(())
     }
 
-    /// Create a simple agent tmux session with a single window running an interactive
-    /// `claude` session. Used for Chief of Staff and PM agents (no nvim/lazygit/shell windows).
+    /// Create a simple agent tmux session with a single window running an
+    /// interactive harness (claude or codex). Used for Chief of Staff/PM/researcher
+    /// and task agents.
+    ///
+    /// `command` is the harness-built shell command to launch (see
+    /// `Harness::build_session_command`). The supervisor mints it via the
+    /// configured `Box<dyn Harness>` and passes it through.
     pub fn create_agent_session(
         session_name: &str,
-        system_prompt: &str,
-        resume_id: Option<&str>,
-        session_id: Option<&str>,
+        command: &str,
         work_dir: Option<&Path>,
     ) -> Result<()> {
         if Self::session_exists(session_name) {
@@ -226,40 +238,7 @@ impl Tmux {
             );
         }
 
-        // Build and send the claude command
-        let cmd = Self::build_claude_command(system_prompt, resume_id, session_id);
-        Self::send_keys_to_session(session_name, &cmd)?;
-
-        Ok(())
-    }
-
-    /// Open a tmux popup running an interactive `claude` session overlaid on
-    /// the current pane. The popup closes when the claude session exits.
-    pub fn display_popup(
-        system_prompt: &str,
-        resume_id: Option<&str>,
-    ) -> Result<()> {
-        let cmd = Self::build_claude_command(system_prompt, resume_id, None);
-
-        tracing::info!("opening claude popup");
-
-        let output = Command::new("tmux")
-            .args([
-                "display-popup",
-                "-E",    // close popup when command exits
-                "-w", "90%",
-                "-h", "90%",
-                &cmd,
-            ])
-            .output()
-            .context("failed to open tmux popup")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "failed to open tmux popup: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        Self::send_keys_to_session(session_name, command)?;
 
         Ok(())
     }
@@ -284,59 +263,6 @@ impl Tmux {
             ])
             .spawn()
             .context("failed to spawn tmux popup")
-    }
-
-    /// Build a `claude` CLI command string with system prompt and optional resume.
-    ///
-    /// When `resume_id` is `Some`, emits `--resume <id>` WITHOUT `--system-prompt`
-    /// (the resumed session already has all context). When `resume_id` is `None`,
-    /// emits `--system-prompt` as before, and optionally `--session-id` to pin the
-    /// session for future resumption.
-    fn build_claude_command(
-        system_prompt: &str,
-        resume_id: Option<&str>,
-        session_id: Option<&str>,
-    ) -> String {
-        let mut cmd = String::from("claude --dangerously-skip-permissions");
-        if let Some(id) = resume_id {
-            cmd.push_str(&format!(" --resume {}", id));
-        } else {
-            // Shell-escape the prompt by using single quotes with inner escaping
-            let escaped_prompt = system_prompt.replace('\'', "'\\''");
-            cmd.push_str(&format!(" --system-prompt '{}'", escaped_prompt));
-            if let Some(id) = session_id {
-                cmd.push_str(&format!(" --session-id {}", id));
-            }
-        }
-        cmd
-    }
-
-    /// Build a `claude` CLI command string that loads its system prompt from
-    /// a file via `--system-prompt-file` and pins claude's session id to a
-    /// caller-supplied UUID via `--session-id`.
-    ///
-    /// Pinning the session id (same pattern Chief of Staff/PM/researcher use on first
-    /// launch) lets us store claude's actual session id in `session_history`,
-    /// so the user can `claude --resume <id>` from the worktree to revisit a
-    /// historical conversation. Without `--session-id`, claude would generate
-    /// its own id internally and we'd have no easy way to learn it.
-    ///
-    /// Task agents never `--resume` — they are disposable, every flow step
-    /// launches a fresh claude with a fresh id. This function therefore takes
-    /// only a session id, not a resume id.
-    ///
-    /// File-based prompt delivery avoids embedding the prompt body in the
-    /// shell command line (which can be megabytes once skills/footers are
-    /// appended).
-    pub fn build_claude_command_with_prompt_file(
-        prompt_path: &Path,
-        session_id: &str,
-    ) -> String {
-        let p = prompt_path.to_string_lossy().replace('\'', "'\\''");
-        format!(
-            "claude --dangerously-skip-permissions --system-prompt-file '{}' --session-id {}",
-            p, session_id
-        )
     }
 
     /// Send keys to the first (and only) window/pane of a session.
@@ -519,20 +445,20 @@ impl Tmux {
         Ok(())
     }
 
-    /// Check whether claude (or anything that isn't a shell) is the foreground
-    /// process in the tmux session.
+    /// Check whether the configured agent harness (or anything that isn't a
+    /// shell) is the foreground process in the tmux session.
     ///
-    /// We do not match on claude's own process name because Claude Code sets its
-    /// `process.title` to the version string (e.g. `"2.1.107"`), which changes
-    /// every release. Instead, we use the inverse: the pane was launched into a
-    /// shell, and when claude runs it takes over the foreground. So "ready" ≡
-    /// "foreground is not a known shell".
-    pub fn is_claude_running(session_name: &str) -> Result<(bool, String)> {
-        Self::is_claude_running_in(session_name, None)
+    /// We do not match on the harness's own process name because Claude Code
+    /// (and codex similarly) set `process.title` to the version string, which
+    /// changes every release. Instead, we use the inverse: the pane was
+    /// launched into a shell, and when the agent runs it takes over the
+    /// foreground. So "ready" ≡ "foreground is not a known shell".
+    pub fn is_agent_running(session_name: &str) -> Result<(bool, String)> {
+        Self::is_agent_running_in(session_name, None)
     }
 
-    /// Like [`is_claude_running`] but scoped to a specific window within the session.
-    pub fn is_claude_running_in(
+    /// Like [`is_agent_running`] but scoped to a specific window within the session.
+    pub fn is_agent_running_in(
         session_name: &str,
         window: Option<&str>,
     ) -> Result<(bool, String)> {
@@ -563,7 +489,7 @@ impl Tmux {
     /// message text. Delivery reliability is ensured by the snippet-verification
     /// loop in the caller, not by UI scraping here.
     pub fn is_session_ready(session_name: &str) -> Result<(bool, String)> {
-        Self::is_claude_running(session_name)
+        Self::is_agent_running(session_name)
     }
 
     /// Like [`is_session_ready`] but scoped to a specific window.
@@ -571,7 +497,7 @@ impl Tmux {
         session_name: &str,
         window: Option<&str>,
     ) -> Result<(bool, String)> {
-        Self::is_claude_running_in(session_name, window)
+        Self::is_agent_running_in(session_name, window)
     }
 
     /// Return the pane PID (`#{pane_pid}`) for the given session/window.
