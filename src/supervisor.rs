@@ -430,6 +430,22 @@ pub fn start_agent_step(
     let session_id = uuid::Uuid::new_v4().to_string();
     let cmd =
         Tmux::build_claude_command_with_prompt_file(&task.current_prompt_path(), &session_id);
+
+    // Re-arm the inbox cold-start buffer BEFORE launching the new claude.
+    // The kill→relaunch gap (~500ms) is shorter than the inbox poll interval
+    // (~2s), so the poller almost never sees the brief shell state between
+    // the dying and freshly launched claude. Without this marker, the prior
+    // `first_ready_at` entry persists and the 5s buffer is bypassed,
+    // delivering into a still-mounting Ink UI. The poll worker checks for
+    // this file on each tick and drops the stale `first_ready_at` entry.
+    if let Err(e) = task.touch_rearm() {
+        tracing::warn!(
+            task_id = %task.meta.task_id(),
+            error = %e,
+            "failed to touch .inbox-rearm marker; cold-start buffer may not re-arm"
+        );
+    }
+
     Tmux::send_keys_to_window(&session_name, AGMAN_WINDOW, &cmd)?;
 
     let entry = SessionEntry {

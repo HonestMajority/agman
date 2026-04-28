@@ -2863,6 +2863,14 @@ pub struct InboxPollTarget {
     /// `Some("agman")` for task sessions whose interactive claude lives in the
     /// `agman` window.
     pub window: Option<String>,
+    /// Optional re-arm marker path. When present on disk, the poll worker
+    /// drops its in-memory cold-start ready-buffer entry for this target and
+    /// deletes the file, forcing the buffer to restart from zero on the next
+    /// observed-ready tick. Currently set only for task targets (the
+    /// supervisor touches `<task_dir>/.inbox-rearm` across kill→relaunch
+    /// transitions). `None` for Chief of Staff/PM/researcher targets, whose
+    /// claude is never restarted under the supervisor.
+    pub rearm_path: Option<PathBuf>,
 }
 
 /// Enumerate all inbox delivery targets from disk.
@@ -2886,6 +2894,7 @@ pub fn collect_inbox_poll_targets(
             seq_path: config.chief_of_staff_seq(),
             session_name: cos_session,
             window: None,
+            rearm_path: None,
         });
     }
 
@@ -2901,6 +2910,7 @@ pub fn collect_inbox_poll_targets(
                         seq_path: config.project_seq(&p.meta.name),
                         session_name,
                         window: None,
+                        rearm_path: None,
                     });
                 }
             }
@@ -2925,6 +2935,7 @@ pub fn collect_inbox_poll_targets(
                         seq_path: config.researcher_seq(&r.meta.project, &r.meta.name),
                         session_name,
                         window: None,
+                        rearm_path: None,
                     });
                 }
             }
@@ -2960,6 +2971,7 @@ pub fn collect_inbox_poll_targets(
             seq_path: config.task_inbox_seq(&task_id),
             session_name,
             window: Some(crate::supervisor::AGMAN_WINDOW.to_string()),
+            rearm_path: Some(task.rearm_path()),
         });
     }
 
