@@ -44,36 +44,42 @@ fn panic_in_iteration_is_caught_and_classified() {
 
 #[test]
 fn format_sender_tag_cases() {
-    assert_eq!(format_sender_tag("ceo"), "CEO");
+    assert_eq!(format_sender_tag("chief-of-staff"), "CoS");
     assert_eq!(format_sender_tag("pm-foo"), "PM:pm-foo");
     assert_eq!(format_sender_tag("researcher:proj--bar"), "R:bar");
-    assert_eq!(format_sender_tag("researcher:ceo--baz"), "R:baz");
+    assert_eq!(format_sender_tag("researcher:chief-of-staff--baz"), "R:baz");
 }
 
 #[test]
 fn parent_of_cases() {
-    assert_eq!(parent_of("ceo"), None);
-    assert_eq!(parent_of("some-project"), Some("ceo".to_string()));
+    assert_eq!(parent_of("chief-of-staff"), None);
+    assert_eq!(
+        parent_of("some-project"),
+        Some("chief-of-staff".to_string())
+    );
     assert_eq!(parent_of("researcher:proj--bar"), Some("proj".to_string()));
-    assert_eq!(parent_of("researcher:ceo--baz"), Some("ceo".to_string()));
+    assert_eq!(
+        parent_of("researcher:chief-of-staff--baz"),
+        Some("chief-of-staff".to_string())
+    );
 }
 
 #[test]
 fn parse_sender_tag_cases() {
-    assert_eq!(parse_sender_tag("[CEO] hi"), Some("CEO"));
+    assert_eq!(parse_sender_tag("[CoS] hi"), Some("CoS"));
     assert_eq!(parse_sender_tag("[PM:foo] bar"), Some("PM:foo"));
     assert_eq!(parse_sender_tag("[R:baz] x"), Some("R:baz"));
     assert_eq!(parse_sender_tag("plain"), None);
     assert_eq!(parse_sender_tag("[unclosed"), None);
     // Bracket not at start.
-    assert_eq!(parse_sender_tag(" [CEO] leading space"), None);
+    assert_eq!(parse_sender_tag(" [CoS] leading space"), None);
     // Empty tag is technically extractable.
     assert_eq!(parse_sender_tag("[] body"), Some(""));
 }
 
 #[test]
 fn format_reply_message_strips_tag_and_concats_body() {
-    let out = format_reply_message("[CEO] hello world", "thanks");
+    let out = format_reply_message("[CoS] hello world", "thanks");
     assert_eq!(out, "In reply to: \"hello world\"\n\nthanks");
 }
 
@@ -85,7 +91,7 @@ fn format_reply_message_keeps_plain_original() {
 
 #[test]
 fn format_reply_message_truncates_long_snippet() {
-    let long = format!("[CEO] {}", "x".repeat(200));
+    let long = format!("[CoS] {}", "x".repeat(200));
     let out = format_reply_message(&long, "body");
     // 140 chars + ellipsis, surrounded by "In reply to: \"...\"\n\nbody".
     let expected_snippet: String = "x".repeat(140);
@@ -96,10 +102,13 @@ fn format_reply_message_truncates_long_snippet() {
 }
 
 #[test]
-fn resolve_tag_ceo() {
+fn resolve_tag_chief_of_staff() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    assert_eq!(resolve_tag_to_agent(&config, "CEO"), Some("ceo".to_string()));
+    assert_eq!(
+        resolve_tag_to_agent(&config, "CoS"),
+        Some("chief-of-staff".to_string())
+    );
 }
 
 #[test]

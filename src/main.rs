@@ -156,17 +156,17 @@ fn main() -> Result<()> {
             task,
             description,
         }) => {
-            let project = project.as_deref().unwrap_or("ceo");
+            let project = project.as_deref().unwrap_or("chief-of-staff");
             cmd_create_researcher(&config, project, &name, repo, branch, task, description)
         }
 
-        Some(Commands::ListResearchers { project, ceo }) => {
-            let filter = if ceo { Some("ceo") } else { project.as_deref() };
+        Some(Commands::ListResearchers { project, cos }) => {
+            let filter = if cos { Some("chief-of-staff") } else { project.as_deref() };
             cmd_list_researchers(&config, filter)
         }
 
         Some(Commands::ArchiveResearcher { name, project }) => {
-            let project = project.as_deref().unwrap_or("ceo");
+            let project = project.as_deref().unwrap_or("chief-of-staff");
             cmd_archive_researcher(&config, project, &name)
         }
 
@@ -269,7 +269,7 @@ fn cmd_run_command(
 }
 
 // ---------------------------------------------------------------------------
-// CEO & PM command handlers
+// Chief of Staff & PM command handlers
 // ---------------------------------------------------------------------------
 
 fn cmd_send_message(
@@ -693,9 +693,12 @@ fn cmd_status(config: &Config) -> Result<()> {
         }
     }
 
-    if !status.ceo_researchers.is_empty() {
+    if !status.chief_of_staff_researchers.is_empty() {
         println!();
-        println!("CEO researchers: {}", format_researchers_line(&status.ceo_researchers));
+        println!(
+            "Chief of Staff researchers: {}",
+            format_researchers_line(&status.chief_of_staff_researchers)
+        );
     }
 
     Ok(())

@@ -406,18 +406,18 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     // Check for empty state first
     let has_projects = !app.projects.is_empty() || app.unassigned_task_count > 0;
     if !has_projects {
-        let msg = Paragraph::new("No projects. Press 'c' to start CEO, or create a project via CLI.")
+        let msg = Paragraph::new("No projects. Press 'c' to start Chief of Staff, or create a project via CLI.")
             .style(Style::default().fg(Color::DarkGray))
             .alignment(Alignment::Center);
         f.render_widget(msg, inner);
         return;
     }
 
-    // Optional CEO stall banner — a dedicated line at the top of the project list.
-    let ceo_stalled = app.stalled_targets().contains(&"ceo");
+    // Optional CoS stall banner — a dedicated line at the top of the project list.
+    let cos_stalled = app.stalled_targets().contains(&"chief-of-staff");
 
-    // Split inner area into (optional CEO banner) + header + list
-    let constraints: Vec<Constraint> = if ceo_stalled {
+    // Split inner area into (optional CoS banner) + header + list
+    let constraints: Vec<Constraint> = if cos_stalled {
         vec![Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]
     } else {
         vec![Constraint::Length(1), Constraint::Min(0)]
@@ -427,9 +427,9 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         .constraints(constraints)
         .split(inner);
 
-    let (header_chunk, list_chunk) = if ceo_stalled {
+    let (header_chunk, list_chunk) = if cos_stalled {
         let banner = Paragraph::new(Line::from(Span::styled(
-            "⚠ CEO stalled",
+            "⚠ CoS stalled",
             Style::default().fg(Color::Yellow),
         )));
         f.render_widget(banner, chunks[0]);
@@ -1721,18 +1721,18 @@ fn draw_respawn_confirm(f: &mut Frame, app: &App) {
     let prefix0 = if sel == 0 { "▸ " } else { "  " };
     let prefix1 = if sel == 1 { "▸ " } else { "  " };
 
-    let (title, text) = if app.respawn_confirm_is_ceo {
+    let (title, text) = if app.respawn_confirm_is_chief_of_staff {
         (
-            " Respawn CEO ",
+            " Respawn Chief of Staff ",
             vec![
                 Line::from(""),
                 Line::from(Span::styled(
-                    format!("{prefix0}CEO only"),
+                    format!("{prefix0}CoS only"),
                     option0_style,
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    format!("{prefix1}CEO + all PMs"),
+                    format!("{prefix1}CoS + all PMs"),
                     option1_style,
                 )),
             ],
@@ -1997,7 +1997,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("c", Style::default().fg(Color::LightYellow)),
-                Span::styled(" CEO chat  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" CoS chat  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("w", Style::default().fg(Color::LightYellow)),
                 Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
             ];
@@ -4514,8 +4514,8 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
     use agman::researcher::ResearcherStatus;
     use agman::tmux::Tmux;
 
-    let title_text = if app.current_project.as_deref() == Some("ceo") {
-        " CEO Researchers ".to_string()
+    let title_text = if app.current_project.as_deref() == Some("chief-of-staff") {
+        " CoS Researchers ".to_string()
     } else if let Some(ref project) = app.current_project {
         format!(" Researchers — {} ", project)
     } else {
@@ -4538,8 +4538,8 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(Color::Cyan));
 
     if app.researchers.is_empty() {
-        let empty_msg = if app.current_project.as_deref() == Some("ceo") {
-            "No CEO researchers. Press 'n' to create one."
+        let empty_msg = if app.current_project.as_deref() == Some("chief-of-staff") {
+            "No CoS researchers. Press 'n' to create one."
         } else {
             "No researchers. Press 'n' to create one."
         };

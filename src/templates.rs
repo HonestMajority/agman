@@ -5,7 +5,7 @@
 //! first non-empty line of the body is the short description shown in
 //! `agman list-templates`.
 //!
-//! The CEO workflow is:
+//! The Chief of Staff workflow is:
 //!   1. `agman list-templates` to discover available templates
 //!   2. `agman get-template <name> > /tmp/brief.md` to copy the body to a scratch file
 //!   3. Edit the scratch file to fit the instance

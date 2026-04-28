@@ -6,6 +6,7 @@ pub mod dismissed_notifications;
 pub mod flow;
 pub mod git;
 pub mod inbox;
+pub mod migration;
 pub mod project;
 pub mod repo_stats;
 pub mod researcher;

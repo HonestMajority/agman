@@ -1,9 +1,9 @@
-//! Minimal Telegram bot integration for the CEO agent.
+//! Minimal Telegram bot integration for the Chief of Staff agent.
 //!
 //! When `telegram_bot_token` and `telegram_chat_id` are configured in the
 //! settings UI (stored in `config.toml`), a background thread bridges
-//! plain-text messages between the user's Telegram chat and the CEO tmux
-//! session via the existing inbox/outbox JSONL files.
+//! plain-text messages between the user's Telegram chat and the Chief of
+//! Staff tmux session via the existing inbox/outbox JSONL files.
 //!
 //! Voice messages are transcribed locally via `whisper-cli` and forwarded as
 //! text. The whisper GGML model is auto-downloaded on first use.
@@ -298,7 +298,7 @@ fn run_bot(
 }
 
 // ---------------------------------------------------------------------------
-// Inbound: Telegram -> CEO inbox
+// Inbound: Telegram -> Chief of Staff inbox
 // ---------------------------------------------------------------------------
 
 fn poll_updates(ctx: &BotCtx, offset: &mut i64) {
@@ -379,7 +379,7 @@ fn poll_updates(ctx: &BotCtx, offset: &mut i64) {
                 match parent_of(&current) {
                     Some(parent) => switch_current_agent(ctx, &parent),
                     None => {
-                        let _ = tg_send(ctx, "📍 Already at CEO (root).");
+                        let _ = tg_send(ctx, "📍 Already at Chief of Staff (root).");
                     }
                 }
                 continue;
@@ -407,10 +407,10 @@ pub fn parse_sender_tag(text: &str) -> Option<&str> {
     Some(&rest[..close])
 }
 
-/// Resolve a sender tag (e.g. `"CEO"`, `"PM:foo"`, `"R:bar"`) back to a
+/// Resolve a sender tag (e.g. `"CoS"`, `"PM:foo"`, `"R:bar"`) back to a
 /// send-target agent id usable with [`use_cases::agent_inbox_path`].
 ///
-/// - `"CEO"` → `Some("ceo")`
+/// - `"CoS"` → `Some("chief-of-staff")`
 /// - `"PM:<id>"` → `Some(id)` if the project agent exists
 /// - `"R:<name>"` → `Some("researcher:<project>--<name>")` when exactly one
 ///   running researcher matches; `None` for zero or multiple matches
@@ -419,8 +419,8 @@ pub fn parse_sender_tag(text: &str) -> Option<&str> {
 /// Defensively returns `None` if the resolved id is `"telegram"` to prevent
 /// the bot from looping messages back to itself.
 pub fn resolve_tag_to_agent(config: &Config, tag: &str) -> Option<String> {
-    let resolved = if tag == "CEO" {
-        Some("ceo".to_string())
+    let resolved = if tag == "CoS" {
+        Some("chief-of-staff".to_string())
     } else if let Some(id) = tag.strip_prefix("PM:") {
         if !id.is_empty() && use_cases::agent_exists(config, id) {
             Some(id.to_string())
@@ -577,7 +577,7 @@ fn handle_callback_query(ctx: &BotCtx, cq: &Value) {
 }
 
 // ---------------------------------------------------------------------------
-// Outbound: CEO outbox -> Telegram
+// Outbound: Chief of Staff outbox -> Telegram
 // ---------------------------------------------------------------------------
 
 fn drain_outbox(ctx: &BotCtx) {
@@ -648,12 +648,12 @@ fn append_dead_letter(path: &Path, msg: &inbox::InboxMessage, reason: &str) -> s
 
 /// Short human-readable sender tag rendered on outbound Telegram messages.
 ///
-/// - `"ceo"` → `"CEO"`
+/// - `"chief-of-staff"` → `"CoS"`
 /// - `"researcher:<project>--<name>"` → `"R:<name>"` (text after the last `--`)
 /// - anything else → `"PM:<from>"` (default — project names live here)
 pub fn format_sender_tag(from: &str) -> String {
-    if from == "ceo" {
-        return "CEO".to_string();
+    if from == "chief-of-staff" {
+        return "CoS".to_string();
     }
     if let Some(rest) = from.strip_prefix("researcher:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
@@ -768,8 +768,8 @@ fn tg_answer_callback(ctx: &BotCtx, callback_id: &str) {
 }
 
 /// Resolve the inbox for the currently-selected agent. On a stale agent
-/// (resolution fails) we reset both in-memory and on-disk state back to `"ceo"`,
-/// notify the user, and return the CEO inbox.
+/// (resolution fails) we reset both in-memory and on-disk state back to
+/// `"chief-of-staff"`, notify the user, and return the Chief of Staff inbox.
 fn current_inbox(ctx: &BotCtx) -> PathBuf {
     let id = ctx
         .current_agent
@@ -782,23 +782,23 @@ fn current_inbox(ctx: &BotCtx) -> PathBuf {
             tracing::warn!(
                 old = %id,
                 error = %e,
-                "telegram: current agent is stale, resetting to ceo"
+                "telegram: current agent is stale, resetting to chief-of-staff"
             );
             match ctx.current_agent.write() {
-                Ok(mut g) => *g = "ceo".to_string(),
+                Ok(mut g) => *g = "chief-of-staff".to_string(),
                 Err(p) => {
                     let mut g = p.into_inner();
-                    *g = "ceo".to_string();
+                    *g = "chief-of-staff".to_string();
                 }
             }
-            if let Err(e) = use_cases::write_current_agent(&ctx.config, "ceo") {
-                tracing::warn!(error = %e, "telegram: failed to persist reset to ceo");
+            if let Err(e) = use_cases::write_current_agent(&ctx.config, "chief-of-staff") {
+                tracing::warn!(error = %e, "telegram: failed to persist reset to chief-of-staff");
             }
             let _ = tg_send(
                 ctx,
-                "⚠️ The agent you were talking to no longer exists. Reset to CEO.",
+                "⚠️ The agent you were talking to no longer exists. Reset to Chief of Staff.",
             );
-            ctx.config.ceo_inbox()
+            ctx.config.chief_of_staff_inbox()
         }
     }
 }
@@ -836,9 +836,10 @@ fn build_ls_reply(ctx: &BotCtx) -> (String, Vec<Vec<(String, String)>>) {
     )
 }
 
-/// Parent agent for `/back`. Returns `None` when already at root (`"ceo"`).
+/// Parent agent for `/back`. Returns `None` when already at root
+/// (`"chief-of-staff"`).
 pub fn parent_of(current: &str) -> Option<String> {
-    if current == "ceo" {
+    if current == "chief-of-staff" {
         return None;
     }
     if let Some(rest) = current.strip_prefix("researcher:") {
@@ -847,7 +848,7 @@ pub fn parent_of(current: &str) -> Option<String> {
             return Some(project.to_string());
         }
     }
-    Some("ceo".to_string())
+    Some("chief-of-staff".to_string())
 }
 
 /// Validate and apply a current-agent switch. Persists, updates in-memory

@@ -97,6 +97,15 @@ impl Config {
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
+        // Run any legacy CEO → Chief of Staff migrations BEFORE creating
+        // the new directory layout. Idempotent and best-effort: see
+        // `crate::migration` for details.
+        std::fs::create_dir_all(&self.base_dir)
+            .with_context(|| format!("Failed to create {}", self.base_dir.display()))?;
+        if let Err(e) = crate::migration::run(self) {
+            tracing::warn!(error = %e, "migration step failed; continuing");
+        }
+
         std::fs::create_dir_all(&self.tasks_dir).context("Failed to create tasks directory")?;
         std::fs::create_dir_all(&self.flows_dir).context("Failed to create flows directory")?;
         std::fs::create_dir_all(&self.prompts_dir).context("Failed to create prompts directory")?;
@@ -228,10 +237,10 @@ impl Config {
         self.base_dir.join("last_break_reset")
     }
 
-    // --- CEO & Project paths ---
+    // --- Chief of Staff & Project paths ---
 
-    pub fn ceo_dir(&self) -> PathBuf {
-        self.base_dir.join("ceo")
+    pub fn chief_of_staff_dir(&self) -> PathBuf {
+        self.base_dir.join("chief-of-staff")
     }
 
     pub fn projects_dir(&self) -> PathBuf {
@@ -242,16 +251,16 @@ impl Config {
         self.projects_dir().join(name)
     }
 
-    pub fn ceo_inbox(&self) -> PathBuf {
-        self.ceo_dir().join("inbox.jsonl")
+    pub fn chief_of_staff_inbox(&self) -> PathBuf {
+        self.chief_of_staff_dir().join("inbox.jsonl")
     }
 
-    pub fn ceo_seq(&self) -> PathBuf {
-        self.ceo_dir().join("inbox.seq")
+    pub fn chief_of_staff_seq(&self) -> PathBuf {
+        self.chief_of_staff_dir().join("inbox.seq")
     }
 
-    pub fn ceo_session_id(&self) -> PathBuf {
-        self.ceo_dir().join("session-id")
+    pub fn chief_of_staff_session_id(&self) -> PathBuf {
+        self.chief_of_staff_dir().join("session-id")
     }
 
     pub fn project_inbox(&self, name: &str) -> PathBuf {
@@ -266,8 +275,8 @@ impl Config {
         self.project_dir(name).join("session-id")
     }
 
-    pub fn ceo_tmux_session() -> &'static str {
-        "agman-ceo"
+    pub fn chief_of_staff_tmux_session() -> &'static str {
+        "agman-chief-of-staff"
     }
 
     pub fn pm_tmux_session(name: &str) -> String {

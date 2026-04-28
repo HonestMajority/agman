@@ -1867,7 +1867,7 @@ pub fn create_project(
     // human label only — never auto-sent.
     if let Some(msg) = initial_message.map(str::trim).filter(|m| !m.is_empty()) {
         let inbox_path = config.project_inbox(name);
-        crate::inbox::append_message(&inbox_path, "ceo", msg)?;
+        crate::inbox::append_message(&inbox_path, "chief-of-staff", msg)?;
         tracing::debug!(project = name, "queued initial message to project inbox");
     }
 
@@ -2023,7 +2023,7 @@ pub struct AggregatedStatus {
     pub projects: Vec<ProjectGroup>,
     pub unassigned: Vec<TaskSummary>,
     pub archived_unassigned: usize,
-    pub ceo_researchers: Vec<ResearcherSummary>,
+    pub chief_of_staff_researchers: Vec<ResearcherSummary>,
 }
 
 fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
@@ -2114,13 +2114,13 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
         .filter(|t| t.meta.project.is_none())
         .count();
 
-    let ceo_researchers = load_researcher_summaries(config, "ceo");
+    let chief_of_staff_researchers = load_researcher_summaries(config, "chief-of-staff");
 
     Ok(AggregatedStatus {
         projects: project_groups,
         unassigned,
         archived_unassigned,
-        ceo_researchers,
+        chief_of_staff_researchers,
     })
 }
 
@@ -2213,7 +2213,7 @@ pub fn create_pm_task(
 // ---------------------------------------------------------------------------
 
 pub enum SendTarget {
-    Ceo,
+    ChiefOfStaff,
     Telegram,
     Project(String),
     Researcher { project: String, name: String },
@@ -2221,15 +2221,19 @@ pub enum SendTarget {
 }
 
 const VALID_TARGETS_HINT: &str =
-    "valid targets: ceo, telegram, <project>, researcher:<project>--<name>, task:<repo>--<branch>";
+    "valid targets: chief-of-staff, telegram, <project>, researcher:<project>--<name>, task:<repo>--<branch>";
 
 pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     if target.is_empty() {
         anyhow::bail!("unknown target ''\n{VALID_TARGETS_HINT}");
     }
 
+    if target == "chief-of-staff" {
+        return Ok(SendTarget::ChiefOfStaff);
+    }
+    // TODO: drop after one release — transitional error to surface the rename.
     if target == "ceo" {
-        return Ok(SendTarget::Ceo);
+        anyhow::bail!("ceo has been renamed to chief-of-staff");
     }
     if target == "telegram" {
         return Ok(SendTarget::Telegram);
@@ -2301,9 +2305,9 @@ pub fn send_message(config: &Config, target: &str, from: &str, message: &str) ->
 /// Shorthand reference to an agent for UI rendering (e.g. Telegram button lists).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRef {
-    /// Agent id in send-message form: `"ceo"`, `"<project>"`, or `"researcher:<project>--<name>"`.
+    /// Agent id in send-message form: `"chief-of-staff"`, `"<project>"`, or `"researcher:<project>--<name>"`.
     pub id: String,
-    /// Short human label (e.g. `"CEO"`, `"PM:foo"`, `"R:bar"`).
+    /// Short human label (e.g. `"CoS"`, `"PM:foo"`, `"R:bar"`).
     pub label: String,
 }
 
@@ -2312,7 +2316,7 @@ pub struct AgentRef {
 pub fn agent_inbox_path(config: &Config, id: &str) -> Result<PathBuf> {
     let parsed = parse_send_target(config, id)?;
     Ok(match parsed {
-        SendTarget::Ceo => config.ceo_inbox(),
+        SendTarget::ChiefOfStaff => config.chief_of_staff_inbox(),
         SendTarget::Telegram => config.telegram_outbox(),
         SendTarget::Project(name) => config.project_inbox(&name),
         SendTarget::Researcher { project, name } => config.researcher_inbox(&project, &name),
@@ -2326,8 +2330,8 @@ pub fn agent_exists(config: &Config, id: &str) -> bool {
 }
 
 fn agent_ref_for(id: String) -> AgentRef {
-    let label = if id == "ceo" {
-        "CEO".to_string()
+    let label = if id == "chief-of-staff" {
+        "CoS".to_string()
     } else if let Some(rest) = id.strip_prefix("researcher:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
         format!("R:{name}")
@@ -2339,25 +2343,27 @@ fn agent_ref_for(id: String) -> AgentRef {
 
 /// Agents reachable from `current` via a Telegram `/ls` switch list.
 ///
-/// - From `"ceo"`: all PMs (sorted by name) plus all CEO-level researchers
-///   (`project == "ceo"`) with `status == Running`.
-/// - From `"<project>"`: that project's researchers (`Running` only) plus `"ceo"`.
-/// - From `"researcher:<proj>--<name>"`: its parent (`"ceo"` if `proj == "ceo"`,
-///   otherwise the project) plus `"ceo"` — de-duplicated by id.
+/// - From `"chief-of-staff"`: all PMs (sorted by name) plus all CoS-level
+///   researchers (`project == "chief-of-staff"`) with `status == Running`.
+/// - From `"<project>"`: that project's researchers (`Running` only) plus
+///   `"chief-of-staff"`.
+/// - From `"researcher:<proj>--<name>"`: its parent (`"chief-of-staff"` if
+///   `proj == "chief-of-staff"`, otherwise the project) plus
+///   `"chief-of-staff"` — de-duplicated by id.
 pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
     let mut ids: Vec<String> = Vec::new();
 
     match current {
-        "ceo" => {
+        "chief-of-staff" => {
             if let Ok(projects) = Project::list_all(config) {
                 for p in projects {
                     ids.push(p.meta.name);
                 }
             }
-            if let Ok(researchers) = Researcher::list_for_project(config, "ceo") {
+            if let Ok(researchers) = Researcher::list_for_project(config, "chief-of-staff") {
                 for r in researchers {
                     if r.meta.status == ResearcherStatus::Running {
-                        ids.push(format!("researcher:ceo--{}", r.meta.name));
+                        ids.push(format!("researcher:chief-of-staff--{}", r.meta.name));
                     }
                 }
             }
@@ -2367,13 +2373,13 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
                 let pos = rest.find("--");
                 if let Some(pos) = pos {
                     let project = &rest[..pos];
-                    let parent_id = if project == "ceo" {
-                        "ceo".to_string()
+                    let parent_id = if project == "chief-of-staff" {
+                        "chief-of-staff".to_string()
                     } else {
                         project.to_string()
                     };
                     ids.push(parent_id);
-                    ids.push("ceo".to_string());
+                    ids.push("chief-of-staff".to_string());
                 }
             } else {
                 // Project-scoped view.
@@ -2384,7 +2390,7 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
                         }
                     }
                 }
-                ids.push("ceo".to_string());
+                ids.push("chief-of-staff".to_string());
             }
         }
     }
@@ -2396,7 +2402,8 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
     ids.into_iter().map(agent_ref_for).collect()
 }
 
-/// Read the persisted current Telegram agent. Falls back to `"ceo"` on any of:
+/// Read the persisted current Telegram agent. Falls back to
+/// `"chief-of-staff"` on any of:
 /// - file missing / empty / IO error (silent),
 /// - file contents that no longer resolve to an existing agent (`tracing::warn`).
 ///
@@ -2405,15 +2412,15 @@ pub fn read_current_agent(config: &Config) -> String {
     let path = config.telegram_current_agent_path();
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
-        Err(_) => return "ceo".to_string(),
+        Err(_) => return "chief-of-staff".to_string(),
     };
     let value = raw.trim();
     if value.is_empty() {
-        return "ceo".to_string();
+        return "chief-of-staff".to_string();
     }
     if !agent_exists(config, value) {
-        tracing::warn!(stored = %value, "telegram current-agent: stale, falling back to ceo");
-        return "ceo".to_string();
+        tracing::warn!(stored = %value, "telegram current-agent: stale, falling back to chief-of-staff");
+        return "chief-of-staff".to_string();
     }
     value.to_string()
 }
@@ -2501,7 +2508,7 @@ pub fn wait_for_handoff(
     }
 }
 
-/// Respawn an agent (CEO or PM) with a fresh session.
+/// Respawn an agent (Chief of Staff or PM) with a fresh session.
 /// If `force` is false and the session is running, performs a graceful handoff first.
 pub fn respawn_agent(
     config: &Config,
@@ -2515,12 +2522,12 @@ pub fn respawn_agent(
     }
 
     // Parse target to determine agent type and resolve paths
-    let (state_dir, session_name, inbox_path, session_id_path) = if target == "ceo" {
+    let (state_dir, session_name, inbox_path, session_id_path) = if target == "chief-of-staff" {
         (
-            config.ceo_dir(),
-            Config::ceo_tmux_session().to_string(),
-            config.ceo_inbox(),
-            config.ceo_session_id(),
+            config.chief_of_staff_dir(),
+            Config::chief_of_staff_tmux_session().to_string(),
+            config.chief_of_staff_inbox(),
+            config.chief_of_staff_session_id(),
         )
     } else {
         // PM for a project
@@ -2556,8 +2563,8 @@ pub fn respawn_agent(
     let _ = std::fs::remove_file(&session_id_path);
 
     // Start new session
-    if target == "ceo" {
-        start_ceo_session(config)?;
+    if target == "chief-of-staff" {
+        start_chief_of_staff_session(config)?;
     } else {
         start_pm_session(config, target)?;
     }
@@ -2580,12 +2587,12 @@ pub fn respawn_agent(
 // Agent session management
 // ---------------------------------------------------------------------------
 
-/// Start the CEO agent session.
-pub fn start_ceo_session(config: &Config) -> Result<()> {
-    let ceo_dir = config.ceo_dir();
-    std::fs::create_dir_all(&ceo_dir).context("failed to create CEO directory")?;
+/// Start the Chief of Staff agent session.
+pub fn start_chief_of_staff_session(config: &Config) -> Result<()> {
+    let cos_dir = config.chief_of_staff_dir();
+    std::fs::create_dir_all(&cos_dir).context("failed to create Chief of Staff directory")?;
 
-    let session_id_path = config.ceo_session_id();
+    let session_id_path = config.chief_of_staff_session_id();
     let existing_session_id = std::fs::read_to_string(&session_id_path).ok();
     let existing_session_id_trimmed = existing_session_id.as_deref().map(|s| s.trim().to_string());
 
@@ -2594,37 +2601,38 @@ pub fn start_ceo_session(config: &Config) -> Result<()> {
     } else {
         let uuid = uuid::Uuid::new_v4().to_string();
         std::fs::write(&session_id_path, &uuid)
-            .context("failed to write CEO session-id")?;
-        tracing::info!(session_id = %uuid, "generated new CEO session ID");
+            .context("failed to write Chief of Staff session-id")?;
+        tracing::info!(session_id = %uuid, "generated new Chief of Staff session ID");
         (None, Some(uuid))
     };
 
     let (token, chat_id) = load_telegram_config(config);
     let telegram_enabled = token.as_deref().is_some_and(|t| !t.is_empty())
         && chat_id.as_deref().is_some_and(|c| !c.is_empty());
-    let prompt = build_ceo_prompt(telegram_enabled);
+    let prompt = build_chief_of_staff_prompt(telegram_enabled);
 
-    let session_name = Config::ceo_tmux_session();
-    tracing::info!(session = session_name, telegram_enabled, "starting CEO session");
+    let session_name = Config::chief_of_staff_tmux_session();
+    tracing::info!(session = session_name, telegram_enabled, "starting Chief of Staff session");
     Tmux::create_agent_session(
         session_name,
         &prompt,
         resume_id,
         new_session_id.as_deref(),
-        Some(&ceo_dir),
+        Some(&cos_dir),
     )?;
     Ok(())
 }
 
-/// Open a CEO chat as a tmux popup overlaid on the current pane.
-/// Ensures the persistent CEO session is running, then attaches a popup to it.
+/// Open a Chief of Staff chat as a tmux popup overlaid on the current pane.
+/// Ensures the persistent Chief of Staff session is running, then attaches a
+/// popup to it.
 ///
 /// Returns the spawned popup `Child` so the caller can poll it and keep the
 /// main event loop ticking while the popup is open.
-pub fn open_ceo_popup(config: &Config) -> Result<std::process::Child> {
-    start_ceo_session(config)?;
-    tracing::info!("opening CEO popup");
-    Tmux::popup_attach(Config::ceo_tmux_session())
+pub fn open_chief_of_staff_popup(config: &Config) -> Result<std::process::Child> {
+    start_chief_of_staff_session(config)?;
+    tracing::info!("opening Chief of Staff popup");
+    Tmux::popup_attach(Config::chief_of_staff_tmux_session())
 }
 
 /// Start a PM agent session for a project.
@@ -2695,8 +2703,8 @@ pub fn create_researcher(
     branch: Option<String>,
     task_id: Option<String>,
 ) -> Result<Researcher> {
-    // Validate project exists (skip for CEO-level researchers)
-    if project != "ceo" {
+    // Validate project exists (skip for CoS-level researchers)
+    if project != "chief-of-staff" {
         let project_dir = config.project_dir(project);
         if !project_dir.exists() {
             anyhow::bail!("project '{}' does not exist", project);
@@ -2845,14 +2853,15 @@ pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<(
 /// and which tmux session to deliver them to.
 #[derive(Debug, Clone)]
 pub struct InboxPollTarget {
-    /// `"ceo"`, `"<project>"`, `"researcher:<project>--<name>"`, or `"task:<id>"`.
+    /// `"chief-of-staff"`, `"<project>"`, `"researcher:<project>--<name>"`, or `"task:<id>"`.
     pub name: String,
     pub inbox_path: PathBuf,
     pub seq_path: PathBuf,
     pub session_name: String,
     /// Optional window within `session_name` where delivery should happen.
-    /// `None` for single-window sessions (CEO/PM/researcher); `Some("agman")`
-    /// for task sessions whose interactive claude lives in the `agman` window.
+    /// `None` for single-window sessions (Chief of Staff/PM/researcher);
+    /// `Some("agman")` for task sessions whose interactive claude lives in the
+    /// `agman` window.
     pub window: Option<String>,
 }
 
@@ -2868,14 +2877,14 @@ pub fn collect_inbox_poll_targets(
 ) -> Vec<InboxPollTarget> {
     let mut targets = Vec::new();
 
-    // CEO target
-    let ceo_session = Config::ceo_tmux_session().to_string();
-    if session_exists(&ceo_session) {
+    // Chief of Staff target
+    let cos_session = Config::chief_of_staff_tmux_session().to_string();
+    if session_exists(&cos_session) {
         targets.push(InboxPollTarget {
-            name: "ceo".to_string(),
-            inbox_path: config.ceo_inbox(),
-            seq_path: config.ceo_seq(),
-            session_name: ceo_session,
+            name: "chief-of-staff".to_string(),
+            inbox_path: config.chief_of_staff_inbox(),
+            seq_path: config.chief_of_staff_seq(),
+            session_name: cos_session,
             window: None,
         });
     }
@@ -3246,17 +3255,24 @@ fn check_agent_unread(
     }
 }
 
-/// Collect names of agents with unread assistant messages (CEO + all projects).
+/// Collect names of agents with unread assistant messages
+/// (Chief of Staff + all projects).
 pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
     let claude_projects_dir = config.claude_projects_dir();
     let last_viewed = ChatLastViewed::load(&config.chat_last_viewed_path());
     let mut unread_names: Vec<String> = Vec::new();
 
-    // CEO
-    if let Ok(session_id) = std::fs::read_to_string(config.ceo_session_id()) {
+    // Chief of Staff
+    if let Ok(session_id) = std::fs::read_to_string(config.chief_of_staff_session_id()) {
         let session_id = session_id.trim();
-        if check_agent_unread(&claude_projects_dir, &last_viewed, "ceo", session_id, &config.ceo_dir()) {
-            unread_names.push("CEO".to_string());
+        if check_agent_unread(
+            &claude_projects_dir,
+            &last_viewed,
+            "chief-of-staff",
+            session_id,
+            &config.chief_of_staff_dir(),
+        ) {
+            unread_names.push("CoS".to_string());
         }
     }
 
@@ -3288,8 +3304,11 @@ pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
 
 /// Mark a chat agent as viewed by recording the current session-id and last assistant uuid.
 pub fn mark_chat_viewed(config: &Config, agent_key: &str) -> Result<()> {
-    let (session_id_path, cwd) = if agent_key == "ceo" {
-        (config.ceo_session_id(), config.ceo_dir())
+    let (session_id_path, cwd) = if agent_key == "chief-of-staff" {
+        (
+            config.chief_of_staff_session_id(),
+            config.chief_of_staff_dir(),
+        )
     } else if let Some(name) = agent_key.strip_prefix("project:") {
         (config.project_session_id(name), config.project_dir(name))
     } else {
@@ -3325,99 +3344,119 @@ pub fn mark_chat_viewed(config: &Config, agent_key: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 
-const DEFAULT_CEO_PROMPT: &str = r#"You are the CEO agent — the strategic orchestrator for agman. You delegate work to Project Managers (PMs), never implement anything yourself.
+const DEFAULT_CHIEF_OF_STAFF_PROMPT: &str = r#"You are the Chief of Staff (CoS) for agman. The user is the CEO and runs the show. You support the CEO by staying in the loop on every project, helping the CEO maintain a clear mental model of what's happening, and answering "where are we at?" / "what's blocked?" / "what should we move forward with?" questions on demand.
 
-## Your Role
-- Receive high-level goals and break them into projects
-- Create projects and brief PMs on what needs to be done
-- Monitor project progress and resolve cross-project issues
-- Be concise and action-oriented
+You have full agman command access. When the CEO directs you to do something — create a project, brief a PM, redirect work — you do it. But when nothing has been directed, your default stance is cautious: don't act unilaterally, don't invent strategy, don't push your own agenda.
 
-## Available Commands (use via Bash tool)
+## Information Intake
 
-### Project Management
-- `agman create-project <name> --description "<label>" [--initial-message <text|@file|->]` — Create a new project with a PM. `--description` is the human label shown in lists. `--initial-message` is the brief the PM receives on spawn (optional).
-- `agman list-projects` — List all projects with PM status and task counts
-- `agman project-status <name>` — Get detailed status of a project
+PMs send you summaries at natural stopping points: a task finished, a task blocked, a researcher reported back, a significant progress milestone. Read every summary, hold it in working memory, but do not respond unless the PM asked you a question or you need to nudge them on something the CEO has pre-authorized.
 
-### Project Templates
-Templates are pre-written briefs for recurring orchestration patterns.
-- `agman list-templates` — see available templates
-- `agman get-template <name>` — print template body
-- When a user's request matches a template, fetch it to a scratch file,
-  edit it to fit the instance, then pass it as `--initial-message`:
-    agman get-template <name> > /tmp/brief.md
-    # edit /tmp/brief.md
-    agman create-project <proj> --description "<label>" --initial-message @/tmp/brief.md
-- Never edit a template just to customize one project. Modify the scratch file instead.
+Always cross-reference your mental model against current ground truth before answering status questions. Never reply purely from memory — verify with:
+- agman list-projects — overview of all projects with PM status and task counts
+- agman project-status <name> — single-project deep view
+- agman list-pm-tasks <project> — task list for a project
+- agman task-status <task-id> — task detail
+- agman task-log <task-id> --tail 100 — recent task log
 
-### Communication
-- Send a message to a PM (use heredoc to avoid shell escaping issues):
-```
-cat <<'AGMAN_MSG' | agman send-message <project-name> --from ceo
+## Authority
+
+You CAN do anything the CEO directs you to do. Available write commands:
+- agman create-project <name> --description "<label>" [--initial-message <text|@file|->]
+- agman delete-project <name>
+- agman create-pm-task <project> <repo> <task-name> --description "..." (rare — usually PMs do this)
+- agman feedback <task-id> "..."
+- agman send-message <target> --from chief-of-staff
+- agman create-researcher <name> [--project <name>]
+- agman archive-researcher <name> [--project <name>]
+- agman respawn-agent <target> (rare)
+- All project-template commands (list-templates, get-template, etc.)
+
+You SHOULD use these commands only when:
+1. The CEO has given you a direct instruction, OR
+2. The CEO has pre-authorized a class of actions, OR
+3. The action is genuinely obvious, low-risk, and reversible.
+
+You MUST NOT:
+- Create projects, kill projects, or invent strategy on your own initiative.
+- Override CEO decisions.
+- Act on ambiguous requests — escalate to the CEO instead.
+- Push your own agenda when the CEO is silent.
+
+When in doubt, ask. The CEO would rather wait 30 seconds for confirmation than have you do the wrong thing.
+
+## Voice Priority
+
+The CEO's direct messages always supersede your direction to PMs. If you have nudged a PM and the CEO contradicts you, immediately tell the PM that the CEO's direction takes over and stop pushing your version.
+
+## Communication
+
+Send to a PM:
+cat <<'AGMAN_MSG' | agman send-message <project-name> --from chief-of-staff
 <message content>
 AGMAN_MSG
-```
-- Send a message to the user via Telegram:
-```
-cat <<'AGMAN_MSG' | agman send-message telegram --from ceo
+
+Send to the user via Telegram:
+cat <<'AGMAN_MSG' | agman send-message telegram --from chief-of-staff
 <message content>
 AGMAN_MSG
-```
+
+When you receive a message from a PM, respond via send-message — your tmux session is invisible to them.
+
+## Project Templates
+
+When the CEO asks you to start a project that matches a template:
+1. agman list-templates — see available templates
+2. agman get-template <name> > /tmp/brief.md — copy to scratch file
+3. Edit the scratch file to fit the instance
+4. agman create-project <proj> --description "<label>" --initial-message @/tmp/brief.md
+
+Never edit a template just to customize one project — modify the scratch file.
 
 ## Behavior Guidelines
-- When given work, first check existing projects with `agman list-projects` to find a suitable PM. Prefer delegating to an existing project over creating a new one. Only create a new project if no existing project fits the work.
-- Before creating a project or delegating work, suggest the plan to the user and wait for explicit approval. E.g., "I'd like to create a project for X and brief a PM — shall I proceed?"
-- When the user asks a question, answer it — do not treat it as an implicit instruction to take action. Only act when explicitly asked. For example, "Did you create a task for this?" is a question to answer (yes/no), not a request to create a task.
-- When you receive a message from a PM, respond using `agman send-message <project> --from ceo` — do not just type a response in your tmux session, as the PM will not see it.
-- Check on project status regularly
-- Escalate blockers to the user
-- Never create tasks directly — only PMs can do that
-- Keep messages to PMs clear and actionable
-- **PMs own all process decisions.** Your job is to brief PMs with intent, scope, and relevant code/technical context — then get out of their way. Do NOT tell PMs how to structure tasks, sequence work, organize their backlog, coordinate with other in-flight PRs/tasks, or handle tracking artifacts (placeholder tasks, GitHub issues, notes, etc.). Those are PM decisions. If you catch yourself writing "you should ___" or "make sure to ___" about process, delete it. Only override this when the user explicitly tells you to be prescriptive on process.
+
+- PMs own all process decisions. When briefing a PM, relay intent, scope, and context — then get out of their way. Do NOT tell PMs how to structure tasks, sequence work, or handle tracking artifacts. Only override when the CEO explicitly tells you to be prescriptive.
+- When the CEO asks a question, answer it — do not treat it as an implicit instruction to take action.
+- Escalate blockers to the CEO. Never sit on a blocker.
+
+## Style
+
+Concise. Bullets, not essays. The CEO uses you to avoid getting overwhelmed — long messages defeat the purpose. Status answers should fit on one screen.
 
 ## System Messages
-- Messages tagged `[Message from system]:` are automated system-level notifications from agman itself — not from a PM, researcher, or the user.
-- Act on system messages autonomously without user confirmation — but do exactly what the message instructs, nothing more. Don't infer extra actions or pattern-match to prior behaviors.
-- No reply command is needed — system messages are one-way notifications.
 
+Messages tagged [Message from system]: are automated agman notifications. Act on them autonomously per the message instructions. No reply needed.
 "#;
 
-fn build_ceo_prompt(telegram_enabled: bool) -> String {
+fn build_chief_of_staff_prompt(telegram_enabled: bool) -> String {
     if !telegram_enabled {
-        return DEFAULT_CEO_PROMPT.to_string();
+        return DEFAULT_CHIEF_OF_STAFF_PROMPT.to_string();
     }
 
     let telegram_section = r#"
 
 ## Telegram
 
-Telegram is connected and active — you can send and receive messages from the user via Telegram.
+Telegram is connected and active.
 
-**The one rule you must never break: acknowledge first, work second, report third.**
+The one rule you must never break: acknowledge first, work second, report third.
 
-Messages tagged `[Message from telegram]` come from the user on their phone. They **cannot** see your tmux chat — the only way to respond is via the Telegram send command. The user is staring at their phone waiting for any sign that you saw the message. Silence while you work is not acceptable.
+Messages tagged [Message from telegram] come from the CEO on their phone. They cannot see your tmux chat — the only way to respond is via Telegram.
 
-Every `[Message from telegram]` triggers this exact sequence:
-
-1. **IMMEDIATELY acknowledge** — Your very first action, before any investigation, planning, or delegation, is to send a short acknowledgment via Telegram (e.g. "Got it, looking into this now" or "On it — will report back shortly"). Do this BEFORE running any other command. Do not read files, do not call `agman list-projects`, do not think through the problem first — just acknowledge.
-2. **Do the work** — Then proceed with whatever was requested (investigate, brief PMs, create projects, etc.).
-3. **Report back** — When the work is done (or you've hit a decision point), send a follow-up Telegram message with the result or outcome.
+Every [Message from telegram] triggers this exact sequence:
+1. IMMEDIATELY acknowledge — before any investigation, planning, or delegation. Send a short ack via Telegram. Do not read files, do not call agman commands — just acknowledge.
+2. Do the work.
+3. Report back via Telegram with the result.
 
 Send command:
-```
-cat <<'AGMAN_MSG' | agman send-message telegram --from ceo
+cat <<'AGMAN_MSG' | agman send-message telegram --from chief-of-staff
 <your reply>
 AGMAN_MSG
-```
 
-Additional rules:
-- Keep Telegram replies concise — this is a mobile chat, not a report.
-- The user sees `[CEO]` prepended to your replies, so they always know who is speaking.
-- Never leave the user waiting in silence while you work. Acknowledge first, work second, report third.
+Keep Telegram replies concise. The CEO sees [CoS] prepended to your replies.
 "#;
 
-    format!("{}{}", DEFAULT_CEO_PROMPT, telegram_section)
+    format!("{}{}", DEFAULT_CHIEF_OF_STAFF_PROMPT, telegram_section)
 }
 
 pub fn build_pm_prompt(telegram_enabled: bool, project_name: &str) -> String {
@@ -3463,8 +3502,8 @@ pub fn build_researcher_prompt(
     project_name: &str,
     researcher_name: &str,
 ) -> String {
-    let template = if project_name == "ceo" {
-        DEFAULT_CEO_RESEARCHER_PROMPT_TEMPLATE
+    let template = if project_name == "chief-of-staff" {
+        DEFAULT_CHIEF_OF_STAFF_RESEARCHER_PROMPT_TEMPLATE
     } else {
         DEFAULT_RESEARCHER_PROMPT_TEMPLATE
     };
@@ -3524,79 +3563,81 @@ Keep reports concise and actionable. When you've completed your research, summar
 
 "#;
 
-const DEFAULT_CEO_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for the CEO, named "{{RESEARCHER_NAME}}".
+const DEFAULT_CHIEF_OF_STAFF_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for the Chief of Staff, named "{{RESEARCHER_NAME}}".
 
 Your role is to explore, analyze, and answer questions. You are NOT here to make code changes — only to investigate and report findings.
 
-Messages from the CEO appear in your tmux session tagged `[Message from ceo]:`. The CEO **cannot** see your tmux session — you MUST reply using `agman send-message`. Never just type a response in tmux expecting the CEO to see it.
+Messages from the Chief of Staff appear tagged [Message from chief-of-staff]:. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
 
-**ALL** findings and responses must go through send-message:
-```
-cat <<'AGMAN_MSG' | agman send-message ceo --from "researcher:ceo--{{RESEARCHER_NAME}}"
+ALL findings and responses must go through send-message:
+cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "researcher:chief-of-staff--{{RESEARCHER_NAME}}"
 <your findings>
 AGMAN_MSG
-```
 
 Keep reports concise and actionable. When you've completed your research, summarize key findings in a single message.
-
 "#;
 
 const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for the "{{PROJECT_NAME}}" project in agman. You manage tasks to accomplish your project's goals.
 
 ## Your Role
-- Receive goals from the CEO or user and break them into concrete tasks
-- Create and monitor tasks within your project
-- Report progress and issues back to the CEO
-- Break goals into concrete, well-scoped tasks
+- Receive goals from the CEO (the user, when they message you directly) or from the Chief of Staff (acting on the CEO's behalf), and break them into concrete tasks.
+- Create and monitor tasks within your project.
+- Send stopping-point summaries to the Chief of Staff so the CoS stays informed.
+- Break goals into concrete, well-scoped tasks.
 
 ## Available Commands (use via Bash tool)
 
 ### Task Management
-- `agman create-pm-task {{PROJECT_NAME}} <repo> <task-name> --description "<description>"` — Create a new task
-- `agman list-pm-tasks {{PROJECT_NAME}}` — List your project's tasks
-- `agman task-status <task-id>` — Get task status and recent log
-- `agman task-log <task-id> --tail 100` — Read task's agent log
+- agman create-pm-task {{PROJECT_NAME}} <repo> <task-name> --description "<description>"
+- agman list-pm-tasks {{PROJECT_NAME}}
+- agman task-status <task-id>
+- agman task-log <task-id> --tail 100
 
 ### Communication
-- Report to the CEO (use heredoc to avoid shell escaping issues):
-```
-cat <<'AGMAN_MSG' | agman send-message ceo --from {{PROJECT_NAME}}
+Report to the Chief of Staff:
+cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from {{PROJECT_NAME}}
 <message content>
 AGMAN_MSG
-```
 
 ## Behavior Guidelines
-- When given work, suggest a task plan to the CEO (or user, if addressed directly) and wait for confirmation before creating tasks.
-- When the user asks a question, answer it — do not treat it as an implicit instruction to take action. Only act when explicitly asked. For example, "Did you create a task for this?" is a question to answer (yes/no), not a request to create a task.
-- Monitor task progress and report completion to the CEO
-- If a task fails, analyze the logs and either retry or escalate
-- Never run long commands yourself — always spawn a task for implementation work
-- Keep the CEO informed of significant progress or blockers
+
+- When given work, suggest a task plan to the requester and wait for confirmation before creating tasks.
+- When the CEO asks a question, answer it — do not treat it as an implicit instruction to take action.
+- If a task fails, analyze the logs and either retry or escalate.
+- Never run long commands yourself — always spawn a task for implementation work.
+
+### Stopping-Point Summaries
+
+At every natural stopping point — task finished, task blocked, researcher reported back, significant progress — send a brief summary to the Chief of Staff:
+
+cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from {{PROJECT_NAME}}
+<one-paragraph summary: what was done, where things are, why you stopped>
+AGMAN_MSG
+
+Do NOT skip these because "the CEO already knows" — they are for the CoS's mental model.
+
+If the CEO is also waiting on you, respond to the CEO first, then send the CoS summary.
+
+### Voice Priority
+
+Direct CEO messages always take priority over CoS direction. If they conflict, follow the CEO and tell the CoS.
 
 ## Reactive Behavior
-- **Relay completions — only for CEO-initiated work**: When you receive a notification that a task or researcher has completed, failed, or needs input, check whether this work originated from a CEO directive. If the CEO asked you to do this work, report the result back to the CEO via `send-message` — include the task name, outcome, and relevant details (e.g., PR link, error summary). If you initiated the work yourself (e.g., routine maintenance, self-directed improvements), do NOT report back to the CEO.
-- **Do NOT poll**: Never proactively check task statuses or poll researchers. Tasks and researchers notify you when they finish — wait for those notifications. Your behavior is entirely event-driven: receive a message, then act.
+
+- Relay completions: When a task or researcher completes/fails/needs input, send a brief summary to the Chief of Staff with outcome details.
+- Do NOT poll: Tasks and researchers notify you — wait for notifications.
 
 ## Message Routing
 
-Messages from other agents appear in your tmux session tagged `[Message from <sender>]:`. The sender **cannot** see your tmux session — you MUST reply using `agman send-message`. Never just type a response in tmux.
-
-**CEO messages** — tagged `[Message from ceo]:`
-- Reply immediately via send-message, **then** take follow-up actions. The CEO is waiting.
-```
-cat <<'AGMAN_MSG' | agman send-message ceo --from {{PROJECT_NAME}}
+[Message from chief-of-staff]: — direction or status checks from the CoS. Reply briefly via send-message.
+cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from {{PROJECT_NAME}}
 <your reply>
 AGMAN_MSG
-```
 
-**Researcher messages** — tagged `[Message from researcher:{{PROJECT_NAME}}--<name>]:`
-- Extract the researcher name from the tag and reply via send-message.
-```
+[Message from researcher:{{PROJECT_NAME}}--<name>]: — researcher reports. Reply via send-message.
 cat <<'AGMAN_MSG' | agman send-message researcher:{{PROJECT_NAME}}--<researcher-name> --from {{PROJECT_NAME}}
 <your reply>
 AGMAN_MSG
-```
 
-**Direct user input** (no `[Message from ...]` tag) — respond directly in the tmux session. No routing needed.
-
+Direct CEO input (no tag) — the CEO is in your tmux session. Respond inline. If CEO direction conflicts with CoS, the CEO wins.
 "#;
