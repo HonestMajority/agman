@@ -111,6 +111,7 @@ fn codex_build_session_command_emits_developer_instructions_and_no_alt_screen() 
         !cmd.contains("--skip-git-repo-check"),
         "codex 0.125.0 dropped this flag: {cmd}"
     );
+    assert!(cmd.contains("--dangerously-bypass-approvals-and-sandbox"));
     assert!(cmd.contains("--no-alt-screen"));
     assert!(cmd.contains("developer_instructions=\"\"\"Identity body\"\"\""));
     // Codex doesn't take --name; the name is registered post-launch via /rename.
@@ -149,6 +150,35 @@ fn codex_build_session_command_does_not_emit_skip_git_repo_check() {
 }
 
 #[test]
+fn codex_build_session_command_always_bypasses_approvals_and_sandbox() {
+    // Regression: codex must ALWAYS launch with
+    // `--dangerously-bypass-approvals-and-sandbox` (mirrors claude's
+    // `--dangerously-skip-permissions`). Without it, codex prompts before
+    // privileged-feeling shell commands (e.g. `git add`), deadlocking
+    // autonomous agman flows. Verify the flag is present for every
+    // session-key shape the codex builder emits.
+    let h = HarnessKind::Codex.select();
+    let work_dir = cwd();
+    for key in [
+        SessionKey::Auto,
+        SessionKey::Pin("agman-pin"),
+        SessionKey::Resume("agman-resume"),
+    ] {
+        let cmd = h.build_session_command(&LaunchContext {
+            identity: "Identity body",
+            name: "agman-task-myrepo--feat-x-step-1",
+            cwd: &work_dir,
+            no_alt_screen: true,
+            session_key: key,
+        });
+        assert!(
+            cmd.contains("--dangerously-bypass-approvals-and-sandbox"),
+            "codex must always bypass approvals+sandbox; got: {cmd}"
+        );
+    }
+}
+
+#[test]
 fn codex_build_session_command_emits_resume_subcommand() {
     // Long-lived resume: `codex resume <name>` shape with -C <cwd> and
     // --no-alt-screen. Skips developer_instructions (the saved thread
@@ -165,6 +195,7 @@ fn codex_build_session_command_emits_resume_subcommand() {
     assert!(cmd.starts_with("codex"));
     assert!(cmd.contains(" resume 'agman-chief-of-staff'"));
     assert!(cmd.contains(&format!(" -C '{}'", work_dir.to_string_lossy())));
+    assert!(cmd.contains("--dangerously-bypass-approvals-and-sandbox"));
     assert!(cmd.contains("--no-alt-screen"));
     assert!(
         !cmd.contains("developer_instructions"),
