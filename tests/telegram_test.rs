@@ -1,7 +1,11 @@
+mod helpers;
+
 use agman::telegram::{
-    classify_outbox_result, format_sender_tag, parent_of, run_iter_catching_panic, OutboxAction,
-    TgError,
+    classify_outbox_result, format_reply_message, format_sender_tag, parent_of, parse_sender_tag,
+    resolve_tag_to_agent, run_iter_catching_panic, OutboxAction, TgError,
 };
+
+use helpers::{create_test_project, create_test_researcher, test_config};
 
 #[test]
 fn classify_ok_marks_delivered() {
@@ -52,4 +56,106 @@ fn parent_of_cases() {
     assert_eq!(parent_of("some-project"), Some("ceo".to_string()));
     assert_eq!(parent_of("researcher:proj--bar"), Some("proj".to_string()));
     assert_eq!(parent_of("researcher:ceo--baz"), Some("ceo".to_string()));
+}
+
+#[test]
+fn parse_sender_tag_cases() {
+    assert_eq!(parse_sender_tag("[CEO] hi"), Some("CEO"));
+    assert_eq!(parse_sender_tag("[PM:foo] bar"), Some("PM:foo"));
+    assert_eq!(parse_sender_tag("[R:baz] x"), Some("R:baz"));
+    assert_eq!(parse_sender_tag("plain"), None);
+    assert_eq!(parse_sender_tag("[unclosed"), None);
+    // Bracket not at start.
+    assert_eq!(parse_sender_tag(" [CEO] leading space"), None);
+    // Empty tag is technically extractable.
+    assert_eq!(parse_sender_tag("[] body"), Some(""));
+}
+
+#[test]
+fn format_reply_message_strips_tag_and_concats_body() {
+    let out = format_reply_message("[CEO] hello world", "thanks");
+    assert_eq!(out, "In reply to: \"hello world\"\n\nthanks");
+}
+
+#[test]
+fn format_reply_message_keeps_plain_original() {
+    let out = format_reply_message("no tag here", "ok");
+    assert_eq!(out, "In reply to: \"no tag here\"\n\nok");
+}
+
+#[test]
+fn format_reply_message_truncates_long_snippet() {
+    let long = format!("[CEO] {}", "x".repeat(200));
+    let out = format_reply_message(&long, "body");
+    // 140 chars + ellipsis, surrounded by "In reply to: \"...\"\n\nbody".
+    let expected_snippet: String = "x".repeat(140);
+    assert_eq!(
+        out,
+        format!("In reply to: \"{expected_snippet}…\"\n\nbody")
+    );
+}
+
+#[test]
+fn resolve_tag_ceo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    assert_eq!(resolve_tag_to_agent(&config, "CEO"), Some("ceo".to_string()));
+}
+
+#[test]
+fn resolve_tag_pm_existing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _ = create_test_project(&config, "myproj");
+    assert_eq!(
+        resolve_tag_to_agent(&config, "PM:myproj"),
+        Some("myproj".to_string())
+    );
+}
+
+#[test]
+fn resolve_tag_pm_missing_returns_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    assert_eq!(resolve_tag_to_agent(&config, "PM:ghost"), None);
+}
+
+#[test]
+fn resolve_tag_researcher_unique_match() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _ = create_test_project(&config, "alpha");
+    let _ = create_test_researcher(&config, "alpha", "scout");
+    assert_eq!(
+        resolve_tag_to_agent(&config, "R:scout"),
+        Some("researcher:alpha--scout".to_string())
+    );
+}
+
+#[test]
+fn resolve_tag_researcher_ambiguous_returns_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _ = create_test_project(&config, "alpha");
+    let _ = create_test_project(&config, "beta");
+    let _ = create_test_researcher(&config, "alpha", "twin");
+    let _ = create_test_researcher(&config, "beta", "twin");
+    assert_eq!(resolve_tag_to_agent(&config, "R:twin"), None);
+}
+
+#[test]
+fn resolve_tag_researcher_missing_returns_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    assert_eq!(resolve_tag_to_agent(&config, "R:nobody"), None);
+}
+
+#[test]
+fn resolve_tag_unknown_returns_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    assert_eq!(resolve_tag_to_agent(&config, "UNKNOWN"), None);
+    assert_eq!(resolve_tag_to_agent(&config, ""), None);
+    assert_eq!(resolve_tag_to_agent(&config, "PM:"), None);
+    assert_eq!(resolve_tag_to_agent(&config, "R:"), None);
 }
