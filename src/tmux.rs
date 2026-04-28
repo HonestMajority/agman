@@ -108,6 +108,15 @@ impl Tmux {
 
     pub fn attach_session(session_name: &str) -> Result<()> {
         tracing::debug!(session = session_name, "attaching to tmux session");
+
+        // Default to the "agman" window (where the supervisor runs claude),
+        // not whichever window happened to be selected last. Best-effort:
+        // sessions without an agman window (shouldn't happen for tasks) just
+        // attach to their currently-selected window.
+        let _ = Command::new("tmux")
+            .args(["select-window", "-t", &format!("{}:agman", session_name)])
+            .status();
+
         // Try switch-client first (if already in tmux)
         let switch_result = Command::new("tmux")
             .args(["switch-client", "-t", session_name])
