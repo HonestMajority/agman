@@ -43,9 +43,8 @@ pub fn setup_logging(config: &Config) -> Result<()> {
     let log_path = config.base_dir.join("agman.log");
     let log_file = open_log_file(&log_path)?;
 
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("agman=debug,warn")
-    });
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("agman=debug,warn"));
 
     let file_layer = fmt::layer()
         .with_writer(log_file)

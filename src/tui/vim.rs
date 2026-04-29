@@ -589,17 +589,13 @@ impl<'a> VimTextArea<'a> {
         self.textarea.lines().join("\n")
     }
 
-    /// Get lines
-    pub fn lines(&self) -> &[String] {
-        self.textarea.lines()
-    }
-
     /// Move cursor
     pub fn move_cursor(&mut self, cursor_move: CursorMove) {
         self.textarea.move_cursor(cursor_move);
     }
 
     /// Get cursor position
+    #[cfg(test)]
     pub fn cursor(&self) -> (usize, usize) {
         self.textarea.cursor()
     }
@@ -618,19 +614,6 @@ impl<'a> VimTextArea<'a> {
     /// Set read-only mode
     pub fn set_read_only(&mut self, read_only: bool) {
         self.vim.read_only = read_only;
-    }
-
-    /// Check if in read-only mode
-    pub fn is_read_only(&self) -> bool {
-        self.vim.read_only
-    }
-
-    /// Set content from string
-    pub fn set_content(&mut self, content: &str) {
-        self.textarea = TextArea::from(content.lines());
-        self.textarea
-            .set_cursor_line_style(ratatui::style::Style::default());
-        self.textarea.set_wrap_mode(WrapMode::WordOrGlyph);
     }
 }
 

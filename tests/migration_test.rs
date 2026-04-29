@@ -18,7 +18,10 @@ fn migration_renames_legacy_ceo_dir() {
     config.ensure_dirs().unwrap();
 
     let new_dir = config.chief_of_staff_dir();
-    assert!(new_dir.exists(), "chief-of-staff dir should exist after migration");
+    assert!(
+        new_dir.exists(),
+        "chief-of-staff dir should exist after migration"
+    );
     assert!(
         new_dir.join("inbox.jsonl").exists(),
         "inbox should have been carried over"
@@ -56,7 +59,11 @@ fn migration_renames_researcher_dirs_and_rewrites_meta() {
         "branch": null,
         "task_id": null,
     });
-    fs::write(legacy.join("meta.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+    fs::write(
+        legacy.join("meta.json"),
+        serde_json::to_string_pretty(&meta).unwrap(),
+    )
+    .unwrap();
 
     config.ensure_dirs().unwrap();
 

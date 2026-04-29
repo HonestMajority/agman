@@ -234,7 +234,13 @@ impl Git {
         branch_name: &str,
         parent_dir: Option<&Path>,
     ) -> Result<PathBuf> {
-        Self::create_worktree_for_existing_branch_impl(config, repo_name, branch_name, parent_dir, true)
+        Self::create_worktree_for_existing_branch_impl(
+            config,
+            repo_name,
+            branch_name,
+            parent_dir,
+            true,
+        )
     }
 
     fn create_worktree_for_existing_branch_impl(
@@ -285,7 +291,8 @@ impl Git {
 
         // Check if branch exists locally or only on remote
         let local_exists = Self::ref_exists(&repo_path, &format!("refs/heads/{}", branch_name));
-        let remote_exists = Self::ref_exists(&repo_path, &format!("refs/remotes/origin/{}", branch_name));
+        let remote_exists =
+            Self::ref_exists(&repo_path, &format!("refs/remotes/origin/{}", branch_name));
 
         if !quiet {
             println!(
@@ -321,10 +328,7 @@ impl Git {
                 .output()
                 .context("Failed to create worktree")?
         } else {
-            anyhow::bail!(
-                "Branch '{}' not found locally or on origin",
-                branch_name
-            );
+            anyhow::bail!("Branch '{}' not found locally or on origin", branch_name);
         };
 
         if !output.status.success() {
@@ -360,7 +364,7 @@ impl Git {
     }
 
     /// Remove a worktree and prune stale references
-    pub fn remove_worktree(repo_path: &PathBuf, worktree_path: &PathBuf) -> Result<()> {
+    pub fn remove_worktree(repo_path: &PathBuf, worktree_path: &Path) -> Result<()> {
         tracing::info!(worktree = %worktree_path.display(), "removing worktree");
         let output = Command::new("git")
             .current_dir(repo_path)
@@ -425,7 +429,7 @@ impl Git {
     }
 
     /// Run direnv allow in a directory
-    pub fn direnv_allow(path: &PathBuf) -> Result<()> {
+    pub fn direnv_allow(path: &Path) -> Result<()> {
         let output = Command::new("direnv")
             .args(["allow", path.to_str().unwrap()])
             .output();

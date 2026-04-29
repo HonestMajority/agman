@@ -44,10 +44,7 @@ pub fn load_break_reset(path: &Path, max_age: Duration) -> Option<Instant> {
     // is `Instant::now() - age`. Use checked_sub to handle edge cases.
     let instant = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
 
-    tracing::info!(
-        age_secs = age.as_secs(),
-        "restored persisted break timer"
-    );
+    tracing::info!(age_secs = age.as_secs(), "restored persisted break timer");
 
     Some(instant)
 }

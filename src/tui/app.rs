@@ -6,13 +6,13 @@ use ratatui::crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use std::io;
-use std::sync::atomic::Ordering;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tokio::sync::mpsc as tokio_mpsc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc as tokio_mpsc;
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
 use agman::break_persist;
@@ -21,13 +21,13 @@ use agman::config::Config;
 use agman::dismissed_notifications::DismissedNotifications;
 use agman::flow::Flow;
 use agman::git::Git;
-use agman::repo_stats::RepoStats;
-use agman::task::{Task, TaskStatus};
-use agman::tmux::Tmux;
 use agman::inbox;
 use agman::project::Project;
+use agman::repo_stats::RepoStats;
 use agman::researcher::Researcher;
 use agman::supervisor;
+use agman::task::{Task, TaskStatus};
+use agman::tmux::Tmux;
 use agman::use_cases;
 
 use super::ui;
@@ -171,7 +171,10 @@ impl DirectoryPicker {
     }
 
     pub fn is_repo_select_mode(&self) -> bool {
-        matches!(self.origin, DirPickerOrigin::RepoSelect | DirPickerOrigin::ReviewRepoSelect)
+        matches!(
+            self.origin,
+            DirPickerOrigin::RepoSelect | DirPickerOrigin::ReviewRepoSelect
+        )
     }
 
     fn refresh_entries(&mut self) {
@@ -182,11 +185,7 @@ impl DirectoryPicker {
             let mut dirs: Vec<(String, PathBuf)> = read_dir
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().is_dir())
-                .filter(|e| {
-                    !e.file_name()
-                        .to_string_lossy()
-                        .starts_with('.')
-                })
+                .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
                 .filter(|e| {
                     // In RepoSelect modes, filter out -wt worktree directories
                     if is_repo_select {
@@ -256,7 +255,10 @@ impl DirectoryPicker {
     pub fn selected_path(&self) -> Option<PathBuf> {
         let fav_len = self.favorites_len();
         if self.selected_index < fav_len {
-            return Some(self.repos_dir.join(&self.favorite_repos[self.selected_index].0));
+            return Some(
+                self.repos_dir
+                    .join(&self.favorite_repos[self.selected_index].0),
+            );
         }
         let entry_idx = self.selected_index - fav_len;
         self.entries
@@ -279,7 +281,6 @@ impl DirectoryPicker {
         self.selected_index < self.favorites_len()
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizardStep {
@@ -483,10 +484,14 @@ fn query_pr_state(worktree_path: &std::path::Path, pr_number: u64) -> Option<(bo
 fn lookup_pr_for_branch(worktree_path: &std::path::Path, branch_name: &str) -> Option<u64> {
     let output = Command::new("gh")
         .args([
-            "pr", "list",
-            "--head", branch_name,
-            "--json", "number",
-            "--limit", "1",
+            "pr",
+            "list",
+            "--head",
+            branch_name,
+            "--json",
+            "number",
+            "--limit",
+            "1",
         ])
         .current_dir(worktree_path)
         .output()
@@ -506,13 +511,7 @@ fn lookup_pr_for_branch(worktree_path: &std::path::Path, branch_name: &str) -> O
 /// Returns `None` on any error so linking gracefully falls back.
 fn fetch_pr_author(worktree_path: &std::path::Path, pr_number: u64) -> Option<String> {
     let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "author",
-        ])
+        .args(["pr", "view", &pr_number.to_string(), "--json", "author"])
         .current_dir(worktree_path)
         .output()
         .ok()?;
@@ -821,8 +820,10 @@ impl App {
         let (respawn_tx, respawn_rx) = tokio_mpsc::unbounded_channel();
         let (chat_poll_tx, chat_poll_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
-        let mut dismissed_notifs = DismissedNotifications::load(&config.dismissed_notifications_path());
-        let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
+        let mut dismissed_notifs =
+            DismissedNotifications::load(&config.dismissed_notifications_path());
+        let retention =
+            chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
         if dismissed_notifs.prune_older_than(retention) > 0 {
             dismissed_notifs.save(&config.dismissed_notifications_path());
         }
@@ -866,11 +867,9 @@ impl App {
         let break_interval = use_cases::load_break_interval(&config);
         let archive_retention_days = use_cases::load_archive_retention(&config);
 
-        let last_break_reset = break_persist::load_break_reset(
-            &config.break_state_path(),
-            BREAK_PERSIST_MAX_AGE,
-        )
-        .unwrap_or_else(Instant::now);
+        let last_break_reset =
+            break_persist::load_break_reset(&config.break_state_path(), BREAK_PERSIST_MAX_AGE)
+                .unwrap_or_else(Instant::now);
 
         Ok(Self {
             config,
@@ -1139,7 +1138,10 @@ impl App {
         self.unassigned_unseen_stopped_count = 0;
         for task in &all_tasks {
             if let Some(ref proj) = task.meta.project {
-                let entry = self.project_task_counts.entry(proj.clone()).or_insert((0, 0, 0));
+                let entry = self
+                    .project_task_counts
+                    .entry(proj.clone())
+                    .or_insert((0, 0, 0));
                 entry.0 += 1;
                 if task.meta.status == TaskStatus::Running {
                     entry.1 += 1;
@@ -1163,11 +1165,12 @@ impl App {
 
     /// Refresh the researcher list, filtered by `current_project` if set.
     pub fn refresh_researchers(&mut self) {
-        self.researchers = use_cases::list_researchers(&self.config, self.current_project.as_deref())
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to list researchers");
-                Vec::new()
-            });
+        self.researchers =
+            use_cases::list_researchers(&self.config, self.current_project.as_deref())
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "failed to list researchers");
+                    Vec::new()
+                });
         if self.researcher_list_index >= self.researchers.len() && !self.researchers.is_empty() {
             self.researcher_list_index = self.researchers.len() - 1;
         }
@@ -1183,12 +1186,14 @@ impl App {
         let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
         let all = Task::list_all(&self.config);
         self.tasks = match &self.current_project {
-            Some(name) if name == "(unassigned)" => {
-                all.into_iter().filter(|t| t.meta.project.is_none()).collect()
-            }
-            Some(name) => {
-                all.into_iter().filter(|t| t.meta.project.as_deref() == Some(name.as_str())).collect()
-            }
+            Some(name) if name == "(unassigned)" => all
+                .into_iter()
+                .filter(|t| t.meta.project.is_none())
+                .collect(),
+            Some(name) => all
+                .into_iter()
+                .filter(|t| t.meta.project.as_deref() == Some(name.as_str()))
+                .collect(),
             None => all,
         };
         // Restore selection
@@ -1249,14 +1254,14 @@ impl App {
                 continue;
             };
 
-            self.log_output(format!("Waking stopped task {} with queued items...", task_id));
+            self.log_output(format!(
+                "Waking stopped task {} with queued items...",
+                task_id
+            ));
 
             if let Some(task) = self.tasks.get_mut(idx) {
                 if let Err(e) = supervisor::ensure_task_tmux(task) {
-                    self.log_output(format!(
-                        "Failed to prepare tmux for {}: {}",
-                        task_id, e
-                    ));
+                    self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
                     continue;
                 }
                 match supervisor::wake_if_idle(&self.config, task) {
@@ -1269,10 +1274,7 @@ impl App {
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        self.log_output(format!(
-                            "Error waking stranded task {}: {}",
-                            task_id, e
-                        ));
+                        self.log_output(format!("Error waking stranded task {}: {}", task_id, e));
                     }
                 }
             }
@@ -1446,20 +1448,16 @@ impl App {
 
             tracing::info!(task_id = %task_id, "TUI: resume after answering");
 
-            let launch_error: Option<anyhow::Error> = if let Some(task) =
-                self.tasks.get_mut(self.selected_index)
-            {
-                use_cases::resume_after_answering(task)?;
-                let _ = use_cases::set_review_addressed(task, false);
-                match supervisor::ensure_task_tmux(task)
-                    .and_then(|_| supervisor::launch_next_step(&self.config, task).map(|_| ()))
-                {
-                    Ok(_) => None,
-                    Err(e) => Some(e),
-                }
-            } else {
-                None
-            };
+            let launch_error: Option<anyhow::Error> =
+                if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                    use_cases::resume_after_answering(task)?;
+                    let _ = use_cases::set_review_addressed(task, false);
+                    supervisor::ensure_task_tmux(task)
+                        .and_then(|_| supervisor::launch_next_step(&self.config, task).map(|_| ()))
+                        .err()
+                } else {
+                    None
+                };
 
             match launch_error {
                 None => {
@@ -1513,7 +1511,11 @@ impl App {
             self.selected_index = self.tasks.len() - 1;
         }
 
-        let label = if saved { "Archived & saved" } else { "Archived" };
+        let label = if saved {
+            "Archived & saved"
+        } else {
+            "Archived"
+        };
         self.set_status(format!("{}: {}", label, task_id));
         self.view = View::TaskList;
         Ok(())
@@ -1593,7 +1595,10 @@ impl App {
             // Delegate to use_cases: queue the feedback
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
                 let queue_count = use_cases::queue_feedback(task, &self.config, &feedback)?;
-                self.log_output(format!("Queued feedback for {} ({} in queue)", task_id, queue_count));
+                self.log_output(format!(
+                    "Queued feedback for {} ({} in queue)",
+                    task_id, queue_count
+                ));
                 self.set_status(format!("Feedback queued ({} in queue)", queue_count));
             }
         } else if let Some(task) = self.tasks.get_mut(self.selected_index) {
@@ -1639,7 +1644,10 @@ impl App {
             let start = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
             self.dir_picker = Some(DirectoryPicker::new(start, DirPickerOrigin::NewTask));
             self.view = View::DirectoryPicker;
-            self.set_status(format!("No repos found in {}. Pick a repos directory (s to select, h/l to navigate).", self.config.repos_dir.display()));
+            self.set_status(format!(
+                "No repos found in {}. Pick a repos directory (s to select, h/l to navigate).",
+                self.config.repos_dir.display()
+            ));
             return Ok(());
         };
 
@@ -1655,7 +1663,12 @@ impl App {
     }
 
     /// Create the wizard from a directory picker selection, starting at `SelectBranch`.
-    fn create_wizard_from_picker(&mut self, repo_name: String, repo_path: PathBuf, is_multi: bool) -> Result<()> {
+    fn create_wizard_from_picker(
+        &mut self,
+        repo_name: String,
+        repo_path: PathBuf,
+        is_multi: bool,
+    ) -> Result<()> {
         let mut new_branch_editor = Self::create_plain_editor();
         new_branch_editor.set_cursor_line_style(ratatui::style::Style::default());
 
@@ -1705,7 +1718,11 @@ impl App {
     }
 
     /// Create a ReviewWizard from a directory picker selection, starting at `EnterBranch`.
-    fn create_review_wizard_from_picker(&mut self, repo_name: String, repo_path: PathBuf) -> Result<()> {
+    fn create_review_wizard_from_picker(
+        &mut self,
+        repo_name: String,
+        repo_path: PathBuf,
+    ) -> Result<()> {
         let branches = self.scan_branches(&repo_name, &repo_path)?;
         let worktrees = self.scan_existing_worktrees(&repo_name, &repo_path)?;
 
@@ -1793,7 +1810,9 @@ impl App {
                     return;
                 }
                 let name = t.meta.primary_repo().repo_name.clone();
-                let path = self.config.repo_path_for(t.meta.parent_dir.as_deref(), &name);
+                let path = self
+                    .config
+                    .repo_path_for(t.meta.parent_dir.as_deref(), &name);
                 (name, path)
             }
             None => {
@@ -1816,10 +1835,7 @@ impl App {
                 }
 
                 // Preselect sensible default branch based on command
-                let cmd_id = self
-                    .pending_branch_command
-                    .as_ref()
-                    .map(|c| c.id.as_str());
+                let cmd_id = self.pending_branch_command.as_ref().map(|c| c.id.as_str());
                 let preselect_index = match cmd_id {
                     Some("local-merge") => branches
                         .iter()
@@ -1875,7 +1891,10 @@ impl App {
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
                 match use_cases::queue_command(task, &self.config, &command.id, Some(branch)) {
                     Ok(count) => {
-                        self.set_status(format!("Command queued: {} → {} ({} in queue)", command.name, branch, count));
+                        self.set_status(format!(
+                            "Command queued: {} → {} ({} in queue)",
+                            command.name, branch, count
+                        ));
                     }
                     Err(e) => {
                         self.set_status(format!("Failed to queue command: {}", e));
@@ -1971,7 +1990,10 @@ impl App {
             if let Some(task) = self.tasks.get_mut(self.selected_index) {
                 match use_cases::queue_command(task, &self.config, &command.id, None) {
                     Ok(count) => {
-                        self.set_status(format!("Command queued: {} ({} in queue)", command.name, count));
+                        self.set_status(format!(
+                            "Command queued: {} ({} in queue)",
+                            command.name, count
+                        ));
                     }
                     Err(e) => {
                         self.set_status(format!("Failed to queue command: {}", e));
@@ -1986,7 +2008,10 @@ impl App {
         if command.id == "create-pr" {
             if let Some(task) = self.selected_task() {
                 if let Some(ref pr) = task.meta.linked_pr {
-                    self.set_status(format!("PR #{} already linked — use monitor-pr instead.", pr.number));
+                    self.set_status(format!(
+                        "PR #{} already linked — use monitor-pr instead.",
+                        pr.number
+                    ));
                     self.view = View::Preview;
                     return Ok(());
                 }
@@ -2055,7 +2080,11 @@ impl App {
         Ok(branches)
     }
 
-    fn scan_existing_worktrees(&self, repo_name: &str, repo_path: &Path) -> Result<Vec<(String, PathBuf)>> {
+    fn scan_existing_worktrees(
+        &self,
+        repo_name: &str,
+        repo_path: &Path,
+    ) -> Result<Vec<(String, PathBuf)>> {
         let repo_path_buf = repo_path.to_path_buf();
         let worktrees = Git::list_worktrees(&repo_path_buf)?;
 
@@ -2213,7 +2242,12 @@ impl App {
             }
             BranchSource::NewBranch => {
                 let bname = wizard.new_branch_editor.lines().join("").trim().to_string();
-                let base = wizard.base_branch_editor.lines().join("").trim().to_string();
+                let base = wizard
+                    .base_branch_editor
+                    .lines()
+                    .join("")
+                    .trim()
+                    .to_string();
                 let base_branch = if base.is_empty() { None } else { Some(base) };
                 (bname, use_cases::WorktreeSource::NewBranch { base_branch })
             }
@@ -2227,7 +2261,9 @@ impl App {
         let review_after = wizard.review_after;
 
         // Determine project assignment from current scope
-        let project = self.current_project.as_ref()
+        let project = self
+            .current_project
+            .as_ref()
             .filter(|p| p.as_str() != "(unassigned)")
             .cloned();
 
@@ -2356,7 +2392,12 @@ impl App {
             }
             BranchSource::NewBranch => {
                 let name = wizard.new_branch_editor.lines().join("").trim().to_string();
-                let base = wizard.base_branch_editor.lines().join("").trim().to_string();
+                let base = wizard
+                    .base_branch_editor
+                    .lines()
+                    .join("")
+                    .trim()
+                    .to_string();
                 let base_branch = if base.is_empty() { None } else { Some(base) };
                 (name, use_cases::WorktreeSource::NewBranch { base_branch })
             }
@@ -2376,12 +2417,17 @@ impl App {
         });
 
         // Determine project assignment from current scope
-        let project = self.current_project.as_ref()
+        let project = self
+            .current_project
+            .as_ref()
             .filter(|p| p.as_str() != "(unassigned)")
             .cloned();
 
         tracing::info!(repo = %repo_name, branch = %branch_name, "creating setup-only task via wizard");
-        self.log_output(format!("Creating setup-only task {}--{}...", repo_name, branch_name));
+        self.log_output(format!(
+            "Creating setup-only task {}--{}...",
+            repo_name, branch_name
+        ));
 
         // Delegate business logic to use_cases
         let task = match use_cases::create_setup_only_task(
@@ -2405,7 +2451,10 @@ impl App {
         // Side effects: create tmux session (but do NOT start any flow)
         let worktree_path = task.meta.primary_repo().worktree_path.clone();
         self.log_output("  Creating tmux session...".to_string());
-        if let Err(e) = Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path) {
+        if let Err(e) = Tmux::create_session_with_windows(
+            &task.meta.primary_repo().tmux_session,
+            &worktree_path,
+        ) {
             self.log_output(format!("  Error: {}", e));
             if let Some(w) = &mut self.wizard {
                 w.error_message = Some(format!("Failed to create tmux session: {}", e));
@@ -2437,7 +2486,10 @@ impl App {
             let start = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
             self.dir_picker = Some(DirectoryPicker::new(start, DirPickerOrigin::Review));
             self.view = View::DirectoryPicker;
-            self.set_status(format!("No repos found in {}. Pick a repos directory (s to select, h/l to navigate).", self.config.repos_dir.display()));
+            self.set_status(format!(
+                "No repos found in {}. Pick a repos directory (s to select, h/l to navigate).",
+                self.config.repos_dir.display()
+            ));
             return Ok(());
         }
 
@@ -2467,8 +2519,7 @@ impl App {
                         let name = wizard.branch_editor.lines().join("");
                         let name = name.trim().to_string();
                         if name.is_empty() {
-                            wizard.error_message =
-                                Some("Branch name cannot be empty".to_string());
+                            wizard.error_message = Some("Branch name cannot be empty".to_string());
                             return Ok(());
                         }
                         if name.contains(' ')
@@ -2476,8 +2527,7 @@ impl App {
                             || name.starts_with('/')
                             || name.ends_with('/')
                         {
-                            wizard.error_message =
-                                Some("Invalid branch name format".to_string());
+                            wizard.error_message = Some("Invalid branch name format".to_string());
                             return Ok(());
                         }
                         name
@@ -2513,7 +2563,7 @@ impl App {
                     return Ok(());
                 }
 
-                return self.create_review_task();
+                self.create_review_task()
             }
         }
     }
@@ -2581,7 +2631,9 @@ impl App {
         };
 
         // Best-effort: look up the PR for this branch and link it
-        if let Some(pr_number) = lookup_pr_for_branch(&task.meta.primary_repo().worktree_path, &branch_name) {
+        if let Some(pr_number) =
+            lookup_pr_for_branch(&task.meta.primary_repo().worktree_path, &branch_name)
+        {
             let task_id = task.meta.task_id();
             let wt = task.meta.primary_repo().worktree_path.clone();
             let author = fetch_pr_author(&wt, pr_number);
@@ -2600,9 +2652,10 @@ impl App {
         // Side effects: create tmux session and run review command
         let worktree_path = task.meta.primary_repo().worktree_path.clone();
         self.log_output("  Creating tmux session...".to_string());
-        if let Err(e) =
-            Tmux::create_session_with_windows(&task.meta.primary_repo().tmux_session, &worktree_path)
-        {
+        if let Err(e) = Tmux::create_session_with_windows(
+            &task.meta.primary_repo().tmux_session,
+            &worktree_path,
+        ) {
             self.log_output(format!("  Error: {}", e));
             if let Some(w) = &mut self.review_wizard {
                 w.error_message = Some(format!("Failed to create tmux session: {}", e));
@@ -2612,7 +2665,8 @@ impl App {
 
         let task_id = task.meta.task_id();
         let review_cmd = format!("agman run-command {} review-pr", task_id);
-        let _ = Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &review_cmd);
+        let _ =
+            Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &review_cmd);
 
         // Success - close wizard and refresh
         self.review_wizard = None;
@@ -2743,11 +2797,8 @@ impl App {
                     let is_unassigned = self.selected_project_index >= self.projects.len()
                         && self.unassigned_task_count > 0;
                     if is_unassigned {
-                        let project_names: Vec<String> = self
-                            .projects
-                            .iter()
-                            .map(|p| p.meta.name.clone())
-                            .collect();
+                        let project_names: Vec<String> =
+                            self.projects.iter().map(|p| p.meta.name.clone()).collect();
                         if project_names.is_empty() {
                             self.set_status("Create a project first with 'n'".to_string());
                         } else {
@@ -2794,21 +2845,22 @@ impl App {
                 }
                 KeyCode::Char('b') => {
                     self.last_break_reset = Instant::now();
-                    break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
+                    break_persist::save_break_reset(
+                        &self.config.break_state_path(),
+                        &self.last_break_reset,
+                    );
                     tracing::info!("break timer reset");
                 }
-                KeyCode::Char('o') => {
-                    match NotesView::new(self.config.notes_dir.clone()) {
-                        Ok(nv) => {
-                            tracing::info!("opening notes view");
-                            self.notes_view = Some(nv);
-                            self.view = View::Notes;
-                        }
-                        Err(e) => {
-                            self.set_status(format!("Failed to open notes: {e}"));
-                        }
+                KeyCode::Char('o') => match NotesView::new(self.config.notes_dir.clone()) {
+                    Ok(nv) => {
+                        tracing::info!("opening notes view");
+                        self.notes_view = Some(nv);
+                        self.view = View::Notes;
                     }
-                }
+                    Err(e) => {
+                        self.set_status(format!("Failed to open notes: {e}"));
+                    }
+                },
                 KeyCode::Char('i') => {
                     self.selected_notif_index = 0;
                     self.view = View::Notifications;
@@ -2961,7 +3013,10 @@ impl App {
                 KeyCode::Char('o') => {
                     // Open linked PR in browser
                     let pr_info = self.selected_task().and_then(|t| {
-                        t.meta.linked_pr.as_ref().map(|pr| (pr.number, pr.url.clone()))
+                        t.meta
+                            .linked_pr
+                            .as_ref()
+                            .map(|pr| (pr.number, pr.url.clone()))
                     });
                     if let Some((number, url)) = pr_info {
                         open_url(&url);
@@ -3002,9 +3057,10 @@ impl App {
                         }
                     } else {
                         // Original behavior: toggle review_addressed
-                        let is_owned = self.selected_task().and_then(|t| {
-                            t.meta.linked_pr.as_ref().map(|pr| pr.owned)
-                        }).unwrap_or(false);
+                        let is_owned = self
+                            .selected_task()
+                            .and_then(|t| t.meta.linked_pr.as_ref().map(|pr| pr.owned))
+                            .unwrap_or(false);
                         if is_owned {
                             if let Some(task) = self.tasks.get_mut(self.selected_index) {
                                 let new_val = !task.meta.review_addressed;
@@ -3186,9 +3242,19 @@ impl App {
                         // Save the edited value
                         let token_text: String = self.telegram_token_editor.lines().join("");
                         let chat_id_text: String = self.telegram_chat_id_editor.lines().join("");
-                        let token = if token_text.is_empty() { None } else { Some(token_text) };
-                        let chat_id = if chat_id_text.is_empty() { None } else { Some(chat_id_text) };
-                        if let Err(e) = use_cases::save_telegram_config(&self.config, token, chat_id) {
+                        let token = if token_text.is_empty() {
+                            None
+                        } else {
+                            Some(token_text)
+                        };
+                        let chat_id = if chat_id_text.is_empty() {
+                            None
+                        } else {
+                            Some(chat_id_text)
+                        };
+                        if let Err(e) =
+                            use_cases::save_telegram_config(&self.config, token, chat_id)
+                        {
                             tracing::error!(error = %e, "failed to save telegram config");
                             self.set_status(format!("Failed to save: {e}"));
                         } else {
@@ -3201,18 +3267,23 @@ impl App {
                         // Discard edit, restore from config
                         let (token, chat_id) = use_cases::load_telegram_config(&self.config);
                         self.telegram_token_editor = TextArea::new(vec![token.unwrap_or_default()]);
-                        self.telegram_token_editor.set_cursor_line_style(ratatui::style::Style::default());
-                        self.telegram_chat_id_editor = TextArea::new(vec![chat_id.unwrap_or_default()]);
-                        self.telegram_chat_id_editor.set_cursor_line_style(ratatui::style::Style::default());
+                        self.telegram_token_editor
+                            .set_cursor_line_style(ratatui::style::Style::default());
+                        self.telegram_chat_id_editor =
+                            TextArea::new(vec![chat_id.unwrap_or_default()]);
+                        self.telegram_chat_id_editor
+                            .set_cursor_line_style(ratatui::style::Style::default());
                         self.settings_editing = false;
                     }
-                    _ => {
-                        match self.settings_selected {
-                            3 => { self.telegram_token_editor.input(event); }
-                            4 => { self.telegram_chat_id_editor.input(event); }
-                            _ => {}
+                    _ => match self.settings_selected {
+                        3 => {
+                            self.telegram_token_editor.input(event);
                         }
-                    }
+                        4 => {
+                            self.telegram_chat_id_editor.input(event);
+                        }
+                        _ => {}
+                    },
                 }
                 return Ok(false);
             }
@@ -3255,9 +3326,15 @@ impl App {
                             let current_mins = self.break_interval.as_secs() / 60;
                             if current_mins > 5 {
                                 let new_mins = current_mins - 5;
-                                tracing::info!(old_mins = current_mins, new_mins, "break interval changed");
+                                tracing::info!(
+                                    old_mins = current_mins,
+                                    new_mins,
+                                    "break interval changed"
+                                );
                                 self.break_interval = Duration::from_secs(new_mins * 60);
-                                if let Err(e) = use_cases::save_break_interval(&self.config, new_mins) {
+                                if let Err(e) =
+                                    use_cases::save_break_interval(&self.config, new_mins)
+                                {
                                     tracing::error!(error = %e, "failed to save break interval");
                                     self.set_status(format!("Failed to save: {e}"));
                                 }
@@ -3267,9 +3344,15 @@ impl App {
                             // Decrease archive retention by 7 days (min 7)
                             if self.archive_retention_days > 7 {
                                 let new_days = self.archive_retention_days - 7;
-                                tracing::info!(old_days = self.archive_retention_days, new_days, "archive retention changed");
+                                tracing::info!(
+                                    old_days = self.archive_retention_days,
+                                    new_days,
+                                    "archive retention changed"
+                                );
                                 self.archive_retention_days = new_days;
-                                if let Err(e) = use_cases::save_archive_retention(&self.config, new_days) {
+                                if let Err(e) =
+                                    use_cases::save_archive_retention(&self.config, new_days)
+                                {
                                     tracing::error!(error = %e, "failed to save archive retention");
                                     self.set_status(format!("Failed to save: {e}"));
                                 }
@@ -3289,9 +3372,15 @@ impl App {
                             let current_mins = self.break_interval.as_secs() / 60;
                             if current_mins < 120 {
                                 let new_mins = current_mins + 5;
-                                tracing::info!(old_mins = current_mins, new_mins, "break interval changed");
+                                tracing::info!(
+                                    old_mins = current_mins,
+                                    new_mins,
+                                    "break interval changed"
+                                );
                                 self.break_interval = Duration::from_secs(new_mins * 60);
-                                if let Err(e) = use_cases::save_break_interval(&self.config, new_mins) {
+                                if let Err(e) =
+                                    use_cases::save_break_interval(&self.config, new_mins)
+                                {
                                     tracing::error!(error = %e, "failed to save break interval");
                                     self.set_status(format!("Failed to save: {e}"));
                                 }
@@ -3301,9 +3390,15 @@ impl App {
                             // Increase archive retention by 7 days (max 365)
                             if self.archive_retention_days < 365 {
                                 let new_days = self.archive_retention_days + 7;
-                                tracing::info!(old_days = self.archive_retention_days, new_days, "archive retention changed");
+                                tracing::info!(
+                                    old_days = self.archive_retention_days,
+                                    new_days,
+                                    "archive retention changed"
+                                );
                                 self.archive_retention_days = new_days;
-                                if let Err(e) = use_cases::save_archive_retention(&self.config, new_days) {
+                                if let Err(e) =
+                                    use_cases::save_archive_retention(&self.config, new_days)
+                                {
                                     tracing::error!(error = %e, "failed to save archive retention");
                                     self.set_status(format!("Failed to save: {e}"));
                                 }
@@ -3499,7 +3594,13 @@ impl App {
                     }
 
                     match use_cases::create_researcher(
-                        &self.config, &project, &name, &desc, None, None, None,
+                        &self.config,
+                        &project,
+                        &name,
+                        &desc,
+                        None,
+                        None,
+                        None,
                     ) {
                         Ok(_researcher) => {
                             tracing::info!(project = %project, name = %name, "created researcher via wizard");
@@ -3580,10 +3681,9 @@ impl App {
                     self.should_quit = true;
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
-                    let was_migrate_all = self
-                        .project_picker
-                        .as_ref()
-                        .is_some_and(|p| matches!(p.action, ProjectPickerAction::MigrateAllUnassigned));
+                    let was_migrate_all = self.project_picker.as_ref().is_some_and(|p| {
+                        matches!(p.action, ProjectPickerAction::MigrateAllUnassigned)
+                    });
                     self.project_picker = None;
                     self.view = if was_migrate_all {
                         View::ProjectList
@@ -3675,7 +3775,8 @@ impl App {
                         if key.code == KeyCode::Up {
                             self.archive_selected = self.archive_selected.saturating_sub(1);
                         } else {
-                            self.archive_selected = (self.archive_selected + 1).min(filtered.len() - 1);
+                            self.archive_selected =
+                                (self.archive_selected + 1).min(filtered.len() - 1);
                         }
                     }
                 }
@@ -3697,12 +3798,22 @@ impl App {
                     }
                 }
                 KeyCode::Backspace => {
-                    self.archive_search.input(Input { key: Key::Backspace, ctrl: false, alt: false, shift: false });
+                    self.archive_search.input(Input {
+                        key: Key::Backspace,
+                        ctrl: false,
+                        alt: false,
+                        shift: false,
+                    });
                     // Reset selection after search change
                     self.archive_selected = 0;
                 }
                 KeyCode::Char(c) => {
-                    self.archive_search.input(Input { key: Key::Char(c), ctrl: false, alt: false, shift: false });
+                    self.archive_search.input(Input {
+                        key: Key::Char(c),
+                        ctrl: false,
+                        alt: false,
+                        shift: false,
+                    });
                     // Reset selection after search change
                     self.archive_selected = 0;
                 }
@@ -3712,7 +3823,11 @@ impl App {
         Ok(false)
     }
 
-    fn handle_archive_preview_event(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
+    fn handle_archive_preview_event(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Result<bool> {
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.archive_preview = None;
@@ -3760,7 +3875,8 @@ impl App {
                 if let Some(&task_idx) = filtered.get(self.archive_selected) {
                     let (task, _) = self.archive_tasks.remove(task_idx);
                     let task_id = task.meta.task_id();
-                    if let Err(e) = use_cases::permanently_delete_archived_task(&self.config, task) {
+                    if let Err(e) = use_cases::permanently_delete_archived_task(&self.config, task)
+                    {
                         tracing::error!(task_id = %task_id, error = %e, "failed to permanently delete archived task");
                         self.set_status(format!("Delete failed: {e}"));
                     } else {
@@ -3782,10 +3898,9 @@ impl App {
                     let repo_name = task.meta.name.clone();
                     let task_id = task.meta.task_id();
                     let branch_name = task.meta.branch_name.clone();
-                    let repo_path = self.config.repo_path_for(
-                        task.meta.parent_dir.as_deref(),
-                        &repo_name,
-                    );
+                    let repo_path = self
+                        .config
+                        .repo_path_for(task.meta.parent_dir.as_deref(), &repo_name);
 
                     if !repo_path.exists() {
                         self.set_status(format!("Repo path not found: {}", repo_path.display()));
@@ -3872,7 +3987,10 @@ impl App {
                             if task.meta.is_multi_repo() && task.meta.repos.len() > 1 {
                                 // Ensure all repo sessions exist before showing picker
                                 for repo in &task.meta.repos {
-                                    let _ = Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path);
+                                    let _ = Tmux::ensure_session(
+                                        &repo.tmux_session,
+                                        &repo.worktree_path,
+                                    );
                                 }
                                 let sessions: Vec<(String, String)> = task
                                     .meta
@@ -3895,10 +4013,16 @@ impl App {
                                     return Ok(true);
                                 }
                             } else if task.meta.is_multi_repo() {
-                                let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+                                let parent_session = Config::tmux_session_name(
+                                    &task.meta.name,
+                                    &task.meta.branch_name,
+                                );
                                 if let Some(ref parent_dir) = task.meta.parent_dir {
                                     if !Tmux::session_exists(&parent_session) {
-                                        let _ = Tmux::create_session_with_windows(&parent_session, parent_dir);
+                                        let _ = Tmux::create_session_with_windows(
+                                            &parent_session,
+                                            parent_dir,
+                                        );
                                     }
                                 }
                                 if Tmux::session_exists(&parent_session) {
@@ -3949,7 +4073,10 @@ impl App {
                 }
                 KeyCode::Char('o') => {
                     let pr_info = self.selected_task().and_then(|t| {
-                        t.meta.linked_pr.as_ref().map(|pr| (pr.number, pr.url.clone()))
+                        t.meta
+                            .linked_pr
+                            .as_ref()
+                            .map(|pr| (pr.number, pr.url.clone()))
                     });
                     if let Some((number, url)) = pr_info {
                         open_url(&url);
@@ -3973,7 +4100,10 @@ impl App {
             // Insert-mode-entry keys in Notes pane start editing
             if self.preview_pane == PreviewPane::Notes {
                 match key.code {
-                    KeyCode::Char('i') | KeyCode::Char('I') | KeyCode::Char('o') | KeyCode::Char('O') => {
+                    KeyCode::Char('i')
+                    | KeyCode::Char('I')
+                    | KeyCode::Char('o')
+                    | KeyCode::Char('O') => {
                         self.start_notes_editing();
                         return Ok(false);
                     }
@@ -4003,9 +4133,7 @@ impl App {
         self.notes_editing = true;
         self.notes_editor.set_read_only(false);
         self.notes_editor.set_insert_mode();
-        self.set_status(
-            "Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string(),
-        );
+        self.set_status("Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string());
     }
 
     fn handle_notes_editing(&mut self, event: Event) -> Result<bool> {
@@ -4035,8 +4163,6 @@ impl App {
                 self.save_notes()?;
                 return Ok(false);
             }
-
-
         }
         Ok(false)
     }
@@ -4062,7 +4188,10 @@ impl App {
                 self.task_file_editor.set_normal_mode();
 
                 // If the task is in InputNeeded state, resume the flow after saving
-                if self.selected_task().map_or(false, |t| t.meta.status == TaskStatus::InputNeeded) {
+                if self
+                    .selected_task()
+                    .is_some_and(|t| t.meta.status == TaskStatus::InputNeeded)
+                {
                     self.resume_after_answering()?;
                 }
 
@@ -4083,8 +4212,6 @@ impl App {
                 self.set_status("Task editor cancelled".to_string());
                 return Ok(false);
             }
-
-
         }
         Ok(false)
     }
@@ -4123,8 +4250,6 @@ impl App {
                 self.set_status("Feedback cancelled".to_string());
                 return Ok(false);
             }
-
-
         }
         Ok(false)
     }
@@ -4138,13 +4263,11 @@ impl App {
                 KeyCode::Char('k') | KeyCode::Up => {
                     self.archive_mode_index = (self.archive_mode_index + 2) % 3;
                 }
-                KeyCode::Enter => {
-                    match self.archive_mode_index {
-                        0 => self.archive_task(false)?,
-                        1 => self.archive_task(true)?,
-                        _ => self.fully_delete_task()?,
-                    }
-                }
+                KeyCode::Enter => match self.archive_mode_index {
+                    0 => self.archive_task(false)?,
+                    1 => self.archive_task(true)?,
+                    _ => self.fully_delete_task()?,
+                },
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
                 }
@@ -4161,7 +4284,11 @@ impl App {
                     self.respawn_confirm_index = (self.respawn_confirm_index + 1) % 2;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    self.respawn_confirm_index = if self.respawn_confirm_index == 0 { 1 } else { 0 };
+                    self.respawn_confirm_index = if self.respawn_confirm_index == 0 {
+                        1
+                    } else {
+                        0
+                    };
                 }
                 KeyCode::Enter => {
                     if self.respawn_confirm_is_chief_of_staff {
@@ -4176,7 +4303,12 @@ impl App {
                                 let config = self.config.clone();
                                 self.rt.spawn(async move {
                                     let result = tokio::task::spawn_blocking(move || {
-                                        use_cases::respawn_agent(&config, "chief-of-staff", false, 120)
+                                        use_cases::respawn_agent(
+                                            &config,
+                                            "chief-of-staff",
+                                            false,
+                                            120,
+                                        )
                                     })
                                     .await
                                     .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
@@ -4189,28 +4321,39 @@ impl App {
                             }
                             1 => {
                                 // Chief of Staff + all PMs
-                                let project_names: Vec<String> = self
-                                    .projects
-                                    .iter()
-                                    .map(|p| p.meta.name.clone())
-                                    .collect();
+                                let project_names: Vec<String> =
+                                    self.projects.iter().map(|p| p.meta.name.clone()).collect();
                                 let pm_count = project_names.len();
-                                tracing::info!(pm_count = pm_count, "respawn confirmed: cos + all pms");
+                                tracing::info!(
+                                    pm_count = pm_count,
+                                    "respawn confirmed: cos + all pms"
+                                );
                                 self.respawn_in_progress = Some("cos+pms".to_string());
-                                self.set_status("respawning chief-of-staff + all pms...".to_string());
+                                self.set_status(
+                                    "respawning chief-of-staff + all pms...".to_string(),
+                                );
                                 let tx = self.respawn_tx.clone();
                                 let config = self.config.clone();
                                 self.rt.spawn(async move {
                                     // Respawn Chief of Staff first
                                     let cos_result = tokio::task::spawn_blocking({
                                         let config = config.clone();
-                                        move || use_cases::respawn_agent(&config, "chief-of-staff", false, 120)
+                                        move || {
+                                            use_cases::respawn_agent(
+                                                &config,
+                                                "chief-of-staff",
+                                                false,
+                                                120,
+                                            )
+                                        }
                                     })
                                     .await
                                     .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
 
                                     if let Err(e) = cos_result {
-                                        let _ = tx.send(Err(format!("chief-of-staff respawn failed: {e}")));
+                                        let _ = tx.send(Err(format!(
+                                            "chief-of-staff respawn failed: {e}"
+                                        )));
                                         return;
                                     }
 
@@ -4228,8 +4371,12 @@ impl App {
                                     for (i, handle) in handles.into_iter().enumerate() {
                                         match handle.await {
                                             Ok(Ok(())) => {}
-                                            Ok(Err(e)) => failures.push(format!("{}: {e}", project_names[i])),
-                                            Err(e) => failures.push(format!("{}: {e}", project_names[i])),
+                                            Ok(Err(e)) => {
+                                                failures.push(format!("{}: {e}", project_names[i]))
+                                            }
+                                            Err(e) => {
+                                                failures.push(format!("{}: {e}", project_names[i]))
+                                            }
                                         }
                                     }
 
@@ -4345,9 +4492,7 @@ impl App {
                                     // Ctrl+B or Up/Down toggles focus between branch name and base branch
                                     if key.modifiers.contains(KeyModifiers::CONTROL)
                                         && key.code == KeyCode::Char('b')
-                                    {
-                                        wizard.base_branch_focus = !wizard.base_branch_focus;
-                                    } else if key.code == KeyCode::Up
+                                        || key.code == KeyCode::Up
                                         || key.code == KeyCode::Down
                                     {
                                         wizard.base_branch_focus = !wizard.base_branch_focus;
@@ -4359,50 +4504,46 @@ impl App {
                                         wizard.new_branch_editor.input(input);
                                     }
                                 }
-                                BranchSource::ExistingBranch => {
-                                    match key.code {
-                                        KeyCode::Char('j') | KeyCode::Down => {
-                                            if !wizard.existing_branches.is_empty() {
-                                                wizard.selected_branch_index =
-                                                    (wizard.selected_branch_index + 1)
-                                                        % wizard.existing_branches.len();
-                                            }
+                                BranchSource::ExistingBranch => match key.code {
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        if !wizard.existing_branches.is_empty() {
+                                            wizard.selected_branch_index =
+                                                (wizard.selected_branch_index + 1)
+                                                    % wizard.existing_branches.len();
                                         }
-                                        KeyCode::Char('k') | KeyCode::Up => {
-                                            if !wizard.existing_branches.is_empty() {
-                                                wizard.selected_branch_index =
-                                                    if wizard.selected_branch_index == 0 {
-                                                        wizard.existing_branches.len() - 1
-                                                    } else {
-                                                        wizard.selected_branch_index - 1
-                                                    };
-                                            }
-                                        }
-                                        _ => {}
                                     }
-                                }
-                                BranchSource::ExistingWorktree => {
-                                    match key.code {
-                                        KeyCode::Char('j') | KeyCode::Down => {
-                                            if !wizard.existing_worktrees.is_empty() {
-                                                wizard.selected_worktree_index =
-                                                    (wizard.selected_worktree_index + 1)
-                                                        % wizard.existing_worktrees.len();
-                                            }
+                                    KeyCode::Char('k') | KeyCode::Up => {
+                                        if !wizard.existing_branches.is_empty() {
+                                            wizard.selected_branch_index =
+                                                if wizard.selected_branch_index == 0 {
+                                                    wizard.existing_branches.len() - 1
+                                                } else {
+                                                    wizard.selected_branch_index - 1
+                                                };
                                         }
-                                        KeyCode::Char('k') | KeyCode::Up => {
-                                            if !wizard.existing_worktrees.is_empty() {
-                                                wizard.selected_worktree_index =
-                                                    if wizard.selected_worktree_index == 0 {
-                                                        wizard.existing_worktrees.len() - 1
-                                                    } else {
-                                                        wizard.selected_worktree_index - 1
-                                                    };
-                                            }
-                                        }
-                                        _ => {}
                                     }
-                                }
+                                    _ => {}
+                                },
+                                BranchSource::ExistingWorktree => match key.code {
+                                    KeyCode::Char('j') | KeyCode::Down => {
+                                        if !wizard.existing_worktrees.is_empty() {
+                                            wizard.selected_worktree_index =
+                                                (wizard.selected_worktree_index + 1)
+                                                    % wizard.existing_worktrees.len();
+                                        }
+                                    }
+                                    KeyCode::Char('k') | KeyCode::Up => {
+                                        if !wizard.existing_worktrees.is_empty() {
+                                            wizard.selected_worktree_index =
+                                                if wizard.selected_worktree_index == 0 {
+                                                    wizard.existing_worktrees.len() - 1
+                                                } else {
+                                                    wizard.selected_worktree_index - 1
+                                                };
+                                        }
+                                    }
+                                    _ => {}
+                                },
                             }
                         }
                     }
@@ -4437,8 +4578,6 @@ impl App {
                         self.wizard_prev_step();
                         return Ok(false);
                     }
-
-
                 }
             }
         }
@@ -4461,7 +4600,8 @@ impl App {
                     if !self.commands.is_empty() {
                         self.selected_command_index =
                             (self.selected_command_index + 1) % self.commands.len();
-                        self.command_list_state.select(Some(self.selected_command_index));
+                        self.command_list_state
+                            .select(Some(self.selected_command_index));
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
@@ -4471,7 +4611,8 @@ impl App {
                         } else {
                             self.selected_command_index - 1
                         };
-                        self.command_list_state.select(Some(self.selected_command_index));
+                        self.command_list_state
+                            .select(Some(self.selected_command_index));
                     }
                 }
                 KeyCode::Enter => {
@@ -4505,7 +4646,8 @@ impl App {
                 return Ok(false);
             }
 
-            let queue_len = self.selected_task()
+            let queue_len = self
+                .selected_task()
                 .map(|t| t.queued_item_count())
                 .unwrap_or(0);
 
@@ -4515,8 +4657,7 @@ impl App {
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     if queue_len > 0 {
-                        self.selected_queue_index =
-                            (self.selected_queue_index + 1) % queue_len;
+                        self.selected_queue_index = (self.selected_queue_index + 1) % queue_len;
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
@@ -4633,8 +4774,9 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    if let Some((_, session)) =
-                        self.session_picker_sessions.get(self.selected_session_index)
+                    if let Some((_, session)) = self
+                        .session_picker_sessions
+                        .get(self.selected_session_index)
                     {
                         self.attach_session_name = Some(session.clone());
                         self.view = View::Preview;
@@ -4678,7 +4820,8 @@ impl App {
 
                         // Track dismissed ID so polls don't reintroduce it (persisted to disk)
                         self.dismissed_notifs.insert(thread_id.clone(), updated_at);
-                        self.dismissed_notifs.save(&self.config.dismissed_notifications_path());
+                        self.dismissed_notifs
+                            .save(&self.config.dismissed_notifications_path());
                         tracing::info!(thread_id = %thread_id, "persisted dismissed notification");
 
                         // Optimistic removal
@@ -4725,7 +4868,6 @@ impl App {
                                 })
                                 .await;
                             });
-
                         }
 
                         self.set_status("Opening notification...".to_string());
@@ -4796,11 +4938,7 @@ impl App {
                 match key.code {
                     KeyCode::Char('y') => {
                         if let Some(entry) = nv.entries.get(nv.selected_index) {
-                            let path = if entry.is_dir {
-                                nv.current_dir.join(&entry.file_name)
-                            } else {
-                                nv.current_dir.join(&entry.file_name)
-                            };
+                            let path = nv.current_dir.join(&entry.file_name);
                             if let Err(e) = use_cases::delete_note(&path) {
                                 self.set_status(format!("Delete failed: {e}"));
                             }
@@ -4863,7 +5001,9 @@ impl App {
             if nv.rename_input.is_some() {
                 match key.code {
                     KeyCode::Enter => {
-                        let new_name = nv.rename_input.as_ref().unwrap().lines()[0].trim().to_string();
+                        let new_name = nv.rename_input.as_ref().unwrap().lines()[0]
+                            .trim()
+                            .to_string();
                         if !new_name.is_empty() {
                             if let Some(entry) = nv.entries.get(nv.selected_index) {
                                 let old_path = nv.current_dir.join(&entry.file_name);
@@ -4889,146 +5029,156 @@ impl App {
 
             // Main key handling based on focus
             match nv.focus {
-                NotesFocus::Explorer => {
-                    match key.code {
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            if !nv.entries.is_empty() && nv.selected_index < nv.entries.len() - 1 {
-                                nv.selected_index += 1;
-                            }
+                NotesFocus::Explorer => match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if !nv.entries.is_empty() && nv.selected_index < nv.entries.len() - 1 {
+                            nv.selected_index += 1;
                         }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            if nv.selected_index > 0 {
-                                nv.selected_index -= 1;
-                            }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if nv.selected_index > 0 {
+                            nv.selected_index -= 1;
                         }
-                        KeyCode::Char('l') | KeyCode::Enter => {
-                            if let Some(entry) = nv.entries.get(nv.selected_index).cloned() {
-                                if entry.is_dir {
-                                    let new_dir = nv.current_dir.join(&entry.file_name);
-                                    nv.current_dir = new_dir;
-                                    nv.selected_index = 0;
-                                    let _ = nv.refresh();
-                                } else {
-                                    let path = nv.current_dir.join(&entry.file_name);
-                                    let _ = nv.save_current();
-                                    if let Err(e) = nv.open_file(&path) {
-                                        self.set_status(format!("Open failed: {e}"));
-                                    } else {
-                                        let nv = self.notes_view.as_mut().unwrap();
-                                        nv.focus = NotesFocus::Editor;
-                                    }
-                                }
-                            }
-                        }
-                        KeyCode::Char('h') | KeyCode::Backspace => {
-                            if nv.current_dir != nv.root_dir {
-                                if let Some(parent) = nv.current_dir.parent() {
-                                    let child_name = nv.current_dir.file_name()
-                                        .map(|n| n.to_string_lossy().to_string());
-                                    nv.current_dir = parent.to_path_buf();
-                                    let _ = nv.refresh();
-                                    nv.selected_index = child_name
-                                        .and_then(|name| nv.entries.iter().position(|e| e.file_name == name))
-                                        .unwrap_or(0);
-                                }
-                            }
-                        }
-                        KeyCode::Char('a') => {
-                            nv.create_input = Some((TextArea::default(), false));
-                        }
-                        KeyCode::Char('A') => {
-                            nv.create_input = Some((TextArea::default(), true));
-                        }
-                        KeyCode::Char('d') => {
-                            if !nv.entries.is_empty() {
-                                nv.confirm_delete = true;
-                            }
-                        }
-                        KeyCode::Char('r') => {
-                            if let Some(entry) = nv.entries.get(nv.selected_index) {
-                                let mut ta = TextArea::default();
-                                ta.insert_str(&entry.name);
-                                nv.rename_input = Some(ta);
-                            }
-                        }
-                        KeyCode::Tab => {
-                            if nv.open_file.is_some() {
-                                nv.focus = NotesFocus::Editor;
-                            }
-                        }
-                        KeyCode::Char('J') => {
-                            if !nv.entries.is_empty() && nv.selected_index < nv.entries.len() - 1 {
-                                let entry_name = nv.entries[nv.selected_index].file_name.clone();
-                                let dir = nv.current_dir.clone();
-                                match use_cases::move_note(&dir, &entry_name, use_cases::MoveDirection::Down) {
-                                    Ok(new_idx) => {
-                                        let _ = nv.refresh();
-                                        nv.selected_index = new_idx;
-                                    }
-                                    Err(e) => {
-                                        self.set_status(format!("Move failed: {e}"));
-                                    }
-                                }
-                            }
-                        }
-                        KeyCode::Char('K') => {
-                            if nv.selected_index > 0 {
-                                let entry_name = nv.entries[nv.selected_index].file_name.clone();
-                                let dir = nv.current_dir.clone();
-                                match use_cases::move_note(&dir, &entry_name, use_cases::MoveDirection::Up) {
-                                    Ok(new_idx) => {
-                                        let _ = nv.refresh();
-                                        nv.selected_index = new_idx;
-                                    }
-                                    Err(e) => {
-                                        self.set_status(format!("Move failed: {e}"));
-                                    }
-                                }
-                            }
-                        }
-                        KeyCode::Char('x') => {
-                            if let Some(entry) = nv.entries.get(nv.selected_index) {
-                                let cut = (nv.current_dir.clone(), entry.file_name.clone());
-                                let status_msg = format!("Cut: {}", entry.name);
-                                tracing::info!(dir = %cut.0.display(), file = %cut.1, "cut note");
-                                nv.cut_entry = Some(cut);
-                                self.set_status(status_msg);
-                            }
-                        }
-                        KeyCode::Char('p') => {
-                            if let Some((ref src_dir, ref file_name)) = nv.cut_entry.clone() {
-                                let dest_dir = nv.current_dir.clone();
-                                match use_cases::paste_note(src_dir, &dest_dir, file_name) {
-                                    Ok(()) => {
-                                        let nv = self.notes_view.as_mut().unwrap();
-                                        nv.cut_entry = None;
-                                        let _ = nv.refresh();
-                                        self.set_status(format!("Pasted: {}", file_name));
-                                    }
-                                    Err(e) => {
-                                        self.set_status(format!("Paste failed: {e}"));
-                                    }
-                                }
-                            }
-                        }
-                        KeyCode::Esc => {
-                            if nv.cut_entry.is_some() {
-                                nv.cut_entry = None;
-                                self.set_status("Cut cancelled".to_string());
+                    }
+                    KeyCode::Char('l') | KeyCode::Enter => {
+                        if let Some(entry) = nv.entries.get(nv.selected_index).cloned() {
+                            if entry.is_dir {
+                                let new_dir = nv.current_dir.join(&entry.file_name);
+                                nv.current_dir = new_dir;
+                                nv.selected_index = 0;
+                                let _ = nv.refresh();
                             } else {
+                                let path = nv.current_dir.join(&entry.file_name);
                                 let _ = nv.save_current();
-                                self.notes_view = None;
-                                self.view = View::ProjectList;
+                                if let Err(e) = nv.open_file(&path) {
+                                    self.set_status(format!("Open failed: {e}"));
+                                } else {
+                                    let nv = self.notes_view.as_mut().unwrap();
+                                    nv.focus = NotesFocus::Editor;
+                                }
                             }
                         }
-                        KeyCode::Char('q') => {
+                    }
+                    KeyCode::Char('h') | KeyCode::Backspace => {
+                        if nv.current_dir != nv.root_dir {
+                            if let Some(parent) = nv.current_dir.parent() {
+                                let child_name = nv
+                                    .current_dir
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string());
+                                nv.current_dir = parent.to_path_buf();
+                                let _ = nv.refresh();
+                                nv.selected_index = child_name
+                                    .and_then(|name| {
+                                        nv.entries.iter().position(|e| e.file_name == name)
+                                    })
+                                    .unwrap_or(0);
+                            }
+                        }
+                    }
+                    KeyCode::Char('a') => {
+                        nv.create_input = Some((TextArea::default(), false));
+                    }
+                    KeyCode::Char('A') => {
+                        nv.create_input = Some((TextArea::default(), true));
+                    }
+                    KeyCode::Char('d') => {
+                        if !nv.entries.is_empty() {
+                            nv.confirm_delete = true;
+                        }
+                    }
+                    KeyCode::Char('r') => {
+                        if let Some(entry) = nv.entries.get(nv.selected_index) {
+                            let mut ta = TextArea::default();
+                            ta.insert_str(&entry.name);
+                            nv.rename_input = Some(ta);
+                        }
+                    }
+                    KeyCode::Tab => {
+                        if nv.open_file.is_some() {
+                            nv.focus = NotesFocus::Editor;
+                        }
+                    }
+                    KeyCode::Char('J') => {
+                        if !nv.entries.is_empty() && nv.selected_index < nv.entries.len() - 1 {
+                            let entry_name = nv.entries[nv.selected_index].file_name.clone();
+                            let dir = nv.current_dir.clone();
+                            match use_cases::move_note(
+                                &dir,
+                                &entry_name,
+                                use_cases::MoveDirection::Down,
+                            ) {
+                                Ok(new_idx) => {
+                                    let _ = nv.refresh();
+                                    nv.selected_index = new_idx;
+                                }
+                                Err(e) => {
+                                    self.set_status(format!("Move failed: {e}"));
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Char('K') => {
+                        if nv.selected_index > 0 {
+                            let entry_name = nv.entries[nv.selected_index].file_name.clone();
+                            let dir = nv.current_dir.clone();
+                            match use_cases::move_note(
+                                &dir,
+                                &entry_name,
+                                use_cases::MoveDirection::Up,
+                            ) {
+                                Ok(new_idx) => {
+                                    let _ = nv.refresh();
+                                    nv.selected_index = new_idx;
+                                }
+                                Err(e) => {
+                                    self.set_status(format!("Move failed: {e}"));
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Char('x') => {
+                        if let Some(entry) = nv.entries.get(nv.selected_index) {
+                            let cut = (nv.current_dir.clone(), entry.file_name.clone());
+                            let status_msg = format!("Cut: {}", entry.name);
+                            tracing::info!(dir = %cut.0.display(), file = %cut.1, "cut note");
+                            nv.cut_entry = Some(cut);
+                            self.set_status(status_msg);
+                        }
+                    }
+                    KeyCode::Char('p') => {
+                        if let Some((ref src_dir, ref file_name)) = nv.cut_entry.clone() {
+                            let dest_dir = nv.current_dir.clone();
+                            match use_cases::paste_note(src_dir, &dest_dir, file_name) {
+                                Ok(()) => {
+                                    let nv = self.notes_view.as_mut().unwrap();
+                                    nv.cut_entry = None;
+                                    let _ = nv.refresh();
+                                    self.set_status(format!("Pasted: {}", file_name));
+                                }
+                                Err(e) => {
+                                    self.set_status(format!("Paste failed: {e}"));
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Esc => {
+                        if nv.cut_entry.is_some() {
+                            nv.cut_entry = None;
+                            self.set_status("Cut cancelled".to_string());
+                        } else {
                             let _ = nv.save_current();
                             self.notes_view = None;
                             self.view = View::ProjectList;
                         }
-                        _ => {}
                     }
-                }
+                    KeyCode::Char('q') => {
+                        let _ = nv.save_current();
+                        self.notes_view = None;
+                        self.view = View::ProjectList;
+                    }
+                    _ => {}
+                },
                 NotesFocus::Editor => {
                     let vim_mode = nv.editor.mode();
                     let is_normal = vim_mode == VimMode::Normal;
@@ -5036,7 +5186,9 @@ impl App {
                     if key.code == KeyCode::Tab && is_normal {
                         let _ = nv.save_current();
                         nv.focus = NotesFocus::Explorer;
-                    } else if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                    } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('s')
+                    {
                         let _ = nv.save_current();
                         self.set_status("Saved".to_string());
                     } else if key.code == KeyCode::Char('q') && is_normal {
@@ -5077,78 +5229,74 @@ impl App {
             wizard.error_message = None;
 
             match wizard.step {
-                ReviewWizardStep::EnterBranch => {
-                    match key.code {
-                        KeyCode::Esc => {
-                            self.review_wizard_prev_step();
-                        }
-                        KeyCode::Tab => {
-                            wizard.branch_source = match wizard.branch_source {
-                                BranchSource::NewBranch => BranchSource::ExistingBranch,
-                                BranchSource::ExistingBranch => BranchSource::ExistingWorktree,
-                                BranchSource::ExistingWorktree => BranchSource::NewBranch,
-                            };
-                        }
-                        KeyCode::BackTab => {
-                            wizard.branch_source = match wizard.branch_source {
-                                BranchSource::NewBranch => BranchSource::ExistingWorktree,
-                                BranchSource::ExistingBranch => BranchSource::NewBranch,
-                                BranchSource::ExistingWorktree => BranchSource::ExistingBranch,
-                            };
-                        }
-                        KeyCode::Enter => {
-                            self.review_wizard_next_step()?;
-                        }
-                        _ => {
-                            match wizard.branch_source {
-                                BranchSource::NewBranch => {
-                                    let input = Input::from(event.clone());
-                                    wizard.branch_editor.input(input);
-                                }
-                                BranchSource::ExistingBranch => match key.code {
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        if !wizard.existing_branches.is_empty() {
-                                            wizard.selected_branch_index =
-                                                (wizard.selected_branch_index + 1)
-                                                    % wizard.existing_branches.len();
-                                        }
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        if !wizard.existing_branches.is_empty() {
-                                            wizard.selected_branch_index =
-                                                if wizard.selected_branch_index == 0 {
-                                                    wizard.existing_branches.len() - 1
-                                                } else {
-                                                    wizard.selected_branch_index - 1
-                                                };
-                                        }
-                                    }
-                                    _ => {}
-                                },
-                                BranchSource::ExistingWorktree => match key.code {
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        if !wizard.existing_worktrees.is_empty() {
-                                            wizard.selected_worktree_index =
-                                                (wizard.selected_worktree_index + 1)
-                                                    % wizard.existing_worktrees.len();
-                                        }
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        if !wizard.existing_worktrees.is_empty() {
-                                            wizard.selected_worktree_index =
-                                                if wizard.selected_worktree_index == 0 {
-                                                    wizard.existing_worktrees.len() - 1
-                                                } else {
-                                                    wizard.selected_worktree_index - 1
-                                                };
-                                        }
-                                    }
-                                    _ => {}
-                                },
-                            }
-                        }
+                ReviewWizardStep::EnterBranch => match key.code {
+                    KeyCode::Esc => {
+                        self.review_wizard_prev_step();
                     }
-                }
+                    KeyCode::Tab => {
+                        wizard.branch_source = match wizard.branch_source {
+                            BranchSource::NewBranch => BranchSource::ExistingBranch,
+                            BranchSource::ExistingBranch => BranchSource::ExistingWorktree,
+                            BranchSource::ExistingWorktree => BranchSource::NewBranch,
+                        };
+                    }
+                    KeyCode::BackTab => {
+                        wizard.branch_source = match wizard.branch_source {
+                            BranchSource::NewBranch => BranchSource::ExistingWorktree,
+                            BranchSource::ExistingBranch => BranchSource::NewBranch,
+                            BranchSource::ExistingWorktree => BranchSource::ExistingBranch,
+                        };
+                    }
+                    KeyCode::Enter => {
+                        self.review_wizard_next_step()?;
+                    }
+                    _ => match wizard.branch_source {
+                        BranchSource::NewBranch => {
+                            let input = Input::from(event.clone());
+                            wizard.branch_editor.input(input);
+                        }
+                        BranchSource::ExistingBranch => match key.code {
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                if !wizard.existing_branches.is_empty() {
+                                    wizard.selected_branch_index = (wizard.selected_branch_index
+                                        + 1)
+                                        % wizard.existing_branches.len();
+                                }
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                if !wizard.existing_branches.is_empty() {
+                                    wizard.selected_branch_index =
+                                        if wizard.selected_branch_index == 0 {
+                                            wizard.existing_branches.len() - 1
+                                        } else {
+                                            wizard.selected_branch_index - 1
+                                        };
+                                }
+                            }
+                            _ => {}
+                        },
+                        BranchSource::ExistingWorktree => match key.code {
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                if !wizard.existing_worktrees.is_empty() {
+                                    wizard.selected_worktree_index =
+                                        (wizard.selected_worktree_index + 1)
+                                            % wizard.existing_worktrees.len();
+                                }
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => {
+                                if !wizard.existing_worktrees.is_empty() {
+                                    wizard.selected_worktree_index =
+                                        if wizard.selected_worktree_index == 0 {
+                                            wizard.existing_worktrees.len() - 1
+                                        } else {
+                                            wizard.selected_worktree_index - 1
+                                        };
+                                }
+                            }
+                            _ => {}
+                        },
+                    },
+                },
             }
         }
         Ok(false)
@@ -5196,26 +5344,26 @@ impl App {
         }
 
         // Extract task info before mutable borrows
-        let (task_id, status, flow_name, tmux_session, task_content) =
-            match self.selected_task() {
-                Some(t) => {
-                    let tmux_session = if t.meta.has_repos() {
-                        t.meta.primary_repo().tmux_session.clone()
-                    } else if t.meta.is_multi_repo() {
-                        Config::tmux_session_name(&t.meta.name, &t.meta.branch_name)
-                    } else {
-                        return Ok(());
-                    };
-                    (
-                        t.meta.task_id(),
-                        t.meta.status,
-                        t.meta.flow_name.clone(),
-                        tmux_session,
-                        t.read_task().unwrap_or_else(|_| "No TASK.md available".to_string()),
-                    )
-                }
-                None => return Ok(()),
-            };
+        let (task_id, status, flow_name, tmux_session, task_content) = match self.selected_task() {
+            Some(t) => {
+                let tmux_session = if t.meta.has_repos() {
+                    t.meta.primary_repo().tmux_session.clone()
+                } else if t.meta.is_multi_repo() {
+                    Config::tmux_session_name(&t.meta.name, &t.meta.branch_name)
+                } else {
+                    return Ok(());
+                };
+                (
+                    t.meta.task_id(),
+                    t.meta.status,
+                    t.meta.flow_name.clone(),
+                    tmux_session,
+                    t.read_task()
+                        .unwrap_or_else(|_| "No TASK.md available".to_string()),
+                )
+            }
+            None => return Ok(()),
+        };
 
         // If task is running, stop it first via the supervisor pathway. This
         // kills the live claude, finalizes the session, and restores any
@@ -5358,8 +5506,6 @@ impl App {
                         self.set_status("Restart cancelled".to_string());
                         return Ok(false);
                     }
-
-
                 }
                 RestartWizardStep::SelectAgent => match key.code {
                     KeyCode::Char('j') | KeyCode::Down => {
@@ -5410,8 +5556,7 @@ impl App {
                     if let Some(picker) = &mut self.dir_picker {
                         let total = picker.total_items();
                         if total > 0 {
-                            picker.selected_index =
-                                (picker.selected_index + 1) % total;
+                            picker.selected_index = (picker.selected_index + 1) % total;
                         }
                     }
                 }
@@ -5429,10 +5574,15 @@ impl App {
                 }
                 KeyCode::Char('l') | KeyCode::Enter => {
                     // In RepoSelect/ReviewRepoSelect mode: Enter on a git repo or favourite selects it directly
-                    let should_select = self.dir_picker.as_ref().map(|p| {
-                        p.is_repo_select_mode()
-                            && (p.is_favorite_selected() || p.selected_entry_kind() == Some(DirKind::GitRepo))
-                    }).unwrap_or(false);
+                    let should_select = self
+                        .dir_picker
+                        .as_ref()
+                        .map(|p| {
+                            p.is_repo_select_mode()
+                                && (p.is_favorite_selected()
+                                    || p.selected_entry_kind() == Some(DirKind::GitRepo))
+                        })
+                        .unwrap_or(false);
 
                     if should_select {
                         self.select_repo_from_picker()?;
@@ -5455,8 +5605,15 @@ impl App {
                         }
                         Some(DirPickerOrigin::ReviewRepoSelect) => {
                             // For review: favourites and git repos can be selected, multi-repo navigates in
-                            let is_fav = self.dir_picker.as_ref().map(|p| p.is_favorite_selected()).unwrap_or(false);
-                            let kind = self.dir_picker.as_ref().and_then(|p| p.selected_entry_kind());
+                            let is_fav = self
+                                .dir_picker
+                                .as_ref()
+                                .map(|p| p.is_favorite_selected())
+                                .unwrap_or(false);
+                            let kind = self
+                                .dir_picker
+                                .as_ref()
+                                .and_then(|p| p.selected_entry_kind());
                             if is_fav || kind == Some(DirKind::GitRepo) {
                                 self.select_repo_from_picker()?;
                             } else if let Some(picker) = &mut self.dir_picker {
@@ -5470,9 +5627,14 @@ impl App {
                                 let selected_dir = picker.current_dir.clone();
                                 let origin = picker.origin;
 
-                                let mut config_file = agman::config::load_config_file(&self.config.base_dir);
-                                config_file.repos_dir = Some(selected_dir.to_string_lossy().to_string());
-                                if let Err(e) = agman::config::save_config_file(&self.config.base_dir, &config_file) {
+                                let mut config_file =
+                                    agman::config::load_config_file(&self.config.base_dir);
+                                config_file.repos_dir =
+                                    Some(selected_dir.to_string_lossy().to_string());
+                                if let Err(e) = agman::config::save_config_file(
+                                    &self.config.base_dir,
+                                    &config_file,
+                                ) {
                                     self.set_status(format!("Failed to save config: {}", e));
                                     self.view = View::TaskList;
                                     return Ok(false);
@@ -5488,7 +5650,8 @@ impl App {
                                     DirPickerOrigin::Review => {
                                         self.start_review_wizard()?;
                                     }
-                                    DirPickerOrigin::RepoSelect | DirPickerOrigin::ReviewRepoSelect => unreachable!(),
+                                    DirPickerOrigin::RepoSelect
+                                    | DirPickerOrigin::ReviewRepoSelect => unreachable!(),
                                 }
                             }
                         }
@@ -5579,8 +5742,8 @@ impl App {
 
         // Enumerate delivery targets from disk so polling does not depend on
         // whichever TUI view the user has visited.
-        let targets: Vec<(String, PathBuf, PathBuf, String, Option<String>, Option<PathBuf>)> =
-            use_cases::collect_inbox_poll_targets(&self.config, |s| Tmux::session_exists(s))
+        let targets: Vec<_> =
+            use_cases::collect_inbox_poll_targets(&self.config, Tmux::session_exists)
                 .into_iter()
                 .map(|t| {
                     (
@@ -5772,15 +5935,13 @@ impl App {
                                     std::thread::sleep(RETRY_DELAY);
                                     continue;
                                 }
-                            } else {
-                                if let Err(e) = Tmux::inject_message_to(&session_name, window_ref, &msg.from, &msg.message, msg.seq) {
-                                    tracing::warn!(
-                                        target = &target, seq = msg.seq, attempt = attempt, error = %e,
-                                        "inject_message failed"
-                                    );
-                                    std::thread::sleep(RETRY_DELAY);
-                                    continue;
-                                }
+                            } else if let Err(e) = Tmux::inject_message_to(&session_name, window_ref, &msg.from, &msg.message, msg.seq) {
+                                tracing::warn!(
+                                    target = &target, seq = msg.seq, attempt = attempt, error = %e,
+                                    "inject_message failed"
+                                );
+                                std::thread::sleep(RETRY_DELAY);
+                                continue;
                             }
 
                             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -6143,12 +6304,7 @@ impl App {
                             continue;
                         }
 
-                        match use_cases::queue_command(
-                            task,
-                            &self.config,
-                            "address-review",
-                            None,
-                        ) {
+                        match use_cases::queue_command(task, &self.config, "address-review", None) {
                             Ok(_) => {
                                 let _ = use_cases::set_review_addressed(task, true);
                                 self.log_output(format!(
@@ -6172,8 +6328,7 @@ impl App {
                         .find(|t| t.meta.task_id() == result.task_id)
                     {
                         if task.meta.last_review_count.is_none() {
-                            let _ =
-                                use_cases::update_last_review_count(task, result.review_count);
+                            let _ = use_cases::update_last_review_count(task, result.review_count);
                         }
                     }
                 }
@@ -6197,15 +6352,12 @@ impl App {
                     let _ = Tmux::kill_session(&repo.tmux_session);
                 }
                 if task.meta.is_multi_repo() {
-                    let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+                    let parent_session =
+                        Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
                     let _ = Tmux::kill_session(&parent_session);
                 }
 
-                let _ = use_cases::archive_task(
-                    &self.config,
-                    &mut task,
-                    false,
-                );
+                let _ = use_cases::archive_task(&self.config, &mut task, false);
 
                 self.log_output(format!(
                     "Auto-archived task {}: PR #{} merged",
@@ -6289,14 +6441,23 @@ impl App {
         // when there's genuine new activity (unread + newer updated_at).
         if !self.dismissed_notifs.ids.is_empty() {
             // Prune entries older than the retention window
-            let retention = chrono::Duration::weeks(agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS);
+            let retention = chrono::Duration::weeks(
+                agman::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS,
+            );
             let pruned = self.dismissed_notifs.prune_older_than(retention);
 
             // Un-dismiss threads that have new activity since they were dismissed
             let mut undismissed: Vec<(String, String, String)> = Vec::new();
             for notif in &self.notifications {
-                if self.dismissed_notifs.should_undismiss(&notif.id, &notif.updated_at, notif.unread) {
-                    let old_updated_at = self.dismissed_notifs.ids.get(&notif.id)
+                if self.dismissed_notifs.should_undismiss(
+                    &notif.id,
+                    &notif.updated_at,
+                    notif.unread,
+                ) {
+                    let old_updated_at = self
+                        .dismissed_notifs
+                        .ids
+                        .get(&notif.id)
                         .map(|e| e.updated_at.clone())
                         .unwrap_or_default();
                     undismissed.push((notif.id.clone(), old_updated_at, notif.updated_at.clone()));
@@ -6313,7 +6474,8 @@ impl App {
             }
 
             if pruned > 0 || !undismissed.is_empty() {
-                self.dismissed_notifs.save(&self.config.dismissed_notifications_path());
+                self.dismissed_notifs
+                    .save(&self.config.dismissed_notifications_path());
                 tracing::debug!(
                     pruned,
                     undismissed = undismissed.len(),
@@ -6322,10 +6484,14 @@ impl App {
             }
             // Filter out still-dismissed notifications from the displayed list
             let before = self.notifications.len();
-            self.notifications.retain(|n| !self.dismissed_notifs.contains(&n.id));
+            self.notifications
+                .retain(|n| !self.dismissed_notifs.contains(&n.id));
             let filtered = before - self.notifications.len();
             if filtered > 0 {
-                tracing::debug!(filtered_count = filtered, "filtered dismissed notifications from poll results");
+                tracing::debug!(
+                    filtered_count = filtered,
+                    "filtered dismissed notifications from poll results"
+                );
             }
         }
 
@@ -6334,7 +6500,10 @@ impl App {
             self.selected_notif_index = self.notifications.len() - 1;
         }
 
-        tracing::debug!(notification_count = self.notifications.len(), "applied github notification poll results");
+        tracing::debug!(
+            notification_count = self.notifications.len(),
+            "applied github notification poll results"
+        );
     }
 
     /// Spawn a background task to poll GitHub issues & PRs for the Show PRs view.
@@ -6400,7 +6569,9 @@ impl App {
         } else if idx < issues_len + my_prs_len {
             self.show_prs_data.my_prs.get(idx - issues_len)
         } else {
-            self.show_prs_data.review_requests.get(idx - issues_len - my_prs_len)
+            self.show_prs_data
+                .review_requests
+                .get(idx - issues_len - my_prs_len)
         }
     }
 
@@ -6417,7 +6588,7 @@ impl App {
         self.rt.spawn(async move {
             let result = tokio::task::spawn_blocking(use_cases::fetch_keybase_unreads)
                 .await
-                .unwrap_or_else(|_| use_cases::KeybasePollResult {
+                .unwrap_or(use_cases::KeybasePollResult {
                     dm_unread_count: 0,
                     channel_unread_count: 0,
                     keybase_available: true,
@@ -6446,7 +6617,11 @@ impl App {
 
         self.keybase_dm_unread_count = result.dm_unread_count;
         self.keybase_channel_unread_count = result.channel_unread_count;
-        tracing::debug!(unread_dm = result.dm_unread_count, unread_channel = result.channel_unread_count, "applied keybase poll results");
+        tracing::debug!(
+            unread_dm = result.dm_unread_count,
+            unread_channel = result.channel_unread_count,
+            "applied keybase poll results"
+        );
     }
 
     /// Spawn a background task to poll chat unread messages.
@@ -6461,11 +6636,12 @@ impl App {
 
         tracing::debug!("starting chat unread poll");
         self.rt.spawn(async move {
-            let result = tokio::task::spawn_blocking(move || {
-                use_cases::count_unread_chat_messages(&config)
-            })
-            .await
-            .unwrap_or_else(|_| use_cases::ChatPollResult { unread_names: vec![] });
+            let result =
+                tokio::task::spawn_blocking(move || use_cases::count_unread_chat_messages(&config))
+                    .await
+                    .unwrap_or_else(|_| use_cases::ChatPollResult {
+                        unread_names: vec![],
+                    });
             let _ = tx.send(result);
         });
     }
@@ -6512,12 +6688,9 @@ impl App {
         let _ = use_cases::set_review_addressed(&mut self.tasks[task_idx], false);
 
         let task = &mut self.tasks[task_idx];
-        let launch_error = match supervisor::ensure_task_tmux(task)
+        let launch_error = supervisor::ensure_task_tmux(task)
             .and_then(|_| supervisor::launch_next_step(&self.config, task).map(|_| ()))
-        {
-            Ok(_) => None,
-            Err(e) => Some(e),
-        };
+            .err();
 
         match launch_error {
             None => {
@@ -6551,7 +6724,7 @@ impl Drop for App {
 /// Higher score = more relevant. Used by `rebase_branch_filtered_indices()`.
 fn branch_search_score(branch: &str, terms: &[&str]) -> i64 {
     let branch_lower = branch.to_lowercase();
-    let segments: Vec<&str> = branch_lower.split(|c| c == '/' || c == '-').collect();
+    let segments: Vec<&str> = branch_lower.split(['/', '-']).collect();
     let mut score: i64 = 0;
     for term in terms {
         if branch_lower == *term {
@@ -6572,12 +6745,11 @@ pub fn run_tui(config: Config) -> Result<()> {
     #[cfg(unix)]
     {
         let base = dirs::home_dir().unwrap_or_default().join(".agman");
-        for name in [".agman-restart"] {
-            let path = base.join(name);
-            if path.exists() {
-                tracing::info!(file = name, "removing stale restart signal file at startup");
-                let _ = std::fs::remove_file(&path);
-            }
+        let name = ".agman-restart";
+        let path = base.join(name);
+        if path.exists() {
+            tracing::info!(file = name, "removing stale restart signal file at startup");
+            let _ = std::fs::remove_file(&path);
         }
     }
 
@@ -6639,10 +6811,14 @@ pub fn run_tui(config: Config) -> Result<()> {
                             attach_session = Some(session);
                         } else if let Some(task) = app.selected_task() {
                             if task.meta.has_repos() {
-                                attach_session = Some(task.meta.primary_repo().tmux_session.clone());
+                                attach_session =
+                                    Some(task.meta.primary_repo().tmux_session.clone());
                             } else if task.meta.is_multi_repo() {
                                 // Multi-repo with no repos yet — attach to parent session
-                                attach_session = Some(Config::tmux_session_name(&task.meta.name, &task.meta.branch_name));
+                                attach_session = Some(Config::tmux_session_name(
+                                    &task.meta.name,
+                                    &task.meta.branch_name,
+                                ));
                             }
                         }
                         break;

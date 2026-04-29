@@ -121,6 +121,18 @@ struct BotPaths {
     telegram_dead_letter: PathBuf,
 }
 
+struct BotRunArgs {
+    token: String,
+    chat_id: String,
+    cancel: Arc<AtomicBool>,
+    paths: BotPaths,
+    whisper_model: String,
+    heartbeat: Arc<AtomicU64>,
+    panic_log_path: PathBuf,
+    config: Config,
+    current_agent: Arc<RwLock<String>>,
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -190,17 +202,17 @@ pub fn start(config: &Config, token: String, chat_id: String) -> Option<Telegram
             };
 
             let result = catch_unwind(AssertUnwindSafe(move || {
-                run_bot(
+                run_bot(BotRunArgs {
                     token,
                     chat_id,
                     cancel,
                     paths,
                     whisper_model,
                     heartbeat,
-                    panic_log,
+                    panic_log_path: panic_log,
                     config,
                     current_agent,
-                );
+                });
             }));
 
             match result {
@@ -222,24 +234,30 @@ pub fn start(config: &Config, token: String, chat_id: String) -> Option<Telegram
         }
     });
 
-    Some(TelegramHandle { cancel, heartbeat, join })
+    Some(TelegramHandle {
+        cancel,
+        heartbeat,
+        join,
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Bot loop
 // ---------------------------------------------------------------------------
 
-fn run_bot(
-    token: String,
-    chat_id: String,
-    cancel: Arc<AtomicBool>,
-    paths: BotPaths,
-    whisper_model: String,
-    heartbeat: Arc<AtomicU64>,
-    panic_log_path: PathBuf,
-    config: Config,
-    current_agent: Arc<RwLock<String>>,
-) {
+fn run_bot(args: BotRunArgs) {
+    let BotRunArgs {
+        token,
+        chat_id,
+        cancel,
+        paths,
+        whisper_model,
+        heartbeat,
+        panic_log_path,
+        config,
+        current_agent,
+    } = args;
+
     if token.trim().is_empty() || chat_id.trim().is_empty() {
         tracing::warn!("telegram bot not started: token or chat_id is empty");
         return;
@@ -544,7 +562,11 @@ fn route_inbound_message(
         }
     }
 
-    (current_inbox(ctx), read_current_agent(ctx), body.to_string())
+    (
+        current_inbox(ctx),
+        read_current_agent(ctx),
+        body.to_string(),
+    )
 }
 
 fn handle_callback_query(ctx: &BotCtx, cq: &Value) {
@@ -606,7 +628,9 @@ fn drain_outbox(ctx: &BotCtx) {
                     preview = %preview,
                     "telegram: permanent send failure, moving to dead-letter queue",
                 );
-                if let Err(e) = append_dead_letter(&ctx.telegram_dead_letter, &msg, "permanent send failure") {
+                if let Err(e) =
+                    append_dead_letter(&ctx.telegram_dead_letter, &msg, "permanent send failure")
+                {
                     tracing::warn!(error = %e, seq = msg.seq, "telegram: failed to write dead-letter entry");
                 }
                 // Mark delivered anyway so the queue unblocks for subsequent messages.
@@ -676,7 +700,12 @@ fn tg_post(agent: &ureq::Agent, url: &str, body: &Value) -> Result<Value, TgErro
         },
         Err(ureq::Error::Status(code, resp)) => {
             let body = resp.into_string().unwrap_or_default();
-            tracing::warn!(method = method, status = code, body = body, "telegram: API error");
+            tracing::warn!(
+                method = method,
+                status = code,
+                body = body,
+                "telegram: API error"
+            );
             if (400..=499).contains(&code) {
                 Err(TgError::Permanent)
             } else {
@@ -762,7 +791,11 @@ fn tg_send_with_keyboard(
 /// Dismiss the loading spinner on a tapped inline-keyboard button. Best-effort.
 fn tg_answer_callback(ctx: &BotCtx, callback_id: &str) {
     let body = serde_json::json!({"callback_query_id": callback_id});
-    if let Err(e) = tg_post(&ctx.agent, &format!("{}/answerCallbackQuery", ctx.base), &body) {
+    if let Err(e) = tg_post(
+        &ctx.agent,
+        &format!("{}/answerCallbackQuery", ctx.base),
+        &body,
+    ) {
         tracing::debug!(error = ?e, "telegram: answerCallbackQuery failed");
     }
 }
@@ -830,10 +863,7 @@ fn build_ls_reply(ctx: &BotCtx) -> (String, Vec<Vec<(String, String)>>) {
         })
         .collect();
 
-    (
-        format!("📍 Current: {current}\n\nSwitch to:"),
-        buttons,
-    )
+    (format!("📍 Current: {current}\n\nSwitch to:"), buttons)
 }
 
 /// Parent agent for `/back`. Returns `None` when already at root
@@ -1045,7 +1075,10 @@ fn transcribe_audio(model_path: &str, audio_data: &[u8]) -> Option<String> {
     }
 
     // Convert OGG/Opus -> WAV (16kHz mono, whisper's expected format).
-    tracing::debug!(bytes = audio_data.len(), "telegram: ffmpeg converting OGG to WAV");
+    tracing::debug!(
+        bytes = audio_data.len(),
+        "telegram: ffmpeg converting OGG to WAV"
+    );
     let ffmpeg = Command::new("ffmpeg")
         .args(["-y", "-i"])
         .arg(&ogg_tmp)
@@ -1076,9 +1109,8 @@ fn transcribe_audio(model_path: &str, audio_data: &[u8]) -> Option<String> {
 
     let result = Command::new("whisper-cli")
         .args([
-            "-m", model_path,
-            "-nt",   // no timestamps
-            "-np",   // no extra prints
+            "-m", model_path, "-nt", // no timestamps
+            "-np", // no extra prints
             "-l", "auto", // auto-detect language
         ])
         .arg(&wav_tmp)
@@ -1090,7 +1122,11 @@ fn transcribe_audio(model_path: &str, audio_data: &[u8]) -> Option<String> {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             tracing::debug!(text = %text, "telegram: whisper-cli output");
-            if text.is_empty() { None } else { Some(text) }
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);

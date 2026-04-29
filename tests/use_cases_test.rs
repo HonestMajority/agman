@@ -5,7 +5,9 @@ use agman::project::Project;
 use agman::repo_stats::RepoStats;
 use agman::task::{QueueItem, SessionEntry, Task, TaskStatus};
 use agman::use_cases::{self, GithubItemKind, PrPollAction, WorktreeSource};
-use helpers::{create_test_project, create_test_task, init_test_repo, init_test_repo_at, test_config};
+use helpers::{
+    create_test_project, create_test_task, init_test_repo, init_test_repo_at, test_config,
+};
 
 // ---------------------------------------------------------------------------
 // Create task
@@ -95,7 +97,8 @@ fn create_task_reuses_existing_worktree() {
 
     // Create a worktree via git (simulates a worktree that already exists on disk)
     let wt_path =
-        agman::git::Git::create_worktree_quiet(&config, "myrepo", "reuse-branch", None, None).unwrap();
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "reuse-branch", None, None)
+            .unwrap();
     assert!(wt_path.exists());
 
     // Now create a task with ExistingBranch — should reuse the worktree instead of failing
@@ -352,7 +355,10 @@ fn permanently_delete_archived_task() {
         .current_dir(&_repo_path)
         .output()
         .unwrap();
-    assert!(!branch_check.stdout.is_empty(), "branch should exist after archive");
+    assert!(
+        !branch_check.stdout.is_empty(),
+        "branch should exist after archive"
+    );
 
     use_cases::permanently_delete_archived_task(&config, task).unwrap();
     assert!(!task_dir.exists());
@@ -400,7 +406,10 @@ fn fully_delete_task() {
         .current_dir(&_repo_path)
         .output()
         .unwrap();
-    assert!(!branch_check.stdout.is_empty(), "branch should exist after creation");
+    assert!(
+        !branch_check.stdout.is_empty(),
+        "branch should exist after creation"
+    );
 
     use_cases::fully_delete_task(&config, task).unwrap();
     assert!(!task_dir.exists(), "task directory should be removed");
@@ -1099,7 +1108,10 @@ fn pr_poll_action_merged() {
 #[test]
 fn pr_poll_action_new_review() {
     let action = use_cases::determine_pr_poll_action(TaskStatus::Stopped, false, 3, Some(2));
-    assert!(matches!(action, PrPollAction::AddressReview { new_count: 3 }));
+    assert!(matches!(
+        action,
+        PrPollAction::AddressReview { new_count: 3 }
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -1183,7 +1195,12 @@ fn set_linked_pr() {
     // Add an origin remote pointing to a GitHub URL
     let wt = task.meta.primary_repo().worktree_path.clone();
     std::process::Command::new("git")
-        .args(["remote", "add", "origin", "https://github.com/testowner/testrepo.git"])
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/testowner/testrepo.git",
+        ])
         .current_dir(&wt)
         .output()
         .unwrap();
@@ -1223,7 +1240,12 @@ fn set_linked_pr_owned_flag() {
 
     let wt = task.meta.primary_repo().worktree_path.clone();
     std::process::Command::new("git")
-        .args(["remote", "add", "origin", "https://github.com/testowner/testrepo.git"])
+        .args([
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/testowner/testrepo.git",
+        ])
         .current_dir(&wt)
         .output()
         .unwrap();
@@ -1374,8 +1396,10 @@ fn archive_multi_repo_task() {
     .unwrap();
 
     // Manually populate repos (simulating what setup_repos_from_task_md would do)
-    let wt_a = agman::git::Git::create_worktree_quiet(&config, "repo-a", "multi-del", None, None).unwrap();
-    let wt_b = agman::git::Git::create_worktree_quiet(&config, "repo-b", "multi-del", None, None).unwrap();
+    let wt_a =
+        agman::git::Git::create_worktree_quiet(&config, "repo-a", "multi-del", None, None).unwrap();
+    let wt_b =
+        agman::git::Git::create_worktree_quiet(&config, "repo-b", "multi-del", None, None).unwrap();
 
     task.meta.repos = vec![
         agman::task::RepoEntry {
@@ -1540,7 +1564,10 @@ fn migrate_old_tasks_rewrites_meta_json() {
         repos[0]["worktree_path"].as_str().unwrap(),
         worktree_path.to_str().unwrap()
     );
-    assert_eq!(repos[0]["tmux_session"].as_str().unwrap(), "(myrepo)__old-branch");
+    assert_eq!(
+        repos[0]["tmux_session"].as_str().unwrap(),
+        "(myrepo)__old-branch"
+    );
 
     // No top-level tmux_session or worktree_path
     assert!(!obj.contains_key("tmux_session"));
@@ -1607,10 +1634,7 @@ fn config_file_sets_repos_dir() {
     std::fs::write(base_dir.join("config.toml"), config_toml).unwrap();
 
     let cf = agman::config::load_config_file(&base_dir);
-    assert_eq!(
-        cf.repos_dir.unwrap(),
-        custom_repos.to_str().unwrap()
-    );
+    assert_eq!(cf.repos_dir.unwrap(), custom_repos.to_str().unwrap());
 
     // Config::new with the loaded value should point to the custom dir
     let config = agman::config::Config::new(base_dir.clone(), custom_repos.clone());
@@ -1909,15 +1933,18 @@ fn parse_notifications_json_extracts_fields() {
     assert_eq!(notifs[0].title, "Fix the bug");
     assert_eq!(notifs[0].reason, "review_requested");
     assert_eq!(notifs[0].subject_type, "PullRequest");
-    assert_eq!(notifs[0].unread, true);
-    assert_eq!(notifs[0].browser_url, "https://github.com/owner/repo/pull/42");
+    assert!(notifs[0].unread);
+    assert_eq!(
+        notifs[0].browser_url,
+        "https://github.com/owner/repo/pull/42"
+    );
 
     assert_eq!(notifs[1].id, "456");
     assert_eq!(notifs[1].repo_full_name, "other/project");
     assert_eq!(notifs[1].title, "Add feature");
     assert_eq!(notifs[1].reason, "mention");
     assert_eq!(notifs[1].subject_type, "Issue");
-    assert_eq!(notifs[1].unread, false);
+    assert!(!notifs[1].unread);
     // null subject.url falls back to repo URL
     assert_eq!(notifs[1].browser_url, "https://github.com/other/project");
 }
@@ -2024,7 +2051,10 @@ fn rename_note_appends_md() {
     let new_path = use_cases::rename_note(&old_path, "new-name").unwrap();
     assert!(!old_path.exists());
     assert!(new_path.exists());
-    assert_eq!(new_path.file_name().unwrap().to_str().unwrap(), "new-name.md");
+    assert_eq!(
+        new_path.file_name().unwrap().to_str().unwrap(),
+        "new-name.md"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2059,7 +2089,8 @@ fn move_note_down() {
     std::fs::write(notes_dir.join("gamma.md"), "").unwrap();
 
     // Move first file (alpha) down
-    let new_idx = use_cases::move_note(&notes_dir, "alpha.md", use_cases::MoveDirection::Down).unwrap();
+    let new_idx =
+        use_cases::move_note(&notes_dir, "alpha.md", use_cases::MoveDirection::Down).unwrap();
     assert_eq!(new_idx, 1);
 
     // Verify .order was written
@@ -2086,7 +2117,8 @@ fn move_note_up() {
     std::fs::write(notes_dir.join("gamma.md"), "").unwrap();
 
     // Move last file (gamma) up
-    let new_idx = use_cases::move_note(&notes_dir, "gamma.md", use_cases::MoveDirection::Up).unwrap();
+    let new_idx =
+        use_cases::move_note(&notes_dir, "gamma.md", use_cases::MoveDirection::Up).unwrap();
     assert_eq!(new_idx, 1);
 
     let entries = use_cases::list_notes(&notes_dir).unwrap();
@@ -2168,7 +2200,10 @@ fn paste_note_moves_file_between_dirs() {
     // File moved
     assert!(!src_dir.join("todo.md").exists());
     assert!(dest_dir.join("todo.md").exists());
-    assert_eq!(std::fs::read_to_string(dest_dir.join("todo.md")).unwrap(), "buy milk");
+    assert_eq!(
+        std::fs::read_to_string(dest_dir.join("todo.md")).unwrap(),
+        "buy milk"
+    );
 
     // Source .order no longer contains todo.md
     let src_order = std::fs::read_to_string(src_dir.join(".order")).unwrap();
@@ -2195,8 +2230,14 @@ fn paste_note_rejects_duplicate_name() {
     let result = use_cases::paste_note(&src_dir, &dest_dir, "readme.md");
     assert!(result.is_err());
     // Original files unchanged
-    assert_eq!(std::fs::read_to_string(src_dir.join("readme.md")).unwrap(), "src");
-    assert_eq!(std::fs::read_to_string(dest_dir.join("readme.md")).unwrap(), "dest");
+    assert_eq!(
+        std::fs::read_to_string(src_dir.join("readme.md")).unwrap(),
+        "src"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dest_dir.join("readme.md")).unwrap(),
+        "dest"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2556,8 +2597,12 @@ fn setup_repos_from_task_md_multi_repo_different_parent_dir() {
     // Worktrees should be under other-repos/<repo>-wt/<branch>/, not repos/<repo>-wt/
     assert!(task.meta.repos[0].worktree_path.starts_with(&other_repos));
     assert!(task.meta.repos[1].worktree_path.starts_with(&other_repos));
-    assert!(!task.meta.repos[0].worktree_path.starts_with(tmp.path().join("repos")));
-    assert!(!task.meta.repos[1].worktree_path.starts_with(tmp.path().join("repos")));
+    assert!(!task.meta.repos[0]
+        .worktree_path
+        .starts_with(tmp.path().join("repos")));
+    assert!(!task.meta.repos[1]
+        .worktree_path
+        .starts_with(tmp.path().join("repos")));
 }
 
 // ---------------------------------------------------------------------------
@@ -2594,7 +2639,10 @@ fn create_task_with_repo_outside_repos_dir() {
     assert_eq!(task.meta.branch_name, "feat-external");
 
     // parent_dir is stored in meta
-    assert_eq!(task.meta.parent_dir.as_deref(), Some(external_dir.as_path()));
+    assert_eq!(
+        task.meta.parent_dir.as_deref(),
+        Some(external_dir.as_path())
+    );
 
     // Task is NOT multi-repo (single repo with external parent_dir)
     assert!(!task.meta.is_multi_repo());
@@ -2616,8 +2664,7 @@ fn create_project() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    let project =
-        agman::project::Project::create(&config, "my-project", "A test project").unwrap();
+    let project = agman::project::Project::create(&config, "my-project", "A test project").unwrap();
 
     assert_eq!(project.meta.name, "my-project");
     assert_eq!(project.meta.description, "A test project");
@@ -2864,8 +2911,7 @@ fn use_case_send_message_to_task_appends_to_task_inbox() {
     let target = format!("task:{task_id}");
     use_cases::send_message(&config, &target, "pm", "nudge from pm").unwrap();
 
-    let messages =
-        agman::inbox::read_messages(&config.task_inbox(&task_id)).unwrap();
+    let messages = agman::inbox::read_messages(&config.task_inbox(&task_id)).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].from, "pm");
     assert_eq!(messages[0].message, "nudge from pm");
@@ -3096,11 +3142,17 @@ fn project_status_with_archived() {
 
     let _project = create_test_project(&config, "backend");
 
-    // Active task assigned to the project
+    // Running task assigned to the project
     let mut task1 = create_test_task(&config, "repo", "feat-a");
     task1.meta.project = Some("backend".to_string());
     task1.meta.status = TaskStatus::Running;
     task1.save_meta().unwrap();
+
+    // Stopped, non-archived tasks are still active project tasks
+    let mut task2 = create_test_task(&config, "repo", "feat-b");
+    task2.meta.project = Some("backend".to_string());
+    task2.meta.status = TaskStatus::Stopped;
+    task2.save_meta().unwrap();
 
     // Archived task assigned to the project
     let mut archived1 = create_test_task(&config, "repo", "old-feat");
@@ -3109,8 +3161,8 @@ fn project_status_with_archived() {
     archived1.save_meta().unwrap();
 
     let result = use_cases::project_status(&config, "backend").unwrap();
-    assert_eq!(result.total_tasks, 1); // only active tasks counted
-    assert_eq!(result.active_tasks, 1);
+    assert_eq!(result.total_tasks, 3);
+    assert_eq!(result.active_tasks, 2);
     assert_eq!(result.archived_tasks, 1);
 }
 
@@ -3247,8 +3299,16 @@ fn use_case_archive_researcher() {
     config.ensure_dirs().unwrap();
     let _project = create_test_project(&config, "myproj");
 
-    use_cases::create_researcher(&config, "myproj", "temp-research", "quick look", None, None, None)
-        .unwrap();
+    use_cases::create_researcher(
+        &config,
+        "myproj",
+        "temp-research",
+        "quick look",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     use_cases::archive_researcher(&config, "myproj", "temp-research").unwrap();
 
@@ -3268,8 +3328,16 @@ fn use_case_send_message_to_researcher() {
     config.ensure_dirs().unwrap();
     let _project = create_test_project(&config, "myproj");
 
-    use_cases::create_researcher(&config, "myproj", "investigator", "check logs", None, None, None)
-        .unwrap();
+    use_cases::create_researcher(
+        &config,
+        "myproj",
+        "investigator",
+        "check logs",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     use_cases::send_message(
         &config,
@@ -3409,11 +3477,7 @@ fn chat_unread_via_transcript_and_mark_viewed() {
         "{\"type\":\"user\",\"uuid\":\"u1\",\"timestamp\":\"2026-01-01T00:00:00Z\"}\n",
     )
     .unwrap();
-    let result = use_cases::count_unread_chat_messages_for_test(
-        &config,
-        Some(claude_home),
-        None,
-    );
+    let result = use_cases::count_unread_chat_messages_for_test(&config, Some(claude_home), None);
     assert!(result.unread_names.is_empty());
 
     // Append assistant line — project appears as unread.
@@ -3428,21 +3492,13 @@ fn chat_unread_via_transcript_and_mark_viewed() {
     )
     .unwrap();
     drop(f);
-    let result = use_cases::count_unread_chat_messages_for_test(
-        &config,
-        Some(claude_home),
-        None,
-    );
+    let result = use_cases::count_unread_chat_messages_for_test(&config, Some(claude_home), None);
     assert_eq!(result.unread_names, vec!["test-project".to_string()]);
 
     // Mark viewed — no longer unread.
     let agent_key = format!("project:{project_name}");
     use_cases::mark_chat_viewed_for_test(&config, &agent_key, Some(claude_home), None).unwrap();
-    let result = use_cases::count_unread_chat_messages_for_test(
-        &config,
-        Some(claude_home),
-        None,
-    );
+    let result = use_cases::count_unread_chat_messages_for_test(&config, Some(claude_home), None);
     assert!(result.unread_names.is_empty());
 
     // Sanity-check the harness lookup directly: it finds the same transcript.
@@ -3463,11 +3519,7 @@ fn chat_unread_via_transcript_and_mark_viewed() {
     )
     .unwrap();
     drop(f);
-    let result = use_cases::count_unread_chat_messages_for_test(
-        &config,
-        Some(claude_home),
-        None,
-    );
+    let result = use_cases::count_unread_chat_messages_for_test(&config, Some(claude_home), None);
     assert_eq!(result.unread_names, vec!["test-project".to_string()]);
 }
 
@@ -3506,8 +3558,14 @@ fn collect_inbox_poll_targets_enumerates_disk() {
         names.contains(&"chief-of-staff"),
         "expected Chief of Staff target, got {names:?}"
     );
-    assert!(names.contains(&"alpha"), "expected alpha PM target, got {names:?}");
-    assert!(names.contains(&"beta"), "expected beta PM target, got {names:?}");
+    assert!(
+        names.contains(&"alpha"),
+        "expected alpha PM target, got {names:?}"
+    );
+    assert!(
+        names.contains(&"beta"),
+        "expected beta PM target, got {names:?}"
+    );
     assert!(
         names.contains(&"researcher:alpha--r1"),
         "expected alpha researcher target, got {names:?}"
@@ -3577,7 +3635,10 @@ fn collect_inbox_poll_targets_scopes_task_to_agman_window() {
         .iter()
         .find(|t| t.name == "chief-of-staff")
         .expect("Chief of Staff target should be present");
-    assert_eq!(cos.window, None, "Chief of Staff target must not be window-scoped");
+    assert_eq!(
+        cos.window, None,
+        "Chief of Staff target must not be window-scoped"
+    );
 
     let task_target = targets
         .iter()
@@ -3695,7 +3756,10 @@ fn append_message_concurrent_seqs() {
     let mut seqs: Vec<u64> = messages.iter().map(|m| m.seq).collect();
     seqs.sort();
     let expected: Vec<u64> = (1..=50).collect();
-    assert_eq!(seqs, expected, "seqs should be unique and contiguous 1..=50");
+    assert_eq!(
+        seqs, expected,
+        "seqs should be unique and contiguous 1..=50"
+    );
 }
 
 #[test]
@@ -3713,8 +3777,7 @@ fn relative_agent_list_from_chief_of_staff() {
     archived.save_meta().unwrap();
 
     // Sanity-check the helper left the archived researcher archived.
-    let archived_reload =
-        Researcher::load(config.researcher_dir("chief-of-staff", "old")).unwrap();
+    let archived_reload = Researcher::load(config.researcher_dir("chief-of-staff", "old")).unwrap();
     assert_eq!(archived_reload.meta.status, ResearcherStatus::Archived);
 
     let agents = use_cases::relative_agent_list(&config, "chief-of-staff");
@@ -3855,7 +3918,8 @@ fn start_agent_step_queues_inbox_work_directive() {
     config.ensure_dirs().unwrap();
 
     let mut task = create_test_task(&config, "myrepo", "feat-x");
-    task.write_task("# Goal\nDo the inbox-delivered work.\n").unwrap();
+    task.write_task("# Goal\nDo the inbox-delivered work.\n")
+        .unwrap();
 
     // Provide a minimal prompt so Agent::load + build_inbox_message succeed
     // before send_keys errors.
@@ -3867,7 +3931,11 @@ fn start_agent_step_queues_inbox_work_directive() {
 
     let inbox_path = config.task_inbox(&task.meta.task_id());
     let messages = inbox::read_messages(&inbox_path).unwrap();
-    assert_eq!(messages.len(), 1, "exactly one work directive should be queued");
+    assert_eq!(
+        messages.len(),
+        1,
+        "exactly one work directive should be queued"
+    );
     let msg = &messages[0];
     assert_eq!(msg.from, "supervisor");
     assert!(
@@ -3928,12 +3996,7 @@ fn list_templates_returns_name_and_description() {
         "Alpha description line\n\nMore detail below.\n",
     )
     .unwrap();
-    agman::templates::write_template(
-        &config,
-        "beta",
-        "\n   \nBeta description line\n",
-    )
-    .unwrap();
+    agman::templates::write_template(&config, "beta", "\n   \nBeta description line\n").unwrap();
 
     let summaries = agman::templates::list_templates(&config).unwrap();
     assert_eq!(summaries.len(), 2);
@@ -4196,7 +4259,10 @@ fn long_lived_force_fresh_ignores_stamped_handle() {
     assert_eq!(prep.mode, "pin");
     assert!(prep.is_first_launch);
     let new_uuid = prep.handle.expect("force_fresh must mint a new uuid");
-    assert_ne!(new_uuid, stale_uuid, "force_fresh must NOT reuse stale uuid");
+    assert_ne!(
+        new_uuid, stale_uuid,
+        "force_fresh must NOT reuse stale uuid"
+    );
 
     // --- Codex path ---
     let codex_home = tempfile::tempdir().unwrap();

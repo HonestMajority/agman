@@ -95,10 +95,7 @@ fn format_reply_message_truncates_long_snippet() {
     let out = format_reply_message(&long, "body");
     // 140 chars + ellipsis, surrounded by "In reply to: \"...\"\n\nbody".
     let expected_snippet: String = "x".repeat(140);
-    assert_eq!(
-        out,
-        format!("In reply to: \"{expected_snippet}…\"\n\nbody")
-    );
+    assert_eq!(out, format!("In reply to: \"{expected_snippet}…\"\n\nbody"));
 }
 
 #[test]
