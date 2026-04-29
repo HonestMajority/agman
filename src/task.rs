@@ -78,6 +78,16 @@ pub struct SessionEntry {
     pub stopped_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub condition: Option<String>,
+    /// Which harness was used to spawn this session. Used by the kill path
+    /// to dispatch the right slash command (`/exit` for claude, `/quit` for
+    /// codex). `#[serde(default)]` so legacy `SessionEntry` records without
+    /// this field deserialize to `HarnessKind::default() = Claude`. Risk: a
+    /// stale unstopped codex session entry from before the upgrade defaults
+    /// to Claude and the kill path dispatches the wrong slash command, which
+    /// then falls through to the Ctrl-C × N fallback. Acceptable — not worth
+    /// a migration.
+    #[serde(default)]
+    pub harness: HarnessKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,14 +150,11 @@ pub struct TaskMeta {
     /// History of interactive agent sessions run by the supervisor.
     /// Appended to on every agent step; persists across iterations so the
     /// user can `claude --resume <name>` / `codex resume <name>` any prior
-    /// session manually from a shell.
+    /// session manually from a shell. Each entry records the harness that
+    /// spawned it on `SessionEntry.harness` so the kill path can dispatch
+    /// the right slash command independently of the current global setting.
     #[serde(default)]
     pub session_history: Vec<SessionEntry>,
-    /// Which harness this task uses (claude or codex). Stamped at task-create
-    /// time and read by the supervisor at every spawn site so a global
-    /// setting flip can't change the harness mid-task.
-    #[serde(default)]
-    pub harness: HarnessKind,
     /// Snapshot of `flow_name` captured before a stored command took over via
     /// `drain_queue`. Restored when the command flow completes without a
     /// terminal `post_action` (archive/delete). `None` outside of command
@@ -210,7 +217,6 @@ impl TaskMeta {
             saved: false,
             project: None,
             session_history: Vec::new(),
-            harness: HarnessKind::default(),
             pre_command_flow_name: None,
             pre_command_flow_step: None,
         }
@@ -246,7 +252,6 @@ impl TaskMeta {
             saved: false,
             project: None,
             session_history: Vec::new(),
-            harness: HarnessKind::default(),
             pre_command_flow_name: None,
             pre_command_flow_step: None,
         }
@@ -304,13 +309,12 @@ impl Task {
         let dir = config.task_dir(name, branch_name);
         std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
 
-        let mut meta = TaskMeta::new(
+        let meta = TaskMeta::new(
             name.to_string(),
             branch_name.to_string(),
             worktree_path.clone(),
             flow_name.to_string(),
         );
-        meta.harness = config.harness_kind();
 
         let task = Self { meta, dir };
         task.save_meta()?;
@@ -341,13 +345,12 @@ impl Task {
         let dir = config.task_dir(name, branch_name);
         std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
 
-        let mut meta = TaskMeta::new_multi(
+        let meta = TaskMeta::new_multi(
             name.to_string(),
             branch_name.to_string(),
             parent_dir,
             flow_name.to_string(),
         );
-        meta.harness = config.harness_kind();
 
         let task = Self { meta, dir };
         task.save_meta()?;

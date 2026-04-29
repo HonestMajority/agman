@@ -83,7 +83,11 @@ agman supports two interactive AI agent CLIs, selected at runtime:
 - **claude** (Anthropic Claude Code) — default
 - **codex** (OpenAI Codex CLI)
 
-The choice is set in the TUI settings view (`,` from the task list) on the **Harness** row (h/l to switch). It persists to `~/.agman/config.toml` as `harness = "..."` and applies to **newly-spawned agents only**. In-flight agents keep using the harness they were spawned with — each long-lived agent (CEO/PM/researcher) stamps its choice in `<state_dir>/harness` on first spawn, and tasks pin it on `TaskMeta.harness` at task-create time.
+The choice is set in the TUI settings view (`,` from the task list) on the **Harness** row (h/l to switch). It persists to `~/.agman/config.toml` as `harness = "..."` and applies to **newly-spawned agents only**.
+
+Newly-spawned **task** agents always read the current global `harness` setting from `config.toml` at spawn time. Task agents have no per-task pin. The harness used at spawn is recorded on each `session_history[N]` entry so the kill path uses the right slash command (`/exit` for claude, `/quit` for codex).
+
+Long-lived agents (Chief of Staff / PM / researcher) **stamp** their harness on first spawn at `<state_dir>/harness` so that resume-by-name (`claude --resume <agent-name>` / `codex resume <agent-name>`) always uses the harness that owns the conversation. A global flip does not affect a long-lived agent's existing conversation. To start a long-lived agent under a new harness, run `agman respawn-agent <target>` — respawn wipes the harness stamp (alongside `session-id` / `launch-cwd`) and the next spawn re-reads global. A tracing line is emitted on the re-read for visibility.
 
 agman never resumes sessions programmatically. To revisit a historical conversation, the user runs the harness's resume command directly from a shell:
 - `claude --resume agman-ceo` (or any name from `~/.agman/tasks/<id>/meta.json` `session_history[].name`)
@@ -107,7 +111,6 @@ Storage layout for harness stamps:
   ceo/harness                       ← "claude" | "codex"
   projects/<name>/harness           ← "claude" | "codex"
   researchers/<project>--<n>/harness ← "claude" | "codex"
-  tasks/<id>/meta.json              ← "harness": "claude" | "codex"
 ```
 
 ### Stop Conditions

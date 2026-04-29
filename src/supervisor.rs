@@ -268,10 +268,13 @@ fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Resu
 ///    no-ops because `--name` already registered the name).
 pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> Result<String> {
     let session_name = supervisor_session(task)?;
-    // Per-task harness pin (set at task-create time). This insulates
-    // in-flight tasks from a global config flip.
-    let _ = config;
-    let harness = task.meta.harness.select();
+    // Task agents have NO per-task harness pin: every step reads the current
+    // global setting at spawn time. Mid-task harness flips are intentional and
+    // visible at the next step boundary. The harness chosen here is recorded
+    // on the SessionEntry below so the kill path uses the right slash command
+    // even if the global flips again before the next stop.
+    let harness_kind = config.harness_kind();
+    let harness = harness_kind.select();
 
     // Reconcile any prior session that wasn't cleanly closed.
     if let Some(last) = task.meta.session_history.last() {
@@ -336,7 +339,7 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
         identity: &identity,
         name: &name,
         cwd: &working_dir,
-        no_alt_screen: matches!(task.meta.harness, HarnessKind::Codex),
+        no_alt_screen: matches!(harness_kind, HarnessKind::Codex),
         // Task agents are disposable: every step is a fresh session.
         session_key: SessionKey::Auto,
     });
@@ -364,6 +367,7 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
         started_at: chrono::Utc::now(),
         stopped_at: None,
         condition: None,
+        harness: harness_kind,
     };
     task.push_session(entry)?;
     task.update_agent(Some(agent_name.to_string()))?;
@@ -373,7 +377,7 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
     // claude this is a no-op (--name already registered the session); for
     // codex this paste-injects /rename and tails session_index.jsonl.
     if wait_for_agent_ready(&session_name, std::time::Duration::from_secs(10)) {
-        let harness_home = harness::harness_home(task.meta.harness);
+        let harness_home = harness::harness_home(harness_kind);
         let _ = harness.register_session_name(&RegisterContext {
             session: &session_name,
             window: Some(AGMAN_WINDOW),
@@ -393,7 +397,7 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
         agent = agent_name,
         session_name = %name,
         sender = %sender,
-        harness = %task.meta.harness,
+        harness = %harness_kind,
         "supervisor launched fresh agent step"
     );
 
@@ -1023,10 +1027,20 @@ pub fn wake_if_idle(config: &Config, task: &mut Task) -> Result<Option<AdvanceOu
 /// completion, so terminal post_actions like `archive_task` do not fire).
 pub fn honor_stop(config: &Config, task: &mut Task) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), "supervisor honoring stop");
-    let _ = config; // reserved for future notify/cleanup use
     if let Ok(session) = supervisor_session(task) {
-        let harness = task.meta.harness.select();
-        let _ = kill_current_agent(harness.as_ref(), &session);
+        // Use the harness recorded on the most recent SessionEntry so the
+        // kill path dispatches the right slash command (`/exit` for claude,
+        // `/quit` for codex) even if the global setting has flipped since
+        // this session was launched. Fall back to the global only when
+        // there is no session history (defensive — shouldn't happen for an
+        // active session being killed).
+        let kill_harness = task
+            .meta
+            .session_history
+            .last()
+            .map(|s| s.harness.select())
+            .unwrap_or_else(|| config.harness_kind().select());
+        let _ = kill_current_agent(kill_harness.as_ref(), &session);
     }
     task.clear_stop()?;
     task.clear_sentinels()?;
@@ -1238,6 +1252,7 @@ mod tests {
             started_at: chrono::Utc::now(),
             stopped_at: None,
             condition: None,
+            harness: HarnessKind::default(),
         })
         .unwrap();
     }

@@ -31,6 +31,29 @@ pub fn poll_session_index_for_test(
     codex::poll_session_index_for(index_path, name, timeout)
 }
 
+/// Test-only re-export of the codex /rename retry loop. Tests pass a
+/// closure-based `paste_attempt` so the retry/poll logic can be verified
+/// without running tmux or codex. See `codex::register_session_name_with_retry`
+/// for behaviour.
+#[doc(hidden)]
+pub fn register_session_name_with_retry_for_test(
+    paste_attempt: Box<dyn FnMut() -> Result<()> + Send>,
+    index_path: &std::path::Path,
+    name: &str,
+    initial_delay: std::time::Duration,
+    poll_timeout: std::time::Duration,
+    max_attempts: u32,
+) -> Result<bool> {
+    codex::register_session_name_with_retry(
+        paste_attempt,
+        index_path,
+        name,
+        initial_delay,
+        poll_timeout,
+        max_attempts,
+    )
+}
+
 /// Test-only entrypoint that resolves the most-recently-modified transcript
 /// for `cwd` under an explicit `home` directory. Avoids the env-var-based
 /// dispatch that backs the trait method, so concurrent tests can each point

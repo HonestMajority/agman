@@ -2673,8 +2673,16 @@ pub fn respawn_agent(config: &Config, target: &str, force: bool, timeout_secs: u
 
     // Wipe long-lived session handles so the new spawn is FRESH (not a
     // resume of the killed thread). respawn intentionally drops prior
-    // context — the handoff content carries forward what matters.
+    // context — the handoff content carries forward what matters. Also
+    // wipes the per-agent `harness` stamp so the next spawn re-reads the
+    // current global setting (a flipped global is intentionally picked up
+    // here, but never silently mid-conversation).
     wipe_long_lived_session_handles(&state_dir);
+    tracing::info!(
+        target = target,
+        target_kind = %config.harness_kind(),
+        "respawn: re-reading global harness setting for fresh spawn"
+    );
 
     // Start new session, forcing a fresh launch.
     if target == "chief-of-staff" {
@@ -2705,8 +2713,13 @@ pub fn respawn_agent(config: &Config, target: &str, force: bool, timeout_secs: u
 /// missing files are ignored. Called by `respawn_agent` to force the
 /// next spawn to be fresh; also exposed for tests so the pre/post state
 /// can be asserted without invoking tmux.
+///
+/// Wipes `harness` too: respawn means "kill, fresh spawn with handoff
+/// briefing", which is the natural place to pick up a flipped global
+/// harness. The next spawn re-reads `config.harness_kind()` via
+/// `read_or_stamp` and stamps the new value.
 pub fn wipe_long_lived_session_handles(state_dir: &Path) {
-    for fname in ["session-id", "launch-cwd"] {
+    for fname in ["session-id", "launch-cwd", "harness"] {
         let _ = std::fs::remove_file(state_dir.join(fname));
     }
 }

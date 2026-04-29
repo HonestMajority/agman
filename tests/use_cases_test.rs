@@ -480,6 +480,7 @@ fn stop_task_finalizes_live_session() {
         started_at: chrono::Utc::now(),
         stopped_at: None,
         condition: None,
+        harness: agman::harness::HarnessKind::default(),
     })
     .unwrap();
 
@@ -4344,4 +4345,148 @@ fn long_lived_resume_codex_falls_back_when_stamped_cwd_missing() {
         "stamped launch-cwd points at a deleted dir; must fall back to the live cwd argument, not the stamped path"
     );
     assert_ne!(prep.cwd, deleted_cwd);
+}
+
+// ---------------------------------------------------------------------------
+// Asymmetric harness pinning — long-lived agents pin, task agents don't.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn respawn_agent_drops_harness_stamp() {
+    // Pin: respawn must wipe `<state_dir>/harness` so the next spawn re-reads
+    // the current global. Other long-lived state (session-id, launch-cwd)
+    // is wiped at the same time. TempDir-isolated; no tmux involved.
+    use agman::use_cases::wipe_long_lived_session_handles;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(state_dir.join("harness"), "claude").unwrap();
+    std::fs::write(state_dir.join("session-id"), "old-uuid").unwrap();
+    std::fs::write(state_dir.join("launch-cwd"), "/old/path").unwrap();
+
+    wipe_long_lived_session_handles(&state_dir);
+
+    assert!(
+        !state_dir.join("harness").exists(),
+        "harness stamp must be wiped on respawn so the next spawn re-reads global"
+    );
+    assert!(!state_dir.join("session-id").exists());
+    assert!(!state_dir.join("launch-cwd").exists());
+}
+
+#[test]
+fn long_lived_harness_pin_survives_global_flip() {
+    // Pin: a long-lived agent stamps its harness on first spawn at
+    // <state_dir>/harness. Subsequent spawns read the stamped value via
+    // `read_or_stamp` regardless of the current global setting — that's
+    // the whole point of the pin. To flip a long-lived agent, the user
+    // must respawn it (which wipes the stamp).
+    use agman::harness::{read_or_stamp, HarnessKind};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("project-foo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    // First spawn under codex: stamps codex.
+    let kind1 = read_or_stamp(&state_dir, HarnessKind::Codex).unwrap();
+    assert_eq!(kind1, HarnessKind::Codex);
+    assert_eq!(
+        std::fs::read_to_string(state_dir.join("harness"))
+            .unwrap()
+            .trim(),
+        "codex"
+    );
+
+    // Global flips to claude. Next spawn reads the stamped codex back —
+    // the global default is ignored when a stamp exists.
+    let kind2 = read_or_stamp(&state_dir, HarnessKind::Claude).unwrap();
+    assert_eq!(
+        kind2,
+        HarnessKind::Codex,
+        "stamp must override the changed default"
+    );
+}
+
+#[test]
+fn task_meta_session_entry_records_harness_round_trip() {
+    // Pin: SessionEntry carries the harness used at spawn so the kill
+    // path can dispatch the right slash command. The field must serialize
+    // and deserialize cleanly through meta.json.
+    use agman::harness::HarnessKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+
+    task.push_session(SessionEntry {
+        agent: "coder".to_string(),
+        name: "agman-task-repo--branch-step-1".to_string(),
+        started_at: chrono::Utc::now(),
+        stopped_at: None,
+        condition: None,
+        harness: HarnessKind::Codex,
+    })
+    .unwrap();
+
+    // Reload from disk to verify the field survives the JSON round-trip.
+    let reloaded = Task::load(&config, "repo", "branch").unwrap();
+    let last = reloaded.meta.session_history.last().unwrap();
+    assert_eq!(last.harness, HarnessKind::Codex);
+}
+
+#[test]
+fn task_meta_session_entry_legacy_record_defaults_to_claude() {
+    // Pin: legacy SessionEntry records (written before SessionEntry.harness
+    // existed) deserialize with `harness = HarnessKind::Claude` via
+    // `#[serde(default)]`. Documented risk: a stale unstopped codex session
+    // entry would read back as Claude and the kill path would dispatch
+    // `/exit` (claude) instead of `/quit` (codex), falling through to the
+    // Ctrl-C × N fallback. Acceptable; not worth a migration.
+    use agman::harness::HarnessKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "branch");
+
+    // Write a meta.json by hand so we can omit the harness key from the
+    // session_history entry. Also include a stray legacy `harness: "codex"`
+    // at the TaskMeta root to confirm serde silently drops it.
+    let meta_path = task.dir.join("meta.json");
+    let raw_meta = serde_json::json!({
+        "name": task.meta.name,
+        "branch_name": task.meta.branch_name,
+        "status": "stopped",
+        "repos": task.meta.repos,
+        "flow_name": task.meta.flow_name,
+        "current_agent": null,
+        "flow_step": 0,
+        "created_at": task.meta.created_at,
+        "updated_at": task.meta.updated_at,
+        "session_history": [
+            {
+                "agent": "coder",
+                "name": "agman-task-repo--branch-step-1",
+                "started_at": chrono::Utc::now(),
+                "stopped_at": null,
+                "condition": null,
+                // no `harness` field
+            }
+        ],
+        // stray legacy root field — serde must drop it without erroring
+        "harness": "codex",
+    });
+    std::fs::write(
+        &meta_path,
+        serde_json::to_string_pretty(&raw_meta).unwrap(),
+    )
+    .unwrap();
+
+    let reloaded = Task::load(&config, "repo", "branch").unwrap();
+    let last = reloaded.meta.session_history.last().unwrap();
+    assert_eq!(
+        last.harness,
+        HarnessKind::Claude,
+        "legacy entry without harness field must default to Claude"
+    );
 }
