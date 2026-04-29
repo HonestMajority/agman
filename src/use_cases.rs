@@ -1912,10 +1912,7 @@ pub struct ProjectStatusInfo {
 pub fn project_status(config: &Config, name: &str) -> Result<ProjectStatusInfo> {
     let project = Project::load_by_name(config, name)?;
     let tasks = list_project_tasks(config, name)?;
-    let active_tasks = tasks
-        .iter()
-        .filter(|t| t.meta.status == TaskStatus::Running)
-        .count();
+    let active_tasks = tasks.len();
     let archived_tasks = Task::list_archived(config)
         .iter()
         .filter(|t| t.meta.project.as_deref() == Some(name))
@@ -1923,7 +1920,7 @@ pub fn project_status(config: &Config, name: &str) -> Result<ProjectStatusInfo> 
 
     Ok(ProjectStatusInfo {
         project,
-        total_tasks: tasks.len(),
+        total_tasks: active_tasks + archived_tasks,
         active_tasks,
         archived_tasks,
     })

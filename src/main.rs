@@ -391,14 +391,10 @@ fn cmd_project_status(config: &Config, name: &str) -> Result<()> {
     println!("Project: {}", status.project.meta.name);
     println!("Description: {}", status.project.meta.description);
     println!("Created: {}", status.project.meta.created_at);
-    if status.archived_tasks > 0 {
-        println!(
-            "Tasks: {} total, {} active, +{} archived",
-            status.total_tasks, status.active_tasks, status.archived_tasks
-        );
-    } else {
-        println!("Tasks: {} total, {} active", status.total_tasks, status.active_tasks);
-    }
+    println!(
+        "Tasks: {} active, {} archived",
+        status.active_tasks, status.archived_tasks
+    );
 
     let tasks = use_cases::list_project_tasks(config, name)?;
     if !tasks.is_empty() {

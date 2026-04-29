@@ -3096,11 +3096,17 @@ fn project_status_with_archived() {
 
     let _project = create_test_project(&config, "backend");
 
-    // Active task assigned to the project
+    // Running task assigned to the project
     let mut task1 = create_test_task(&config, "repo", "feat-a");
     task1.meta.project = Some("backend".to_string());
     task1.meta.status = TaskStatus::Running;
     task1.save_meta().unwrap();
+
+    // Stopped, non-archived tasks are still active project tasks
+    let mut task2 = create_test_task(&config, "repo", "feat-b");
+    task2.meta.project = Some("backend".to_string());
+    task2.meta.status = TaskStatus::Stopped;
+    task2.save_meta().unwrap();
 
     // Archived task assigned to the project
     let mut archived1 = create_test_task(&config, "repo", "old-feat");
@@ -3109,8 +3115,8 @@ fn project_status_with_archived() {
     archived1.save_meta().unwrap();
 
     let result = use_cases::project_status(&config, "backend").unwrap();
-    assert_eq!(result.total_tasks, 1); // only active tasks counted
-    assert_eq!(result.active_tasks, 1);
+    assert_eq!(result.total_tasks, 3);
+    assert_eq!(result.active_tasks, 2);
     assert_eq!(result.archived_tasks, 1);
 }
 
