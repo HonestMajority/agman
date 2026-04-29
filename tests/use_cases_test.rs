@@ -480,6 +480,7 @@ fn stop_task_finalizes_live_session() {
         started_at: chrono::Utc::now(),
         stopped_at: None,
         condition: None,
+        harness: agman::harness::HarnessKind::default(),
     })
     .unwrap();
 

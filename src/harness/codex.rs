@@ -81,8 +81,12 @@ impl Harness for CodexHarness {
     }
 
     /// Paste-inject `/rename <name>` post-launch and verify the entry shows
-    /// up in `~/.codex/session_index.jsonl` within 5s. On timeout, log a
-    /// warning and return Ok — the session is still usable, just not
+    /// up in `~/.codex/session_index.jsonl`. Self-verifying with retry: codex
+    /// step 2+ relaunches faster than first launch (file watchers warm, no
+    /// first-time prompts), so the bracket-paste handler isn't always
+    /// fully mounted when `wait_for_agent_ready` returns. Sleep ~500 ms,
+    /// then loop up to 3 attempts of `paste + 2 s poll`. On all-three timeout,
+    /// log a warning and return Ok — the session is still usable, just not
     /// resume-by-name.
     fn register_session_name(&self, ctx: &RegisterContext) -> Result<()> {
         let target = match ctx.window {
@@ -90,23 +94,18 @@ impl Harness for CodexHarness {
             None => ctx.session.to_string(),
         };
         let cmd = format!("/rename {}", ctx.name);
-
-        // Use load-buffer + paste-buffer + Enter to inject the slash command
-        // without depending on shell escaping.
-        if let Err(e) = paste_text(&target, &cmd) {
-            tracing::warn!(
-                session = ctx.session,
-                name = ctx.name,
-                error = %e,
-                "codex register_session_name: failed to paste /rename; continuing"
-            );
-            return Ok(());
-        }
-
-        // Tail session_index.jsonl for up to 5s, looking for an entry whose
-        // name matches.
         let index_path = ctx.harness_home.join("session_index.jsonl");
-        if poll_session_index_for(&index_path, ctx.name, Duration::from_secs(5)) {
+
+        let found = register_session_name_with_retry(
+            || paste_text(&target, &cmd),
+            &index_path,
+            ctx.name,
+            Duration::from_millis(500),
+            Duration::from_secs(2),
+            3,
+        )?;
+
+        if found {
             tracing::debug!(
                 session = ctx.session,
                 name = ctx.name,
@@ -117,7 +116,7 @@ impl Harness for CodexHarness {
                 session = ctx.session,
                 name = ctx.name,
                 index_path = %index_path.display(),
-                "codex /rename did not appear in session_index.jsonl within 5s; session usable but not resume-by-name"
+                "codex /rename did not appear in session_index.jsonl after 3 retries; session usable but not resume-by-name"
             );
         }
         Ok(())
@@ -324,6 +323,49 @@ fn rollout_cwd_matches(path: &Path, cwd_canonical: &str, cwd_raw: &Path) -> bool
         }
     }
     false
+}
+
+/// Run `paste_attempt` then poll `index_path` for `name`, retrying up to
+/// `max_attempts` times. Returns `Ok(true)` if the entry appears within any
+/// attempt's poll window, `Ok(false)` if all attempts time out.
+///
+/// `initial_delay` is slept before the first paste attempt — codex's
+/// bracket-paste input handler is not always mounted at the moment
+/// `wait_for_agent_ready` returns true (especially on step 2+ relaunches
+/// where everything is hot). The delay gives the TUI time to wire it up.
+///
+/// Per-attempt: paste failures are logged at warn but do NOT short-circuit
+/// the loop — the next attempt may succeed (e.g., transient tmux race).
+/// Inter-attempt: no extra sleep beyond the polling timeout, which
+/// effectively backs off naturally.
+pub(crate) fn register_session_name_with_retry<F>(
+    mut paste_attempt: F,
+    index_path: &Path,
+    name: &str,
+    initial_delay: Duration,
+    poll_timeout: Duration,
+    max_attempts: u32,
+) -> anyhow::Result<bool>
+where
+    F: FnMut() -> anyhow::Result<()>,
+{
+    if !initial_delay.is_zero() {
+        std::thread::sleep(initial_delay);
+    }
+    for attempt in 1..=max_attempts {
+        if let Err(e) = paste_attempt() {
+            tracing::warn!(
+                attempt,
+                name = name,
+                error = %e,
+                "codex /rename: paste attempt failed; will retry"
+            );
+        }
+        if poll_session_index_for(index_path, name, poll_timeout) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Poll `index_path` (`~/.codex/session_index.jsonl`) for at most `timeout`
