@@ -44,13 +44,8 @@ fn migrate_ceo_dir(config: &Config) -> Result<()> {
         );
     }
 
-    std::fs::rename(&legacy, &new).with_context(|| {
-        format!(
-            "failed to rename {} to {}",
-            legacy.display(),
-            new.display()
-        )
-    })?;
+    std::fs::rename(&legacy, &new)
+        .with_context(|| format!("failed to rename {} to {}", legacy.display(), new.display()))?;
     tracing::info!(
         from = %legacy.display(),
         to = %new.display(),
@@ -174,10 +169,10 @@ fn migrate_telegram_current_agent(config: &Config) -> Result<()> {
 
     let new_value = if value == "ceo" {
         Some("chief-of-staff".to_string())
-    } else if let Some(rest) = value.strip_prefix("researcher:ceo--") {
-        Some(format!("researcher:chief-of-staff--{rest}"))
     } else {
-        None
+        value
+            .strip_prefix("researcher:ceo--")
+            .map(|rest| format!("researcher:chief-of-staff--{rest}"))
     };
 
     let Some(new_value) = new_value else {
@@ -201,7 +196,9 @@ fn kill_legacy_tmux_session() {
     if crate::tmux::Tmux::session_exists(LEGACY) {
         match crate::tmux::Tmux::kill_session(LEGACY) {
             Ok(()) => tracing::info!(session = LEGACY, "migration: killed legacy tmux session"),
-            Err(e) => tracing::warn!(error = %e, session = LEGACY, "migration: failed to kill legacy tmux session"),
+            Err(e) => {
+                tracing::warn!(error = %e, session = LEGACY, "migration: failed to kill legacy tmux session")
+            }
         }
     }
 }

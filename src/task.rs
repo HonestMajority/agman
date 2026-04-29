@@ -11,8 +11,13 @@ use crate::harness::HarnessKind;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum QueueItem {
-    Feedback { text: String },
-    Command { command_id: String, branch: Option<String> },
+    Feedback {
+        text: String,
+    },
+    Command {
+        command_id: String,
+        branch: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -45,7 +50,6 @@ impl std::fmt::Display for TaskStatus {
         }
     }
 }
-
 
 /// A single repo entry within a task. For single-repo tasks there is exactly one;
 /// for multi-repo tasks there is one per repo.
@@ -291,7 +295,12 @@ impl Task {
         flow_name: &str,
         worktree_path: PathBuf,
     ) -> Result<Self> {
-        tracing::info!(repo = name, branch = branch_name, flow = flow_name, "creating task");
+        tracing::info!(
+            repo = name,
+            branch = branch_name,
+            flow = flow_name,
+            "creating task"
+        );
         let dir = config.task_dir(name, branch_name);
         std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
 
@@ -323,7 +332,12 @@ impl Task {
         flow_name: &str,
         parent_dir: PathBuf,
     ) -> Result<Self> {
-        tracing::info!(name = name, branch = branch_name, flow = flow_name, "creating multi-repo task");
+        tracing::info!(
+            name = name,
+            branch = branch_name,
+            flow = flow_name,
+            "creating multi-repo task"
+        );
         let dir = config.task_dir(name, branch_name);
         std::fs::create_dir_all(&dir).context("Failed to create task directory")?;
 
@@ -491,9 +505,7 @@ impl Task {
         }
 
         // Sort by archived_at descending (most recently archived first)
-        tasks.sort_by(|a, b| {
-            b.meta.archived_at.cmp(&a.meta.archived_at)
-        });
+        tasks.sort_by(|a, b| b.meta.archived_at.cmp(&a.meta.archived_at));
 
         tasks
     }
@@ -553,10 +565,7 @@ impl Task {
 
     fn init_files(&self) -> Result<()> {
         // Create empty files that will be populated later
-        let files = [
-            "notes.md",
-            "agent.log",
-        ];
+        let files = ["notes.md", "agent.log"];
 
         for file in files {
             let path = self.dir.join(file);
@@ -614,27 +623,45 @@ impl Task {
         for line in &all_lines {
             let trimmed = line.trim();
 
-            if trimmed.starts_with("--- Agent:") && trimmed.ends_with("---") && trimmed.contains("started at") {
+            if trimmed.starts_with("--- Agent:")
+                && trimmed.ends_with("---")
+                && trimmed.contains("started at")
+            {
                 // Flush previous section
                 if !current_lines.is_empty() {
-                    sections.push(LogSection { kind: current_kind, lines: std::mem::take(&mut current_lines) });
+                    sections.push(LogSection {
+                        kind: current_kind,
+                        lines: std::mem::take(&mut current_lines),
+                    });
                 }
                 current_kind = SectionKind::AgentOutput;
                 current_lines.push(line);
-            } else if trimmed.starts_with("--- Agent:") && trimmed.ends_with("---") && trimmed.contains("finished at") {
+            } else if trimmed.starts_with("--- Agent:")
+                && trimmed.ends_with("---")
+                && trimmed.contains("finished at")
+            {
                 current_lines.push(line);
-                sections.push(LogSection { kind: current_kind, lines: std::mem::take(&mut current_lines) });
+                sections.push(LogSection {
+                    kind: current_kind,
+                    lines: std::mem::take(&mut current_lines),
+                });
                 current_kind = SectionKind::AgentOutput;
             } else if trimmed.starts_with("--- User feedback at ") && trimmed.ends_with("---") {
                 // Flush previous section
                 if !current_lines.is_empty() {
-                    sections.push(LogSection { kind: current_kind, lines: std::mem::take(&mut current_lines) });
+                    sections.push(LogSection {
+                        kind: current_kind,
+                        lines: std::mem::take(&mut current_lines),
+                    });
                 }
                 current_kind = SectionKind::UserFeedback;
                 current_lines.push(line);
             } else if trimmed == "--- End user feedback ---" {
                 current_lines.push(line);
-                sections.push(LogSection { kind: current_kind, lines: std::mem::take(&mut current_lines) });
+                sections.push(LogSection {
+                    kind: current_kind,
+                    lines: std::mem::take(&mut current_lines),
+                });
                 current_kind = SectionKind::AgentOutput;
             } else {
                 current_lines.push(line);
@@ -642,7 +669,10 @@ impl Task {
         }
         // Flush last section
         if !current_lines.is_empty() {
-            sections.push(LogSection { kind: current_kind, lines: current_lines });
+            sections.push(LogSection {
+                kind: current_kind,
+                lines: current_lines,
+            });
         }
 
         // Now condense: keep structural lines and tail of agent output
@@ -667,7 +697,8 @@ impl Task {
                     let mut in_body = false;
                     for line in &section.lines {
                         let trimmed = line.trim();
-                        let is_marker = (trimmed.starts_with("--- Agent:") && trimmed.ends_with("---"))
+                        let is_marker = (trimmed.starts_with("--- Agent:")
+                            && trimmed.ends_with("---"))
                             || trimmed.contains("AGENT_DONE")
                             || trimmed.contains("TASK_COMPLETE")
                             || trimmed.contains("INPUT_NEEDED");
@@ -858,7 +889,9 @@ impl Task {
     pub fn queue_feedback(&self, feedback: &str) -> Result<()> {
         let mut queue = self.read_queue_file();
         tracing::debug!(task_id = %self.meta.task_id(), queue_size = queue.len() + 1, "queuing feedback");
-        queue.push(QueueItem::Feedback { text: feedback.to_string() });
+        queue.push(QueueItem::Feedback {
+            text: feedback.to_string(),
+        });
         self.write_queue_file(&queue)
     }
 
@@ -918,8 +951,19 @@ impl Task {
         Ok(())
     }
 
-    pub fn set_linked_pr(&mut self, number: u64, url: String, owned: bool, author: Option<String>) -> Result<()> {
-        self.meta.linked_pr = Some(LinkedPr { number, url, owned, author });
+    pub fn set_linked_pr(
+        &mut self,
+        number: u64,
+        url: String,
+        owned: bool,
+        author: Option<String>,
+    ) -> Result<()> {
+        self.meta.linked_pr = Some(LinkedPr {
+            number,
+            url,
+            owned,
+            author,
+        });
         self.meta.updated_at = Utc::now();
         self.save_meta()
     }
@@ -1086,8 +1130,7 @@ impl Task {
 
     /// Write the `.stop` sentinel to request supervisor cancellation.
     pub fn request_stop(&self) -> Result<()> {
-        std::fs::write(self.stop_path(), "")
-            .context("Failed to write .stop sentinel")
+        std::fs::write(self.stop_path(), "").context("Failed to write .stop sentinel")
     }
 
     /// Return true if a `.stop` sentinel is present.
@@ -1099,8 +1142,7 @@ impl Task {
     pub fn clear_stop(&self) -> Result<()> {
         let path = self.stop_path();
         if path.exists() {
-            std::fs::remove_file(&path)
-                .context("Failed to remove .stop sentinel")?;
+            std::fs::remove_file(&path).context("Failed to remove .stop sentinel")?;
         }
         Ok(())
     }
@@ -1123,16 +1165,14 @@ impl Task {
 
     /// Touch the `.inbox-rearm` marker (create the file, contents irrelevant).
     pub fn touch_rearm(&self) -> Result<()> {
-        std::fs::write(self.rearm_path(), "")
-            .context("Failed to write .inbox-rearm marker")
+        std::fs::write(self.rearm_path(), "").context("Failed to write .inbox-rearm marker")
     }
 
     /// Remove the `.inbox-rearm` marker if present.
     pub fn clear_rearm(&self) -> Result<()> {
         let path = self.rearm_path();
         if path.exists() {
-            std::fs::remove_file(&path)
-                .context("Failed to remove .inbox-rearm marker")?;
+            std::fs::remove_file(&path).context("Failed to remove .inbox-rearm marker")?;
         }
         Ok(())
     }
@@ -1146,10 +1186,7 @@ impl Task {
 
     /// Update the most recent session entry in-place (stopped_at + condition)
     /// and persist. No-op if `session_history` is empty.
-    pub fn finish_last_session(
-        &mut self,
-        condition: Option<String>,
-    ) -> Result<()> {
+    pub fn finish_last_session(&mut self, condition: Option<String>) -> Result<()> {
         if let Some(last) = self.meta.session_history.last_mut() {
             last.stopped_at = Some(Utc::now());
             last.condition = condition;

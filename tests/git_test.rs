@@ -9,7 +9,8 @@ fn git_create_and_remove_worktree() {
     let config = test_config(&tmp);
     let _repo_path = init_test_repo(&tmp, "myrepo");
 
-    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "feat-branch", None, None).unwrap();
+    let worktree_path =
+        Git::create_worktree_quiet(&config, "myrepo", "feat-branch", None, None).unwrap();
 
     // Worktree directory should exist and contain files
     assert!(worktree_path.exists());
@@ -41,7 +42,8 @@ fn git_delete_branch() {
     let config = test_config(&tmp);
     let repo_path = init_test_repo(&tmp, "myrepo");
 
-    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "to-delete", None, None).unwrap();
+    let worktree_path =
+        Git::create_worktree_quiet(&config, "myrepo", "to-delete", None, None).unwrap();
     Git::remove_worktree(&repo_path, &worktree_path).unwrap();
 
     Git::delete_branch(&repo_path, "to-delete").unwrap();
@@ -78,14 +80,20 @@ fn git_create_worktree_with_dangling_branch() {
     let repo_path = init_test_repo(&tmp, "myrepo");
 
     // Create a worktree (this also creates the local branch)
-    let worktree_path = Git::create_worktree_quiet(&config, "myrepo", "dangling-branch", None, None).unwrap();
+    let worktree_path =
+        Git::create_worktree_quiet(&config, "myrepo", "dangling-branch", None, None).unwrap();
     assert!(worktree_path.exists());
 
     // Simulate a dangling branch: remove the worktree directory but keep the branch.
     // First, unregister the worktree from git so git doesn't complain about it.
     let _ = std::process::Command::new("git")
         .current_dir(&repo_path)
-        .args(["worktree", "remove", "--force", worktree_path.to_str().unwrap()])
+        .args([
+            "worktree",
+            "remove",
+            "--force",
+            worktree_path.to_str().unwrap(),
+        ])
         .output()
         .unwrap();
     // The worktree directory is gone but the local branch still exists
@@ -95,11 +103,15 @@ fn git_create_worktree_with_dangling_branch() {
         .args(["rev-parse", "--verify", "refs/heads/dangling-branch"])
         .output()
         .unwrap();
-    assert!(branch_check.status.success(), "local branch should still exist");
+    assert!(
+        branch_check.status.success(),
+        "local branch should still exist"
+    );
 
     // Now retry creating the worktree with the same branch name — this should succeed
     // thanks to -B (would fail with -b because the branch already exists)
-    let worktree_path2 = Git::create_worktree_quiet(&config, "myrepo", "dangling-branch", None, None).unwrap();
+    let worktree_path2 =
+        Git::create_worktree_quiet(&config, "myrepo", "dangling-branch", None, None).unwrap();
     assert!(worktree_path2.exists());
     assert!(worktree_path2.join("README.md").exists());
 }
@@ -117,7 +129,8 @@ fn git_create_worktree_for_existing_branch_idempotent() {
     // Now call create_worktree_for_existing_branch_quiet for the same branch —
     // the worktree is already on disk, so it should reuse it
     let path2 =
-        Git::create_worktree_for_existing_branch_quiet(&config, "myrepo", "exist-branch", None).unwrap();
+        Git::create_worktree_for_existing_branch_quiet(&config, "myrepo", "exist-branch", None)
+            .unwrap();
     assert_eq!(path1, path2);
     assert!(path2.exists());
 }

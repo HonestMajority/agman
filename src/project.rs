@@ -92,8 +92,8 @@ impl Project {
     /// Write meta.json to disk.
     pub fn save_meta(&self) -> Result<()> {
         let meta_path = self.dir.join("meta.json");
-        let contents = serde_json::to_string_pretty(&self.meta)
-            .context("failed to serialize project meta")?;
+        let contents =
+            serde_json::to_string_pretty(&self.meta).context("failed to serialize project meta")?;
         std::fs::write(&meta_path, contents)
             .with_context(|| format!("failed to write {}", meta_path.display()))?;
         Ok(())

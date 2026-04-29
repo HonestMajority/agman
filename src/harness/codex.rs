@@ -56,10 +56,7 @@ impl Harness for CodexHarness {
         // triple-quoted strings so newlines are preserved verbatim. Defensive
         // escape literal `"""` in the body.
         let body = ctx.identity.replace("\"\"\"", "\\\"\\\"\\\"");
-        let dev_instructions = format!(
-            "developer_instructions=\"\"\"{}\"\"\"",
-            body
-        );
+        let dev_instructions = format!("developer_instructions=\"\"\"{}\"\"\"", body);
         // Single-quote the whole `-c` arg, escaping inner single quotes.
         let dev_arg_escaped = dev_instructions.replace('\'', "'\\''");
 
@@ -154,19 +151,16 @@ impl Harness for CodexHarness {
                 .and_then(|p| p.get("type"))
                 .and_then(|t| t.as_str());
 
-            let is_agent_message = payload_type == Some("agent_message")
-                || (outer_type == Some("agent_message"));
+            let is_agent_message =
+                payload_type == Some("agent_message") || (outer_type == Some("agent_message"));
             if !is_agent_message {
                 continue;
             }
-            let ts = v
-                .get("timestamp")
-                .and_then(|t| t.as_str())
-                .or_else(|| {
-                    v.get("payload")
-                        .and_then(|p| p.get("timestamp"))
-                        .and_then(|t| t.as_str())
-                });
+            let ts = v.get("timestamp").and_then(|t| t.as_str()).or_else(|| {
+                v.get("payload")
+                    .and_then(|p| p.get("timestamp"))
+                    .and_then(|t| t.as_str())
+            });
             if let Some(t) = ts {
                 last = Some(t.to_string());
             } else {
@@ -212,7 +206,12 @@ pub fn latest_transcript_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
         let Some(year) = parse_dir_component(&year_path) else {
             continue;
         };
-        for month_entry in std::fs::read_dir(&year_path).ok().into_iter().flatten().flatten() {
+        for month_entry in std::fs::read_dir(&year_path)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             let month_path = month_entry.path();
             if !month_path.is_dir() {
                 continue;
@@ -220,7 +219,12 @@ pub fn latest_transcript_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
             let Some(month) = parse_dir_component(&month_path) else {
                 continue;
             };
-            for day_entry in std::fs::read_dir(&month_path).ok().into_iter().flatten().flatten() {
+            for day_entry in std::fs::read_dir(&month_path)
+                .ok()
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let day_path = day_entry.path();
                 if !day_path.is_dir() {
                     continue;
@@ -234,7 +238,12 @@ pub fn latest_transcript_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
                 if date < cutoff_date {
                     continue;
                 }
-                for file_entry in std::fs::read_dir(&day_path).ok().into_iter().flatten().flatten() {
+                for file_entry in std::fs::read_dir(&day_path)
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                {
                     let p = file_entry.path();
                     if p.extension().and_then(|s| s.to_str()) == Some("jsonl") {
                         candidates.push(p);
@@ -300,7 +309,9 @@ fn rollout_cwd_matches(path: &Path, cwd_canonical: &str, cwd_raw: &Path) -> bool
     // entries; older / newer versions may differ.
     let candidates = [
         v.get("cwd").and_then(|c| c.as_str()),
-        v.get("payload").and_then(|p| p.get("cwd")).and_then(|c| c.as_str()),
+        v.get("payload")
+            .and_then(|p| p.get("cwd"))
+            .and_then(|c| c.as_str()),
         v.get("payload")
             .and_then(|p| p.get("session_meta"))
             .and_then(|s| s.get("cwd"))
@@ -456,10 +467,7 @@ pub fn ensure_workspace_trusted_in(trust_file: &Path, cwd: &Path) -> Result<()> 
             toml::Value::Table(toml::value::Table::new())
         } else {
             toml::from_str(&text).with_context(|| {
-                format!(
-                    "parse codex trust file at {} as TOML",
-                    trust_file.display()
-                )
+                format!("parse codex trust file at {} as TOML", trust_file.display())
             })?
         }
     } else {

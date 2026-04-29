@@ -70,7 +70,8 @@ fn backwards_compatible_load_from_legacy_map_format() {
     let path = tmp.path().join("dismissed.json");
 
     // Write the v2 HashMap<String, String> format: { "ids": { "id": "dismissed_at" } }
-    let legacy_json = r#"{"ids":{"thread-1":"2025-06-01T00:00:00Z","thread-2":"2025-06-02T00:00:00Z"}}"#;
+    let legacy_json =
+        r#"{"ids":{"thread-1":"2025-06-01T00:00:00Z","thread-2":"2025-06-02T00:00:00Z"}}"#;
     std::fs::write(&path, legacy_json).unwrap();
 
     let loaded = DismissedNotifications::load(&path);
@@ -99,7 +100,10 @@ fn prune_older_than_removes_old_entries() {
     );
 
     // Insert a recent entry
-    dn.insert("recent-thread".to_string(), "2025-06-01T00:00:00Z".to_string());
+    dn.insert(
+        "recent-thread".to_string(),
+        "2025-06-01T00:00:00Z".to_string(),
+    );
 
     assert_eq!(dn.ids.len(), 2);
 

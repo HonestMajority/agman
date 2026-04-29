@@ -88,7 +88,13 @@ fn main() -> Result<()> {
             message,
             file,
             from,
-        }) => cmd_send_message(&config, &target, message.as_deref(), file.as_deref(), from.as_deref()),
+        }) => cmd_send_message(
+            &config,
+            &target,
+            message.as_deref(),
+            file.as_deref(),
+            from.as_deref(),
+        ),
 
         Some(Commands::CreateProject {
             name,
@@ -119,9 +125,7 @@ fn main() -> Result<()> {
 
         Some(Commands::StopTask { task_id }) => cmd_stop_task(&config, &task_id),
 
-        Some(Commands::ArchiveTask { task_id, save }) => {
-            cmd_archive_task(&config, &task_id, save)
-        }
+        Some(Commands::ArchiveTask { task_id, save }) => cmd_archive_task(&config, &task_id, save),
 
         Some(Commands::CreatePmTask {
             project,
@@ -140,13 +144,13 @@ fn main() -> Result<()> {
 
         Some(Commands::TaskLog { task_id, tail }) => cmd_task_log(&config, &task_id, tail),
 
-        Some(Commands::TaskCurrentPlan { task_id }) => {
-            cmd_task_current_plan(&config, &task_id)
-        }
+        Some(Commands::TaskCurrentPlan { task_id }) => cmd_task_current_plan(&config, &task_id),
 
-        Some(Commands::Feedback { task_id, feedback, file }) => {
-            cmd_queue_feedback(&config, &task_id, feedback.as_deref(), file.as_deref())
-        }
+        Some(Commands::Feedback {
+            task_id,
+            feedback,
+            file,
+        }) => cmd_queue_feedback(&config, &task_id, feedback.as_deref(), file.as_deref()),
 
         Some(Commands::CreateResearcher {
             name,
@@ -161,7 +165,11 @@ fn main() -> Result<()> {
         }
 
         Some(Commands::ListResearchers { project, cos }) => {
-            let filter = if cos { Some("chief-of-staff") } else { project.as_deref() };
+            let filter = if cos {
+                Some("chief-of-staff")
+            } else {
+                project.as_deref()
+            };
             cmd_list_researchers(&config, filter)
         }
 
@@ -170,9 +178,11 @@ fn main() -> Result<()> {
             cmd_archive_researcher(&config, project, &name)
         }
 
-        Some(Commands::RespawnAgent { target, force, timeout }) => {
-            cmd_respawn_agent(&config, &target, force, timeout)
-        }
+        Some(Commands::RespawnAgent {
+            target,
+            force,
+            timeout,
+        }) => cmd_respawn_agent(&config, &target, force, timeout),
 
         Some(Commands::Restart) => cmd_restart(),
 
@@ -248,9 +258,8 @@ fn cmd_run_command(
             task_id, count
         );
     } else {
-        supervisor::ensure_task_tmux(&task).with_context(|| {
-            format!("failed to prepare tmux for command on '{}'", task_id)
-        })?;
+        supervisor::ensure_task_tmux(&task)
+            .with_context(|| format!("failed to prepare tmux for command on '{}'", task_id))?;
 
         let count = use_cases::queue_command(&mut task, config, command_id, branch)?;
         tracing::info!(
@@ -309,7 +318,11 @@ fn cmd_create_project(
         .filter(|s| !s.is_empty());
 
     let project = use_cases::create_project(config, name, desc, initial_trimmed)?;
-    println!("Project '{}' created at {}", project.meta.name, project.dir.display());
+    println!(
+        "Project '{}' created at {}",
+        project.meta.name,
+        project.dir.display()
+    );
     if initial_trimmed.is_some() {
         println!("Initial message queued to PM inbox.");
     }
@@ -324,7 +337,7 @@ fn cmd_list_templates(config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<24} {}", "NAME", "DESCRIPTION");
+    println!("{:<24} DESCRIPTION", "NAME");
     println!("{}", "-".repeat(60));
     for t in &templates {
         println!("{:<24} {}", t.name, t.description);
@@ -362,11 +375,13 @@ fn cmd_list_projects(config: &Config) -> Result<()> {
     }
 
     let archived = Task::list_archived(config);
-    println!("{:<20} {:<8} {:<8} {:<8}", "NAME", "TASKS", "ACTIVE", "ARCHIVED");
+    println!(
+        "{:<20} {:<8} {:<8} {:<8}",
+        "NAME", "TASKS", "ACTIVE", "ARCHIVED"
+    );
     println!("{}", "-".repeat(48));
     for p in &projects {
-        let tasks = use_cases::list_project_tasks(config, &p.meta.name)
-            .unwrap_or_default();
+        let tasks = use_cases::list_project_tasks(config, &p.meta.name).unwrap_or_default();
         let active = tasks
             .iter()
             .filter(|t| t.meta.status == TaskStatus::Running)
@@ -425,8 +440,7 @@ fn cmd_stop_task(config: &Config, task_id: &str) -> Result<()> {
         }
     }
     if task.meta.is_multi_repo() && task.meta.repos.is_empty() {
-        let parent_session =
-            Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+        let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
         if Tmux::session_exists(&parent_session) {
             if let Err(e) = Tmux::send_ctrl_c_to_window(&parent_session, "agman") {
                 tracing::warn!(task_id = %task.meta.task_id(), error = %e, "failed to interrupt parent tmux session");
@@ -455,8 +469,7 @@ fn cmd_archive_task(config: &Config, task_id: &str, save: bool) -> Result<()> {
         let _ = Tmux::kill_session(&repo.tmux_session);
     }
     if task.meta.is_multi_repo() {
-        let parent_session =
-            Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+        let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
         let _ = Tmux::kill_session(&parent_session);
     }
 
@@ -486,7 +499,11 @@ fn cmd_create_pm_task(
 
     // Check if branch already exists
     let output = std::process::Command::new("git")
-        .args(["rev-parse", "--verify", &format!("refs/heads/{}", task_name)])
+        .args([
+            "rev-parse",
+            "--verify",
+            &format!("refs/heads/{}", task_name),
+        ])
         .output()?;
     if output.status.success() {
         anyhow::bail!(
@@ -500,13 +517,7 @@ fn cmd_create_pm_task(
         None => String::new(),
     };
 
-    let mut task = use_cases::create_pm_task(
-        config,
-        project,
-        repo,
-        task_name,
-        &desc,
-    )?;
+    let mut task = use_cases::create_pm_task(config, project, repo, task_name, &desc)?;
     let task_id = task.meta.task_id();
 
     supervisor::ensure_task_tmux(&task)
@@ -629,11 +640,7 @@ fn format_task_line(t: &use_cases::TaskSummary) {
     };
     println!(
         "  {:<40} {:<14} {}{:<20} {}",
-        t.task_id,
-        status_str,
-        step_str,
-        agent_str,
-        time_str
+        t.task_id, status_str, step_str, agent_str, time_str
     );
 }
 
@@ -652,7 +659,11 @@ fn cmd_status(config: &Config) -> Result<()> {
 
     for group in &status.projects {
         println!();
-        let task_word = if group.tasks.len() == 1 { "task" } else { "tasks" };
+        let task_word = if group.tasks.len() == 1 {
+            "task"
+        } else {
+            "tasks"
+        };
         let breakdown = format_status_breakdown(&group.tasks);
         let archived_suffix = if group.archived_count > 0 {
             format!(", +{} archived", group.archived_count)
@@ -671,19 +682,31 @@ fn cmd_status(config: &Config) -> Result<()> {
             format_task_line(t);
         }
         if !group.researchers.is_empty() {
-            println!("  Researchers: {}", format_researchers_line(&group.researchers));
+            println!(
+                "  Researchers: {}",
+                format_researchers_line(&group.researchers)
+            );
         }
     }
 
     if !status.unassigned.is_empty() || status.archived_unassigned > 0 {
         println!();
-        let task_word = if status.unassigned.len() == 1 { "task" } else { "tasks" };
+        let task_word = if status.unassigned.len() == 1 {
+            "task"
+        } else {
+            "tasks"
+        };
         let archived_suffix = if status.archived_unassigned > 0 {
             format!(", +{} archived", status.archived_unassigned)
         } else {
             String::new()
         };
-        println!("Unassigned ({} {}{})", status.unassigned.len(), task_word, archived_suffix);
+        println!(
+            "Unassigned ({} {}{})",
+            status.unassigned.len(),
+            task_word,
+            archived_suffix
+        );
         for t in &status.unassigned {
             format_task_line(t);
         }
@@ -718,9 +741,8 @@ fn cmd_queue_feedback(
             task_id, count
         );
     } else {
-        supervisor::ensure_task_tmux(&task).with_context(|| {
-            format!("failed to prepare tmux for feedback on '{}'", task_id)
-        })?;
+        supervisor::ensure_task_tmux(&task)
+            .with_context(|| format!("failed to prepare tmux for feedback on '{}'", task_id))?;
 
         let count = use_cases::queue_feedback(&mut task, config, feedback)?;
         tracing::info!(
@@ -750,15 +772,8 @@ fn cmd_create_researcher(
         Some(d) => resolve_text_arg(Some(&d), None, "description")?,
         None => String::new(),
     };
-    let researcher = use_cases::create_researcher(
-        config,
-        project,
-        name,
-        &desc,
-        repo,
-        branch,
-        task,
-    )?;
+    let researcher =
+        use_cases::create_researcher(config, project, name, &desc, repo, branch, task)?;
     use_cases::start_researcher_session(config, project, name, false)?;
     println!(
         "Researcher '{}' created for project '{}' (tmux: {})",
@@ -777,13 +792,12 @@ fn cmd_list_researchers(config: &Config, project: Option<&str>) -> Result<()> {
     }
 
     println!(
-        "{:<20} {:<20} {:<10} {:<24} {}",
-        "NAME", "PROJECT", "STATUS", "CREATED", "DESCRIPTION"
+        "{:<20} {:<20} {:<10} {:<24} DESCRIPTION",
+        "NAME", "PROJECT", "STATUS", "CREATED"
     );
     println!("{}", "-".repeat(90));
     for r in &researchers {
-        let session_name =
-            Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
+        let session_name = Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
         let status = if r.meta.status == agman::researcher::ResearcherStatus::Archived {
             "archived"
         } else if Tmux::session_exists(&session_name) {
@@ -812,7 +826,11 @@ fn cmd_archive_researcher(config: &Config, project: &str, name: &str) -> Result<
 }
 
 fn cmd_respawn_agent(config: &Config, target: &str, force: bool, timeout: u64) -> Result<()> {
-    println!("Respawning agent '{}'{}...", target, if force { " (force)" } else { "" });
+    println!(
+        "Respawning agent '{}'{}...",
+        target,
+        if force { " (force)" } else { "" }
+    );
     use_cases::respawn_agent(config, target, force, timeout)?;
     println!("Agent '{}' respawned successfully.", target);
     Ok(())

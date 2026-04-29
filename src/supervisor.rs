@@ -83,13 +83,12 @@ pub fn supervisor_session(task: &Task) -> Result<String> {
 /// the same string `supervisor_session` would.
 pub fn ensure_task_tmux(task: &Task) -> Result<String> {
     for repo in &task.meta.repos {
-        Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path)
-            .with_context(|| {
-                format!(
-                    "failed to ensure tmux session for repo '{}'",
-                    repo.repo_name
-                )
-            })?;
+        Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path).with_context(|| {
+            format!(
+                "failed to ensure tmux session for repo '{}'",
+                repo.repo_name
+            )
+        })?;
     }
     if task.meta.is_multi_repo() {
         let parent_dir = task.meta.parent_dir.as_ref().ok_or_else(|| {
@@ -267,11 +266,7 @@ fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Resu
 /// 8. Wait for the pane to flip from shell → agent, then run the harness's
 ///    post-launch `register_session_name` step (codex `/rename`; claude
 ///    no-ops because `--name` already registered the name).
-pub fn start_agent_step(
-    config: &Config,
-    task: &mut Task,
-    agent_name: &str,
-) -> Result<String> {
+pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> Result<String> {
     let session_name = supervisor_session(task)?;
     // Per-task harness pin (set at task-create time). This insulates
     // in-flight tasks from a global config flip.
@@ -482,10 +477,7 @@ fn step_working_dir(task: &Task) -> Result<std::path::PathBuf> {
     } else if task.meta.has_repos() {
         Ok(task.meta.primary_repo().worktree_path.clone())
     } else {
-        anyhow::bail!(
-            "task '{}' has no repos configured",
-            task.meta.task_id()
-        )
+        anyhow::bail!("task '{}' has no repos configured", task.meta.task_id())
     }
 }
 
@@ -541,7 +533,9 @@ fn detect_pr_link(task: &mut Task) -> Result<()> {
         if !path.exists() {
             continue;
         }
-        let Ok(contents) = std::fs::read_to_string(path) else { continue };
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            continue;
+        };
         let lines: Vec<&str> = contents.lines().collect();
         if lines.len() >= 2 {
             if let Ok(number) = lines[0].trim().parse::<u64>() {
@@ -565,12 +559,9 @@ fn detect_pr_link(task: &mut Task) -> Result<()> {
 /// Errors are logged but not propagated.
 fn notify_pm(config: &Config, task: &Task, message: &str) {
     if let Some(ref project) = task.meta.project {
-        if let Err(e) = crate::use_cases::send_message(
-            config,
-            project,
-            &task.meta.task_id(),
-            message,
-        ) {
+        if let Err(e) =
+            crate::use_cases::send_message(config, project, &task.meta.task_id(), message)
+        {
             tracing::warn!(
                 task_id = %task.meta.task_id(),
                 project = %project,
@@ -714,7 +705,9 @@ fn drain_queue(task: &mut Task, config: &Config) -> Result<bool> {
 ///   drain queue, etc.).
 fn handle_command_flow_end(config: &Config, task: &mut Task) -> Result<bool> {
     let flow_name = task.meta.flow_name.clone();
-    let stored = StoredCommand::get_by_id(&config.commands_dir, &flow_name).ok().flatten();
+    let stored = StoredCommand::get_by_id(&config.commands_dir, &flow_name)
+        .ok()
+        .flatten();
 
     // Terminal post_action: archive the task and kill its tmux sessions.
     if let Some(ref cmd) = stored {
@@ -730,8 +723,12 @@ fn handle_command_flow_end(config: &Config, task: &mut Task) -> Result<bool> {
             );
 
             // Collect tmux session names before archival wipes worktrees.
-            let mut tmux_sessions: Vec<String> =
-                task.meta.repos.iter().map(|r| r.tmux_session.clone()).collect();
+            let mut tmux_sessions: Vec<String> = task
+                .meta
+                .repos
+                .iter()
+                .map(|r| r.tmux_session.clone())
+                .collect();
             if task.meta.is_multi_repo() {
                 tmux_sessions.push(Config::tmux_session_name(
                     &task.meta.name,
@@ -910,11 +907,7 @@ pub fn advance(
     task.finish_last_session(Some(condition.to_string()))?;
 
     // 2. Post-step cleanup.
-    let last_agent = task
-        .meta
-        .session_history
-        .last()
-        .map(|s| s.agent.clone());
+    let last_agent = task.meta.session_history.last().map(|s| s.agent.clone());
     if last_agent.as_deref() == Some("refiner") {
         task.clear_feedback()?;
     }
@@ -1004,10 +997,7 @@ pub fn advance(
 /// and `use_cases::queue_command` to kick the supervisor immediately when
 /// work is queued onto an idle task. The mid-flight drain (at flow-end on an
 /// already-Running task) is handled inside `advance` / `launch_next_step`.
-pub fn wake_if_idle(
-    config: &Config,
-    task: &mut Task,
-) -> Result<Option<AdvanceOutcome>> {
+pub fn wake_if_idle(config: &Config, task: &mut Task) -> Result<Option<AdvanceOutcome>> {
     if task.meta.status != TaskStatus::Stopped {
         return Ok(None);
     }
@@ -1180,7 +1170,10 @@ mod tests {
         assert!(cmd.contains("--dangerously-skip-permissions"));
         assert!(cmd.contains("--system-prompt 'Identity body'"));
         assert!(cmd.contains("--name 'agman-task-myrepo--feat-x-step-1'"));
-        assert!(!cmd.contains("--resume"), "agman never resumes programmatically");
+        assert!(
+            !cmd.contains("--resume"),
+            "agman never resumes programmatically"
+        );
         assert!(!cmd.contains("--system-prompt-file"));
     }
 
@@ -1329,7 +1322,11 @@ mod tests {
 
         let _ = advance(&config, &mut task, StopCondition::TaskComplete).unwrap();
 
-        let linked = task.meta.linked_pr.as_ref().expect("linked_pr should be set");
+        let linked = task
+            .meta
+            .linked_pr
+            .as_ref()
+            .expect("linked_pr should be set");
         assert_eq!(linked.number, 4242);
         assert_eq!(linked.url, "https://example.com/pr/4242");
         assert!(!pr_link.exists(), ".pr-link sidecar should be consumed");
@@ -1426,7 +1423,10 @@ mod tests {
         // State must be untouched so we don't corrupt flow position.
         assert_eq!(task.meta.flow_name, "new");
         assert_eq!(task.meta.flow_step, 2);
-        assert!(!task.has_queued_items(), "bad item should be popped from queue");
+        assert!(
+            !task.has_queued_items(),
+            "bad item should be popped from queue"
+        );
     }
 
     #[test]
@@ -1467,7 +1467,10 @@ mod tests {
 
         let archived = handle_command_flow_end(&cfg, &mut task).unwrap();
         assert!(archived, "archive_task post_action must archive the task");
-        assert!(task.meta.archived_at.is_some(), "archived_at should be stamped");
+        assert!(
+            task.meta.archived_at.is_some(),
+            "archived_at should be stamped"
+        );
     }
 
     #[test]
@@ -1511,7 +1514,10 @@ mod tests {
         assert_eq!(task.meta.flow_name, "new");
         assert_eq!(task.meta.flow_step, 4);
         assert_eq!(task.meta.flow_sub_step, 0);
-        assert!(task.meta.pre_command_flow_name.is_none(), "snapshot must be cleared");
+        assert!(
+            task.meta.pre_command_flow_name.is_none(),
+            "snapshot must be cleared"
+        );
         assert!(task.meta.pre_command_flow_step.is_none());
         assert!(task.meta.archived_at.is_none());
     }
@@ -1593,7 +1599,11 @@ mod tests {
         let (cfg, _task) = build_task(&tmp);
         // Both files exist — flow dir wins.
         std::fs::write(cfg.flow_path("shared"), "name: from-flows\nsteps: []\n").unwrap();
-        std::fs::write(cfg.command_path("shared"), "name: from-commands\nsteps: []\n").unwrap();
+        std::fs::write(
+            cfg.command_path("shared"),
+            "name: from-commands\nsteps: []\n",
+        )
+        .unwrap();
 
         let resolved = resolve_flow_path(&cfg, "shared").unwrap();
         assert_eq!(resolved, cfg.flow_path("shared"));
@@ -1643,7 +1653,10 @@ mod tests {
             ],
             StopCondition::TaskComplete,
         );
-        assert_eq!(decide_loop_next(&loop_step, 0), LoopDecision::NextSubStep(1));
+        assert_eq!(
+            decide_loop_next(&loop_step, 0),
+            LoopDecision::NextSubStep(1)
+        );
     }
 
     #[test]
@@ -1655,7 +1668,10 @@ mod tests {
             ],
             StopCondition::TaskComplete,
         );
-        assert_eq!(decide_loop_next(&loop_step, 1), LoopDecision::NextSubStep(0));
+        assert_eq!(
+            decide_loop_next(&loop_step, 1),
+            LoopDecision::NextSubStep(0)
+        );
     }
 
     #[test]
@@ -1714,7 +1730,10 @@ mod tests {
         let outcome = advance(&config, &mut task, StopCondition::AgentDone).unwrap();
         assert_eq!(outcome, AdvanceOutcome::Stopped);
         assert_eq!(task.meta.flow_step, 1, "flow_step should advance past loop");
-        assert_eq!(task.meta.flow_sub_step, 0, "sub_step should reset on loop exit");
+        assert_eq!(
+            task.meta.flow_sub_step, 0,
+            "sub_step should reset on loop exit"
+        );
         assert_eq!(task.meta.status, TaskStatus::Stopped);
     }
 
@@ -1870,7 +1889,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (_cfg, mut task) = build_task(&tmp);
         push_session(&mut task, "coder", "sid-done");
-        task.finish_last_session(Some("AGENT_DONE".to_string())).unwrap();
+        task.finish_last_session(Some("AGENT_DONE".to_string()))
+            .unwrap();
 
         assert_eq!(classify(&task), PollTarget::NeedsLaunch);
     }
@@ -1918,11 +1938,7 @@ mod tests {
     /// succeed. The eventual `send_keys` still fails because no real tmux
     /// session exists in the test env.
     fn prime_for_start_agent_step(config: &Config, task: &Task, agent_name: &str) {
-        std::fs::write(
-            config.prompt_path(agent_name),
-            "You are a test agent.\n",
-        )
-        .unwrap();
+        std::fs::write(config.prompt_path(agent_name), "You are a test agent.\n").unwrap();
         task.write_task("# Goal\nDo the test work.\n").unwrap();
     }
 

@@ -15,7 +15,7 @@ fn sanitize_branch_for_id(branch: &str) -> String {
 /// Replaces characters that tmux interprets as target syntax separators:
 /// `.` (pane separator), `:` (window separator), `/` (path separator).
 fn sanitize_for_tmux(branch: &str) -> String {
-    branch.replace('/', "-").replace('.', "_").replace(':', "_")
+    branch.replace('/', "-").replace(['.', ':'], "_")
 }
 
 #[derive(Debug, Clone)]
@@ -60,8 +60,8 @@ pub fn load_config_file(base_dir: &Path) -> ConfigFile {
 /// Write a `ConfigFile` to `<base_dir>/config.toml`.
 pub fn save_config_file(base_dir: &Path, config_file: &ConfigFile) -> Result<()> {
     let path = base_dir.join("config.toml");
-    let contents = toml::to_string_pretty(config_file)
-        .context("failed to serialize config.toml")?;
+    let contents =
+        toml::to_string_pretty(config_file).context("failed to serialize config.toml")?;
     std::fs::write(&path, contents)
         .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
@@ -117,7 +117,7 @@ impl Config {
         std::fs::create_dir_all(&self.commands_dir)
             .context("Failed to create commands directory")?;
         std::fs::create_dir_all(&self.notes_dir).context("Failed to create notes directory")?;
-        std::fs::create_dir_all(&self.researchers_dir())
+        std::fs::create_dir_all(self.researchers_dir())
             .context("Failed to create researchers directory")?;
         Ok(())
     }
@@ -234,7 +234,7 @@ impl Config {
         let cf = load_config_file(&self.base_dir);
         cf.harness
             .as_deref()
-            .and_then(HarnessKind::from_str)
+            .and_then(|raw| raw.parse().ok())
             .unwrap_or(HarnessKind::Claude)
     }
 
@@ -305,7 +305,6 @@ impl Config {
     pub fn pm_tmux_session(name: &str) -> String {
         format!("agman-pm-{name}")
     }
-
 
     pub fn telegram_dir(&self) -> PathBuf {
         self.base_dir.join("telegram")

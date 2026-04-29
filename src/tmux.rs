@@ -22,7 +22,10 @@ impl Tmux {
     ///   (claude or codex, per the configured harness)
     pub fn create_session_with_windows(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
-            tracing::debug!(session = session_name, "tmux session already exists, skipping creation");
+            tracing::debug!(
+                session = session_name,
+                "tmux session already exists, skipping creation"
+            );
             return Ok(());
         }
         tracing::debug!(session = session_name, dir = %working_dir.display(), "creating tmux session");
@@ -144,7 +147,11 @@ impl Tmux {
 
     /// Send keys to a specific window in a session
     pub fn send_keys_to_window(session_name: &str, window_name: &str, keys: &str) -> Result<()> {
-        tracing::trace!(session = session_name, window = window_name, "sending keys to tmux window");
+        tracing::trace!(
+            session = session_name,
+            window = window_name,
+            "sending keys to tmux window"
+        );
         let target = format!("{}:{}", session_name, window_name);
         let output = Command::new("tmux")
             .args(["send-keys", "-t", &target, keys, "C-m"])
@@ -220,7 +227,16 @@ impl Tmux {
         tracing::info!(session = session_name, "creating agent tmux session");
 
         // Create the session with a default shell
-        let mut args = vec!["new-session", "-d", "-x", "200", "-y", "50", "-s", session_name];
+        let mut args = vec![
+            "new-session",
+            "-d",
+            "-x",
+            "200",
+            "-y",
+            "50",
+            "-s",
+            session_name,
+        ];
         let work_dir_str;
         if let Some(dir) = work_dir {
             work_dir_str = dir.to_string_lossy().to_string();
@@ -257,8 +273,10 @@ impl Tmux {
             .args([
                 "display-popup",
                 "-E", // close popup when attach detaches
-                "-w", "90%",
-                "-h", "90%",
+                "-w",
+                "90%",
+                "-h",
+                "90%",
                 &attach_cmd,
             ])
             .spawn()
@@ -319,7 +337,10 @@ impl Tmux {
         seq: u64,
     ) -> Result<()> {
         let target = Self::tmux_target(session_name, window);
-        let formatted = format!("[msg:{}:{}] [Message from {}]: {}", from, seq, from, message);
+        let formatted = format!(
+            "[msg:{}:{}] [Message from {}]: {}",
+            from, seq, from, message
+        );
 
         // Load message into tmux paste buffer via stdin (avoids shell escaping issues)
         tracing::trace!(session = session_name, "loading message into tmux buffer");
@@ -458,13 +479,16 @@ impl Tmux {
     }
 
     /// Like [`is_agent_running`] but scoped to a specific window within the session.
-    pub fn is_agent_running_in(
-        session_name: &str,
-        window: Option<&str>,
-    ) -> Result<(bool, String)> {
+    pub fn is_agent_running_in(session_name: &str, window: Option<&str>) -> Result<(bool, String)> {
         let target = Self::tmux_target(session_name, window);
         let output = Command::new("tmux")
-            .args(["display-message", "-p", "-t", &target, "#{pane_current_command}"])
+            .args([
+                "display-message",
+                "-p",
+                "-t",
+                &target,
+                "#{pane_current_command}",
+            ])
             .output()
             .context("failed to query pane_current_command")?;
 
@@ -493,10 +517,7 @@ impl Tmux {
     }
 
     /// Like [`is_session_ready`] but scoped to a specific window.
-    pub fn is_session_ready_in(
-        session_name: &str,
-        window: Option<&str>,
-    ) -> Result<(bool, String)> {
+    pub fn is_session_ready_in(session_name: &str, window: Option<&str>) -> Result<(bool, String)> {
         Self::is_agent_running_in(session_name, window)
     }
 

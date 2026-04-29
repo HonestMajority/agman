@@ -15,6 +15,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 pub mod claude;
 pub mod codex;
@@ -60,9 +61,10 @@ pub fn ensure_workspace_trusted_for_test(
 }
 
 /// Identifies which harness to use. Persisted in config + per-agent stamps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HarnessKind {
+    #[default]
     Claude,
     Codex,
 }
@@ -77,14 +79,6 @@ impl HarnessKind {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.trim() {
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            _ => None,
-        }
-    }
-
     /// Materialize the trait object. Cheap — both impls are zero-sized.
     pub fn select(self) -> Box<dyn Harness> {
         match self {
@@ -94,9 +88,15 @@ impl HarnessKind {
     }
 }
 
-impl Default for HarnessKind {
-    fn default() -> Self {
-        HarnessKind::Claude
+impl FromStr for HarnessKind {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim() {
+            "claude" => Ok(Self::Claude),
+            "codex" => Ok(Self::Codex),
+            _ => Err(()),
+        }
     }
 }
 
@@ -113,7 +113,7 @@ pub fn read_or_stamp(state_dir: &Path, default_kind: HarnessKind) -> Result<Harn
     let stamp = state_dir.join("harness");
     if stamp.exists() {
         let raw = std::fs::read_to_string(&stamp).unwrap_or_default();
-        return Ok(HarnessKind::from_str(raw.trim()).unwrap_or(default_kind));
+        return Ok(raw.trim().parse().unwrap_or(default_kind));
     }
     if let Some(parent) = stamp.parent() {
         std::fs::create_dir_all(parent).ok();

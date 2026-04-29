@@ -34,7 +34,9 @@ fn agent_build_system_prompt_basic() {
         .unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let prompt = agent.build_system_prompt(&task, false, harness().as_ref()).unwrap();
+    let prompt = agent
+        .build_system_prompt(&task, false, harness().as_ref())
+        .unwrap();
 
     // Identity content from the prompt template is present
     assert!(prompt.contains("coding agent"));
@@ -63,10 +65,13 @@ fn agent_build_system_prompt_omits_feedback_and_git_context() {
 
     let task = create_test_task(&config, "repo", "branch");
     task.write_task("# Goal\nOriginal goal\n").unwrap();
-    task.write_feedback("Please fix the bug in main.rs").unwrap();
+    task.write_feedback("Please fix the bug in main.rs")
+        .unwrap();
 
     let agent = Agent::load(&config, "refiner").unwrap();
-    let prompt = agent.build_system_prompt(&task, false, harness().as_ref()).unwrap();
+    let prompt = agent
+        .build_system_prompt(&task, false, harness().as_ref())
+        .unwrap();
 
     assert!(
         !prompt.contains("Follow-up Feedback"),
@@ -85,7 +90,9 @@ fn agent_build_system_prompt_includes_self_improve_footer() {
     task.write_task("# Goal\nBuild something\n").unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let prompt = agent.build_system_prompt(&task, false, harness().as_ref()).unwrap();
+    let prompt = agent
+        .build_system_prompt(&task, false, harness().as_ref())
+        .unwrap();
 
     assert!(prompt.contains("# Self-Improvement"));
     assert!(prompt.contains("self-improve"));
@@ -102,7 +109,9 @@ fn agent_build_system_prompt_includes_skill_awareness_footer() {
     task.write_task("# Goal\nBuild something\n").unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let prompt = agent.build_system_prompt(&task, false, harness().as_ref()).unwrap();
+    let prompt = agent
+        .build_system_prompt(&task, false, harness().as_ref())
+        .unwrap();
 
     assert!(prompt.contains("# Skills"));
     assert!(prompt.contains(".claude/skills/"));
@@ -119,7 +128,9 @@ fn agent_build_system_prompt_includes_supervisor_sentinel_directive() {
     task.write_task("# Goal\nDo something\n").unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let prompt = agent.build_system_prompt(&task, false, harness().as_ref()).unwrap();
+    let prompt = agent
+        .build_system_prompt(&task, false, harness().as_ref())
+        .unwrap();
 
     // The sentinel section must list all three sentinel files and reference
     // this task's directory so the supervisor can find them.
@@ -148,7 +159,9 @@ fn agent_build_system_prompt_uses_project_as_inbox_sender_tag() {
     task.write_task("# Goal\nDo something\n").unwrap();
 
     let agent = Agent::load(&config, "coder").unwrap();
-    let prompt = agent.build_system_prompt(&task, false, harness().as_ref()).unwrap();
+    let prompt = agent
+        .build_system_prompt(&task, false, harness().as_ref())
+        .unwrap();
     assert!(prompt.contains("[Message from agman-ceo-pm]"));
     assert!(!prompt.contains("[Message from supervisor]"));
 }
@@ -183,7 +196,8 @@ fn agent_build_inbox_message_includes_feedback_when_present() {
 
     let task = create_test_task(&config, "repo", "branch");
     task.write_task("# Goal\nOriginal goal\n").unwrap();
-    task.write_feedback("Please fix the bug in main.rs").unwrap();
+    task.write_feedback("Please fix the bug in main.rs")
+        .unwrap();
 
     let agent = Agent::load(&config, "refiner").unwrap();
     let msg = agent.build_inbox_message(&task, false).unwrap();
@@ -226,7 +240,9 @@ fn agent_command_mode_omits_prompt_template_from_system_prompt() {
     task.write_task("# Goal\nReady to ship\n").unwrap();
 
     let agent = Agent::load(&config, "pr-creator").unwrap();
-    let prompt = agent.build_system_prompt(&task, true, harness().as_ref()).unwrap();
+    let prompt = agent
+        .build_system_prompt(&task, true, harness().as_ref())
+        .unwrap();
 
     // Boilerplate is still present
     assert!(prompt.contains("## Work Directives"));
@@ -305,7 +321,9 @@ fn agent_command_mode_system_prompt_describes_inbox_action_payload() {
     task.write_task("# Goal\nGo\n").unwrap();
 
     let agent = Agent::load(&config, "pr-merge-agent").unwrap();
-    let prompt = agent.build_system_prompt(&task, true, harness().as_ref()).unwrap();
+    let prompt = agent
+        .build_system_prompt(&task, true, harness().as_ref())
+        .unwrap();
 
     assert!(prompt.contains("## Work Directives"));
     // Wording must hint that the inbox message carries the action directive.

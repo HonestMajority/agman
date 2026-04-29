@@ -6,9 +6,9 @@ fn cwd() -> std::path::PathBuf {
 
 #[test]
 fn harness_kind_round_trips_through_strings() {
-    assert_eq!(HarnessKind::from_str("claude"), Some(HarnessKind::Claude));
-    assert_eq!(HarnessKind::from_str("codex"), Some(HarnessKind::Codex));
-    assert_eq!(HarnessKind::from_str("nope"), None);
+    assert_eq!("claude".parse::<HarnessKind>(), Ok(HarnessKind::Claude));
+    assert_eq!("codex".parse::<HarnessKind>(), Ok(HarnessKind::Codex));
+    assert_eq!("nope".parse::<HarnessKind>(), Err(()));
     assert_eq!(HarnessKind::Claude.as_str(), "claude");
     assert_eq!(HarnessKind::Codex.as_str(), "codex");
     assert_eq!(HarnessKind::ALL, &[HarnessKind::Claude, HarnessKind::Codex]);
@@ -435,7 +435,10 @@ fn claude_ensure_workspace_trusted_preserves_other_keys() {
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
 
     // Root-level keys preserved.
-    assert_eq!(v.get("anonymousId").and_then(|x| x.as_str()), Some("abc-123"));
+    assert_eq!(
+        v.get("anonymousId").and_then(|x| x.as_str()),
+        Some("abc-123")
+    );
     assert_eq!(v.get("editorMode").and_then(|x| x.as_str()), Some("vim"));
 
     // Other project entry preserved verbatim.
@@ -495,10 +498,7 @@ fn claude_ensure_workspace_trusted_idempotent() {
         bytes_before, bytes_after,
         "second call must not rewrite the file"
     );
-    assert_eq!(
-        mtime_before, mtime_after,
-        "second call must not bump mtime"
-    );
+    assert_eq!(mtime_before, mtime_after, "second call must not bump mtime");
 }
 
 #[test]
@@ -646,10 +646,7 @@ fn codex_ensure_workspace_trusted_idempotent() {
         bytes_before, bytes_after,
         "second call must not rewrite the file"
     );
-    assert_eq!(
-        mtime_before, mtime_after,
-        "second call must not bump mtime"
-    );
+    assert_eq!(mtime_before, mtime_after, "second call must not bump mtime");
 }
 
 #[test]
@@ -661,10 +658,7 @@ fn codex_ensure_workspace_trusted_upgrades_untrusted_to_trusted() {
     let cwd = tempfile::tempdir().unwrap();
     let cwd_str = cwd.path().to_string_lossy().to_string();
 
-    let pre = format!(
-        "[projects.\"{}\"]\ntrust_level = \"untrusted\"\n",
-        cwd_str
-    );
+    let pre = format!("[projects.\"{}\"]\ntrust_level = \"untrusted\"\n", cwd_str);
     std::fs::write(&trust_file, pre).unwrap();
 
     ensure_workspace_trusted_for_test(HarnessKind::Codex, &trust_file, cwd.path()).unwrap();

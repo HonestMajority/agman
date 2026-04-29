@@ -15,7 +15,10 @@ use agman::use_cases::{self, TelegramHealth};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::app::{App, BranchSource, DirPickerOrigin, DirKind, NotesFocus, PreviewPane, RestartWizardStep, View, WizardStep, BREAK_WARNING_SECS};
+use super::app::{
+    App, BranchSource, DirKind, DirPickerOrigin, NotesFocus, PreviewPane, RestartWizardStep, View,
+    WizardStep, BREAK_WARNING_SECS,
+};
 use super::vim::VimMode;
 
 fn vim_mode_color(mode: VimMode) -> Color {
@@ -225,7 +228,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::ProjectPicker => {
             // Draw the underlying view behind the modal
             if app.project_picker.as_ref().is_some_and(|p| {
-                matches!(p.action, super::app::ProjectPickerAction::MigrateAllUnassigned)
+                matches!(
+                    p.action,
+                    super::app::ProjectPickerAction::MigrateAllUnassigned
+                )
             }) {
                 draw_project_list(f, app, chunks[0]);
             } else {
@@ -344,9 +350,7 @@ fn render_project_row<'a>(
         )
     };
 
-    let is_stalled = app
-        .stalled_targets()
-        .contains(&project.meta.name.as_str());
+    let is_stalled = app.stalled_targets().contains(&project.meta.name.as_str());
 
     let mut spans = vec![
         Span::styled(
@@ -406,9 +410,11 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     // Check for empty state first
     let has_projects = !app.projects.is_empty() || app.unassigned_task_count > 0;
     if !has_projects {
-        let msg = Paragraph::new("No projects. Press 'c' to start Chief of Staff, or create a project via CLI.")
-            .style(Style::default().fg(Color::DarkGray))
-            .alignment(Alignment::Center);
+        let msg = Paragraph::new(
+            "No projects. Press 'c' to start Chief of Staff, or create a project via CLI.",
+        )
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
         f.render_widget(msg, inner);
         return;
     }
@@ -418,7 +424,11 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
 
     // Split inner area into (optional CoS banner) + header + list
     let constraints: Vec<Constraint> = if cos_stalled {
-        vec![Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]
+        vec![
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ]
     } else {
         vec![Constraint::Length(1), Constraint::Min(0)]
     };
@@ -455,7 +465,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     if app.unassigned_task_count > 0 {
         max_name_len = max_name_len.max("(unassigned)".len());
     }
-    let project_width = max_name_len.max(MIN_PROJECT_WIDTH).min(MAX_PROJECT_WIDTH);
+    let project_width = max_name_len.clamp(MIN_PROJECT_WIDTH, MAX_PROJECT_WIDTH);
 
     // Calculate description width
     // Layout: 4 (leading) + project_width + 4 (gap) + TASKS + 4 (gap) + ACTIVE + 4 (gap)
@@ -468,11 +478,20 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         .add_modifier(Modifier::BOLD);
     let header = Line::from(vec![
         Span::raw("    "),
-        Span::styled(format!("{:<width$}", "PROJECT", width = project_width), header_style),
+        Span::styled(
+            format!("{:<width$}", "PROJECT", width = project_width),
+            header_style,
+        ),
         Span::raw(COL_GAP),
-        Span::styled(format!("{:>width$}", "TASKS", width = TASKS_WIDTH), header_style),
+        Span::styled(
+            format!("{:>width$}", "TASKS", width = TASKS_WIDTH),
+            header_style,
+        ),
         Span::raw(COL_GAP),
-        Span::styled(format!("{:>width$}", "ACTIVE", width = ACTIVE_WIDTH), header_style),
+        Span::styled(
+            format!("{:>width$}", "ACTIVE", width = ACTIVE_WIDTH),
+            header_style,
+        ),
         Span::raw(COL_GAP),
         Span::styled("DESCRIPTION", header_style),
     ]);
@@ -488,7 +507,14 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         if project.meta.held {
             break; // held projects are sorted to the end
         }
-        items.push(render_project_row(app, project, i, false, project_width, desc_width));
+        items.push(render_project_row(
+            app,
+            project,
+            i,
+            false,
+            project_width,
+            desc_width,
+        ));
     }
 
     // Render on-hold section header and held projects
@@ -502,14 +528,24 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
                     .fg(Color::Rgb(180, 140, 60))
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+            Span::styled(
+                "─".repeat(fill),
+                Style::default().fg(Color::Rgb(60, 60, 60)),
+            ),
         ]);
         items.push(ListItem::new(header_line));
         items.push(ListItem::new(Line::from("")));
 
         for (i, project) in app.projects.iter().enumerate() {
             if project.meta.held {
-                items.push(render_project_row(app, project, i, true, project_width, desc_width));
+                items.push(render_project_row(
+                    app,
+                    project,
+                    i,
+                    true,
+                    project_width,
+                    desc_width,
+                ));
             }
         }
     }
@@ -528,17 +564,18 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
 
         let line = Line::from(vec![
             Span::styled(
-                if app.unassigned_unseen_stopped_count > 0 { "● " } else { "  " },
+                if app.unassigned_unseen_stopped_count > 0 {
+                    "● "
+                } else {
+                    "  "
+                },
                 Style::default().fg(Color::Rgb(100, 200, 220)),
             ),
             Span::styled(
                 if is_selected { "> " } else { "  " },
                 Style::default().fg(Color::LightCyan),
             ),
-            Span::styled(
-                name_display,
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(name_display, Style::default().fg(Color::DarkGray)),
             Span::raw(COL_GAP),
             Span::styled(
                 format!("{:>width$}", app.unassigned_task_count, width = TASKS_WIDTH),
@@ -567,8 +604,8 @@ fn draw_project_wizard(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // name field
-            Constraint::Min(5),   // description field
+            Constraint::Length(3),             // name field
+            Constraint::Min(5),                // description field
             Constraint::Length(footer_height), // help/error
         ])
         .split(area);
@@ -644,8 +681,7 @@ fn draw_project_wizard(f: &mut Frame, app: &mut App) {
             Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
         ]
     };
-    let footer = Paragraph::new(Line::from(footer_spans))
-        .alignment(Alignment::Center);
+    let footer = Paragraph::new(Line::from(footer_spans)).alignment(Alignment::Center);
     f.render_widget(footer, chunks[2]);
 }
 
@@ -664,8 +700,8 @@ fn draw_researcher_wizard(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // name field
-            Constraint::Min(5),   // description field
+            Constraint::Length(3),             // name field
+            Constraint::Min(5),                // description field
             Constraint::Length(footer_height), // help/error
         ])
         .split(area);
@@ -741,8 +777,7 @@ fn draw_researcher_wizard(f: &mut Frame, app: &mut App) {
             Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
         ]
     };
-    let footer = Paragraph::new(Line::from(footer_spans))
-        .alignment(Alignment::Center);
+    let footer = Paragraph::new(Line::from(footer_spans)).alignment(Alignment::Center);
     f.render_widget(footer, chunks[2]);
 }
 
@@ -869,9 +904,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .max()
         .unwrap_or(MIN_REPO_WIDTH);
 
-    let repo_width = max_repo_len
-        .max(MIN_REPO_WIDTH)
-        .min(MAX_REPO_WIDTH);
+    let repo_width = max_repo_len.clamp(MIN_REPO_WIDTH, MAX_REPO_WIDTH);
 
     // Scan tasks for longest branch name (including queue suffix)
     let max_branch_len = app
@@ -889,8 +922,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .max()
         .unwrap_or(MIN_BRANCH_WIDTH);
 
-    let branch_width = max_branch_len
-        .max(MIN_BRANCH_WIDTH);
+    let branch_width = max_branch_len.max(MIN_BRANCH_WIDTH);
 
     // Scan tasks for longest agent name
     let max_agent_len = app
@@ -907,13 +939,12 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         .max()
         .unwrap_or(0);
 
-    let agent_width = max_agent_len
-        .max(MIN_AGENT_WIDTH)
-        .min(MAX_AGENT_WIDTH);
+    let agent_width = max_agent_len.clamp(MIN_AGENT_WIDTH, MAX_AGENT_WIDTH);
 
     // Compute fixed width from actual components:
     // icon(1) + padding(4) + col_gaps(5*4=20) + repo + pr + status + agent + updated
-    let fixed_cols_width = (1 + 4 + 20 + repo_width + PR_WIDTH + STATUS_WIDTH + agent_width + UPDATED_WIDTH) as u16;
+    let fixed_cols_width =
+        (1 + 4 + 20 + repo_width + PR_WIDTH + STATUS_WIDTH + agent_width + UPDATED_WIDTH) as u16;
 
     let available_width = inner.width.saturating_sub(fixed_cols_width) as usize;
 
@@ -969,13 +1000,12 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
 
     // Build task list (sorted by status: running, input_needed, stopped; then by updated_at)
     let mut items: Vec<ListItem> = Vec::new();
-    let mut task_index = 0;
     let mut shown_running_header = false;
     let mut shown_input_needed_header = false;
     let mut shown_stopped_header = false;
     let mut shown_on_hold_header = false;
 
-    for task in &app.tasks {
+    for (task_index, task) in app.tasks.iter().enumerate() {
         let status = task.meta.status;
 
         // Add section header if needed
@@ -990,7 +1020,10 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                             .fg(Color::LightGreen)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+                    Span::styled(
+                        "─".repeat(fill),
+                        Style::default().fg(Color::Rgb(60, 60, 60)),
+                    ),
                 ]);
                 items.push(ListItem::new(header_line));
                 items.push(ListItem::new(Line::from("")));
@@ -1009,7 +1042,10 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                             .fg(Color::LightYellow)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+                    Span::styled(
+                        "─".repeat(fill),
+                        Style::default().fg(Color::Rgb(60, 60, 60)),
+                    ),
                 ]);
                 items.push(ListItem::new(header_line));
                 items.push(ListItem::new(Line::from("")));
@@ -1028,7 +1064,10 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                             .fg(Color::Rgb(140, 140, 140))
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+                    Span::styled(
+                        "─".repeat(fill),
+                        Style::default().fg(Color::Rgb(60, 60, 60)),
+                    ),
                 ]);
                 items.push(ListItem::new(header_line));
                 items.push(ListItem::new(Line::from("")));
@@ -1047,7 +1086,10 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
                             .fg(Color::Rgb(180, 140, 60))
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+                    Span::styled(
+                        "─".repeat(fill),
+                        Style::default().fg(Color::Rgb(60, 60, 60)),
+                    ),
                 ]);
                 items.push(ListItem::new(header_line));
                 items.push(ListItem::new(Line::from("")));
@@ -1116,15 +1158,24 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         };
 
         // Build PR display string and truncate if needed
-        let pr_display = task.meta.linked_pr.as_ref().map(|pr| {
-            if !pr.owned {
-                format!("#{:>5} ({})", pr.number, pr.author.as_deref().unwrap_or("ext"))
-            } else if task.meta.review_addressed {
-                format!("#{:>5} ✓", pr.number)
-            } else {
-                format!("#{:>5} mine", pr.number)
-            }
-        }).unwrap_or_default();
+        let pr_display = task
+            .meta
+            .linked_pr
+            .as_ref()
+            .map(|pr| {
+                if !pr.owned {
+                    format!(
+                        "#{:>5} ({})",
+                        pr.number,
+                        pr.author.as_deref().unwrap_or("ext")
+                    )
+                } else if task.meta.review_addressed {
+                    format!("#{:>5} ✓", pr.number)
+                } else {
+                    format!("#{:>5} mine", pr.number)
+                }
+            })
+            .unwrap_or_default();
         let pr_display = if pr_display.len() > PR_WIDTH {
             format!("{}…", &pr_display[..PR_WIDTH.saturating_sub(1)])
         } else {
@@ -1199,7 +1250,6 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         };
 
         items.push(ListItem::new(line).style(style));
-        task_index += 1;
     }
 
     let list = List::new(items);
@@ -1214,7 +1264,8 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Task info header
     if let Some(task) = app.selected_task() {
-        let is_active = task.meta.status == TaskStatus::Running || task.meta.status == TaskStatus::InputNeeded;
+        let is_active =
+            task.meta.status == TaskStatus::Running || task.meta.status == TaskStatus::InputNeeded;
         let agent_str = if is_active {
             task.meta.current_agent.as_deref().unwrap_or("none")
         } else {
@@ -1256,7 +1307,10 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         // Add queued feedback indicator if there are items in the queue
         if queue_count > 0 {
             header_spans.push(Span::raw("  "));
-            header_spans.push(Span::styled("Queue: ", Style::default().fg(Color::DarkGray)));
+            header_spans.push(Span::styled(
+                "Queue: ",
+                Style::default().fg(Color::DarkGray),
+            ));
             header_spans.push(Span::styled(
                 format!("{}", queue_count),
                 Style::default()
@@ -1265,8 +1319,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
             ));
         }
 
-        let header = Paragraph::new(Line::from(header_spans))
-        .block(
+        let header = Paragraph::new(Line::from(header_spans)).block(
             Block::default()
                 .title(Span::styled(
                     " Task Info ",
@@ -1316,9 +1369,9 @@ fn draw_logs_panel(f: &mut Frame, app: &mut App, area: Rect) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color)),
     );
-    app.logs_editor.textarea.set_cursor_style(
-        Style::default().bg(Color::DarkGray).fg(Color::White),
-    );
+    app.logs_editor
+        .textarea
+        .set_cursor_style(Style::default().bg(Color::DarkGray).fg(Color::White));
     f.render_widget(&app.logs_editor.textarea, area);
 }
 
@@ -1376,7 +1429,9 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
         VimMode::Operator(_) => Color::LightMagenta,
     };
 
-    let is_answering = app.selected_task().map_or(false, |t| t.meta.status == TaskStatus::InputNeeded);
+    let is_answering = app
+        .selected_task()
+        .is_some_and(|t| t.meta.status == TaskStatus::InputNeeded);
     let title_text = if is_answering {
         " Answer Questions "
     } else {
@@ -1415,8 +1470,7 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
             Style::default().fg(Color::LightYellow),
         ));
     }
-    let header = Paragraph::new(Line::from(header_spans))
-    .block(
+    let header = Paragraph::new(Line::from(header_spans)).block(
         Block::default()
             .title(Span::styled(
                 title_text,
@@ -1437,10 +1491,7 @@ fn draw_task_editor(f: &mut Frame, app: &mut App) {
     };
     app.task_file_editor.textarea.set_block(
         Block::default()
-            .title(Span::styled(
-                save_hint,
-                Style::default().fg(mode_color),
-            ))
+            .title(Span::styled(save_hint, Style::default().fg(mode_color)))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(mode_color)),
     );
@@ -1471,7 +1522,11 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     // Header
@@ -1491,10 +1546,12 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
         Span::styled("]", Style::default().fg(Color::DarkGray)),
     ];
     if review_after {
-        header_spans.push(Span::styled("  [review: ON]", Style::default().fg(Color::LightGreen)));
+        header_spans.push(Span::styled(
+            "  [review: ON]",
+            Style::default().fg(Color::LightGreen),
+        ));
     }
-    let header = Paragraph::new(Line::from(header_spans))
-    .block(
+    let header = Paragraph::new(Line::from(header_spans)).block(
         Block::default()
             .title(Span::styled(
                 " Continue Task ",
@@ -1527,7 +1584,12 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
     let review_label = if review_after {
         Line::from(vec![
             Span::styled("  End with review: ", Style::default().fg(Color::DarkGray)),
-            Span::styled("YES", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "YES",
+                Style::default()
+                    .fg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  (Ctrl+R to toggle)", Style::default().fg(Color::DarkGray)),
         ])
     } else {
@@ -1599,7 +1661,10 @@ fn draw_delete_confirm(f: &mut Frame, app: &App, retention_days: u64) {
             Style::default().fg(Color::LightBlue),
         )),
         Line::from(Span::styled(
-            format!("    keep task files. Auto-purged after {} days.", retention_days),
+            format!(
+                "    keep task files. Auto-purged after {} days.",
+                retention_days
+            ),
             Style::default().fg(Color::LightBlue),
         )),
         Line::from(""),
@@ -1650,10 +1715,7 @@ fn draw_project_delete_confirm(f: &mut Frame, app: &App) {
 
     f.render_widget(Clear, area);
 
-    let project_name = app
-        .project_to_delete
-        .as_deref()
-        .unwrap_or("unknown");
+    let project_name = app.project_to_delete.as_deref().unwrap_or("unknown");
 
     let text = vec![
         Line::from(""),
@@ -1726,10 +1788,7 @@ fn draw_respawn_confirm(f: &mut Frame, app: &App) {
             " Respawn Chief of Staff ",
             vec![
                 Line::from(""),
-                Line::from(Span::styled(
-                    format!("{prefix0}CoS only"),
-                    option0_style,
-                )),
+                Line::from(Span::styled(format!("{prefix0}CoS only"), option0_style)),
                 Line::from(""),
                 Line::from(Span::styled(
                     format!("{prefix1}CoS + all PMs"),
@@ -1738,10 +1797,7 @@ fn draw_respawn_confirm(f: &mut Frame, app: &App) {
             ],
         )
     } else {
-        let target = app
-            .respawn_confirm_target
-            .as_deref()
-            .unwrap_or("unknown");
+        let target = app.respawn_confirm_target.as_deref().unwrap_or("unknown");
         (
             " Respawn PM ",
             vec![
@@ -1753,15 +1809,9 @@ fn draw_respawn_confirm(f: &mut Frame, app: &App) {
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
-                Line::from(Span::styled(
-                    format!("{prefix0}Respawn"),
-                    option0_style,
-                )),
+                Line::from(Span::styled(format!("{prefix0}Respawn"), option0_style)),
                 Line::from(""),
-                Line::from(Span::styled(
-                    format!("{prefix1}Cancel"),
-                    option1_style,
-                )),
+                Line::from(Span::styled(format!("{prefix1}Cancel"), option1_style)),
             ],
         )
     };
@@ -1909,9 +1959,8 @@ fn draw_output_pane(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|line| {
             let lower = line.to_lowercase();
-            let is_error = lower.contains("error")
-                || lower.contains("failed")
-                || lower.contains("[stderr]");
+            let is_error =
+                lower.contains("error") || lower.contains("failed") || lower.contains("[stderr]");
             let color = if is_error {
                 Color::LightRed
             } else {
@@ -2002,8 +2051,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
             ];
             // Show migrate hint when (unassigned) is selected
-            let is_unassigned = app.selected_project_index >= app.projects.len()
-                && app.unassigned_task_count > 0;
+            let is_unassigned =
+                app.selected_project_index >= app.projects.len() && app.unassigned_task_count > 0;
             if is_unassigned {
                 spans.extend([
                     Span::styled("m", Style::default().fg(Color::LightMagenta)),
@@ -2061,7 +2110,11 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" review  ", Style::default().fg(Color::DarkGray)),
             ];
             // Show PM chat hint when in a project scope
-            if app.current_project.as_deref().is_some_and(|p| p != "(unassigned)") {
+            if app
+                .current_project
+                .as_deref()
+                .is_some_and(|p| p != "(unassigned)")
+            {
                 spans.extend([
                     Span::styled("c", Style::default().fg(Color::LightYellow)),
                     Span::styled(" PM chat  ", Style::default().fg(Color::DarkGray)),
@@ -2071,26 +2124,52 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 // State-conditional hints
                 if task.meta.status == TaskStatus::InputNeeded {
                     spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
-                    spans.push(Span::styled(" answer  ", Style::default().fg(Color::DarkGray)));
+                    spans.push(Span::styled(
+                        " answer  ",
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
                 if task.meta.linked_pr.is_some() {
                     spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
-                    spans.push(Span::styled(" open pr  ", Style::default().fg(Color::DarkGray)));
+                    spans.push(Span::styled(
+                        " open pr  ",
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
                 if task.meta.status == TaskStatus::Stopped {
-                    spans.push(Span::styled("h", Style::default().fg(Color::Rgb(180, 140, 60))));
-                    spans.push(Span::styled(" hold  ", Style::default().fg(Color::DarkGray)));
+                    spans.push(Span::styled(
+                        "h",
+                        Style::default().fg(Color::Rgb(180, 140, 60)),
+                    ));
+                    spans.push(Span::styled(
+                        " hold  ",
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 } else if task.meta.status == TaskStatus::OnHold {
-                    spans.push(Span::styled("h", Style::default().fg(Color::Rgb(180, 140, 60))));
-                    spans.push(Span::styled(" unhold  ", Style::default().fg(Color::DarkGray)));
+                    spans.push(Span::styled(
+                        "h",
+                        Style::default().fg(Color::Rgb(180, 140, 60)),
+                    ));
+                    spans.push(Span::styled(
+                        " unhold  ",
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
-                if task.meta.review_addressed && task.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned) {
+                if task.meta.review_addressed
+                    && task.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned)
+                {
                     spans.push(Span::styled("c", Style::default().fg(Color::LightGreen)));
-                    spans.push(Span::styled(" clear  ", Style::default().fg(Color::DarkGray)));
+                    spans.push(Span::styled(
+                        " clear  ",
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
                 if task.meta.status == TaskStatus::Running {
                     spans.push(Span::styled("s", Style::default().fg(Color::LightRed)));
-                    spans.push(Span::styled(" stop  ", Style::default().fg(Color::DarkGray)));
+                    spans.push(Span::styled(
+                        " stop  ",
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
                 // Task-selected hints (always shown when a task is selected)
                 spans.extend([
@@ -2106,7 +2185,11 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
-            if app.current_project.as_deref().is_some_and(|p| p != "(unassigned)") {
+            if app
+                .current_project
+                .as_deref()
+                .is_some_and(|p| p != "(unassigned)")
+            {
                 spans.extend([
                     Span::styled("e", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
@@ -2141,22 +2224,43 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     // State-conditional hints
                     if task.meta.status == TaskStatus::InputNeeded {
                         spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
-                        spans.push(Span::styled(" answer  ", Style::default().fg(Color::DarkGray)));
+                        spans.push(Span::styled(
+                            " answer  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
                     }
                     if task.meta.linked_pr.is_some() {
                         spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
-                        spans.push(Span::styled(" open pr  ", Style::default().fg(Color::DarkGray)));
+                        spans.push(Span::styled(
+                            " open pr  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
                     }
                     if task.meta.status == TaskStatus::Stopped {
-                        spans.push(Span::styled("h", Style::default().fg(Color::Rgb(180, 140, 60))));
-                        spans.push(Span::styled(" hold  ", Style::default().fg(Color::DarkGray)));
+                        spans.push(Span::styled(
+                            "h",
+                            Style::default().fg(Color::Rgb(180, 140, 60)),
+                        ));
+                        spans.push(Span::styled(
+                            " hold  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
                     } else if task.meta.status == TaskStatus::OnHold {
-                        spans.push(Span::styled("h", Style::default().fg(Color::Rgb(180, 140, 60))));
-                        spans.push(Span::styled(" unhold  ", Style::default().fg(Color::DarkGray)));
+                        spans.push(Span::styled(
+                            "h",
+                            Style::default().fg(Color::Rgb(180, 140, 60)),
+                        ));
+                        spans.push(Span::styled(
+                            " unhold  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
                     }
                     if task.meta.status == TaskStatus::Running {
                         spans.push(Span::styled("s", Style::default().fg(Color::LightRed)));
-                        spans.push(Span::styled(" stop  ", Style::default().fg(Color::DarkGray)));
+                        spans.push(Span::styled(
+                            " stop  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
                     }
                     // Task-selected hints (always shown when a task is selected)
                     spans.extend([
@@ -2370,7 +2474,9 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             spans
         }
         View::Notes => {
-            let is_editor = app.notes_view.as_ref()
+            let is_editor = app
+                .notes_view
+                .as_ref()
                 .map(|nv| nv.focus == NotesFocus::Editor)
                 .unwrap_or(false);
             if is_editor {
@@ -2451,7 +2557,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(
                         {
                             let filtered = app.archive_filtered_indices();
-                            if filtered.get(app.archive_selected)
+                            if filtered
+                                .get(app.archive_selected)
                                 .and_then(|&i| app.archive_tasks.get(i))
                                 .map(|(t, _)| t.meta.saved)
                                 .unwrap_or(false)
@@ -2514,9 +2621,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             let enter_label = if app
                 .researchers
                 .get(app.researcher_list_index)
-                .is_some_and(|r| {
-                    r.meta.status == ResearcherStatus::Archived
-                })
+                .is_some_and(|r| r.meta.status == ResearcherStatus::Archived)
             {
                 " resume  "
             } else {
@@ -2714,7 +2819,12 @@ fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
     let review_label = if wizard.review_after {
         Line::from(vec![
             Span::styled("  End with review: ", Style::default().fg(Color::DarkGray)),
-            Span::styled("YES", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "YES",
+                Style::default()
+                    .fg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  (Ctrl+R to toggle)", Style::default().fg(Color::DarkGray)),
         ])
     } else {
@@ -2742,7 +2852,9 @@ fn draw_wizard_footer_direct(
         // Show contextual help
         let help = match step {
             WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
-            WizardStep::EnterDescription => "Ctrl+S: create task (empty = setup only)  Ctrl+R: toggle review  Esc: back",
+            WizardStep::EnterDescription => {
+                "Ctrl+S: create task (empty = setup only)  Ctrl+R: toggle review  Esc: back"
+            }
         };
         Line::from(Span::styled(help, Style::default().fg(Color::DarkGray)))
     };
@@ -3009,15 +3121,12 @@ fn draw_rebase_branch_picker(f: &mut Frame, app: &mut App) {
         .unwrap_or_else(|| "unknown".to_string());
 
     // Dynamic title and labels based on the pending command
-    let (picker_title, header_label) = match app
-        .pending_branch_command
-        .as_ref()
-        .map(|c| c.id.as_str())
-    {
-        Some("local-merge") => (" Merge Branch Picker ", "Merge task into: "),
-        Some("rebase") => (" Rebase Branch Picker ", "Rebase task: "),
-        _ => (" Branch Picker ", "Task: "),
-    };
+    let (picker_title, header_label) =
+        match app.pending_branch_command.as_ref().map(|c| c.id.as_str()) {
+            Some("local-merge") => (" Merge Branch Picker ", "Merge task into: "),
+            Some("rebase") => (" Rebase Branch Picker ", "Rebase task: "),
+            _ => (" Branch Picker ", "Task: "),
+        };
 
     // Split into header, search input, and list
     let chunks = Layout::default()
@@ -3207,6 +3316,7 @@ fn draw_session_picker(f: &mut Frame, app: &App) {
     f.render_widget(list, chunks[1]);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_branch_tabs(
     f: &mut Frame,
     branch_source: BranchSource,
@@ -3224,7 +3334,11 @@ fn draw_branch_tabs(
     let has_base = base_branch_editor.is_some();
     let content_constraint = match branch_source {
         BranchSource::NewBranch => {
-            if has_base { Constraint::Length(7) } else { Constraint::Length(3) }
+            if has_base {
+                Constraint::Length(7)
+            } else {
+                Constraint::Length(3)
+            }
         }
         BranchSource::ExistingBranch | BranchSource::ExistingWorktree => Constraint::Min(3),
     };
@@ -3298,14 +3412,34 @@ fn draw_branch_tabs(
                 // Two stacked fields: branch name + base branch
                 let field_chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Length(1), Constraint::Length(3)])
+                    .constraints([
+                        Constraint::Length(3),
+                        Constraint::Length(1),
+                        Constraint::Length(3),
+                    ])
                     .split(chunks[1]);
 
                 let branch_focused = !base_branch_focus;
-                let branch_border_color = if branch_focused { Color::LightGreen } else { Color::DarkGray };
-                let base_border_color = if base_branch_focus { Color::LightGreen } else { Color::DarkGray };
-                let branch_title_color = if branch_focused { Color::LightGreen } else { Color::DarkGray };
-                let base_title_color = if base_branch_focus { Color::LightGreen } else { Color::DarkGray };
+                let branch_border_color = if branch_focused {
+                    Color::LightGreen
+                } else {
+                    Color::DarkGray
+                };
+                let base_border_color = if base_branch_focus {
+                    Color::LightGreen
+                } else {
+                    Color::DarkGray
+                };
+                let branch_title_color = if branch_focused {
+                    Color::LightGreen
+                } else {
+                    Color::DarkGray
+                };
+                let base_title_color = if base_branch_focus {
+                    Color::LightGreen
+                } else {
+                    Color::DarkGray
+                };
 
                 branch_editor.set_block(
                     Block::default()
@@ -3317,7 +3451,8 @@ fn draw_branch_tabs(
                         .border_style(Style::default().fg(branch_border_color)),
                 );
                 if branch_focused {
-                    branch_editor.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+                    branch_editor
+                        .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
                 } else {
                     branch_editor.set_cursor_style(Style::default());
                 }
@@ -3333,7 +3468,8 @@ fn draw_branch_tabs(
                         .border_style(Style::default().fg(base_border_color)),
                 );
                 if base_branch_focus {
-                    base_editor.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+                    base_editor
+                        .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
                 } else {
                     base_editor.set_cursor_style(Style::default());
                 }
@@ -3629,14 +3765,10 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
 
         if is_repo_select {
             let (suffix, suffix_style) = match kind {
-                Some(DirKind::GitRepo) => (
-                    "  [git]",
-                    Style::default().fg(Color::LightGreen),
-                ),
-                Some(DirKind::MultiRepoParent) => (
-                    "  [multi]",
-                    Style::default().fg(Color::LightYellow),
-                ),
+                Some(DirKind::GitRepo) => ("  [git]", Style::default().fg(Color::LightGreen)),
+                Some(DirKind::MultiRepoParent) => {
+                    ("  [multi]", Style::default().fg(Color::LightYellow))
+                }
                 _ => ("", Style::default()),
             };
             items.push(ListItem::new(Line::from(vec![
@@ -3644,7 +3776,10 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
                 Span::styled(suffix, suffix_style),
             ])));
         } else {
-            items.push(ListItem::new(Span::styled(format!("{}{}/", prefix, name), base_style)));
+            items.push(ListItem::new(Span::styled(
+                format!("{}{}/", prefix, name),
+                base_style,
+            )));
         }
     }
 
@@ -3778,8 +3913,7 @@ fn draw_notifications(f: &mut Frame, app: &App, area: Rect) {
                 meta_parts.push(time_str);
             }
             let meta_text = format!("   {}", meta_parts.join(" · "));
-            let meta_line =
-                Line::from(Span::styled(meta_text, Style::default().fg(meta_color)));
+            let meta_line = Line::from(Span::styled(meta_text, Style::default().fg(meta_color)));
 
             ListItem::new(vec![title_line, meta_line, Line::from("")]).style(style)
         })
@@ -3828,7 +3962,11 @@ fn draw_show_prs(f: &mut Frame, app: &mut App, area: Rect) {
     let sections: &[(&str, Color, &[agman::use_cases::GithubItem])] = &[
         ("My Issues", Color::LightYellow, &app.show_prs_data.issues),
         ("My PRs", Color::LightGreen, &app.show_prs_data.my_prs),
-        ("Review Requests", Color::LightCyan, &app.show_prs_data.review_requests),
+        (
+            "Review Requests",
+            Color::LightCyan,
+            &app.show_prs_data.review_requests,
+        ),
     ];
 
     for &(section_name, header_color, section_items) in sections {
@@ -3868,10 +4006,7 @@ fn draw_show_prs(f: &mut Frame, app: &mut App, area: Rect) {
             let title_line = Line::from(title_spans);
 
             let time_str = relative_time(&item.updated_at);
-            let mut meta_parts = vec![
-                item.repo_full_name.clone(),
-                item.author.clone(),
-            ];
+            let mut meta_parts = vec![item.repo_full_name.clone(), item.author.clone()];
             if !time_str.is_empty() {
                 meta_parts.push(time_str);
             }
@@ -4032,7 +4167,7 @@ fn draw_archive(f: &mut Frame, app: &mut App, area: Rect) {
                 .meta
                 .archived_at
                 .as_ref()
-                .map(|at| format_time_ago(at))
+                .map(format_time_ago)
                 .unwrap_or_default();
 
             let mut spans: Vec<Span> = Vec::new();
@@ -4059,7 +4194,9 @@ fn draw_archive(f: &mut Frame, app: &mut App, area: Rect) {
             if task.meta.saved {
                 spans.push(Span::styled(
                     "  [SAVED]",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 ));
             }
 
@@ -4169,9 +4306,18 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
 
     let selected_style = Style::default().bg(Color::Rgb(40, 40, 50));
 
-    let break_display = format!("  Break interval      \u{25C0}  {} min  \u{25B6}", break_mins);
-    let retention_display = format!("  Archive retention   \u{25C0}  {} days \u{25B6}", retention_days);
-    let harness_display = format!("  Harness             \u{25C0}  {:<6} \u{25B6}", harness_kind.as_str());
+    let break_display = format!(
+        "  Break interval      \u{25C0}  {} min  \u{25B6}",
+        break_mins
+    );
+    let retention_display = format!(
+        "  Archive retention   \u{25C0}  {} days \u{25B6}",
+        retention_days
+    );
+    let harness_display = format!(
+        "  Harness             \u{25C0}  {:<6} \u{25B6}",
+        harness_kind.as_str()
+    );
 
     // Telegram token display: mask all but last 4 chars
     let token_text: String = app.telegram_token_editor.lines().join("");
@@ -4180,7 +4326,11 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
     } else if token_text.len() <= 4 {
         token_text.clone()
     } else {
-        format!("{}{}", "\u{2022}".repeat(token_text.len() - 4), &token_text[token_text.len() - 4..])
+        format!(
+            "{}{}",
+            "\u{2022}".repeat(token_text.len() - 4),
+            &token_text[token_text.len() - 4..]
+        )
     };
 
     let chat_id_text: String = app.telegram_chat_id_editor.lines().join("");
@@ -4195,20 +4345,44 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
     let editing_token = app.settings_editing && app.settings_selected == 3;
     let editing_chat_id = app.settings_editing && app.settings_selected == 4;
 
-    let token_row_text = format!("  Telegram bot token  {}", if editing_token { "" } else { &token_display });
-    let chat_id_row_text = format!("  Telegram chat ID    {}", if editing_chat_id { "" } else { &chat_id_display });
+    let token_row_text = format!(
+        "  Telegram bot token  {}",
+        if editing_token { "" } else { &token_display }
+    );
+    let chat_id_row_text = format!(
+        "  Telegram chat ID    {}",
+        if editing_chat_id {
+            ""
+        } else {
+            &chat_id_display
+        }
+    );
 
     let items = vec![
         ListItem::new(Line::from(vec![
             Span::styled(&break_display, Style::default().fg(Color::White)),
-            Span::styled("    (h/l to adjust, 5\u{2013}120 min)", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "    (h/l to adjust, 5\u{2013}120 min)",
+                Style::default().fg(Color::DarkGray),
+            ),
         ]))
-        .style(if app.settings_selected == 0 { selected_style } else { Style::default() }),
+        .style(if app.settings_selected == 0 {
+            selected_style
+        } else {
+            Style::default()
+        }),
         ListItem::new(Line::from(vec![
             Span::styled(&retention_display, Style::default().fg(Color::White)),
-            Span::styled("    (h/l to adjust, 7\u{2013}365 days)", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "    (h/l to adjust, 7\u{2013}365 days)",
+                Style::default().fg(Color::DarkGray),
+            ),
         ]))
-        .style(if app.settings_selected == 1 { selected_style } else { Style::default() }),
+        .style(if app.settings_selected == 1 {
+            selected_style
+        } else {
+            Style::default()
+        }),
         ListItem::new(Line::from(vec![
             Span::styled(&harness_display, Style::default().fg(Color::White)),
             Span::styled(
@@ -4216,7 +4390,11 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ),
         ]))
-        .style(if app.settings_selected == 2 { selected_style } else { Style::default() }),
+        .style(if app.settings_selected == 2 {
+            selected_style
+        } else {
+            Style::default()
+        }),
         ListItem::new(Line::from(vec![
             Span::styled(&token_row_text, Style::default().fg(Color::White)),
             if !editing_token {
@@ -4225,7 +4403,11 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::raw("")
             },
         ]))
-        .style(if app.settings_selected == 3 { selected_style } else { Style::default() }),
+        .style(if app.settings_selected == 3 {
+            selected_style
+        } else {
+            Style::default()
+        }),
         ListItem::new(Line::from(vec![
             Span::styled(&chat_id_row_text, Style::default().fg(Color::White)),
             if !editing_chat_id {
@@ -4234,7 +4416,11 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::raw("")
             },
         ]))
-        .style(if app.settings_selected == 4 { selected_style } else { Style::default() }),
+        .style(if app.settings_selected == 4 {
+            selected_style
+        } else {
+            Style::default()
+        }),
     ];
 
     let block = Block::default()
@@ -4313,13 +4499,20 @@ fn draw_notes(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
     let is_focused = nv.focus == NotesFocus::Explorer;
-    let border_color = if is_focused { Color::LightCyan } else { Color::DarkGray };
+    let border_color = if is_focused {
+        Color::LightCyan
+    } else {
+        Color::DarkGray
+    };
 
     // Build title from relative path
     let title = if nv.current_dir == nv.root_dir {
         " Notes ".to_string()
     } else {
-        let rel = nv.current_dir.strip_prefix(&nv.root_dir).unwrap_or(&nv.current_dir);
+        let rel = nv
+            .current_dir
+            .strip_prefix(&nv.root_dir)
+            .unwrap_or(&nv.current_dir);
         format!(" Notes/{} ", rel.display())
     };
 
@@ -4333,22 +4526,29 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
 
     // If confirm_delete, show confirmation
     if nv.confirm_delete {
-        let entry_name = nv.entries.get(nv.selected_index)
+        let entry_name = nv
+            .entries
+            .get(nv.selected_index)
             .map(|e| e.name.as_str())
             .unwrap_or("?");
-        let items: Vec<ListItem> = nv.entries.iter().enumerate().map(|(i, entry)| {
-            let display = if entry.is_dir {
-                format!("  {}/", entry.name)
-            } else {
-                format!("  {}", entry.name)
-            };
-            let style = if i == nv.selected_index {
-                Style::default().bg(Color::Rgb(40, 40, 50))
-            } else {
-                Style::default()
-            };
-            ListItem::new(display).style(style)
-        }).collect();
+        let items: Vec<ListItem> = nv
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let display = if entry.is_dir {
+                    format!("  {}/", entry.name)
+                } else {
+                    format!("  {}", entry.name)
+                };
+                let style = if i == nv.selected_index {
+                    Style::default().bg(Color::Rgb(40, 40, 50))
+                } else {
+                    Style::default()
+                };
+                ListItem::new(display).style(style)
+            })
+            .collect();
 
         let list = List::new(items).block(block);
         f.render_widget(list, area);
@@ -4362,8 +4562,11 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
                 height: 1,
             };
             let msg = format!(" Delete {}? y/n ", entry_name);
-            let confirm = Paragraph::new(msg)
-                .style(Style::default().fg(Color::LightRed).bg(Color::Rgb(40, 20, 20)));
+            let confirm = Paragraph::new(msg).style(
+                Style::default()
+                    .fg(Color::LightRed)
+                    .bg(Color::Rgb(40, 20, 20)),
+            );
             f.render_widget(confirm, confirm_area);
         }
         return;
@@ -4373,19 +4576,24 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
     if let Some((ref input, is_dir)) = nv.create_input {
         let label = if is_dir { "New dir: " } else { "New note: " };
 
-        let items: Vec<ListItem> = nv.entries.iter().enumerate().map(|(i, entry)| {
-            let display = if entry.is_dir {
-                format!("  {}/", entry.name)
-            } else {
-                format!("  {}", entry.name)
-            };
-            let style = if i == nv.selected_index {
-                Style::default().bg(Color::Rgb(40, 40, 50))
-            } else {
-                Style::default()
-            };
-            ListItem::new(display).style(style)
-        }).collect();
+        let items: Vec<ListItem> = nv
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let display = if entry.is_dir {
+                    format!("  {}/", entry.name)
+                } else {
+                    format!("  {}", entry.name)
+                };
+                let style = if i == nv.selected_index {
+                    Style::default().bg(Color::Rgb(40, 40, 50))
+                } else {
+                    Style::default()
+                };
+                ListItem::new(display).style(style)
+            })
+            .collect();
 
         let list = List::new(items).block(block);
         f.render_widget(list, area);
@@ -4399,8 +4607,7 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
                 height: 1,
             };
             let text = format!("{}{}", label, input.lines()[0]);
-            let input_para = Paragraph::new(text)
-                .style(Style::default().fg(Color::LightGreen));
+            let input_para = Paragraph::new(text).style(Style::default().fg(Color::LightGreen));
             f.render_widget(input_para, input_area);
         }
         return;
@@ -4408,20 +4615,29 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
 
     // If rename_input is active, show it inline at the selected position
     if let Some(ref _rename) = nv.rename_input {
-        let items: Vec<ListItem> = nv.entries.iter().enumerate().map(|(i, entry)| {
-            if i == nv.selected_index {
-                let rename_text = nv.rename_input.as_ref().unwrap().lines()[0].clone();
-                let display = format!("  {}", rename_text);
-                ListItem::new(display).style(Style::default().fg(Color::LightYellow).bg(Color::Rgb(40, 40, 50)))
-            } else {
-                let display = if entry.is_dir {
-                    format!("  {}/", entry.name)
+        let items: Vec<ListItem> = nv
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                if i == nv.selected_index {
+                    let rename_text = nv.rename_input.as_ref().unwrap().lines()[0].clone();
+                    let display = format!("  {}", rename_text);
+                    ListItem::new(display).style(
+                        Style::default()
+                            .fg(Color::LightYellow)
+                            .bg(Color::Rgb(40, 40, 50)),
+                    )
                 } else {
-                    format!("  {}", entry.name)
-                };
-                ListItem::new(display).style(Style::default())
-            }
-        }).collect();
+                    let display = if entry.is_dir {
+                        format!("  {}/", entry.name)
+                    } else {
+                        format!("  {}", entry.name)
+                    };
+                    ListItem::new(display).style(Style::default())
+                }
+            })
+            .collect();
 
         let list = List::new(items).block(block);
         f.render_widget(list, area);
@@ -4437,34 +4653,40 @@ fn draw_notes_explorer(f: &mut Frame, nv: &super::app::NotesView, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = nv.entries.iter().enumerate().map(|(i, entry)| {
-        let is_cut = nv.cut_entry.as_ref().is_some_and(|(dir, name)| {
-            dir == &nv.current_dir && name == &entry.file_name
-        });
-        let display = if entry.is_dir {
-            format!("  {}/", entry.name)
-        } else {
-            format!("  {}", entry.name)
-        };
-        let style = if i == nv.selected_index {
-            Style::default().bg(Color::Rgb(40, 40, 50))
-        } else {
-            Style::default()
-        };
-        let color = if is_cut {
-            Color::DarkGray
-        } else if entry.is_dir {
-            Color::LightCyan
-        } else {
-            Color::White
-        };
-        let style = if is_cut {
-            style.fg(color).add_modifier(Modifier::ITALIC)
-        } else {
-            style.fg(color)
-        };
-        ListItem::new(display).style(style)
-    }).collect();
+    let items: Vec<ListItem> = nv
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let is_cut = nv
+                .cut_entry
+                .as_ref()
+                .is_some_and(|(dir, name)| dir == &nv.current_dir && name == &entry.file_name);
+            let display = if entry.is_dir {
+                format!("  {}/", entry.name)
+            } else {
+                format!("  {}", entry.name)
+            };
+            let style = if i == nv.selected_index {
+                Style::default().bg(Color::Rgb(40, 40, 50))
+            } else {
+                Style::default()
+            };
+            let color = if is_cut {
+                Color::DarkGray
+            } else if entry.is_dir {
+                Color::LightCyan
+            } else {
+                Color::White
+            };
+            let style = if is_cut {
+                style.fg(color).add_modifier(Modifier::ITALIC)
+            } else {
+                style.fg(color)
+            };
+            ListItem::new(display).style(style)
+        })
+        .collect();
 
     let list = List::new(items).block(block);
     f.render_widget(list, area);
@@ -4489,7 +4711,8 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     if let Some(ref path) = nv.open_file {
-        let file_name = path.file_stem()
+        let file_name = path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
         let modified_indicator = if nv.modified { " [+]" } else { "" };
@@ -4504,7 +4727,9 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
 
         let editor_area = block.inner(area);
         f.render_widget(block, area);
-        nv.editor.textarea.set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+        nv.editor
+            .textarea
+            .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
         f.render_widget(&nv.editor.textarea, editor_area);
     } else {
         let block = Block::default()
@@ -4585,8 +4810,7 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         .map(|r| r.meta.name.len())
         .max()
         .unwrap_or(MIN_NAME_WIDTH)
-        .max(MIN_NAME_WIDTH)
-        .min(MAX_NAME_WIDTH);
+        .clamp(MIN_NAME_WIDTH, MAX_NAME_WIDTH);
 
     let project_width = app
         .researchers
@@ -4594,8 +4818,7 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         .map(|r| r.meta.project.len())
         .max()
         .unwrap_or(MIN_PROJECT_WIDTH)
-        .max(MIN_PROJECT_WIDTH)
-        .min(MAX_PROJECT_WIDTH);
+        .clamp(MIN_PROJECT_WIDTH, MAX_PROJECT_WIDTH);
 
     // leading_padding(4: " " + icon + "  ") + 3 col_gaps(9) + name + project + status
     let fixed_width = 4 + 9 + name_width + project_width + STATUS_WIDTH;
@@ -4607,11 +4830,20 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         .add_modifier(Modifier::BOLD);
     let header = Line::from(vec![
         Span::raw("    "),
-        Span::styled(format!("{:<width$}", "NAME", width = name_width), header_style),
+        Span::styled(
+            format!("{:<width$}", "NAME", width = name_width),
+            header_style,
+        ),
         Span::raw(COL_GAP),
-        Span::styled(format!("{:<width$}", "PROJECT", width = project_width), header_style),
+        Span::styled(
+            format!("{:<width$}", "PROJECT", width = project_width),
+            header_style,
+        ),
         Span::raw(COL_GAP),
-        Span::styled(format!("{:<width$}", "STATUS", width = STATUS_WIDTH), header_style),
+        Span::styled(
+            format!("{:<width$}", "STATUS", width = STATUS_WIDTH),
+            header_style,
+        ),
         Span::raw(COL_GAP),
         Span::styled("DESCRIPTION", header_style),
     ]);
@@ -4640,14 +4872,36 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
     let mut researcher_index: usize = 0;
     let mut groups_shown: usize = 0;
 
-    let groups: Vec<(&str, &str, Color, &[(usize, &agman::researcher::Researcher)])> = vec![
-        ("Running", "●", Color::LightGreen, &running),
-        ("Stopped", "○", Color::Yellow, &stopped),
-        ("Archived", "○", Color::DarkGray, &archived),
+    struct ResearcherGroup<'a> {
+        name: &'a str,
+        icon: &'a str,
+        color: Color,
+        members: &'a [(usize, &'a agman::researcher::Researcher)],
+    }
+
+    let groups = [
+        ResearcherGroup {
+            name: "Running",
+            icon: "●",
+            color: Color::LightGreen,
+            members: &running,
+        },
+        ResearcherGroup {
+            name: "Stopped",
+            icon: "○",
+            color: Color::Yellow,
+            members: &stopped,
+        },
+        ResearcherGroup {
+            name: "Archived",
+            icon: "○",
+            color: Color::DarkGray,
+            members: &archived,
+        },
     ];
 
-    for (group_name, icon, group_color, members) in &groups {
-        if members.is_empty() {
+    for group in &groups {
+        if group.members.is_empty() {
             continue;
         }
 
@@ -4657,26 +4911,29 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         }
 
         // Section header
-        let label = format!("── {} ({}) ", group_name, members.len());
+        let label = format!("── {} ({}) ", group.name, group.members.len());
         let fill = (inner.width as usize).saturating_sub(label.len());
         let header_line = Line::from(vec![
             Span::styled(
                 label,
                 Style::default()
-                    .fg(*group_color)
+                    .fg(group.color)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("─".repeat(fill), Style::default().fg(Color::Rgb(60, 60, 60))),
+            Span::styled(
+                "─".repeat(fill),
+                Style::default().fg(Color::Rgb(60, 60, 60)),
+            ),
         ]);
         items.push(ListItem::new(header_line));
         groups_shown += 1;
 
-        for (orig_idx, r) in *members {
+        for (orig_idx, r) in group.members {
             let is_selected = *orig_idx == app.researcher_list_index;
 
             // Derive status from group metadata — no redundant tmux check
-            let status_str = group_name.to_lowercase();
-            let status_color = *group_color;
+            let status_str = group.name.to_lowercase();
+            let status_color = group.color;
 
             // Truncate name if needed
             let display_name = if r.meta.name.len() > name_width {
@@ -4714,7 +4971,7 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
 
             let mut spans = vec![
                 Span::raw(" "),
-                Span::styled(*icon, Style::default().fg(status_color)),
+                Span::styled(group.icon, Style::default().fg(status_color)),
                 Span::raw("  "),
                 Span::styled(
                     format!("{:<width$}", display_name, width = name_width),

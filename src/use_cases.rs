@@ -52,7 +52,10 @@ pub fn install_hint(config: &Config, tool: &str) -> String {
         "tmux" => "brew install tmux (macOS) / apt install tmux (Linux)".into(),
         "git" => "brew install git (macOS) / apt install git (Linux)".into(),
         "nvim" => "brew install neovim (macOS) / apt install neovim (Linux)".into(),
-        "lazygit" => "brew install lazygit (macOS) / go install github.com/jesseduffield/lazygit@latest".into(),
+        "lazygit" => {
+            "brew install lazygit (macOS) / go install github.com/jesseduffield/lazygit@latest"
+                .into()
+        }
         "gh" => "brew install gh (macOS) / apt install gh (Linux)".into(),
         "direnv" => "brew install direnv (macOS) / apt install direnv (Linux)".into(),
         other => {
@@ -117,6 +120,7 @@ pub enum WorktreeSource {
 /// This is the pure business logic behind `App::create_task_from_wizard()`.
 /// It does NOT create tmux sessions or start flows — those are side effects
 /// handled by the TUI caller.
+#[allow(clippy::too_many_arguments)]
 pub fn create_task(
     config: &Config,
     repo_name: &str,
@@ -149,11 +153,21 @@ pub fn create_task(
         WorktreeSource::NewBranch { base_branch } => {
             let candidate = config.worktree_path_for(parent_dir_ref, repo_name, branch_name);
             if candidate.exists() {
-                tracing::info!(repo = repo_name, branch = branch_name, "worktree already exists, reusing");
+                tracing::info!(
+                    repo = repo_name,
+                    branch = branch_name,
+                    "worktree already exists, reusing"
+                );
                 let _ = Git::direnv_allow(&candidate);
                 candidate
             } else {
-                let path = Git::create_worktree_quiet(config, repo_name, branch_name, base_branch.as_deref(), parent_dir_ref)?;
+                let path = Git::create_worktree_quiet(
+                    config,
+                    repo_name,
+                    branch_name,
+                    base_branch.as_deref(),
+                    parent_dir_ref,
+                )?;
                 let _ = Git::direnv_allow(&path);
                 path
             }
@@ -161,12 +175,20 @@ pub fn create_task(
         WorktreeSource::ExistingBranch => {
             let candidate = config.worktree_path_for(parent_dir_ref, repo_name, branch_name);
             if candidate.exists() {
-                tracing::info!(repo = repo_name, branch = branch_name, "worktree already exists, reusing");
+                tracing::info!(
+                    repo = repo_name,
+                    branch = branch_name,
+                    "worktree already exists, reusing"
+                );
                 let _ = Git::direnv_allow(&candidate);
                 candidate
             } else {
-                let path =
-                    Git::create_worktree_for_existing_branch_quiet(config, repo_name, branch_name, parent_dir_ref)?;
+                let path = Git::create_worktree_for_existing_branch_quiet(
+                    config,
+                    repo_name,
+                    branch_name,
+                    parent_dir_ref,
+                )?;
                 let _ = Git::direnv_allow(&path);
                 path
             }
@@ -223,6 +245,7 @@ pub fn create_task(
 /// This is the pure business logic behind multi-repo task creation in the wizard.
 /// It does NOT create tmux sessions or start flows — those are side effects
 /// handled by the TUI caller.
+#[allow(clippy::too_many_arguments)]
 pub fn create_multi_repo_task(
     config: &Config,
     name: &str,
@@ -246,7 +269,14 @@ pub fn create_multi_repo_task(
     config.init_default_files(false)?;
 
     // Create task files (no worktrees — repos not yet determined)
-    let mut task = Task::create_multi(config, name, branch_name, description, flow_name, parent_dir)?;
+    let mut task = Task::create_multi(
+        config,
+        name,
+        branch_name,
+        description,
+        flow_name,
+        parent_dir,
+    )?;
 
     // Set review_after flag if requested
     if review_after {
@@ -617,7 +647,13 @@ pub fn update_last_review_count(task: &mut Task, count: u64) -> Result<()> {
 }
 
 /// Set the linked PR for a task by constructing the URL from the worktree's origin remote.
-pub fn set_linked_pr(task: &mut Task, pr_number: u64, worktree_path: &PathBuf, owned: bool, author: Option<String>) -> Result<()> {
+pub fn set_linked_pr(
+    task: &mut Task,
+    pr_number: u64,
+    worktree_path: &PathBuf,
+    owned: bool,
+    author: Option<String>,
+) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), pr_number, owned, author = ?author, "setting linked PR");
     let remote_url = Git::get_remote_url(worktree_path)?;
     let (owner, repo) = git::parse_github_owner_repo(&remote_url)
@@ -656,27 +692,30 @@ pub fn create_setup_only_task(
             path
         }
         WorktreeSource::NewBranch { base_branch } => {
-            let path = Git::create_worktree_quiet(config, repo_name, branch_name, base_branch.as_deref(), parent_dir_ref)?;
+            let path = Git::create_worktree_quiet(
+                config,
+                repo_name,
+                branch_name,
+                base_branch.as_deref(),
+                parent_dir_ref,
+            )?;
             let _ = Git::direnv_allow(&path);
             path
         }
         WorktreeSource::ExistingBranch => {
-            let path =
-                Git::create_worktree_for_existing_branch_quiet(config, repo_name, branch_name, parent_dir_ref)?;
+            let path = Git::create_worktree_for_existing_branch_quiet(
+                config,
+                repo_name,
+                branch_name,
+                parent_dir_ref,
+            )?;
             let _ = Git::direnv_allow(&path);
             path
         }
     };
 
     // Create task files
-    let mut task = Task::create(
-        config,
-        repo_name,
-        branch_name,
-        "",
-        "none",
-        worktree_path,
-    )?;
+    let mut task = Task::create(config, repo_name, branch_name, "", "none", worktree_path)?;
 
     // Store parent_dir if repo is outside repos_dir
     if parent_dir.is_some() {
@@ -722,7 +761,11 @@ pub fn create_review_task(
     worktree_source: WorktreeSource,
     parent_dir: Option<PathBuf>,
 ) -> Result<Task> {
-    tracing::info!(repo = repo_name, branch = branch_name, "creating review task");
+    tracing::info!(
+        repo = repo_name,
+        branch = branch_name,
+        "creating review task"
+    );
     let description = format!("Review branch {}", branch_name);
     create_task(
         config,
@@ -859,7 +902,10 @@ fn migrate_single_task(task_dir: &std::path::Path, dir_name: &str) -> anyhow::Re
         .to_string();
 
     // Transform: rename repo_name → name
-    obj.insert("name".to_string(), serde_json::Value::String(repo_name.clone()));
+    obj.insert(
+        "name".to_string(),
+        serde_json::Value::String(repo_name.clone()),
+    );
     obj.remove("repo_name");
 
     // Transform: create repos array from old top-level fields
@@ -868,7 +914,10 @@ fn migrate_single_task(task_dir: &std::path::Path, dir_name: &str) -> anyhow::Re
         "worktree_path": worktree_path,
         "tmux_session": tmux_session,
     });
-    obj.insert("repos".to_string(), serde_json::Value::Array(vec![repo_entry]));
+    obj.insert(
+        "repos".to_string(),
+        serde_json::Value::Array(vec![repo_entry]),
+    );
     obj.remove("tmux_session");
     obj.remove("worktree_path");
 
@@ -931,8 +980,14 @@ pub fn setup_repos_from_task_md(config: &Config, task: &mut Task, skip_tmux: boo
             let _ = Git::direnv_allow(&candidate);
             candidate
         } else {
-            let path = Git::create_worktree_quiet(config, repo_name, &task.meta.branch_name, None, parent_dir)
-                .with_context(|| format!("Failed to create worktree for repo '{}'", repo_name))?;
+            let path = Git::create_worktree_quiet(
+                config,
+                repo_name,
+                &task.meta.branch_name,
+                None,
+                parent_dir,
+            )
+            .with_context(|| format!("Failed to create worktree for repo '{}'", repo_name))?;
             let _ = Git::direnv_allow(&path);
             path
         };
@@ -1007,7 +1062,6 @@ pub enum DirKind {
     Plain,
 }
 
-
 // ---------------------------------------------------------------------------
 // Break Interval Settings
 // ---------------------------------------------------------------------------
@@ -1017,7 +1071,9 @@ const DEFAULT_BREAK_INTERVAL_MINS: u64 = 40;
 /// Load the break interval from config, defaulting to 40 minutes.
 pub fn load_break_interval(config: &Config) -> Duration {
     let cf = crate::config::load_config_file(&config.base_dir);
-    let mins = cf.break_interval_mins.unwrap_or(DEFAULT_BREAK_INTERVAL_MINS);
+    let mins = cf
+        .break_interval_mins
+        .unwrap_or(DEFAULT_BREAK_INTERVAL_MINS);
     Duration::from_secs(mins * 60)
 }
 
@@ -1037,7 +1093,8 @@ const DEFAULT_ARCHIVE_RETENTION_DAYS: u64 = 30;
 /// Load the archive retention period from config, defaulting to 30 days.
 pub fn load_archive_retention(config: &Config) -> u64 {
     let cf = crate::config::load_config_file(&config.base_dir);
-    cf.archive_retention_days.unwrap_or(DEFAULT_ARCHIVE_RETENTION_DAYS)
+    cf.archive_retention_days
+        .unwrap_or(DEFAULT_ARCHIVE_RETENTION_DAYS)
 }
 
 /// Save the archive retention period to config, preserving other config fields.
@@ -1162,11 +1219,10 @@ pub fn api_url_to_browser_url(api_url: &str, fallback: &str) -> String {
     if api_url.is_empty() {
         return fallback.to_string();
     }
-    let url = api_url
+    api_url
         .replace("https://api.github.com/repos/", "https://github.com/")
         .replace("/pulls/", "/pull/")
-        .replace("/commits/", "/commit/");
-    url
+        .replace("/commits/", "/commit/")
 }
 
 /// Parse the JSON response from `gh api /notifications` into a vec of notifications.
@@ -1182,10 +1238,8 @@ pub fn parse_notifications_json(json_str: &str) -> Vec<GithubNotification> {
     raw.into_iter()
         .map(|n| {
             let fallback = format!("https://github.com/{}", n.repository.full_name);
-            let browser_url = api_url_to_browser_url(
-                n.subject.url.as_deref().unwrap_or(""),
-                &fallback,
-            );
+            let browser_url =
+                api_url_to_browser_url(n.subject.url.as_deref().unwrap_or(""), &fallback);
             GithubNotification {
                 id: n.id,
                 repo_full_name: n.repository.full_name,
@@ -1213,9 +1267,8 @@ pub struct NotifPollResult {
 pub fn fetch_github_notifications() -> NotifPollResult {
     use crate::dismissed_notifications::NOTIFICATION_RETENTION_WEEKS;
 
-    let since = (chrono::Utc::now()
-        - chrono::Duration::weeks(NOTIFICATION_RETENTION_WEEKS))
-    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let since = (chrono::Utc::now() - chrono::Duration::weeks(NOTIFICATION_RETENTION_WEEKS))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     tracing::info!(since = %since, "fetching github notifications with time bound");
 
     let mut all_notifications = Vec::new();
@@ -1247,7 +1300,10 @@ pub fn fetch_github_notifications() -> NotifPollResult {
         }
     }
 
-    tracing::debug!(total = all_notifications.len(), "fetched github notifications");
+    tracing::debug!(
+        total = all_notifications.len(),
+        "fetched github notifications"
+    );
     NotifPollResult {
         notifications: all_notifications,
     }
@@ -1390,7 +1446,11 @@ pub fn fetch_keybase_unreads() -> KeybasePollResult {
         })
         .unwrap_or((0, 0));
 
-    tracing::debug!(unread_dm = dm_unread_count, unread_channel = channel_unread_count, "keybase unread poll complete");
+    tracing::debug!(
+        unread_dm = dm_unread_count,
+        unread_channel = channel_unread_count,
+        "keybase unread poll complete"
+    );
     KeybasePollResult {
         dm_unread_count,
         channel_unread_count,
@@ -1438,7 +1498,10 @@ pub fn list_notes(dir: &Path) -> Result<Vec<NoteEntry>> {
                 is_dir: true,
             });
         } else if file_type.is_file() && file_name.ends_with(".md") {
-            let display_name = file_name.strip_suffix(".md").unwrap_or(&file_name).to_string();
+            let display_name = file_name
+                .strip_suffix(".md")
+                .unwrap_or(&file_name)
+                .to_string();
             files.push(NoteEntry {
                 name: display_name,
                 file_name,
@@ -1455,7 +1518,8 @@ pub fn list_notes(dir: &Path) -> Result<Vec<NoteEntry>> {
         let order_lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
 
         // Collect all entries into a lookup map by file_name
-        let mut all_entries: std::collections::HashMap<String, NoteEntry> = std::collections::HashMap::new();
+        let mut all_entries: std::collections::HashMap<String, NoteEntry> =
+            std::collections::HashMap::new();
         for e in dirs.into_iter().chain(files.into_iter()) {
             all_entries.insert(e.file_name.clone(), e);
         }
@@ -1545,8 +1609,13 @@ pub fn rename_note(old: &Path, new_name: &str) -> Result<PathBuf> {
     };
 
     let new_path = parent.join(&actual_name);
-    std::fs::rename(old, &new_path)
-        .with_context(|| format!("failed to rename {} to {}", old.display(), new_path.display()))?;
+    std::fs::rename(old, &new_path).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            old.display(),
+            new_path.display()
+        )
+    })?;
     tracing::info!(note_path = %new_path.display(), old_path = %old.display(), "renamed note");
     Ok(new_path)
 }
@@ -1581,7 +1650,11 @@ pub fn move_note(dir: &Path, file_name: &str, direction: MoveDirection) -> Resul
     // Build current order: from .order file (reconciled with disk) or from list_notes.
     let mut order: Vec<String> = if order_path.exists() {
         let content = std::fs::read_to_string(&order_path)?;
-        let mut from_file: Vec<String> = content.lines().filter(|l| !l.is_empty()).map(String::from).collect();
+        let mut from_file: Vec<String> = content
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect();
         // Reconcile: append any disk entries not already in .order
         let disk_entries = list_notes(dir)?;
         for entry in &disk_entries {
@@ -1590,24 +1663,34 @@ pub fn move_note(dir: &Path, file_name: &str, direction: MoveDirection) -> Resul
             }
         }
         // Remove .order entries that no longer exist on disk
-        let disk_names: std::collections::HashSet<String> = disk_entries.into_iter().map(|e| e.file_name).collect();
+        let disk_names: std::collections::HashSet<String> =
+            disk_entries.into_iter().map(|e| e.file_name).collect();
         from_file.retain(|name| disk_names.contains(name));
         from_file
     } else {
-        list_notes(dir)?.iter().map(|e| e.file_name.clone()).collect()
+        list_notes(dir)?
+            .iter()
+            .map(|e| e.file_name.clone())
+            .collect()
     };
 
-    let idx = order.iter().position(|n| n == file_name)
+    let idx = order
+        .iter()
+        .position(|n| n == file_name)
         .with_context(|| format!("entry '{}' not found in order list", file_name))?;
 
     let new_idx = match direction {
         MoveDirection::Up => {
-            if idx == 0 { return Ok(idx); }
+            if idx == 0 {
+                return Ok(idx);
+            }
             order.swap(idx, idx - 1);
             idx - 1
         }
         MoveDirection::Down => {
-            if idx + 1 >= order.len() { return Ok(idx); }
+            if idx + 1 >= order.len() {
+                return Ok(idx);
+            }
             order.swap(idx, idx + 1);
             idx + 1
         }
@@ -1771,7 +1854,11 @@ pub fn parse_search_items_json(json_str: &str, kind: GithubItemKind) -> Vec<Gith
             url: item.url,
             updated_at: item.updated_at,
             author: item.author.login,
-            is_draft: if kind == GithubItemKind::Issue { false } else { item.is_draft },
+            is_draft: if kind == GithubItemKind::Issue {
+                false
+            } else {
+                item.is_draft
+            },
             kind: kind.clone(),
         })
         .collect()
@@ -1811,24 +1898,36 @@ pub fn fetch_show_prs_data() -> ShowPrsData {
 
     // 1. My Issues (assigned to me)
     let issues = run_gh_search(&[
-        "search", "issues", "--assignee=@me", "--state=open",
-        &format!("--json={}", ISSUE_JSON_FIELDS), "--limit=50",
+        "search",
+        "issues",
+        "--assignee=@me",
+        "--state=open",
+        &format!("--json={}", ISSUE_JSON_FIELDS),
+        "--limit=50",
     ])
     .map(|json| parse_search_items_json(&json, GithubItemKind::Issue))
     .unwrap_or_default();
 
     // 2. My PRs (authored by me)
     let mut my_prs = run_gh_search(&[
-        "search", "prs", "--author=@me", "--state=open",
-        &format!("--json={}", PR_JSON_FIELDS), "--limit=50",
+        "search",
+        "prs",
+        "--author=@me",
+        "--state=open",
+        &format!("--json={}", PR_JSON_FIELDS),
+        "--limit=50",
     ])
     .map(|json| parse_search_items_json(&json, GithubItemKind::PullRequest))
     .unwrap_or_default();
 
     // 3. PRs assigned to me (merge into my_prs)
     if let Some(json) = run_gh_search(&[
-        "search", "prs", "--assignee=@me", "--state=open",
-        &format!("--json={}", PR_JSON_FIELDS), "--limit=50",
+        "search",
+        "prs",
+        "--assignee=@me",
+        "--state=open",
+        &format!("--json={}", PR_JSON_FIELDS),
+        "--limit=50",
     ]) {
         my_prs.extend(parse_search_items_json(&json, GithubItemKind::PullRequest));
         dedup_github_items(&mut my_prs);
@@ -1836,16 +1935,24 @@ pub fn fetch_show_prs_data() -> ShowPrsData {
 
     // 4. Review requests
     let mut review_requests = run_gh_search(&[
-        "search", "prs", "--review-requested=@me", "--state=open",
-        &format!("--json={}", PR_JSON_FIELDS), "--limit=50",
+        "search",
+        "prs",
+        "--review-requested=@me",
+        "--state=open",
+        &format!("--json={}", PR_JSON_FIELDS),
+        "--limit=50",
     ])
     .map(|json| parse_search_items_json(&json, GithubItemKind::PullRequest))
     .unwrap_or_default();
 
     // 5. PRs mentioning me (merge into review_requests)
     if let Some(json) = run_gh_search(&[
-        "search", "prs", "--mentions=@me", "--state=open",
-        &format!("--json={}", PR_JSON_FIELDS), "--limit=50",
+        "search",
+        "prs",
+        "--mentions=@me",
+        "--state=open",
+        &format!("--json={}", PR_JSON_FIELDS),
+        "--limit=50",
     ]) {
         review_requests.extend(parse_search_items_json(&json, GithubItemKind::PullRequest));
         dedup_github_items(&mut review_requests);
@@ -1938,7 +2045,10 @@ pub fn list_project_tasks(config: &Config, project_name: &str) -> Result<Vec<Tas
 /// List tasks not assigned to any project.
 pub fn list_unassigned_tasks(config: &Config) -> Result<Vec<Task>> {
     let all = Task::list_all(config);
-    Ok(all.into_iter().filter(|t| t.meta.project.is_none()).collect())
+    Ok(all
+        .into_iter()
+        .filter(|t| t.meta.project.is_none())
+        .collect())
 }
 
 /// Delete a project: archive all its tasks, kill PM session, remove project directory.
@@ -1961,8 +2071,7 @@ pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
         }
         // Kill multi-repo parent session if applicable
         if task.meta.is_multi_repo() {
-            let parent_session =
-                Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+            let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
             let _ = Tmux::kill_session(&parent_session);
         }
         archive_task(config, &mut task, false)?;
@@ -1976,7 +2085,8 @@ pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
         if researcher.meta.status == crate::researcher::ResearcherStatus::Archived {
             continue;
         }
-        if let Err(e) = archive_researcher(config, &researcher.meta.project, &researcher.meta.name) {
+        if let Err(e) = archive_researcher(config, &researcher.meta.project, &researcher.meta.name)
+        {
             tracing::warn!(
                 project = %project_name,
                 researcher = %researcher.meta.name,
@@ -2095,7 +2205,8 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
         }
 
         let tasks = list_project_tasks(config, &project.meta.name)?;
-        let summaries: Vec<TaskSummary> = tasks.iter().map(|t| task_to_summary(config, t)).collect();
+        let summaries: Vec<TaskSummary> =
+            tasks.iter().map(|t| task_to_summary(config, t)).collect();
         let researchers = load_researcher_summaries(config, &project.meta.name);
 
         // Skip projects with no active tasks and no active researchers
@@ -2122,10 +2233,7 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
         .map(|t| task_to_summary(config, t))
         .collect();
 
-    let archived_unassigned = archived
-        .iter()
-        .filter(|t| t.meta.project.is_none())
-        .count();
+    let archived_unassigned = archived.iter().filter(|t| t.meta.project.is_none()).count();
 
     let chief_of_staff_researchers = load_researcher_summaries(config, "chief-of-staff");
 
@@ -2161,11 +2269,14 @@ pub fn migrate_tasks_to_project(
         }
         let meta_path = task_dir.join("meta.json");
         let load_result: Result<Task> = (|| {
-            let content = std::fs::read_to_string(&meta_path)
-                .context("failed to read meta.json")?;
+            let content =
+                std::fs::read_to_string(&meta_path).context("failed to read meta.json")?;
             let meta: crate::task::TaskMeta =
                 serde_json::from_str(&content).context("failed to parse meta.json")?;
-            Ok(Task { meta, dir: task_dir.clone() })
+            Ok(Task {
+                meta,
+                dir: task_dir.clone(),
+            })
         })();
         match load_result {
             Ok(mut task) => {
@@ -2446,8 +2557,7 @@ pub fn write_current_agent(config: &Config, value: &str) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, value)
-        .with_context(|| format!("failed to write {}", tmp.display()))?;
+    std::fs::write(&tmp, value).with_context(|| format!("failed to write {}", tmp.display()))?;
     std::fs::rename(&tmp, &path)
         .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display()))?;
     Ok(())
@@ -2481,11 +2591,7 @@ pub fn wait_for_handoff(
 
     loop {
         if start.elapsed() >= timeout {
-            tracing::warn!(
-                target = target,
-                "handoff timed out after {}s",
-                timeout_secs
-            );
+            tracing::warn!(target = target, "handoff timed out after {}s", timeout_secs);
             // Check if partial handoff.md exists
             if handoff_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(handoff_path) {
@@ -2523,12 +2629,7 @@ pub fn wait_for_handoff(
 
 /// Respawn an agent (Chief of Staff or PM) with a fresh session.
 /// If `force` is false and the session is running, performs a graceful handoff first.
-pub fn respawn_agent(
-    config: &Config,
-    target: &str,
-    force: bool,
-    timeout_secs: u64,
-) -> Result<()> {
+pub fn respawn_agent(config: &Config, target: &str, force: bool, timeout_secs: u64) -> Result<()> {
     if target.starts_with("researcher:") {
         tracing::info!(target = target, "rejected researcher respawn attempt");
         bail!("Respawning researchers is not supported. Create a new researcher instead.");
@@ -2824,12 +2925,14 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
     // Pre-stamp workspace trust so the harness's first-launch trust dialog
     // doesn't block. Idempotent and cheap; failure is fatal because the
     // dialog is unrecoverable (the agent never reaches a usable state).
-    harness.ensure_workspace_trusted(&prep.cwd).with_context(|| {
-        format!(
-            "failed to pre-stamp workspace trust for Chief of Staff at {}",
-            prep.cwd.display()
-        )
-    })?;
+    harness
+        .ensure_workspace_trusted(&prep.cwd)
+        .with_context(|| {
+            format!(
+                "failed to pre-stamp workspace trust for Chief of Staff at {}",
+                prep.cwd.display()
+            )
+        })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &prompt,
         name: &agent_name,
@@ -2872,7 +2975,10 @@ fn register_long_lived_session(
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    tracing::warn!(session, "agent did not become foreground within 10s; skipping name registration");
+    tracing::warn!(
+        session,
+        "agent did not become foreground within 10s; skipping name registration"
+    );
 }
 
 /// Open a Chief of Staff chat as a tmux popup overlaid on the current pane.
@@ -2908,13 +3014,15 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
 
     let prep =
         prepare_long_lived_launch(&project_dir, &agent_name, &project_dir, kind, force_fresh)?;
-    harness.ensure_workspace_trusted(&prep.cwd).with_context(|| {
-        format!(
-            "failed to pre-stamp workspace trust for PM '{}' at {}",
-            project_name,
-            prep.cwd.display()
-        )
-    })?;
+    harness
+        .ensure_workspace_trusted(&prep.cwd)
+        .with_context(|| {
+            format!(
+                "failed to pre-stamp workspace trust for PM '{}' at {}",
+                project_name,
+                prep.cwd.display()
+            )
+        })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &prompt,
         name: &agent_name,
@@ -2978,7 +3086,11 @@ pub fn create_researcher(
     if !description.is_empty() {
         let inbox_path = config.researcher_inbox(project, name);
         crate::inbox::append_message(&inbox_path, "user", description)?;
-        tracing::debug!(project = project, name = name, "queued research description to inbox");
+        tracing::debug!(
+            project = project,
+            name = name,
+            "queued research description to inbox"
+        );
     }
 
     Ok(researcher)
@@ -3012,14 +3124,16 @@ pub fn start_researcher_session(
 
     let cwd = work_dir.as_deref().unwrap_or(&dir);
     let prep = prepare_long_lived_launch(&dir, &agent_name, cwd, kind, force_fresh)?;
-    harness.ensure_workspace_trusted(&prep.cwd).with_context(|| {
-        format!(
-            "failed to pre-stamp workspace trust for researcher '{}--{}' at {}",
-            project,
-            name,
-            prep.cwd.display()
-        )
-    })?;
+    harness
+        .ensure_workspace_trusted(&prep.cwd)
+        .with_context(|| {
+            format!(
+                "failed to pre-stamp workspace trust for researcher '{}--{}' at {}",
+                project,
+                name,
+                prep.cwd.display()
+            )
+        })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &prompt,
         name: &agent_name,
@@ -3056,7 +3170,11 @@ fn resolve_researcher_work_dir(config: &Config, researcher: &Researcher) -> Opti
 
     // If repo + branch, resolve to worktree
     if let (Some(ref repo), Some(ref branch)) = (&researcher.meta.repo, &researcher.meta.branch) {
-        let wt_dir = config.repos_dir.parent()?.join(format!("{repo}-wt")).join(branch);
+        let wt_dir = config
+            .repos_dir
+            .parent()?
+            .join(format!("{repo}-wt"))
+            .join(branch);
         if wt_dir.exists() {
             return Some(wt_dir);
         }
@@ -3325,8 +3443,8 @@ fn extract_goal_summary(path: &Path) -> Option<String> {
 
 /// Get a formatted status string for a task.
 pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
-    let (repo, branch) = Config::parse_task_id(task_id)
-        .context(format!("invalid task ID: {}", task_id))?;
+    let (repo, branch) =
+        Config::parse_task_id(task_id).context(format!("invalid task ID: {}", task_id))?;
     let task = Task::load(config, &repo, &branch)?;
 
     let mut out = String::new();
@@ -3347,8 +3465,7 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
                 let agent_name = match flow_step {
                     FlowStep::Agent(s) => s.agent.clone(),
                     FlowStep::Loop(l) => {
-                        let agents: Vec<&str> =
-                            l.steps.iter().map(|s| s.agent.as_str()).collect();
+                        let agents: Vec<&str> = l.steps.iter().map(|s| s.agent.as_str()).collect();
                         format!("loop: {}", agents.join(" → "))
                     }
                 };
@@ -3370,7 +3487,8 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
         }
         Err(_) => format!(
             "Flow: {} (step {})\n",
-            task.meta.flow_name, task.meta.flow_step + 1,
+            task.meta.flow_name,
+            task.meta.flow_step + 1,
         ),
     };
     out.push_str(&flow_line);
@@ -3395,7 +3513,11 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
     if queue.is_empty() {
         out.push_str("Queue: empty\n");
     } else {
-        out.push_str(&format!("Queue: {} item{}\n", queue.len(), if queue.len() == 1 { "" } else { "s" }));
+        out.push_str(&format!(
+            "Queue: {} item{}\n",
+            queue.len(),
+            if queue.len() == 1 { "" } else { "s" }
+        ));
         for item in &queue {
             match item {
                 QueueItem::Feedback { text } => {
@@ -3407,7 +3529,10 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
                     out.push_str(&format!("  [feedback] {}\n", truncated));
                 }
                 QueueItem::Command { command_id, branch } => {
-                    let branch_str = branch.as_deref().map(|b| format!(" ({})", b)).unwrap_or_default();
+                    let branch_str = branch
+                        .as_deref()
+                        .map(|b| format!(" ({})", b))
+                        .unwrap_or_default();
                     out.push_str(&format!("  [cmd] {}{}\n", command_id, branch_str));
                 }
             }
@@ -3431,8 +3556,8 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
 
 /// Read the full contents of a task's TASK.md.
 pub fn get_task_current_plan(config: &Config, task_id: &str) -> Result<String> {
-    let (repo, branch) = Config::parse_task_id(task_id)
-        .context(format!("invalid task ID: {}", task_id))?;
+    let (repo, branch) =
+        Config::parse_task_id(task_id).context(format!("invalid task ID: {}", task_id))?;
     let task = Task::load(config, &repo, &branch)?;
     let plan_path = task.dir.join("TASK.md");
 
@@ -3448,8 +3573,8 @@ pub fn get_task_current_plan(config: &Config, task_id: &str) -> Result<String> {
 
 /// Read the last N lines of a task's agent.log.
 pub fn get_task_log_tail(config: &Config, task_id: &str, n: usize) -> Result<String> {
-    let (repo, branch) = Config::parse_task_id(task_id)
-        .context(format!("invalid task ID: {}", task_id))?;
+    let (repo, branch) =
+        Config::parse_task_id(task_id).context(format!("invalid task ID: {}", task_id))?;
     let task = Task::load(config, &repo, &branch)?;
     let log_path = task.dir.join("agent.log");
 
@@ -3507,7 +3632,7 @@ pub struct ChatPollResult {
 fn agent_harness_kind(config: &Config, state_dir: &Path) -> HarnessKind {
     let stamp = state_dir.join("harness");
     if let Ok(raw) = std::fs::read_to_string(&stamp) {
-        if let Some(k) = HarnessKind::from_str(raw.trim()) {
+        if let Ok(k) = raw.trim().parse() {
             return k;
         }
     }
@@ -3542,10 +3667,10 @@ fn check_agent_unread_with_transcript(
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| transcript.to_string_lossy().to_string());
-    match last_viewed.0.get(agent_key) {
-        Some(entry) if entry.transcript_path == canonical && entry.last_marker == marker => false,
-        _ => true,
-    }
+    !matches!(
+        last_viewed.0.get(agent_key),
+        Some(entry) if entry.transcript_path == canonical && entry.last_marker == marker
+    )
 }
 
 /// Collect names of agents with unread assistant messages
@@ -3735,7 +3860,6 @@ pub fn save_harness(config: &Config, kind: HarnessKind) -> Result<()> {
 // Default system prompts
 // ---------------------------------------------------------------------------
 
-
 const DEFAULT_CHIEF_OF_STAFF_PROMPT: &str = r#"You are the Chief of Staff (CoS) for agman. The user is the CEO and runs the show. You support the CEO by staying in the loop on every project, helping the CEO maintain a clear mental model of what's happening, and answering "where are we at?" / "what's blocked?" / "what should we move forward with?" questions on demand.
 
 You have full agman command access. When the CEO directs you to do something — create a project, brief a PM, redirect work — you do it. But when nothing has been directed, your default stance is cautious: don't act unilaterally, don't invent strategy, don't push your own agenda.
@@ -3857,7 +3981,8 @@ pub fn build_pm_prompt(telegram_enabled: bool, project_name: &str) -> String {
         return base;
     }
 
-    let telegram_section = format!(r#"
+    let telegram_section = format!(
+        r#"
 
 ## Telegram
 
@@ -3884,7 +4009,8 @@ Additional rules:
 - Keep Telegram replies concise — this is a mobile chat, not a report.
 - The user sees `[PM:{project_name}]` prepended to your replies, so they always know who is speaking.
 - Never leave the user waiting in silence while you work. Acknowledge first, work second, report third.
-"#);
+"#
+    );
 
     format!("{base}{telegram_section}")
 }
@@ -3906,7 +4032,8 @@ pub fn build_researcher_prompt(
         return base;
     }
 
-    let telegram_section = format!(r#"
+    let telegram_section = format!(
+        r#"
 
 ## Telegram
 
@@ -3933,7 +4060,8 @@ Additional rules:
 - Keep Telegram replies concise — this is a mobile chat, not a report.
 - The user sees `[R:{researcher_name}]` prepended to your replies, so they always know who is speaking.
 - Never leave the user waiting in silence while you work. Acknowledge first, work second, report third.
-"#);
+"#
+    );
 
     format!("{base}{telegram_section}")
 }
