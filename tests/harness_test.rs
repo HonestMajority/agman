@@ -375,6 +375,99 @@ fn codex_register_session_name_polls_session_index() {
     ));
 }
 
+#[test]
+fn codex_register_session_name_retries_until_indexed() {
+    // Pin: codex /rename can land in a half-mounted bracket-paste UI on
+    // step 2+ relaunches. The retry helper retries until the entry shows
+    // up in session_index.jsonl. Simulate codex writing the entry only on
+    // the second paste attempt; assert the helper returns Ok(true).
+    use agman::harness::register_session_name_with_retry_for_test;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    let index_path = codex_home.path().join("session_index.jsonl");
+    let name = "agman-task-foo--bar-step-2";
+
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_in_paste = Arc::clone(&attempts);
+    let index_path_in_paste = index_path.clone();
+    let name_owned = name.to_string();
+
+    let paste = Box::new(move || {
+        let n = attempts_in_paste.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == 2 {
+            // Simulate codex's TUI finally accepting the paste and writing
+            // the index entry. Spawn a side thread so the entry shows up
+            // *during* the poll window of attempt 2, not before paste returns.
+            let p = index_path_in_paste.clone();
+            let nm = name_owned.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                std::fs::write(&p, format!("{{\"thread_name\":\"{nm}\"}}\n")).unwrap();
+            });
+        }
+        Ok(())
+    });
+
+    let result = register_session_name_with_retry_for_test(
+        paste,
+        &index_path,
+        name,
+        Duration::from_millis(0),
+        Duration::from_millis(500),
+        3,
+    )
+    .unwrap();
+    assert!(result, "retry helper must return true once indexed");
+    // Should have stopped at attempt 2 (the one that succeeded).
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn codex_register_session_name_returns_ok_on_timeout_after_retries() {
+    // Pin: when codex never indexes the rename (e.g., update prompt
+    // swallows /rename), the retry helper must still return Ok(false)
+    // after exhausting attempts. The session is still usable; just not
+    // resume-by-name.
+    use agman::harness::register_session_name_with_retry_for_test;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    let index_path = codex_home.path().join("session_index.jsonl");
+    let name = "agman-task-foo--bar-step-2";
+
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_in_paste = Arc::clone(&attempts);
+
+    let paste = Box::new(move || {
+        attempts_in_paste.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+
+    let result = register_session_name_with_retry_for_test(
+        paste,
+        &index_path,
+        name,
+        Duration::from_millis(0),
+        Duration::from_millis(150),
+        3,
+    )
+    .unwrap();
+    assert!(
+        !result,
+        "retry helper must return false after all attempts time out"
+    );
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        3,
+        "all 3 attempts must run when none succeed"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // `ensure_workspace_trusted` — claude (`~/.claude.json`) and codex
 // (`~/.codex/config.toml`).
