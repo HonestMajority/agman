@@ -178,7 +178,48 @@ pub fn classify(task: &Task) -> PollTarget {
 /// back to Ctrl-C — but never SIGTERM/SIGKILL the pane pid (that destroys
 /// the tmux window).
 pub fn kill_current_agent(harness: &dyn crate::harness::Harness, session_name: &str) -> Result<()> {
+    #[cfg(test)]
+    if let Some(result) = KILL_CURRENT_AGENT_HOOK.with(|hook| {
+        hook.borrow_mut()
+            .as_mut()
+            .map(|hook| hook(harness.kind(), session_name))
+    }) {
+        return result;
+    }
+
     harness.kill_pane(session_name, Some(AGMAN_WINDOW))
+}
+
+#[cfg(test)]
+type KillCurrentAgentHook = Box<dyn FnMut(HarnessKind, &str) -> Result<()>>;
+
+#[cfg(test)]
+thread_local! {
+    static KILL_CURRENT_AGENT_HOOK: std::cell::RefCell<Option<KillCurrentAgentHook>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+struct KillCurrentAgentHookGuard;
+
+#[cfg(test)]
+impl Drop for KillCurrentAgentHookGuard {
+    fn drop(&mut self) {
+        KILL_CURRENT_AGENT_HOOK.with(|hook| {
+            *hook.borrow_mut() = None;
+        });
+    }
+}
+
+#[cfg(test)]
+fn set_kill_current_agent_hook_for_test<F>(hook: F) -> KillCurrentAgentHookGuard
+where
+    F: FnMut(HarnessKind, &str) -> Result<()> + 'static,
+{
+    KILL_CURRENT_AGENT_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+    KillCurrentAgentHookGuard
 }
 
 /// Wait until the foreground process is NOT a shell — i.e. the agent has
@@ -288,8 +329,17 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
         }
     }
 
-    // Kill the prior agent and wait for the pane to be idle.
-    kill_current_agent(harness.as_ref(), &session_name)?;
+    // Kill the prior agent and wait for the pane to be idle. Use the
+    // harness recorded on the prior SessionEntry, not the just-selected
+    // launch harness, so a global harness flip between steps doesn't send
+    // the wrong slash command to the already-running agent.
+    let kill_harness = task
+        .meta
+        .session_history
+        .last()
+        .map(|s| s.harness.select())
+        .unwrap_or_else(|| config.harness_kind().select());
+    kill_current_agent(kill_harness.as_ref(), &session_name)?;
 
     // Wipe all sentinel files so the new agent's signal can't be confused
     // with stale state from the previous step.
@@ -2027,6 +2077,56 @@ mod tests {
             task.meta.session_history.len(),
             1,
             "no new SessionEntry should be appended when launch fails"
+        );
+    }
+
+    #[test]
+    fn start_agent_step_kills_prior_session_with_recorded_harness_after_global_flip() {
+        // Regression: the next launch reads the current global harness, but
+        // the prior live agent must be killed with the harness that spawned
+        // that prior SessionEntry. Otherwise a mid-flow global flip can send
+        // claude's `/exit` to a codex session instead of codex's `/quit`.
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        crate::use_cases::save_harness(&config, HarnessKind::Claude).unwrap();
+        assert_eq!(config.harness_kind(), HarnessKind::Claude);
+
+        prime_for_start_agent_step(&config, &task, "coder");
+        let expected_tmux_session = task.meta.primary_repo().tmux_session.clone();
+        task.push_session(SessionEntry {
+            agent: "coder".to_string(),
+            name: "agman-task-r--b-step-1".to_string(),
+            started_at: chrono::Utc::now(),
+            stopped_at: None,
+            condition: None,
+            harness: HarnessKind::Codex,
+        })
+        .unwrap();
+
+        let kill_calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded_calls = std::rc::Rc::clone(&kill_calls);
+        let _guard = set_kill_current_agent_hook_for_test(move |kind, session| {
+            recorded_calls
+                .borrow_mut()
+                .push((kind, session.to_string()));
+            Ok(())
+        });
+
+        let result = start_agent_step(&config, &mut task, "coder");
+        assert!(result.is_err(), "tmux send_keys must fail in test env");
+
+        let kill_calls = kill_calls.borrow();
+        assert_eq!(kill_calls.len(), 1, "prior agent kill must run once");
+        assert_eq!(
+            kill_calls[0].0,
+            HarnessKind::Codex,
+            "kill path must use the prior SessionEntry harness, not the current global harness"
+        );
+        assert_eq!(kill_calls[0].1, expected_tmux_session);
+        assert_eq!(
+            task.meta.session_history.len(),
+            1,
+            "failed relaunch should not append a new SessionEntry"
         );
     }
 
