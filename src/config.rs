@@ -38,7 +38,7 @@ pub struct ConfigFile {
     pub telegram_bot_token: Option<String>,
     pub telegram_chat_id: Option<String>,
     /// Which agent harness to use for newly-spawned agents. `"claude"`,
-    /// `"codex"`, or `"goose"`. Defaults to `"claude"` when absent.
+    /// `"codex"`, `"goose"`, or `"pi"`. Defaults to `"claude"` when absent.
     pub harness: Option<String>,
 }
 
@@ -286,7 +286,7 @@ impl Config {
         self.project_dir(name).join("session-id")
     }
 
-    /// Stamped working directory for a long-lived codex/goose session,
+    /// Stamped working directory for a long-lived codex/goose/pi session,
     /// captured on first launch. Reused on resume so the harness restarts
     /// from the original generation cwd.
     pub fn launch_cwd_path(state_dir: &Path) -> PathBuf {

@@ -3890,6 +3890,51 @@ fn start_agent_step_queues_inbox_work_directive() {
     );
 }
 
+#[test]
+fn start_agent_step_with_pi_prepares_identity_file_and_session_dir() {
+    use agman::harness::{self, HarnessKind};
+    use agman::inbox;
+    use agman::supervisor;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    use_cases::save_harness(&config, HarnessKind::Pi).unwrap();
+
+    let mut task = create_test_task(&config, "myrepo", "feat-pi");
+    task.write_task("# Goal\nDo the Pi launch work.\n").unwrap();
+    std::fs::write(config.prompt_path("coder"), "You are a Pi coder.\n").unwrap();
+
+    let result = supervisor::start_agent_step(&config, &mut task, "coder");
+    assert!(result.is_err(), "tmux send_keys must fail in test env");
+
+    let session_name = format!("agman-task-{}-step-1", task.meta.task_id());
+    let identity_file = harness::pi::identity_file_path(&task.dir, &session_name);
+    assert!(identity_file.exists(), "pi identity file must be prepared");
+    assert!(
+        std::fs::read_to_string(&identity_file)
+            .unwrap()
+            .contains("You are a Pi coder."),
+        "identity file should contain the agent system prompt"
+    );
+    assert!(
+        harness::pi::task_session_dir(&task.dir, &session_name).exists(),
+        "pi per-step session dir must be prepared"
+    );
+
+    let messages = inbox::read_messages(&config.task_inbox(&task.meta.task_id())).unwrap();
+    assert_eq!(messages.len(), 1, "work directive should still be queued");
+    assert!(
+        task.meta.session_history.is_empty(),
+        "failed tmux launch must not push a SessionEntry"
+    );
+    let raw_meta = std::fs::read_to_string(task.dir.join("meta.json")).unwrap();
+    assert!(
+        !raw_meta.contains("\"harness\""),
+        "TaskMeta must not grow a root harness field"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Project templates
 // ---------------------------------------------------------------------------
@@ -3992,6 +4037,7 @@ fn long_lived_first_launch_claude_stamps_session_id() {
         identity: "Identity body",
         name: &prep.session_name,
         identity_file: None,
+        session_dir: None,
         cwd: &prep.cwd,
         no_alt_screen: false,
         session_key: SessionKey::Pin(&uuid),
@@ -4071,6 +4117,7 @@ fn long_lived_resume_claude_emits_resume_flag() {
         identity: "Identity body",
         name: &prep.session_name,
         identity_file: None,
+        session_dir: None,
         cwd: &prep.cwd,
         no_alt_screen: false,
         session_key: SessionKey::Resume(pinned_uuid),
@@ -4120,6 +4167,7 @@ fn long_lived_resume_codex_emits_resume_subcommand() {
         identity: "Identity body",
         name: &prep.session_name,
         identity_file: None,
+        session_dir: None,
         cwd: &prep.cwd,
         no_alt_screen: true,
         session_key: SessionKey::Resume(&prep.session_name),
@@ -4170,6 +4218,7 @@ fn long_lived_goose_resume_uses_session_name_launch_cwd_and_identity_path() {
         identity: "Identity body",
         name: &prep.session_name,
         identity_file: Some(&identity_file),
+        session_dir: None,
         cwd: &prep.cwd,
         no_alt_screen: false,
         session_key: SessionKey::Resume(&prep.session_name),
@@ -4179,6 +4228,187 @@ fn long_lived_goose_resume_uses_session_name_launch_cwd_and_identity_path() {
     assert!(cmd.contains("--with-builtin developer,tom"));
     assert!(cmd.contains(&format!("--resume --name '{stamped_name}'")));
     assert!(cmd.contains(&identity_file.to_string_lossy().to_string()));
+}
+
+#[test]
+fn long_lived_pi_first_launch_stamps_name_cwd_session_dir_and_identity() {
+    use agman::harness::{self, HarnessKind, LaunchContext};
+    use agman::use_cases::{
+        prepare_identity_file_for_harness_for_test, prepare_long_lived_launch_for_test,
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    let cwd = tmp.path().join("worktree");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        &cwd,
+        HarnessKind::Pi,
+        false,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(prep.mode, "auto");
+    assert!(prep.is_first_launch);
+    assert!(prep.handle.is_none());
+    assert_eq!(
+        std::fs::read_to_string(state_dir.join("session-name"))
+            .unwrap()
+            .trim(),
+        prep.session_name
+    );
+    assert_eq!(
+        std::fs::read_to_string(state_dir.join("launch-cwd"))
+            .unwrap()
+            .trim(),
+        cwd.to_string_lossy()
+    );
+    assert_eq!(
+        prep.session_dir.as_deref(),
+        Some(harness::pi::long_lived_session_dir(&state_dir).as_path())
+    );
+    assert!(prep.session_dir.as_ref().unwrap().exists());
+
+    let identity_file = prepare_identity_file_for_harness_for_test(
+        HarnessKind::Pi,
+        &state_dir,
+        &prep.session_name,
+        "Pi identity body",
+        prep.is_first_launch,
+    )
+    .unwrap()
+    .expect("pi uses an identity file");
+    assert_eq!(
+        std::fs::read_to_string(&identity_file).unwrap(),
+        "Pi identity body"
+    );
+
+    let h = HarnessKind::Pi.select();
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Pi identity body",
+        name: &prep.session_name,
+        identity_file: Some(&identity_file),
+        session_dir: prep.session_dir.as_deref(),
+        cwd: &prep.cwd,
+        no_alt_screen: false,
+        session_key: agman::harness::SessionKey::Auto,
+    });
+    assert!(cmd.contains("pi --offline"));
+    assert!(cmd.contains("--append-system-prompt "));
+    assert!(cmd.contains("--session-dir "));
+    assert!(cmd.contains("--tools read,bash,edit,write,grep,find,ls"));
+    assert!(!cmd.contains("--continue"));
+}
+
+#[test]
+fn long_lived_pi_resume_uses_session_dir_continue_and_stamped_cwd() {
+    use agman::harness::{self, HarnessKind, LaunchContext, SessionKey};
+    use agman::use_cases::{
+        prepare_identity_file_for_harness_for_test, prepare_long_lived_launch_for_test,
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let stamped_name = "agman-chief-of-staff-260101-000000-pi123456";
+    std::fs::write(state_dir.join("session-name"), stamped_name).unwrap();
+    let stamped_cwd = tmp.path().join("pi-worktree");
+    std::fs::create_dir_all(&stamped_cwd).unwrap();
+    std::fs::write(
+        state_dir.join("launch-cwd"),
+        stamped_cwd.to_string_lossy().as_ref(),
+    )
+    .unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        tmp.path(),
+        HarnessKind::Pi,
+        false,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(prep.mode, "resume");
+    assert!(!prep.is_first_launch);
+    assert_eq!(prep.handle.as_deref(), Some(stamped_name));
+    assert_eq!(prep.session_name, stamped_name);
+    assert_eq!(prep.cwd, stamped_cwd);
+    assert_eq!(
+        prep.session_dir.as_deref(),
+        Some(harness::pi::long_lived_session_dir(&state_dir).as_path())
+    );
+
+    let identity_file = prepare_identity_file_for_harness_for_test(
+        HarnessKind::Pi,
+        &state_dir,
+        &prep.session_name,
+        "Fresh Pi identity on resume",
+        false,
+    )
+    .unwrap()
+    .expect("pi uses an identity file on resume");
+    let h = HarnessKind::Pi.select();
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Fresh Pi identity on resume",
+        name: &prep.session_name,
+        identity_file: Some(&identity_file),
+        session_dir: prep.session_dir.as_deref(),
+        cwd: &prep.cwd,
+        no_alt_screen: false,
+        session_key: SessionKey::Resume(&prep.session_name),
+    });
+    assert!(cmd.contains("--continue"));
+    assert!(cmd.contains("--append-system-prompt "));
+    assert!(cmd.contains("--session-dir "));
+    assert!(!cmd.contains("--system-prompt"));
+    assert!(!cmd.contains("--session-id"));
+}
+
+#[test]
+fn long_lived_resume_pi_falls_back_when_stamped_cwd_missing() {
+    use agman::harness::HarnessKind;
+    use agman::use_cases::prepare_long_lived_launch_for_test;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_dir = tmp.path().join("ceo");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(
+        state_dir.join("session-name"),
+        "agman-chief-of-staff-260101-000000-pi999999",
+    )
+    .unwrap();
+    let deleted_cwd = tmp.path().join("deleted-pi-cwd");
+    std::fs::create_dir_all(&deleted_cwd).unwrap();
+    std::fs::remove_dir_all(&deleted_cwd).unwrap();
+    std::fs::write(
+        state_dir.join("launch-cwd"),
+        deleted_cwd.to_string_lossy().as_ref(),
+    )
+    .unwrap();
+
+    let live_cwd = tmp.path().join("live-pi-worktree");
+    std::fs::create_dir_all(&live_cwd).unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &state_dir,
+        "agman-chief-of-staff",
+        &live_cwd,
+        HarnessKind::Pi,
+        false,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(prep.mode, "resume");
+    assert_eq!(prep.cwd, live_cwd);
+    assert_ne!(prep.cwd, deleted_cwd);
+    assert!(prep.session_dir.unwrap().exists());
 }
 
 #[test]
@@ -4280,6 +4510,35 @@ fn long_lived_force_fresh_ignores_stamped_handle() {
     assert_ne!(prep.session_name, stale_name);
     let stamped = std::fs::read_to_string(codex_state.join("launch-cwd")).unwrap();
     assert_eq!(stamped.trim(), tmp.path().to_string_lossy());
+
+    // --- Pi path ---
+    let pi_state = tmp.path().join("pi-ceo");
+    std::fs::create_dir_all(&pi_state).unwrap();
+    std::fs::write(pi_state.join("launch-cwd"), "/old/pi/path").unwrap();
+    std::fs::write(pi_state.join("session-name"), stale_name).unwrap();
+
+    let prep = prepare_long_lived_launch_for_test(
+        &pi_state,
+        "agman-chief-of-staff",
+        tmp.path(),
+        HarnessKind::Pi,
+        true,
+        None,
+    )
+    .unwrap();
+    assert_eq!(prep.mode, "auto");
+    assert!(prep.is_first_launch);
+    assert_ne!(prep.session_name, stale_name);
+    assert_eq!(
+        std::fs::read_to_string(pi_state.join("launch-cwd"))
+            .unwrap()
+            .trim(),
+        tmp.path().to_string_lossy()
+    );
+    assert_eq!(
+        prep.session_dir.as_deref(),
+        Some(agman::harness::pi::long_lived_session_dir(&pi_state).as_path())
+    );
 }
 
 #[test]
@@ -4424,6 +4683,29 @@ fn task_meta_session_entry_records_harness_round_trip() {
     let reloaded = Task::load(&config, "repo", "branch").unwrap();
     let last = reloaded.meta.session_history.last().unwrap();
     assert_eq!(last.harness, HarnessKind::Goose);
+}
+
+#[test]
+fn task_meta_session_entry_records_pi_harness_round_trip() {
+    use agman::harness::HarnessKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+
+    task.push_session(SessionEntry {
+        agent: "coder".to_string(),
+        name: "agman-task-repo--branch-step-1".to_string(),
+        started_at: chrono::Utc::now(),
+        stopped_at: None,
+        condition: None,
+        harness: HarnessKind::Pi,
+    })
+    .unwrap();
+
+    let reloaded = Task::load(&config, "repo", "branch").unwrap();
+    let last = reloaded.meta.session_history.last().unwrap();
+    assert_eq!(last.harness, HarnessKind::Pi);
 }
 
 #[test]

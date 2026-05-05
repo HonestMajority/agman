@@ -4,6 +4,7 @@
 //! - `claude` (Anthropic Claude Code CLI)
 //! - `codex`  (OpenAI Codex CLI)
 //! - `goose`  (Block Goose CLI)
+//! - `pi`     (Pi coding agent CLI)
 //!
 //! The user picks one in the TUI settings view; the choice is persisted as
 //! `harness = "..."` in `~/.agman/config.toml` and applies to every newly
@@ -21,6 +22,7 @@ use std::str::FromStr;
 pub mod claude;
 pub mod codex;
 pub mod goose;
+pub mod pi;
 
 /// Test-only re-export of the codex session_index polling helper. Used by
 /// integration tests to verify the polling logic without a running codex.
@@ -71,6 +73,7 @@ pub fn ensure_workspace_trusted_for_test(
         HarnessKind::Claude => claude::ensure_workspace_trusted_in(trust_file, cwd),
         HarnessKind::Codex => codex::ensure_workspace_trusted_in(trust_file, cwd),
         HarnessKind::Goose => Ok(()),
+        HarnessKind::Pi => Ok(()),
     }
 }
 
@@ -82,25 +85,28 @@ pub enum HarnessKind {
     Claude,
     Codex,
     Goose,
+    Pi,
 }
 
 impl HarnessKind {
-    pub const ALL: &'static [Self] = &[Self::Claude, Self::Codex, Self::Goose];
+    pub const ALL: &'static [Self] = &[Self::Claude, Self::Codex, Self::Goose, Self::Pi];
 
     pub fn as_str(&self) -> &'static str {
         match self {
             HarnessKind::Claude => "claude",
             HarnessKind::Codex => "codex",
             HarnessKind::Goose => "goose",
+            HarnessKind::Pi => "pi",
         }
     }
 
-    /// Materialize the trait object. Cheap — both impls are zero-sized.
+    /// Materialize the trait object. Cheap — harness impls are zero-sized.
     pub fn select(self) -> Box<dyn Harness> {
         match self {
             HarnessKind::Claude => Box::new(claude::ClaudeHarness),
             HarnessKind::Codex => Box::new(codex::CodexHarness),
             HarnessKind::Goose => Box::new(goose::GooseHarness),
+            HarnessKind::Pi => Box::new(pi::PiHarness),
         }
     }
 }
@@ -113,6 +119,7 @@ impl FromStr for HarnessKind {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             "goose" => Ok(Self::Goose),
+            "pi" => Ok(Self::Pi),
             _ => Err(()),
         }
     }
@@ -147,38 +154,43 @@ pub fn read_or_stamp(state_dir: &Path, default_kind: HarnessKind) -> Result<Harn
 /// `Pin` on first launch and `Resume` on subsequent launches.
 ///
 /// The `'a` lifetime borrows the stamped session-id (claude) or
-/// stamped unique session name (codex/goose) from the caller.
+/// stamped unique session name (codex/goose/pi) from the caller.
 #[derive(Debug, Clone, Copy)]
 pub enum SessionKey<'a> {
     /// No resume, no pin. Claude and goose receive the launch name directly;
-    /// codex may be renamed post-launch via `/rename`.
+    /// codex/pi may be renamed post-launch via `/rename` or `/name`.
     Auto,
     /// First launch of a long-lived agent. Claude pins the supplied UUID
-    /// via `--session-id <uuid>`. Codex/goose have no launch-time session-id
+    /// via `--session-id <uuid>`. Codex/goose/pi have no launch-time session-id
     /// pin and treat this like `Auto`.
     Pin(&'a str),
     /// Resume an existing long-lived session. Claude resumes by UUID
-    /// (`--resume <uuid>`); codex/goose resume by stamped unique name.
+    /// (`--resume <uuid>`); codex/goose resume by stamped unique name;
+    /// pi resumes latest session in a private session dir via `--continue`.
     Resume(&'a str),
 }
 
 /// Static input for `Harness::build_session_command`. Names follow the
 /// harness's resume / session-listing convention so the user can reattach
 /// manually from a shell (`claude --resume <id>`, `codex resume <name>`, or
-/// `goose session --resume --name <name>`).
+/// `goose session --resume --name <name>`; pi uses its private session dir).
 pub struct LaunchContext<'a> {
     /// Inline system-prompt body. Passed to claude via `--system-prompt` and
     /// to codex via `-c 'developer_instructions="""..."""'`. Skipped on
     /// `SessionKey::Resume` for claude/codex (the resumed thread already
-    /// has its system prompt baked in). Goose receives the same body through
-    /// `identity_file`.
+    /// has its system prompt baked in). Harnesses that need a file receive
+    /// the same body through `identity_file`.
     pub identity: &'a str,
     /// Session name passed to the harness. Long-lived agents use a stamped
     /// unique generation name; task agents use a unique step name.
     pub name: &'a str,
-    /// Goose-only: persistent MOIM instructions file passed via
-    /// `GOOSE_MOIM_MESSAGE_FILE`.
+    /// Harness-specific identity file. Goose passes this via
+    /// `GOOSE_MOIM_MESSAGE_FILE`; pi passes this via
+    /// `--append-system-prompt`.
     pub identity_file: Option<&'a Path>,
+    /// Harness-specific private session directory. Pi passes this via
+    /// `--session-dir`; other harnesses ignore it.
+    pub session_dir: Option<&'a Path>,
     /// Working directory for the launched process.
     pub cwd: &'a Path,
     /// Codex-only: pass `--no-alt-screen` so `tmux capture-pane` can read
@@ -191,7 +203,8 @@ pub struct LaunchContext<'a> {
 }
 
 /// Static input for `Harness::register_session_name`. Used by codex's
-/// post-launch `/rename <name>` step. Claude/goose no-op.
+/// post-launch `/rename <name>` step and pi's `/name <name>` step.
+/// Claude/goose no-op.
 pub struct RegisterContext<'a> {
     pub session: &'a str,
     pub window: Option<&'a str>,
@@ -235,23 +248,26 @@ pub trait Harness: Send + Sync {
     ///   and return Ok — the session is still usable, just not
     ///   resume-by-name.
     /// - Goose: no-op.
+    /// - Pi: best-effort paste `/name <name>` + Enter.
     fn register_session_name(&self, ctx: &RegisterContext) -> Result<()>;
 
     /// Tear down the foreground agent in a tmux pane gracefully.
     /// - Claude: `/exit` + Enter, fallback Ctrl-C × 2.
     /// - Codex:  `/quit` + Enter, fallback Ctrl-C × 3.
     /// - Goose:  `/exit`, Enter in a separate tmux call, fallback Ctrl-C × 3.
+    /// - Pi:     `/quit` + Enter, fallback Ctrl-C × 3.
     fn kill_pane(&self, session: &str, window: Option<&str>) -> Result<()>;
 }
 
 /// Resolve the home directory for a harness, honoring optional env overrides
 /// used by tests. `AGMAN_CLAUDE_HOME` overrides the claude home; similarly
-/// for codex.
+/// for other harnesses.
 pub fn harness_home(kind: HarnessKind) -> PathBuf {
     let env_var = match kind {
         HarnessKind::Claude => "AGMAN_CLAUDE_HOME",
         HarnessKind::Codex => "AGMAN_CODEX_HOME",
         HarnessKind::Goose => "AGMAN_GOOSE_HOME",
+        HarnessKind::Pi => "AGMAN_PI_HOME",
     };
     if let Ok(dir) = std::env::var(env_var) {
         return PathBuf::from(dir);
@@ -261,6 +277,7 @@ pub fn harness_home(kind: HarnessKind) -> PathBuf {
         HarnessKind::Claude => home.join(".claude"),
         HarnessKind::Codex => home.join(".codex"),
         HarnessKind::Goose => home.join(".local").join("share").join("goose"),
+        HarnessKind::Pi => home.join(".pi").join("agent"),
     }
 }
 

@@ -63,8 +63,9 @@ pub struct RepoEntry {
 /// A single interactive agent session run by the supervisor.
 ///
 /// Records the deterministic session name passed to the harness at launch
-/// (`claude --name <name>`, `codex` post-launch `/rename <name>`, or
-/// `goose --name <name>`) so the user can manually reattach from a shell.
+/// (`claude --name <name>`, `codex` post-launch `/rename <name>`,
+/// `goose --name <name>`, or `pi` post-launch `/name <name>`) so the user can
+/// manually reattach from a shell where the harness supports it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
     pub agent: String,
@@ -79,7 +80,7 @@ pub struct SessionEntry {
     pub condition: Option<String>,
     /// Which harness was used to spawn this session. Used by the kill path
     /// to dispatch the right slash command (`/exit` for claude/goose, `/quit`
-    /// for codex). `#[serde(default)]` so legacy `SessionEntry` records without
+    /// for codex/pi). `#[serde(default)]` so legacy `SessionEntry` records without
     /// this field deserialize to `HarnessKind::default() = Claude`. Risk: a
     /// stale unstopped codex session entry from before the upgrade defaults
     /// to Claude and the kill path dispatches the wrong slash command, which

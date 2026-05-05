@@ -9,13 +9,20 @@ fn harness_kind_round_trips_through_strings() {
     assert_eq!("claude".parse::<HarnessKind>(), Ok(HarnessKind::Claude));
     assert_eq!("codex".parse::<HarnessKind>(), Ok(HarnessKind::Codex));
     assert_eq!("goose".parse::<HarnessKind>(), Ok(HarnessKind::Goose));
+    assert_eq!("pi".parse::<HarnessKind>(), Ok(HarnessKind::Pi));
     assert_eq!("nope".parse::<HarnessKind>(), Err(()));
     assert_eq!(HarnessKind::Claude.as_str(), "claude");
     assert_eq!(HarnessKind::Codex.as_str(), "codex");
     assert_eq!(HarnessKind::Goose.as_str(), "goose");
+    assert_eq!(HarnessKind::Pi.as_str(), "pi");
     assert_eq!(
         HarnessKind::ALL,
-        &[HarnessKind::Claude, HarnessKind::Codex, HarnessKind::Goose]
+        &[
+            HarnessKind::Claude,
+            HarnessKind::Codex,
+            HarnessKind::Goose,
+            HarnessKind::Pi,
+        ]
     );
 }
 
@@ -26,6 +33,7 @@ fn claude_build_session_command_emits_system_prompt_and_name() {
         identity: "Identity body",
         name: "agman-task-myrepo--feat-x-step-1",
         identity_file: None,
+        session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Auto,
@@ -46,6 +54,7 @@ fn claude_build_session_command_escapes_inner_single_quotes() {
         identity: "It's a body with 'quotes'",
         name: "agman-x",
         identity_file: None,
+        session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Auto,
@@ -65,6 +74,7 @@ fn claude_build_session_command_pins_session_id_when_provided() {
         identity: "Identity body",
         name: "agman-chief-of-staff",
         identity_file: None,
+        session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Pin(uuid),
@@ -85,6 +95,7 @@ fn claude_build_session_command_resumes_when_provided() {
         identity: "Identity body",
         name: "agman-chief-of-staff",
         identity_file: None,
+        session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Resume(uuid),
@@ -112,6 +123,7 @@ fn codex_build_session_command_emits_developer_instructions_and_no_alt_screen() 
         identity: "Identity body",
         name: "agman-task-myrepo--feat-x-step-1",
         identity_file: None,
+        session_dir: None,
         cwd: &cwd(),
         no_alt_screen: true,
         session_key: SessionKey::Auto,
@@ -149,6 +161,7 @@ fn codex_build_session_command_does_not_emit_skip_git_repo_check() {
             identity: "Identity body",
             name: "agman-task-myrepo--feat-x-step-1",
             identity_file: None,
+            session_dir: None,
             cwd: &work_dir,
             no_alt_screen: true,
             session_key: key,
@@ -179,6 +192,7 @@ fn codex_build_session_command_always_bypasses_approvals_and_sandbox() {
             identity: "Identity body",
             name: "agman-task-myrepo--feat-x-step-1",
             identity_file: None,
+            session_dir: None,
             cwd: &work_dir,
             no_alt_screen: true,
             session_key: key,
@@ -201,6 +215,7 @@ fn codex_build_session_command_emits_resume_subcommand() {
         identity: "Identity body",
         name: "agman-chief-of-staff",
         identity_file: None,
+        session_dir: None,
         cwd: &work_dir,
         no_alt_screen: true,
         session_key: SessionKey::Resume("agman-chief-of-staff"),
@@ -229,6 +244,7 @@ fn codex_build_session_command_escapes_triple_quotes_in_body() {
         identity: "Pre \"\"\" mid",
         name: "x",
         identity_file: None,
+        session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Auto,
@@ -246,6 +262,7 @@ fn goose_build_session_command_emits_auto_mode_moim_and_name() {
         identity: "Identity body",
         name: "agman-goose's-name",
         identity_file: Some(&identity_file),
+        session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Auto,
@@ -268,6 +285,7 @@ fn goose_build_session_command_resumes_by_name() {
         identity: "Identity body",
         name: "agman-goose",
         identity_file: Some(&identity_file),
+        session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Resume("agman-goose"),
@@ -275,6 +293,79 @@ fn goose_build_session_command_resumes_by_name() {
     assert!(cmd.contains("goose session"));
     assert!(cmd.contains("--resume --name 'agman-goose'"));
     assert!(!cmd.contains("Identity body"));
+}
+
+#[test]
+fn pi_build_session_command_emits_offline_identity_session_dir_and_tools() {
+    let h = HarnessKind::Pi.select();
+    let tmp = tempfile::tempdir().unwrap();
+    let identity_file = tmp.path().join("identity").join("pi identity.md");
+    let session_dir = tmp.path().join("pi sessions").join("run one");
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-pi",
+        identity_file: Some(&identity_file),
+        session_dir: Some(&session_dir),
+        cwd: &cwd(),
+        no_alt_screen: false,
+        session_key: SessionKey::Auto,
+    });
+
+    assert!(cmd.starts_with("PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 pi --offline"));
+    assert!(cmd.contains("--append-system-prompt "));
+    assert!(cmd.contains(&format!("'{}'", identity_file.to_string_lossy())));
+    assert!(cmd.contains("--session-dir "));
+    assert!(cmd.contains(&format!("'{}'", session_dir.to_string_lossy())));
+    assert!(cmd.contains("--tools read,bash,edit,write,grep,find,ls"));
+    assert!(!cmd.contains("--continue"));
+    assert!(!cmd.contains("--system-prompt"));
+    assert!(!cmd.contains("--session "));
+}
+
+#[test]
+fn pi_build_session_command_resumes_with_continue_and_no_session_id() {
+    let h = HarnessKind::Pi.select();
+    let tmp = tempfile::tempdir().unwrap();
+    let identity_file = tmp.path().join("identity").join("pi.md");
+    let session_dir = tmp.path().join("pi-sessions");
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-pi",
+        identity_file: Some(&identity_file),
+        session_dir: Some(&session_dir),
+        cwd: &cwd(),
+        no_alt_screen: false,
+        session_key: SessionKey::Resume("agman-pi"),
+    });
+
+    assert!(cmd.contains("--continue"));
+    assert!(cmd.contains("--append-system-prompt "));
+    assert!(cmd.contains("--session-dir "));
+    assert!(cmd.contains("--tools read,bash,edit,write,grep,find,ls"));
+    assert!(!cmd.contains("--system-prompt"));
+    assert!(!cmd.contains("--session-id"));
+    assert!(!cmd.contains("--session 'agman-pi'"));
+}
+
+#[test]
+fn pi_build_session_command_shell_quotes_single_quotes_in_paths() {
+    let h = HarnessKind::Pi.select();
+    let tmp = tempfile::tempdir().unwrap();
+    let identity_file = tmp.path().join("identity").join("pi's identity.md");
+    let session_dir = tmp.path().join("pi sessions").join("coder's run");
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-pi's-name",
+        identity_file: Some(&identity_file),
+        session_dir: Some(&session_dir),
+        cwd: &cwd(),
+        no_alt_screen: false,
+        session_key: SessionKey::Auto,
+    });
+
+    assert!(cmd.contains("pi'\\''s identity.md"));
+    assert!(cmd.contains("coder'\\''s run"));
+    assert!(!cmd.contains("agman-pi'\\''s-name"));
 }
 
 #[test]
@@ -290,6 +381,7 @@ fn codex_skill_hint_is_empty() {
     let h = HarnessKind::Codex.select();
     assert_eq!(h.skill_hint(), "");
     assert_eq!(HarnessKind::Goose.select().skill_hint(), "");
+    assert_eq!(HarnessKind::Pi.select().skill_hint(), "");
 }
 
 #[test]
@@ -301,6 +393,10 @@ fn install_hints_match_documented_text() {
     let codex_hint = HarnessKind::Codex.select().install_hint();
     assert!(codex_hint.contains("codex") && codex_hint.contains("brew"));
     assert!(HarnessKind::Goose.select().install_hint().contains("Goose"));
+    assert!(HarnessKind::Pi
+        .select()
+        .install_hint()
+        .contains("@mariozechner/pi-coding-agent"));
 }
 
 #[test]
@@ -308,6 +404,23 @@ fn cli_binaries_match_kinds() {
     assert_eq!(HarnessKind::Claude.select().cli_binary(), "claude");
     assert_eq!(HarnessKind::Codex.select().cli_binary(), "codex");
     assert_eq!(HarnessKind::Goose.select().cli_binary(), "goose");
+    assert_eq!(HarnessKind::Pi.select().cli_binary(), "pi");
+}
+
+#[test]
+fn pi_ensure_workspace_trusted_is_noop() {
+    use agman::harness::ensure_workspace_trusted_for_test;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let trust_file = tmp.path().join("does-not-matter");
+    let cwd = tmp.path().join("worktree");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    ensure_workspace_trusted_for_test(HarnessKind::Pi, &trust_file, &cwd).unwrap();
+    assert!(
+        !trust_file.exists(),
+        "pi has no trust file to pre-stamp; test helper should be a no-op"
+    );
 }
 
 #[test]

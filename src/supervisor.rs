@@ -43,7 +43,7 @@ use crate::task::{QueueItem, SessionEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
 
 /// Window name inside a task's tmux session that hosts the interactive
-/// `claude` session driven by the supervisor.
+/// harness session driven by the supervisor.
 pub const AGMAN_WINDOW: &str = "agman";
 
 /// Resolve the tmux session that hosts the supervisor's `agman` window for a
@@ -113,9 +113,9 @@ pub fn ensure_task_tmux(task: &Task) -> Result<String> {
 /// Outcome of a single supervisor poll cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PollOutcome {
-    /// Nothing interesting happened — claude is still running.
+    /// Nothing interesting happened — the harness is still running.
     Idle,
-    /// The user wrote `.stop`; the supervisor should kill claude and halt.
+    /// The user wrote `.stop`; the supervisor should kill the harness and halt.
     StopRequested,
     /// The agent reported a stop condition via `.agent-done` or pane scan.
     Condition(StopCondition),
@@ -273,7 +273,7 @@ fn prepare_system_prompt(
 /// Build the **inbox message** for a step — the dynamic per-launch work
 /// payload (TASK.md, feedback, git diff, recent commits). Caller is
 /// responsible for delivering it via `inbox::append_message` so the TUI's
-/// inbox poller will inject it once claude is ready.
+/// inbox poller will inject it once the harness is ready.
 ///
 /// For stored-command flows the agent's prompt template is the action
 /// directive and is included at the top of the message (`# Action`) with
@@ -282,6 +282,40 @@ fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Resu
     let agent = Agent::load(config, agent_name)?;
     let command_mode = is_command_flow(config, &task.meta.flow_name);
     agent.build_inbox_message(task, command_mode)
+}
+
+fn prepare_identity_file_for_task(
+    kind: HarnessKind,
+    task_dir: &std::path::Path,
+    session_name: &str,
+    identity: &str,
+) -> Result<Option<PathBuf>> {
+    let path = match kind {
+        HarnessKind::Goose => harness::goose::identity_file_path(task_dir, session_name),
+        HarnessKind::Pi => harness::pi::identity_file_path(task_dir, session_name),
+        _ => return Ok(None),
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(&path, identity)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(Some(path))
+}
+
+fn prepare_session_dir_for_task(
+    kind: HarnessKind,
+    task_dir: &std::path::Path,
+    session_name: &str,
+) -> Result<Option<PathBuf>> {
+    if kind != HarnessKind::Pi {
+        return Ok(None);
+    }
+    let path = harness::pi::task_session_dir(task_dir, session_name);
+    std::fs::create_dir_all(&path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    Ok(Some(path))
 }
 
 /// Start an agent step as a fresh interactive agent session.
@@ -372,18 +406,8 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
     let name = format!("agman-task-{}-step-{}", task.meta.task_id(), step_n);
 
     let working_dir = step_working_dir(task)?;
-    let identity_file = if harness_kind == HarnessKind::Goose {
-        let path = harness::goose::identity_file_path(&task.dir, &name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        std::fs::write(&path, &identity)
-            .with_context(|| format!("failed to write {}", path.display()))?;
-        Some(path)
-    } else {
-        None
-    };
+    let identity_file = prepare_identity_file_for_task(harness_kind, &task.dir, &name, &identity)?;
+    let session_dir = prepare_session_dir_for_task(harness_kind, &task.dir, &name)?;
     // Pre-stamp workspace trust for the worktree so the harness's first-
     // launch trust dialog doesn't block. Idempotent and cheap; failure is
     // fatal because the dialog is unrecoverable.
@@ -400,6 +424,7 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
         identity: &identity,
         name: &name,
         identity_file: identity_file.as_deref(),
+        session_dir: session_dir.as_deref(),
         cwd: &working_dir,
         no_alt_screen: matches!(harness_kind, HarnessKind::Codex),
         // Task agents are disposable: every step is a fresh session.
@@ -437,7 +462,7 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
     // Post-launch registration. Wait for the pane to flip to the agent
     // (foreground process != shell), then call the harness hook. For
     // claude/goose this is a no-op (--name already registered the session);
-    // for codex this paste-injects /rename and tails session_index.jsonl.
+    // for codex/pi this paste-injects /rename or /name.
     if wait_for_agent_ready(&session_name, std::time::Duration::from_secs(10)) {
         let harness_home = harness::harness_home(harness_kind);
         let _ = harness.register_session_name(&RegisterContext {
@@ -1078,7 +1103,7 @@ pub fn wake_if_idle(config: &Config, task: &mut Task) -> Result<Option<AdvanceOu
     Ok(Some(launch_next_step(config, task)?))
 }
 
-/// Honor a `.stop` sentinel: kill the currently-running claude, finish the
+/// Honor a `.stop` sentinel: kill the currently-running harness, finish the
 /// live session, restore any pre-command flow snapshot, and transition the
 /// task to Stopped. Idempotent — safe to call even if the session is already
 /// stopped or the sentinel is gone.
@@ -1240,6 +1265,7 @@ mod tests {
             identity: "Identity body",
             name: "agman-task-myrepo--feat-x-step-1",
             identity_file: None,
+            session_dir: None,
             cwd: &cwd,
             no_alt_screen: false,
             session_key: SessionKey::Auto,
@@ -1274,6 +1300,7 @@ mod tests {
                 identity: "Identity body",
                 name: "agman-task-myrepo--feat-x-step-1",
                 identity_file: None,
+                session_dir: None,
                 cwd: &cwd,
                 no_alt_screen: true,
                 session_key: key,
@@ -1294,6 +1321,7 @@ mod tests {
             identity: "Identity body",
             name: "agman-task-myrepo--feat-x-step-1",
             identity_file: None,
+            session_dir: None,
             cwd: &cwd,
             no_alt_screen: true,
             session_key: SessionKey::Auto,
@@ -1983,7 +2011,7 @@ mod tests {
     fn launch_next_step_bails_when_task_not_running() {
         // Race-window guard: a stale `NeedsLaunch` item can arrive at the
         // apply step after the user called `stop_task`. The freshly-reloaded
-        // task meta will then read `Stopped`, and we must not launch claude.
+        // task meta will then read `Stopped`, and we must not launch a harness.
         let tmp = tempfile::tempdir().unwrap();
         let (config, mut task) = build_task(&tmp);
         task.update_status(TaskStatus::Stopped).unwrap();
@@ -2049,7 +2077,7 @@ mod tests {
         // Task agents always start fresh — there is no resume path. A prior
         // session left in the live state (stopped_at == None) must be
         // reconciled before the next launch so `classify` doesn't keep
-        // routing the task to `LiveSession` for a session whose claude is
+        // routing the task to `LiveSession` for a session whose harness is
         // already dead.
         let tmp = tempfile::tempdir().unwrap();
         let (config, mut task) = build_task(&tmp);
@@ -2128,6 +2156,46 @@ mod tests {
             1,
             "failed relaunch should not append a new SessionEntry"
         );
+    }
+
+    #[test]
+    fn start_agent_step_kills_prior_pi_session_with_recorded_harness_after_global_flip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, mut task) = build_task(&tmp);
+        crate::use_cases::save_harness(&config, HarnessKind::Claude).unwrap();
+
+        prime_for_start_agent_step(&config, &task, "coder");
+        let expected_tmux_session = task.meta.primary_repo().tmux_session.clone();
+        task.push_session(SessionEntry {
+            agent: "coder".to_string(),
+            name: "agman-task-r--b-step-1".to_string(),
+            started_at: chrono::Utc::now(),
+            stopped_at: None,
+            condition: None,
+            harness: HarnessKind::Pi,
+        })
+        .unwrap();
+
+        let kill_calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded_calls = std::rc::Rc::clone(&kill_calls);
+        let _guard = set_kill_current_agent_hook_for_test(move |kind, session| {
+            recorded_calls
+                .borrow_mut()
+                .push((kind, session.to_string()));
+            Ok(())
+        });
+
+        let result = start_agent_step(&config, &mut task, "coder");
+        assert!(result.is_err(), "tmux send_keys must fail in test env");
+
+        let kill_calls = kill_calls.borrow();
+        assert_eq!(kill_calls.len(), 1, "prior agent kill must run once");
+        assert_eq!(
+            kill_calls[0].0,
+            HarnessKind::Pi,
+            "kill path must use the prior Pi SessionEntry harness, not the current global harness"
+        );
+        assert_eq!(kill_calls[0].1, expected_tmux_session);
     }
 
     #[test]

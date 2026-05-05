@@ -1353,7 +1353,7 @@ impl App {
             self.log_output(format!("Stopping task {}...", task_id));
 
             // Delegate business logic to use_cases. `stop_task` routes through
-            // `supervisor::honor_stop`, which kills the live claude in the
+            // `supervisor::honor_stop`, which kills the live harness in the
             // agman pane via `/exit` (with Ctrl+C fallback), finalizes the
             // session, and restores any pre-command flow snapshot.
             let config = self.config.clone();
@@ -5318,7 +5318,7 @@ impl App {
         };
 
         // If task is running, stop it first via the supervisor pathway. This
-        // kills the live claude, finalizes the session, and restores any
+        // kills the live harness, finalizes the session, and restores any
         // pre-command flow snapshot — same as the `s` keybinding.
         if status == TaskStatus::Running {
             let config = self.config.clone();

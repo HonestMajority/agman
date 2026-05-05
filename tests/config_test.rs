@@ -126,6 +126,19 @@ fn config_accepts_and_persists_goose_harness() {
 }
 
 #[test]
+fn config_accepts_and_persists_pi_harness() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    agman::use_cases::save_harness(&config, HarnessKind::Pi).unwrap();
+
+    assert_eq!(config.harness_kind(), HarnessKind::Pi);
+    let raw = std::fs::read_to_string(config.base_dir.join("config.toml")).unwrap();
+    assert!(raw.contains("harness = \"pi\""));
+}
+
+#[test]
 fn config_telegram_current_agent_path() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
