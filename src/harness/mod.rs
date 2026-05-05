@@ -3,6 +3,7 @@
 //! agman supports multiple interactive CLI harnesses for hosting agents:
 //! - `claude` (Anthropic Claude Code CLI)
 //! - `codex`  (OpenAI Codex CLI)
+//! - `goose`  (Block Goose CLI)
 //!
 //! The user picks one in the TUI settings view; the choice is persisted as
 //! `harness = "..."` in `~/.agman/config.toml` and applies to every newly
@@ -10,7 +11,7 @@
 //!
 //! Long-lived agents (CEO/PM/researcher) stamp `<state_dir>/harness` on first
 //! spawn so a global flip doesn't break in-flight agents. Task agents capture
-//! `harness` on `TaskMeta` at task-create time.
+//! their spawn-time `harness` on `SessionEntry`.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,7 @@ use std::str::FromStr;
 
 pub mod claude;
 pub mod codex;
+pub mod goose;
 
 /// Test-only re-export of the codex session_index polling helper. Used by
 /// integration tests to verify the polling logic without a running codex.
@@ -54,18 +56,6 @@ pub fn register_session_name_with_retry_for_test(
     )
 }
 
-/// Test-only entrypoint that resolves the most-recently-modified transcript
-/// for `cwd` under an explicit `home` directory. Avoids the env-var-based
-/// dispatch that backs the trait method, so concurrent tests can each point
-/// at their own `TempDir` without serializing on a process-global env var.
-#[doc(hidden)]
-pub fn latest_transcript_for_test(kind: HarnessKind, home: &Path, cwd: &Path) -> Option<PathBuf> {
-    match kind {
-        HarnessKind::Claude => claude::latest_transcript_in(home, cwd),
-        HarnessKind::Codex => codex::latest_transcript_in(home, cwd),
-    }
-}
-
 /// Test-only entrypoint that pre-stamps workspace trust against an explicit
 /// trust-file path (`.claude.json` for claude, `config.toml` for codex).
 /// Avoids the env-var-based dispatch that backs the trait method, so
@@ -80,6 +70,7 @@ pub fn ensure_workspace_trusted_for_test(
     match kind {
         HarnessKind::Claude => claude::ensure_workspace_trusted_in(trust_file, cwd),
         HarnessKind::Codex => codex::ensure_workspace_trusted_in(trust_file, cwd),
+        HarnessKind::Goose => Ok(()),
     }
 }
 
@@ -90,15 +81,17 @@ pub enum HarnessKind {
     #[default]
     Claude,
     Codex,
+    Goose,
 }
 
 impl HarnessKind {
-    pub const ALL: &'static [Self] = &[Self::Claude, Self::Codex];
+    pub const ALL: &'static [Self] = &[Self::Claude, Self::Codex, Self::Goose];
 
     pub fn as_str(&self) -> &'static str {
         match self {
             HarnessKind::Claude => "claude",
             HarnessKind::Codex => "codex",
+            HarnessKind::Goose => "goose",
         }
     }
 
@@ -107,6 +100,7 @@ impl HarnessKind {
         match self {
             HarnessKind::Claude => Box::new(claude::ClaudeHarness),
             HarnessKind::Codex => Box::new(codex::CodexHarness),
+            HarnessKind::Goose => Box::new(goose::GooseHarness),
         }
     }
 }
@@ -118,6 +112,7 @@ impl FromStr for HarnessKind {
         match s.trim() {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
+            "goose" => Ok(Self::Goose),
             _ => Err(()),
         }
     }
@@ -152,35 +147,38 @@ pub fn read_or_stamp(state_dir: &Path, default_kind: HarnessKind) -> Result<Harn
 /// `Pin` on first launch and `Resume` on subsequent launches.
 ///
 /// The `'a` lifetime borrows the stamped session-id (claude) or
-/// deterministic name (codex) from the caller.
+/// stamped unique session name (codex/goose) from the caller.
 #[derive(Debug, Clone, Copy)]
 pub enum SessionKey<'a> {
-    /// No resume, no pin. Claude generates its own UUID; codex auto-names
-    /// (and may be renamed post-launch via `/rename`).
+    /// No resume, no pin. Claude and goose receive the launch name directly;
+    /// codex may be renamed post-launch via `/rename`.
     Auto,
     /// First launch of a long-lived agent. Claude pins the supplied UUID
-    /// via `--session-id <uuid>`. Codex has no launch-time pin and treats
-    /// this like `Auto` (the deterministic name is registered post-launch).
+    /// via `--session-id <uuid>`. Codex/goose have no launch-time session-id
+    /// pin and treat this like `Auto`.
     Pin(&'a str),
     /// Resume an existing long-lived session. Claude resumes by UUID
-    /// (`--resume <uuid>`); codex resumes by deterministic name
-    /// (`codex resume <name>`).
+    /// (`--resume <uuid>`); codex/goose resume by stamped unique name.
     Resume(&'a str),
 }
 
 /// Static input for `Harness::build_session_command`. Names follow the
 /// harness's resume / session-listing convention so the user can reattach
-/// manually from a shell (`claude --resume <name>` / `codex resume <name>`).
+/// manually from a shell (`claude --resume <id>`, `codex resume <name>`, or
+/// `goose session --resume --name <name>`).
 pub struct LaunchContext<'a> {
     /// Inline system-prompt body. Passed to claude via `--system-prompt` and
     /// to codex via `-c 'developer_instructions="""..."""'`. Skipped on
-    /// `SessionKey::Resume` for both harnesses (the resumed thread already
-    /// has its system prompt baked in).
+    /// `SessionKey::Resume` for claude/codex (the resumed thread already
+    /// has its system prompt baked in). Goose receives the same body through
+    /// `identity_file`.
     pub identity: &'a str,
-    /// Stable, deterministic session name (e.g. `agman-chief-of-staff`,
-    /// `agman-pm-<project>`, `agman-r-<project>--<name>`,
-    /// `agman-task-<task-id>-step-<n>`).
+    /// Session name passed to the harness. Long-lived agents use a stamped
+    /// unique generation name; task agents use a unique step name.
     pub name: &'a str,
+    /// Goose-only: persistent MOIM instructions file passed via
+    /// `GOOSE_MOIM_MESSAGE_FILE`.
+    pub identity_file: Option<&'a Path>,
     /// Working directory for the launched process.
     pub cwd: &'a Path,
     /// Codex-only: pass `--no-alt-screen` so `tmux capture-pane` can read
@@ -193,17 +191,17 @@ pub struct LaunchContext<'a> {
 }
 
 /// Static input for `Harness::register_session_name`. Used by codex's
-/// post-launch `/rename <name>` step. Claude no-ops.
+/// post-launch `/rename <name>` step. Claude/goose no-op.
 pub struct RegisterContext<'a> {
     pub session: &'a str,
     pub window: Option<&'a str>,
     pub name: &'a str,
-    /// Harness home dir (`~/.codex` for codex, `~/.claude` for claude).
+    /// Harness home dir (`~/.codex` for codex, `~/.claude` for claude, etc.).
     pub harness_home: &'a Path,
 }
 
-/// Behaviour exposed by a harness. Two impls today: `ClaudeHarness` and
-/// `CodexHarness`. Add new harnesses by adding a `HarnessKind` variant and
+/// Behaviour exposed by a harness. Add new harnesses by adding a
+/// `HarnessKind` variant and
 /// a corresponding impl.
 pub trait Harness: Send + Sync {
     fn kind(&self) -> HarnessKind;
@@ -236,23 +234,14 @@ pub trait Harness: Send + Sync {
     ///   `~/.codex/session_index.jsonl` for ≤ 5s. On timeout: log warning
     ///   and return Ok — the session is still usable, just not
     ///   resume-by-name.
+    /// - Goose: no-op.
     fn register_session_name(&self, ctx: &RegisterContext) -> Result<()>;
 
     /// Tear down the foreground agent in a tmux pane gracefully.
     /// - Claude: `/exit` + Enter, fallback Ctrl-C × 2.
     /// - Codex:  `/quit` + Enter, fallback Ctrl-C × 3.
+    /// - Goose:  `/exit`, Enter in a separate tmux call, fallback Ctrl-C × 3.
     fn kill_pane(&self, session: &str, window: Option<&str>) -> Result<()>;
-
-    /// Most-recently-modified transcript file matching the agent's cwd.
-    /// - Claude: `~/.claude/projects/<escaped-cwd>/*.jsonl` by mtime.
-    /// - Codex:  walks `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`,
-    ///   matching the first-line `session_meta.payload.cwd` field.
-    fn latest_transcript(&self, cwd: &Path) -> Option<PathBuf>;
-
-    /// Stable marker for the last assistant message in a transcript.
-    /// - Claude: last `type=="assistant"` entry's `uuid`.
-    /// - Codex:  last `event_msg{type=agent_message}` entry's `timestamp`.
-    fn find_last_assistant_marker(&self, transcript: &Path) -> Option<String>;
 }
 
 /// Resolve the home directory for a harness, honoring optional env overrides
@@ -262,6 +251,7 @@ pub fn harness_home(kind: HarnessKind) -> PathBuf {
     let env_var = match kind {
         HarnessKind::Claude => "AGMAN_CLAUDE_HOME",
         HarnessKind::Codex => "AGMAN_CODEX_HOME",
+        HarnessKind::Goose => "AGMAN_GOOSE_HOME",
     };
     if let Ok(dir) = std::env::var(env_var) {
         return PathBuf::from(dir);
@@ -270,5 +260,10 @@ pub fn harness_home(kind: HarnessKind) -> PathBuf {
     match kind {
         HarnessKind::Claude => home.join(".claude"),
         HarnessKind::Codex => home.join(".codex"),
+        HarnessKind::Goose => home.join(".local").join("share").join("goose"),
     }
+}
+
+pub(crate) fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }

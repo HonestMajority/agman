@@ -85,19 +85,10 @@ pub enum View {
     RespawnConfirm,
 }
 
-/// Which persistent session a tmux popup is currently attached to.
-/// Determines the side-effects dispatched when the popup closes.
-enum PopupKind {
-    ChiefOfStaff,
-    Pm { project: String },
-    Researcher,
-}
-
 /// A live tmux popup spawned by agman. The `Child` is polled each tick of
 /// the main loop via `try_wait` so the loop never blocks on the popup.
 struct ActivePopup {
     child: std::process::Child,
-    kind: PopupKind,
 }
 
 /// Which wizard requested the directory picker.
@@ -696,12 +687,6 @@ pub struct App {
     keybase_poll_active: bool,
     pub keybase_first_poll_done: bool,
     pub keybase_available: bool,
-    // Chat unread polling
-    pub chat_unread_names: Vec<String>,
-    pub last_chat_poll: Instant,
-    chat_poll_tx: tokio_mpsc::UnboundedSender<use_cases::ChatPollResult>,
-    chat_poll_rx: tokio_mpsc::UnboundedReceiver<use_cases::ChatPollResult>,
-    chat_poll_active: bool,
     // Notes view
     pub notes_view: Option<NotesView>,
     // Show PRs (GitHub Issues & PRs for current user)
@@ -787,7 +772,7 @@ pub struct App {
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
     // Active tmux popup (CoS/PM chat, researcher attach). Polled each main-loop
-    // tick so inbox delivery, PR polls, and chat polls keep running while a
+    // tick so inbox delivery and PR polls keep running while a
     // popup is open.
     popup: Option<ActivePopup>,
 }
@@ -818,7 +803,6 @@ impl App {
         let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
         let (supervisor_poll_tx, supervisor_poll_rx) = tokio_mpsc::unbounded_channel();
         let (respawn_tx, respawn_rx) = tokio_mpsc::unbounded_channel();
-        let (chat_poll_tx, chat_poll_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
         let mut dismissed_notifs =
             DismissedNotifications::load(&config.dismissed_notifications_path());
@@ -929,11 +913,6 @@ impl App {
             keybase_poll_active: false,
             keybase_first_poll_done: false,
             keybase_available: true,
-            chat_unread_names: vec![],
-            last_chat_poll: Instant::now() - Duration::from_secs(3),
-            chat_poll_tx,
-            chat_poll_rx,
-            chat_poll_active: false,
             notes_view: None,
             show_prs_data: Default::default(),
             show_prs_selected: 0,
@@ -1013,23 +992,7 @@ impl App {
     /// Dispatch side-effects for a popup that just closed. Called from the
     /// main loop once `try_wait` on the popup `Child` returns `Some`.
     fn on_popup_closed(&mut self) {
-        if let Some(popup) = self.popup.take() {
-            match popup.kind {
-                PopupKind::ChiefOfStaff => {
-                    if let Err(e) = use_cases::mark_chat_viewed(&self.config, "chief-of-staff") {
-                        tracing::error!(error = %e, "failed to mark Chief of Staff chat as viewed");
-                    }
-                    self.last_chat_poll = Instant::now() - Duration::from_secs(10);
-                }
-                PopupKind::Pm { project } => {
-                    let inbox_key = format!("project:{project}");
-                    if let Err(e) = use_cases::mark_chat_viewed(&self.config, &inbox_key) {
-                        tracing::error!(project = %project, error = %e, "failed to mark PM chat as viewed");
-                    }
-                    self.last_chat_poll = Instant::now() - Duration::from_secs(10);
-                }
-                PopupKind::Researcher => {}
-            }
+        if self.popup.take().is_some() {
             tracing::info!("popup closed");
         }
     }
@@ -2765,10 +2728,7 @@ impl App {
                     match use_cases::open_chief_of_staff_popup(&self.config) {
                         Ok(child) => {
                             tracing::info!("opened Chief of Staff popup");
-                            self.popup = Some(ActivePopup {
-                                child,
-                                kind: PopupKind::ChiefOfStaff,
-                            });
+                            self.popup = Some(ActivePopup { child });
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "failed to open Chief of Staff popup");
@@ -3042,12 +3002,7 @@ impl App {
                             match use_cases::open_pm_popup(&self.config, project_name) {
                                 Ok(child) => {
                                     tracing::info!(project = %project_name, "opened PM popup");
-                                    self.popup = Some(ActivePopup {
-                                        child,
-                                        kind: PopupKind::Pm {
-                                            project: project_name.clone(),
-                                        },
-                                    });
+                                    self.popup = Some(ActivePopup { child });
                                 }
                                 Err(e) => {
                                     tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
@@ -3173,10 +3128,7 @@ impl App {
                                     session = &session_name,
                                     "attached to researcher session"
                                 );
-                                self.popup = Some(ActivePopup {
-                                    child,
-                                    kind: PopupKind::Researcher,
-                                });
+                                self.popup = Some(ActivePopup { child });
                             }
                             Err(e) => {
                                 self.set_status(format!("Failed to attach: {e}"));
@@ -6624,39 +6576,6 @@ impl App {
         );
     }
 
-    /// Spawn a background task to poll chat unread messages.
-    fn start_chat_poll(&mut self) {
-        if self.chat_poll_active {
-            return;
-        }
-
-        self.chat_poll_active = true;
-        let tx = self.chat_poll_tx.clone();
-        let config = self.config.clone();
-
-        tracing::debug!("starting chat unread poll");
-        self.rt.spawn(async move {
-            let result =
-                tokio::task::spawn_blocking(move || use_cases::count_unread_chat_messages(&config))
-                    .await
-                    .unwrap_or_else(|_| use_cases::ChatPollResult {
-                        unread_names: vec![],
-                    });
-            let _ = tx.send(result);
-        });
-    }
-
-    /// Check for completed chat poll results (non-blocking) and apply.
-    fn apply_chat_poll_results(&mut self) {
-        let result = match self.chat_poll_rx.try_recv() {
-            Ok(r) => r,
-            Err(_) => return,
-        };
-        self.chat_poll_active = false;
-        self.chat_unread_names = result.unread_names.clone();
-        tracing::debug!(names = ?result.unread_names, "applied chat poll results");
-    }
-
     fn execute_restart_wizard(&mut self) -> Result<()> {
         let (task_id, selected_step_index) = match &self.restart_wizard {
             Some(w) => (w.task_id.clone(), w.selected_step_index),
@@ -6777,7 +6696,7 @@ pub fn run_tui(config: Config) -> Result<()> {
         let refresh_interval = Duration::from_secs(3);
 
         loop {
-            // Poll any active tmux popup so inbox/PR/chat polling keeps ticking
+            // Poll any active tmux popup so inbox and PR polling keep ticking
             // while the user is interacting with the popup. When the popup
             // process exits, dispatch close side-effects via `on_popup_closed`.
             let popup_open = match app.popup.as_mut() {
@@ -6882,15 +6801,6 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed Keybase poll results (non-blocking)
             app.apply_keybase_poll_results();
-
-            // Poll chat unreads every 5 seconds (local filesystem)
-            if app.last_chat_poll.elapsed() >= Duration::from_secs(5) {
-                app.start_chat_poll();
-                app.last_chat_poll = Instant::now();
-            }
-
-            // Check for completed chat poll results (non-blocking)
-            app.apply_chat_poll_results();
 
             // Poll agent inboxes every 2 seconds (deliver messages via tmux send-keys)
             if app.last_inbox_poll.elapsed() >= Duration::from_secs(2) {

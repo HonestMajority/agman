@@ -14,14 +14,14 @@ You manage everything from a single TUI dashboard: create tasks, monitor agent p
 
 ## Prerequisites
 
-All dependencies are required. agman checks for them on startup and will tell you what's missing.
+All non-harness dependencies are required. agman also checks that the configured harness CLI is on PATH and will tell you what's missing.
 
 | Dependency | Purpose |
 |---|---|
 | [Rust](https://www.rust-lang.org/) | Building from source |
 | `git` | Version control |
 | `tmux` | Terminal multiplexer — one session per task |
-| [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`) | AI agent execution |
+| [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`), Codex CLI (`codex`), or Goose CLI (`goose`) | AI agent execution, selected with `harness = "..."` |
 | `nvim` | Editor in tmux sessions |
 | `lazygit` | Git TUI in tmux sessions |
 | [GitHub CLI](https://cli.github.com/) (`gh`) | PR operations |
@@ -61,11 +61,11 @@ repos_dir = "~/repos/"
 - **Task management** — create tasks via wizard, track status, give feedback, restart from specific flow steps
 - **Agent orchestration** — YAML-defined flows chain specialized agents (coder, checker, reviewer, refiner, repo-inspector, etc.) with stop conditions and loop support
 - **Git worktree isolation** — automatic worktree creation/cleanup per task, branch management, rebase workflows
-- **Tmux integration** — dedicated session per task with pre-configured windows (nvim, lazygit, claude, shell, agent)
+- **Tmux integration** — dedicated session per task with pre-configured windows (nvim, lazygit, shell, agent)
 - **GitHub integration** — draft PRs, CI monitoring, review tracking, local merge
 - **Stored commands** — pre-packaged workflows: create-pr, review-pr, address-review, monitor-pr, rebase, local-merge
 - **Vim-style TUI** — fully keyboard-driven with preview pane, built-in editors
 
 ## Tech Stack
 
-Rust with [ratatui](https://github.com/ratatui/ratatui). Integrates with git (worktrees), tmux (sessions), Claude Code CLI (agents), and GitHub CLI (PRs).
+Rust with [ratatui](https://github.com/ratatui/ratatui). Integrates with git (worktrees), tmux (sessions), runtime-selectable agent CLIs, and GitHub CLI (PRs).

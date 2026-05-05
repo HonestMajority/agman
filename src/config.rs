@@ -37,8 +37,8 @@ pub struct ConfigFile {
     pub archive_retention_days: Option<u64>,
     pub telegram_bot_token: Option<String>,
     pub telegram_chat_id: Option<String>,
-    /// Which agent harness to use for newly-spawned agents. `"claude"` or
-    /// `"codex"`. Defaults to `"claude"` when absent.
+    /// Which agent harness to use for newly-spawned agents. `"claude"`,
+    /// `"codex"`, or `"goose"`. Defaults to `"claude"` when absent.
     pub harness: Option<String>,
 }
 
@@ -224,10 +224,6 @@ impl Config {
         self.base_dir.join("dismissed_notifications.json")
     }
 
-    pub fn chat_last_viewed_path(&self) -> PathBuf {
-        self.base_dir.join("chat_last_viewed.json")
-    }
-
     /// Resolve the configured harness kind. Falls back to `Claude` when the
     /// `harness` config key is absent or unparseable.
     pub fn harness_kind(&self) -> HarnessKind {
@@ -290,10 +286,9 @@ impl Config {
         self.project_dir(name).join("session-id")
     }
 
-    /// Stamped working directory for a long-lived codex session, captured
-    /// on first launch. Reused as `-C <cwd>` on resume so codex doesn't
-    /// pop a directory picker when the cwd doesn't match the saved
-    /// `session_meta.payload.cwd`.
+    /// Stamped working directory for a long-lived codex/goose session,
+    /// captured on first launch. Reused on resume so the harness restarts
+    /// from the original generation cwd.
     pub fn launch_cwd_path(state_dir: &Path) -> PathBuf {
         state_dir.join("launch-cwd")
     }

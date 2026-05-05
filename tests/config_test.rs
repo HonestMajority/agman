@@ -1,6 +1,7 @@
 mod helpers;
 
 use agman::config::Config;
+use agman::harness::HarnessKind;
 use helpers::test_config;
 
 #[test]
@@ -109,6 +110,19 @@ fn config_ensure_dirs() {
     assert!(config.flows_dir.exists());
     assert!(config.prompts_dir.exists());
     assert!(config.commands_dir.exists());
+}
+
+#[test]
+fn config_accepts_and_persists_goose_harness() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    agman::use_cases::save_harness(&config, HarnessKind::Goose).unwrap();
+
+    assert_eq!(config.harness_kind(), HarnessKind::Goose);
+    let raw = std::fs::read_to_string(config.base_dir.join("config.toml")).unwrap();
+    assert!(raw.contains("harness = \"goose\""));
 }
 
 #[test]

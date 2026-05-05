@@ -147,19 +147,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         (app.output_log.len() as u16 + 2).min(8) // 2 for borders, max 8 lines
     };
 
-    let chat_height: u16 = if app.chat_unread_names.is_empty() {
-        0
-    } else {
-        1
-    };
-
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(10),
             Constraint::Length(output_height),
             Constraint::Length(3),
-            Constraint::Length(chat_height),
         ])
         .split(f.area());
 
@@ -263,22 +256,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     draw_status_bar(f, app, chunks[2]);
-
-    if chat_height > 0 {
-        let chat_style = Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(100, 200, 100))
-            .add_modifier(Modifier::BOLD);
-        let mut spans: Vec<Span> = Vec::new();
-        for (i, name) in app.chat_unread_names.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::raw(" "));
-            }
-            spans.push(Span::styled(format!(" {} ", name), chat_style));
-        }
-        let line = Line::from(spans);
-        f.render_widget(Paragraph::new(line).alignment(Alignment::Right), chunks[3]);
-    }
 }
 
 fn render_project_row<'a>(
