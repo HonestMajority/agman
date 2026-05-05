@@ -38,11 +38,12 @@ src/
 ├── flow.rs      # Flow/step parsing from YAML
 ├── git.rs       # Worktree operations
 ├── tmux.rs      # Tmux session management
-├── harness/     # Pluggable AI CLI harness (claude / codex / goose)
+├── harness/     # Pluggable AI CLI harness (claude / codex / goose / pi)
 │   ├── mod.rs   # Harness trait, HarnessKind, LaunchContext
 │   ├── claude.rs
 │   ├── codex.rs
-│   └── goose.rs
+│   ├── goose.rs
+│   └── pi.rs
 └── tui/
     ├── mod.rs
     ├── app.rs   # TUI state and event handling
@@ -74,27 +75,29 @@ Agents may append a short `## Notes` section if the next iteration needs context
 
 ### Agent
 - Prompt template in `~/.agman/prompts/<name>.md`
-- Executed via the configured **harness** (`claude`, `codex`, or `goose`) — see "Harnesses" below
+- Executed via the configured **harness** (`claude`, `codex`, `goose`, or `pi`) — see "Harnesses" below
 - Outputs magic strings: `AGENT_DONE`, `TASK_COMPLETE`, `INPUT_NEEDED`
 
 ### Harnesses
 
-agman supports three interactive AI agent CLIs, selected at runtime:
+agman supports four interactive AI agent CLIs, selected at runtime:
 
 - **claude** (Anthropic Claude Code) — default
 - **codex** (OpenAI Codex CLI)
 - **goose** (Block Goose CLI)
+- **pi** (Pi coding agent CLI, docs: https://pi.dev/docs/latest, install: `npm install -g @mariozechner/pi-coding-agent`)
 
 The choice is set in the TUI settings view (`,` from the task list) on the **Harness** row (h/l to switch). It persists to `~/.agman/config.toml` as `harness = "..."` and applies to **newly-spawned agents only**.
 
-Newly-spawned **task** agents always read the current global `harness` setting from `config.toml` at spawn time. Task agents have no per-task pin. The harness used at spawn is recorded on each `session_history[N]` entry so the kill path uses the right slash command (`/exit` for claude/goose, `/quit` for codex).
+Newly-spawned **task** agents always read the current global `harness` setting from `config.toml` at spawn time. Task agents have no per-task pin. The harness used at spawn is recorded on each `session_history[N]` entry so the kill path uses the right slash command (`/exit` for claude/goose, `/quit` for codex/pi).
 
-Long-lived agents (Chief of Staff / PM / researcher) **stamp** their harness on first spawn at `<state_dir>/harness` and their generation name at `<state_dir>/session-name` so resume-by-name always uses the harness and conversation generation that owns the session. Claude also keeps `<state_dir>/session-id` for reliable resume by UUID; codex/goose resume by the stamped session name from the stamped `<state_dir>/launch-cwd`. A global flip does not affect a long-lived agent's existing conversation. To start a long-lived agent under a new harness, run `agman respawn-agent <target>` — respawn wipes the harness stamp and stale generation handles (`session-id`, `session-name`, `launch-cwd`) and the next spawn re-reads global. A tracing line is emitted on the re-read for visibility.
+Long-lived agents (Chief of Staff / PM / researcher) **stamp** their harness on first spawn at `<state_dir>/harness` and their generation name at `<state_dir>/session-name` so resume always uses the harness and conversation generation that owns the session. Claude also keeps `<state_dir>/session-id` for reliable resume by UUID; codex/goose resume by the stamped session name from the stamped `<state_dir>/launch-cwd`; pi resumes with `--continue` from the stamped cwd inside `<state_dir>/pi-sessions`. A global flip does not affect a long-lived agent's existing conversation. To start a long-lived agent under a new harness, run `agman respawn-agent <target>` — respawn wipes the harness stamp and stale generation handles (`session-id`, `session-name`, `launch-cwd`) and the next spawn re-reads global. A tracing line is emitted on the re-read for visibility.
 
 Task agents are never resumed programmatically. Long-lived agents resume from their stamped generation handles on normal restart. To revisit a historical task conversation, the user runs the harness's resume command directly from a shell:
 - `claude --resume <session-id>` for long-lived agents, or a name from `~/.agman/tasks/<id>/meta.json` `session_history[].name`
 - `codex resume <session-name>`
 - `goose session --resume --name <session-name>`
+- Pi task sessions use private session dirs under the task state; long-lived Pi sessions use `<state_dir>/pi-sessions` and resume through agman's stamped cwd/session-dir pairing.
 
 Codex respects `AGENTS.md` in the worktree the same way claude respects `CLAUDE.md` — that's project-conventional, not agman's responsibility.
 
@@ -106,6 +109,7 @@ Codex respects `AGENTS.md` in the worktree the same way claude respects `CLAUDE.
 - Claude: `~/.claude.json` → `projects[<cwd>].hasTrustDialogAccepted = true` (root-level dot file, NOT inside `~/.claude/`).
 - Codex: `~/.codex/config.toml` → `[projects."<cwd>"] trust_level = "trusted"`.
 - Goose: no-op for now; no verified trust prestamp equivalent.
+- Pi: no-op; Pi has no workspace trust/sandbox/approval bypass to pre-stamp.
 
 The helper is idempotent (no-op when the entry is already trusted; preserves mtime), tolerates missing files/dirs, and preserves all other keys in the config. Failure is fatal: a launch that hits the trust dialog never reaches a usable agent state and downstream `/rename` paste-injects would run as shell commands.
 
@@ -115,8 +119,9 @@ Storage layout for harness stamps:
   chief-of-staff/harness
   chief-of-staff/session-name
   chief-of-staff/session-id          ← claude only
-  chief-of-staff/launch-cwd          ← codex/goose
-  chief-of-staff/identity/<session-name>.md ← goose
+  chief-of-staff/launch-cwd          ← codex/goose/pi
+  chief-of-staff/identity/<session-name>.md ← goose/pi
+  chief-of-staff/pi-sessions/        ← pi
   projects/<name>/harness
   projects/<name>/session-name
   researchers/<project>--<n>/harness

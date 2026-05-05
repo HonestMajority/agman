@@ -2,7 +2,7 @@
 
 Agent Manager — a TUI for orchestrating stateless AI agents across isolated git worktrees.
 
-> **Warning: agman is reckless by design.** All Claude agents are executed with `--dangerously-skip-permissions`, which means agents can read, write, and execute anything on your machine without asking for confirmation. Do not use agman on a machine where unrestricted AI access to the filesystem and shell is unacceptable.
+> **Warning: agman is reckless by design.** Supported harnesses are launched with high-trust settings so agents can read, write, and execute shell commands without normal confirmation prompts. Pi has no permission prompt or sandbox bypass to preconfigure; agman gives it the full tool allowlist. Do not use agman on a machine where unrestricted AI access to the filesystem and shell is unacceptable.
 
 ## What is agman?
 
@@ -21,7 +21,7 @@ All non-harness dependencies are required. agman also checks that the configured
 | [Rust](https://www.rust-lang.org/) | Building from source |
 | `git` | Version control |
 | `tmux` | Terminal multiplexer — one session per task |
-| [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`), Codex CLI (`codex`), or Goose CLI (`goose`) | AI agent execution, selected with `harness = "..."` |
+| [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`), Codex CLI (`codex`), Goose CLI (`goose`), or [Pi](https://pi.dev/docs/latest) (`pi`, install with `npm install -g @mariozechner/pi-coding-agent`) | AI agent execution, selected with `harness = "..."` |
 | `nvim` | Editor in tmux sessions |
 | `lazygit` | Git TUI in tmux sessions |
 | [GitHub CLI](https://cli.github.com/) (`gh`) | PR operations |
@@ -54,6 +54,8 @@ agman stores its config and state in `~/.agman/`. On first launch:
 ```toml
 # ~/.agman/config.toml
 repos_dir = "~/repos/"
+# Optional: claude, codex, goose, or pi
+harness = "claude"
 ```
 
 ## Features
@@ -65,6 +67,12 @@ repos_dir = "~/repos/"
 - **GitHub integration** — draft PRs, CI monitoring, review tracking, local merge
 - **Stored commands** — pre-packaged workflows: create-pr, review-pr, address-review, monitor-pr, rebase, local-merge
 - **Vim-style TUI** — fully keyboard-driven with preview pane, built-in editors
+
+## Harness Notes
+
+Set `harness = "claude"`, `"codex"`, `"goose"`, or `"pi"` in `~/.agman/config.toml`, or switch it in the TUI settings view. Task agents read the global setting at spawn time. Long-lived Chief of Staff, PM, and researcher agents pin their first-spawn harness in `<state_dir>/harness`.
+
+Pi launches with `PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 pi --offline`, an agman identity file passed through `--append-system-prompt`, a private `--session-dir`, and the full tool allowlist `read,bash,edit,write,grep,find,ls`. Long-lived Pi sessions store their private session files in `<state_dir>/pi-sessions` and resume with `--continue` from the stamped `<state_dir>/launch-cwd`.
 
 ## Tech Stack
 

@@ -413,7 +413,7 @@ pub fn list_archived_tasks(config: &Config) -> Vec<(Task, String)> {
 /// Stop a running task by driving the full supervisor stop pathway.
 ///
 /// Routes through `supervisor::honor_stop`, which:
-/// - Kills the currently-running `claude` in the agman pane (so it doesn't
+/// - Kills the currently-running harness in the agman pane (so it doesn't
 ///   stay orphaned after the user clicked stop).
 /// - Finalizes the last `SessionEntry` with `stopped_at` + `condition =
 ///   STOPPED`.
@@ -424,7 +424,7 @@ pub fn list_archived_tasks(config: &Config) -> Vec<(Task, String)> {
 ///
 /// This is the pure business logic behind `App::stop_task()`. The supervisor
 /// pathway is preferred over a direct status flip because directly setting
-/// status to Stopped would orphan the live claude in the agman window, leak
+/// status to Stopped would orphan the live harness in the agman window, leak
 /// session-history entries with `stopped_at = null`, and leave stored-command
 /// flow state stranded.
 pub fn stop_task(config: &Config, task: &mut Task) -> Result<()> {
@@ -2717,7 +2717,9 @@ pub fn respawn_agent(config: &Config, target: &str, force: bool, timeout_secs: u
 /// Wipes `harness` too: respawn means "kill, fresh spawn with handoff
 /// briefing", which is the natural place to pick up a flipped global
 /// harness. The next spawn re-reads `config.harness_kind()` via
-/// `read_or_stamp` and stamps the new value.
+/// `read_or_stamp` and stamps the new value. Pi has no extra stamped
+/// handle beyond these files; its private session data is not parsed as
+/// control metadata.
 pub fn wipe_long_lived_session_handles(state_dir: &Path) {
     for fname in ["session-id", "session-name", "launch-cwd", "harness"] {
         let _ = std::fs::remove_file(state_dir.join(fname));
@@ -2735,6 +2737,7 @@ pub struct LongLivedLaunchForTest {
     pub handle: Option<String>,
     pub session_name: String,
     pub cwd: PathBuf,
+    pub session_dir: Option<PathBuf>,
     pub is_first_launch: bool,
 }
 
@@ -2761,24 +2764,30 @@ pub fn prepare_long_lived_launch_for_test(
         handle,
         session_name: prep.session_name,
         cwd: prep.cwd,
+        session_dir: prep.session_dir,
         is_first_launch: prep.is_first_launch,
     })
 }
 
 /// Result of preparing a long-lived agent launch — what to feed into
 /// `Harness::build_session_command` and whether to run the post-launch
-/// registration step (`/rename` for codex; no-op for claude/goose).
+/// registration step (`/rename` for codex, `/name` for pi; no-op for
+/// claude/goose).
 struct LongLivedLaunch {
     /// Mode + the owned UUID/name backing the borrowed `SessionKey` returned
     /// by `session_key`. The handle lives inside the variant, so a `Pin` /
     /// `Resume` without a handle is unrepresentable.
     mode: LaunchMode,
     /// Working directory to actually launch in. Equals the stamped
-    /// `<state_dir>/launch-cwd` when codex/goose are resuming; otherwise the
+    /// `<state_dir>/launch-cwd` when codex/goose/pi are resuming; otherwise the
     /// caller-supplied cwd.
     cwd: PathBuf,
+    /// Private session dir for harnesses that require one. Pi resumes with
+    /// `--continue` inside this directory; other harnesses leave it unset.
+    session_dir: Option<PathBuf>,
     /// Stamped unique generation name. Passed as the harness session name
-    /// for fresh launches and as the resume key for codex/goose.
+    /// for fresh launches, as the resume key for codex/goose, and as the
+    /// human-visible `/name` value for pi.
     session_name: String,
     /// First time we've launched this long-lived agent (or `force_fresh`
     /// was set). Gates whether we run `register_long_lived_session`.
@@ -2808,10 +2817,11 @@ impl LongLivedLaunch {
 /// launch we mint one and write it; on subsequent launches we read it
 /// back and use `Resume(uuid)`.
 ///
-/// Codex/goose path: keyed off `<state_dir>/session-name`. On first launch
+/// Codex/goose/pi path: keyed off `<state_dir>/session-name`. On first launch
 /// we mint a unique generation name and stamp `<state_dir>/launch-cwd`;
 /// on subsequent launches we resume that exact stamped name from the
-/// stamped cwd.
+/// stamped cwd. Pi also receives a private `<state_dir>/pi-sessions` dir
+/// and resumes via `--continue`.
 ///
 /// `force_fresh` short-circuits all paths: caller (respawn_agent) has
 /// already wiped the handles; we mint a fresh generation.
@@ -2846,6 +2856,7 @@ fn prepare_long_lived_launch_inner(
                         return Ok(LongLivedLaunch {
                             mode: LaunchMode::Resume(trimmed.to_string()),
                             cwd: cwd.to_path_buf(),
+                            session_dir: None,
                             session_name,
                             is_first_launch: false,
                         });
@@ -2859,12 +2870,15 @@ fn prepare_long_lived_launch_inner(
             Ok(LongLivedLaunch {
                 mode: LaunchMode::Pin(uuid),
                 cwd: cwd.to_path_buf(),
+                session_dir: None,
                 session_name,
                 is_first_launch: true,
             })
         }
-        HarnessKind::Codex | HarnessKind::Goose => {
+        HarnessKind::Codex | HarnessKind::Goose | HarnessKind::Pi => {
             let cwd_path = Config::launch_cwd_path(state_dir);
+            let session_dir =
+                prepare_session_dir_for_harness(kind, state_dir, &session_name, true)?;
 
             if !force_fresh && !fresh_session_name {
                 // Prefer the stamped launch-cwd if it still exists;
@@ -2877,6 +2891,7 @@ fn prepare_long_lived_launch_inner(
                 Ok(LongLivedLaunch {
                     mode: LaunchMode::Resume(session_name.clone()),
                     cwd: resume_cwd,
+                    session_dir,
                     session_name,
                     is_first_launch: false,
                 })
@@ -2892,6 +2907,7 @@ fn prepare_long_lived_launch_inner(
                 Ok(LongLivedLaunch {
                     mode: LaunchMode::Auto,
                     cwd: cwd.to_path_buf(),
+                    session_dir,
                     session_name,
                     is_first_launch: true,
                 })
@@ -2951,18 +2967,23 @@ fn sanitize_session_name_base(base_name: &str) -> String {
     }
 }
 
-fn prepare_goose_identity_file(
+fn prepare_identity_file_for_harness(
     kind: HarnessKind,
     state_dir: &Path,
     session_name: &str,
     identity: &str,
     rewrite: bool,
 ) -> Result<Option<PathBuf>> {
-    if kind != HarnessKind::Goose {
-        return Ok(None);
-    }
-    let path = harness::goose::identity_file_path(state_dir, session_name);
-    if rewrite || !path.exists() {
+    let path = match kind {
+        HarnessKind::Goose => harness::goose::identity_file_path(state_dir, session_name),
+        HarnessKind::Pi => harness::pi::identity_file_path(state_dir, session_name),
+        _ => return Ok(None),
+    };
+    let should_write = match kind {
+        HarnessKind::Pi => true,
+        _ => rewrite || !path.exists(),
+    };
+    if should_write {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -2971,6 +2992,49 @@ fn prepare_goose_identity_file(
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
     Ok(Some(path))
+}
+
+fn prepare_pi_session_dir(
+    state_dir: &Path,
+    session_name: &str,
+    long_lived: bool,
+) -> Result<PathBuf> {
+    let path = if long_lived {
+        harness::pi::long_lived_session_dir(state_dir)
+    } else {
+        harness::pi::task_session_dir(state_dir, session_name)
+    };
+    std::fs::create_dir_all(&path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    Ok(path)
+}
+
+fn prepare_session_dir_for_harness(
+    kind: HarnessKind,
+    state_dir: &Path,
+    session_name: &str,
+    long_lived: bool,
+) -> Result<Option<PathBuf>> {
+    if kind == HarnessKind::Pi {
+        Ok(Some(prepare_pi_session_dir(
+            state_dir,
+            session_name,
+            long_lived,
+        )?))
+    } else {
+        Ok(None)
+    }
+}
+
+#[doc(hidden)]
+pub fn prepare_identity_file_for_harness_for_test(
+    kind: HarnessKind,
+    state_dir: &Path,
+    session_name: &str,
+    identity: &str,
+    rewrite: bool,
+) -> Result<Option<PathBuf>> {
+    prepare_identity_file_for_harness(kind, state_dir, session_name, identity, rewrite)
 }
 
 /// Start the Chief of Staff agent session.
@@ -2996,7 +3060,7 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
     tracing::info!(session = session_name, telegram_enabled, harness = %kind, force_fresh, "starting Chief of Staff session");
 
     let prep = prepare_long_lived_launch(&cos_dir, &agent_name, &cos_dir, kind, force_fresh)?;
-    let identity_file = prepare_goose_identity_file(
+    let identity_file = prepare_identity_file_for_harness(
         kind,
         &cos_dir,
         &prep.session_name,
@@ -3018,6 +3082,7 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
         identity: &prompt,
         name: &prep.session_name,
         identity_file: identity_file.as_deref(),
+        session_dir: prep.session_dir.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
         session_key: prep.session_key(),
@@ -3026,7 +3091,7 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
     let already_existed = Tmux::session_exists(session_name);
     Tmux::create_agent_session(session_name, &cmd, Some(&prep.cwd))?;
 
-    if !already_existed && prep.is_first_launch {
+    if !already_existed && (prep.is_first_launch || kind == HarnessKind::Pi) {
         register_long_lived_session(harness.as_ref(), session_name, &prep.session_name, kind);
     }
     Ok(())
@@ -3096,7 +3161,7 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
 
     let prep =
         prepare_long_lived_launch(&project_dir, &agent_name, &project_dir, kind, force_fresh)?;
-    let identity_file = prepare_goose_identity_file(
+    let identity_file = prepare_identity_file_for_harness(
         kind,
         &project_dir,
         &prep.session_name,
@@ -3116,6 +3181,7 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
         identity: &prompt,
         name: &prep.session_name,
         identity_file: identity_file.as_deref(),
+        session_dir: prep.session_dir.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
         session_key: prep.session_key(),
@@ -3123,7 +3189,7 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
 
     let already_existed = Tmux::session_exists(&session_name);
     Tmux::create_agent_session(&session_name, &cmd, Some(&prep.cwd))?;
-    if !already_existed && prep.is_first_launch {
+    if !already_existed && (prep.is_first_launch || kind == HarnessKind::Pi) {
         register_long_lived_session(harness.as_ref(), &session_name, &prep.session_name, kind);
     }
     Ok(())
@@ -3214,7 +3280,7 @@ pub fn start_researcher_session(
 
     let cwd = work_dir.as_deref().unwrap_or(&dir);
     let prep = prepare_long_lived_launch(&dir, &agent_name, cwd, kind, force_fresh)?;
-    let identity_file = prepare_goose_identity_file(
+    let identity_file = prepare_identity_file_for_harness(
         kind,
         &dir,
         &prep.session_name,
@@ -3235,6 +3301,7 @@ pub fn start_researcher_session(
         identity: &prompt,
         name: &prep.session_name,
         identity_file: identity_file.as_deref(),
+        session_dir: prep.session_dir.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
         session_key: prep.session_key(),
@@ -3242,7 +3309,7 @@ pub fn start_researcher_session(
 
     let already_existed = Tmux::session_exists(&session_name);
     Tmux::create_agent_session(&session_name, &cmd, Some(&prep.cwd))?;
-    if !already_existed && prep.is_first_launch {
+    if !already_existed && (prep.is_first_launch || kind == HarnessKind::Pi) {
         register_long_lived_session(harness.as_ref(), &session_name, &prep.session_name, kind);
     }
 
@@ -3316,7 +3383,7 @@ pub fn archive_researcher(config: &Config, project: &str, name: &str) -> Result<
 
 /// Resume an archived researcher: start a new tmux session and flip status
 /// to Running. `start_researcher_session` will pick up any stamped
-/// session-id (claude) or session-name (codex/goose) and resume the
+/// session-id (claude) or session-name (codex/goose/pi) and resume the
 /// underlying conversation if available; archive does not delete those
 /// handles.
 pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
@@ -3346,7 +3413,7 @@ pub struct InboxPollTarget {
     pub session_name: String,
     /// Optional window within `session_name` where delivery should happen.
     /// `None` for single-window sessions (Chief of Staff/PM/researcher);
-    /// `Some("agman")` for task sessions whose interactive claude lives in the
+    /// `Some("agman")` for task sessions whose interactive harness lives in the
     /// `agman` window.
     pub window: Option<String>,
     /// Optional re-arm marker path. When present on disk, the poll worker
@@ -3355,7 +3422,7 @@ pub struct InboxPollTarget {
     /// observed-ready tick. Currently set only for task targets (the
     /// supervisor touches `<task_dir>/.inbox-rearm` across kill→relaunch
     /// transitions). `None` for Chief of Staff/PM/researcher targets, whose
-    /// claude is never restarted under the supervisor.
+    /// harness is never restarted under the supervisor.
     pub rearm_path: Option<PathBuf>,
 }
 
@@ -3431,7 +3498,7 @@ pub fn collect_inbox_poll_targets(
         }
     }
 
-    // Task targets. Tasks host their interactive claude in the `agman` window
+    // Task targets. Tasks host their interactive harness in the `agman` window
     // of their session (single-repo: primary repo's session; multi-repo:
     // parent-dir session). `session_name` carries only the session; the
     // caller must deliver to the `agman` window specifically via the
