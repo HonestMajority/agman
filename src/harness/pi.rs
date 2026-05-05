@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{Harness, HarnessKind, LaunchContext, RegisterContext, SessionKey};
 
@@ -13,7 +13,10 @@ const NAME_REGISTRATION_INITIAL_DELAY: Duration = Duration::from_millis(500);
 const NAME_REGISTRATION_RETRY_DELAY: Duration = Duration::from_millis(500);
 const NAME_REGISTRATION_SUBMIT_DELAY: Duration = Duration::from_millis(500);
 const NAME_REGISTRATION_SECOND_SUBMIT_DELAY: Duration = Duration::from_millis(120);
+const NAME_REGISTRATION_PROMPT_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const NAME_REGISTRATION_PROMPT_READY_POLL_DELAY: Duration = Duration::from_millis(200);
 const NAME_REGISTRATION_MAX_ATTEMPTS: u32 = 3;
+const PI_SUBMIT_CR_HEX: &str = "0d";
 
 pub struct PiHarness;
 
@@ -66,6 +69,20 @@ impl Harness for PiHarness {
         };
         let cmd = format!("/name {}", ctx.name);
 
+        if wait_for_prompt_ready(&target, NAME_REGISTRATION_PROMPT_READY_TIMEOUT) {
+            tracing::debug!(
+                session = ctx.session,
+                name = ctx.name,
+                "pi prompt ready before /name registration"
+            );
+        } else {
+            tracing::warn!(
+                session = ctx.session,
+                name = ctx.name,
+                "pi prompt-ready cue not observed before /name registration; continuing best-effort"
+            );
+        }
+
         let sent = register_session_name_with_retry(
             || submit_slash_command(&target, &cmd),
             ctx.name,
@@ -114,6 +131,51 @@ fn safe_path_component(name: &str) -> String {
     name.replace(['/', '\\'], "-")
 }
 
+fn wait_for_prompt_ready(target: &str, timeout: Duration) -> bool {
+    wait_for_prompt_ready_with_runner(
+        target,
+        timeout,
+        NAME_REGISTRATION_PROMPT_READY_POLL_DELAY,
+        capture_tmux_pane_tail,
+    )
+}
+
+fn wait_for_prompt_ready_with_runner<F>(
+    target: &str,
+    timeout: Duration,
+    poll_delay: Duration,
+    mut capture: F,
+) -> bool
+where
+    F: FnMut(&str) -> Result<String>,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        match capture(target) {
+            Ok(text) if pane_text_has_prompt_ready_cue(&text) => return true,
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(
+                    target,
+                    error = %e,
+                    "pi prompt readiness capture failed; will retry until timeout"
+                );
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return false;
+        }
+        if !poll_delay.is_zero() {
+            std::thread::sleep(poll_delay);
+        }
+    }
+}
+
+fn pane_text_has_prompt_ready_cue(text: &str) -> bool {
+    text.contains("/ commands") && text.contains("ctrl+o")
+}
+
 fn register_session_name_with_retry<F>(
     mut submit_attempt: F,
     name: &str,
@@ -156,13 +218,14 @@ fn submit_slash_command(target: &str, text: &str) -> Result<()> {
     )
 }
 
-/// Submit Pi slash commands with a raw paste and delayed Enter keys.
+/// Submit Pi slash commands with a raw paste and delayed carriage returns.
 ///
-/// Pi's prompt can leave bracket-pasted slash commands in the editor with a
-/// blank continuation line. The command text is single-line, so raw tmux paste
-/// is sufficient and avoids bracket-paste editor state; the second `Enter`
-/// covers the observed case where the first submit creates the blank line that
-/// a manual Enter then accepts.
+/// Pi's prompt can leave bracket-pasted slash commands in the editor with
+/// blank continuation lines. The command text is single-line, so raw tmux
+/// paste is sufficient and avoids bracket-paste editor state. Once the editor
+/// is mounted, raw carriage return via tmux hex mode matches the sequence
+/// verified against Pi's TUI; the second CR preserves the prior reliability
+/// guard.
 fn submit_slash_command_with_runner<F>(
     target: &str,
     text: &str,
@@ -181,17 +244,17 @@ where
     if !submit_delay.is_zero() {
         std::thread::sleep(submit_delay);
     }
-    run(PiSubmitAction::SendKey {
+    run(PiSubmitAction::SendHex {
         target: target.to_string(),
-        key: "Enter",
+        hex: PI_SUBMIT_CR_HEX,
     })?;
 
     if !second_submit_delay.is_zero() {
         std::thread::sleep(second_submit_delay);
     }
-    run(PiSubmitAction::SendKey {
+    run(PiSubmitAction::SendHex {
         target: target.to_string(),
-        key: "Enter",
+        hex: PI_SUBMIT_CR_HEX,
     })?;
 
     Ok(())
@@ -201,15 +264,28 @@ where
 enum PiSubmitAction {
     LoadBuffer(String),
     PasteBufferRaw { target: String },
-    SendKey { target: String, key: &'static str },
+    SendHex { target: String, hex: &'static str },
 }
 
 fn run_tmux_submit_action(action: PiSubmitAction) -> Result<()> {
     match action {
         PiSubmitAction::LoadBuffer(text) => load_tmux_buffer(&text),
         PiSubmitAction::PasteBufferRaw { target } => paste_tmux_buffer_raw(&target),
-        PiSubmitAction::SendKey { target, key } => send_tmux_key(&target, key),
+        PiSubmitAction::SendHex { target, hex } => send_tmux_hex(&target, hex),
     }
+}
+
+fn capture_tmux_pane_tail(target: &str) -> Result<String> {
+    let capture = Command::new("tmux")
+        .args(["capture-pane", "-p", "-t", target, "-S", "-80"])
+        .output()?;
+    if !capture.status.success() {
+        anyhow::bail!(
+            "tmux capture-pane failed: {}",
+            String::from_utf8_lossy(&capture.stderr)
+        );
+    }
+    Ok(String::from_utf8_lossy(&capture.stdout).to_string())
 }
 
 fn load_tmux_buffer(text: &str) -> Result<()> {
@@ -247,13 +323,13 @@ fn paste_tmux_buffer_raw(target: &str) -> Result<()> {
     Ok(())
 }
 
-fn send_tmux_key(target: &str, key: &str) -> Result<()> {
+fn send_tmux_hex(target: &str, hex: &str) -> Result<()> {
     let send = Command::new("tmux")
-        .args(["send-keys", "-t", target, key])
+        .args(["send-keys", "-H", "-t", target, hex])
         .output()?;
     if !send.status.success() {
         anyhow::bail!(
-            "tmux send-keys ({key}) failed: {}",
+            "tmux send-keys -H ({hex}) failed: {}",
             String::from_utf8_lossy(&send.stderr)
         );
     }
@@ -268,7 +344,61 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn pi_submit_slash_command_uses_raw_paste_and_double_enter() {
+    fn pi_prompt_ready_requires_commands_and_ctrl_o() {
+        assert!(!pane_text_has_prompt_ready_cue("pi v0.73.0\n/ commands"));
+        assert!(!pane_text_has_prompt_ready_cue("pi v0.73.0\nctrl+o"));
+        assert!(pane_text_has_prompt_ready_cue(
+            "pi v0.73.0\n/ commands\nctrl+o"
+        ));
+    }
+
+    #[test]
+    fn pi_wait_for_prompt_ready_polls_until_ready_cue() {
+        let captures = Arc::new(Mutex::new(vec![
+            "pane_current_command=node".to_string(),
+            "pi v0.73.0\n/ commands".to_string(),
+            "pi v0.73.0\n/ commands\nctrl+o".to_string(),
+        ]));
+        let captures_in_runner = Arc::clone(&captures);
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_in_runner = Arc::clone(&attempts);
+
+        let ready = wait_for_prompt_ready_with_runner(
+            "agman-test:agman",
+            Duration::from_secs(1),
+            Duration::ZERO,
+            move |target| {
+                assert_eq!(target, "agman-test:agman");
+                attempts_in_runner.fetch_add(1, Ordering::SeqCst);
+                Ok(captures_in_runner.lock().unwrap().remove(0))
+            },
+        );
+
+        assert!(ready);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn pi_wait_for_prompt_ready_times_out_best_effort() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_in_runner = Arc::clone(&attempts);
+
+        let ready = wait_for_prompt_ready_with_runner(
+            "agman-test:agman",
+            Duration::ZERO,
+            Duration::ZERO,
+            move |_| {
+                attempts_in_runner.fetch_add(1, Ordering::SeqCst);
+                Ok("pi v0.73.0\n/ commands".to_string())
+            },
+        );
+
+        assert!(!ready);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pi_submit_slash_command_uses_raw_paste_and_double_hex_cr() {
         let actions = Arc::new(Mutex::new(Vec::new()));
         let actions_in_runner = Arc::clone(&actions);
 
@@ -291,13 +421,13 @@ mod tests {
                 PiSubmitAction::PasteBufferRaw {
                     target: "agman-test:agman".to_string()
                 },
-                PiSubmitAction::SendKey {
+                PiSubmitAction::SendHex {
                     target: "agman-test:agman".to_string(),
-                    key: "Enter"
+                    hex: "0d"
                 },
-                PiSubmitAction::SendKey {
+                PiSubmitAction::SendHex {
                     target: "agman-test:agman".to_string(),
-                    key: "Enter"
+                    hex: "0d"
                 },
             ]
         );
