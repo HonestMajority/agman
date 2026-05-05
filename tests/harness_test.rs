@@ -8,10 +8,15 @@ fn cwd() -> std::path::PathBuf {
 fn harness_kind_round_trips_through_strings() {
     assert_eq!("claude".parse::<HarnessKind>(), Ok(HarnessKind::Claude));
     assert_eq!("codex".parse::<HarnessKind>(), Ok(HarnessKind::Codex));
+    assert_eq!("goose".parse::<HarnessKind>(), Ok(HarnessKind::Goose));
     assert_eq!("nope".parse::<HarnessKind>(), Err(()));
     assert_eq!(HarnessKind::Claude.as_str(), "claude");
     assert_eq!(HarnessKind::Codex.as_str(), "codex");
-    assert_eq!(HarnessKind::ALL, &[HarnessKind::Claude, HarnessKind::Codex]);
+    assert_eq!(HarnessKind::Goose.as_str(), "goose");
+    assert_eq!(
+        HarnessKind::ALL,
+        &[HarnessKind::Claude, HarnessKind::Codex, HarnessKind::Goose]
+    );
 }
 
 #[test]
@@ -20,6 +25,7 @@ fn claude_build_session_command_emits_system_prompt_and_name() {
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
         name: "agman-task-myrepo--feat-x-step-1",
+        identity_file: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Auto,
@@ -39,6 +45,7 @@ fn claude_build_session_command_escapes_inner_single_quotes() {
     let cmd = h.build_session_command(&LaunchContext {
         identity: "It's a body with 'quotes'",
         name: "agman-x",
+        identity_file: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Auto,
@@ -57,6 +64,7 @@ fn claude_build_session_command_pins_session_id_when_provided() {
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
         name: "agman-chief-of-staff",
+        identity_file: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Pin(uuid),
@@ -76,6 +84,7 @@ fn claude_build_session_command_resumes_when_provided() {
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
         name: "agman-chief-of-staff",
+        identity_file: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Resume(uuid),
@@ -102,6 +111,7 @@ fn codex_build_session_command_emits_developer_instructions_and_no_alt_screen() 
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
         name: "agman-task-myrepo--feat-x-step-1",
+        identity_file: None,
         cwd: &cwd(),
         no_alt_screen: true,
         session_key: SessionKey::Auto,
@@ -138,6 +148,7 @@ fn codex_build_session_command_does_not_emit_skip_git_repo_check() {
         let cmd = h.build_session_command(&LaunchContext {
             identity: "Identity body",
             name: "agman-task-myrepo--feat-x-step-1",
+            identity_file: None,
             cwd: &work_dir,
             no_alt_screen: true,
             session_key: key,
@@ -167,6 +178,7 @@ fn codex_build_session_command_always_bypasses_approvals_and_sandbox() {
         let cmd = h.build_session_command(&LaunchContext {
             identity: "Identity body",
             name: "agman-task-myrepo--feat-x-step-1",
+            identity_file: None,
             cwd: &work_dir,
             no_alt_screen: true,
             session_key: key,
@@ -188,6 +200,7 @@ fn codex_build_session_command_emits_resume_subcommand() {
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
         name: "agman-chief-of-staff",
+        identity_file: None,
         cwd: &work_dir,
         no_alt_screen: true,
         session_key: SessionKey::Resume("agman-chief-of-staff"),
@@ -215,12 +228,53 @@ fn codex_build_session_command_escapes_triple_quotes_in_body() {
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Pre \"\"\" mid",
         name: "x",
+        identity_file: None,
         cwd: &cwd(),
         no_alt_screen: false,
         session_key: SessionKey::Auto,
     });
     assert!(cmd.contains("Pre \\\"\\\"\\\" mid"));
     assert!(!cmd.contains("Pre \"\"\" mid"));
+}
+
+#[test]
+fn goose_build_session_command_emits_auto_mode_moim_and_name() {
+    let h = HarnessKind::Goose.select();
+    let tmp = tempfile::tempdir().unwrap();
+    let identity_file = tmp.path().join("identity").join("agman goose's name.md");
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-goose's-name",
+        identity_file: Some(&identity_file),
+        cwd: &cwd(),
+        no_alt_screen: false,
+        session_key: SessionKey::Auto,
+    });
+    assert!(cmd.starts_with("GOOSE_MODE=auto "));
+    assert!(cmd.contains("GOOSE_MOIM_MESSAGE_FILE="));
+    assert!(cmd.contains("goose session"));
+    assert!(cmd.contains("--with-builtin developer,tom"));
+    assert!(cmd.contains("--name 'agman-goose'\\''s-name'"));
+    assert!(cmd.contains("agman goose'\\''s name.md"));
+    assert!(!cmd.contains("--resume"));
+}
+
+#[test]
+fn goose_build_session_command_resumes_by_name() {
+    let h = HarnessKind::Goose.select();
+    let tmp = tempfile::tempdir().unwrap();
+    let identity_file = tmp.path().join("identity").join("agman-goose.md");
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-goose",
+        identity_file: Some(&identity_file),
+        cwd: &cwd(),
+        no_alt_screen: false,
+        session_key: SessionKey::Resume("agman-goose"),
+    });
+    assert!(cmd.contains("goose session"));
+    assert!(cmd.contains("--resume --name 'agman-goose'"));
+    assert!(!cmd.contains("Identity body"));
 }
 
 #[test]
@@ -235,6 +289,7 @@ fn claude_skill_hint_mentions_dot_claude() {
 fn codex_skill_hint_is_empty() {
     let h = HarnessKind::Codex.select();
     assert_eq!(h.skill_hint(), "");
+    assert_eq!(HarnessKind::Goose.select().skill_hint(), "");
 }
 
 #[test]
@@ -245,66 +300,14 @@ fn install_hints_match_documented_text() {
         .contains("@anthropic-ai/claude-code"));
     let codex_hint = HarnessKind::Codex.select().install_hint();
     assert!(codex_hint.contains("codex") && codex_hint.contains("brew"));
+    assert!(HarnessKind::Goose.select().install_hint().contains("Goose"));
 }
 
 #[test]
 fn cli_binaries_match_kinds() {
     assert_eq!(HarnessKind::Claude.select().cli_binary(), "claude");
     assert_eq!(HarnessKind::Codex.select().cli_binary(), "codex");
-}
-
-#[test]
-fn claude_latest_transcript_picks_newest_jsonl_for_cwd() {
-    use agman::harness;
-
-    // Per-test claude home tempdir threaded explicitly through the test
-    // seam — no env-var mutation, so this stays parallel-safe.
-    let claude_home = tempfile::tempdir().unwrap();
-
-    let cwd = tempfile::tempdir().unwrap();
-    let escaped = cwd.path().to_string_lossy().replace('/', "-");
-    let agent_dir = claude_home.path().join("projects").join(escaped);
-    std::fs::create_dir_all(&agent_dir).unwrap();
-
-    let older = agent_dir.join("a.jsonl");
-    let newer = agent_dir.join("b.jsonl");
-    std::fs::write(&older, "{}\n").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    std::fs::write(&newer, "{}\n").unwrap();
-
-    let pick =
-        harness::latest_transcript_for_test(HarnessKind::Claude, claude_home.path(), cwd.path())
-            .unwrap();
-    assert_eq!(pick, newer);
-}
-
-#[test]
-fn claude_find_last_assistant_marker_returns_uuid() {
-    let h = HarnessKind::Claude.select();
-    let tmp = tempfile::tempdir().unwrap();
-    let p = tmp.path().join("t.jsonl");
-    std::fs::write(
-        &p,
-        "{\"type\":\"user\",\"uuid\":\"u1\"}\n{\"type\":\"assistant\",\"uuid\":\"a1\"}\n{\"type\":\"assistant\",\"uuid\":\"a2\"}\n",
-    )
-    .unwrap();
-    assert_eq!(h.find_last_assistant_marker(&p), Some("a2".to_string()));
-}
-
-#[test]
-fn codex_find_last_assistant_marker_returns_timestamp() {
-    let h = HarnessKind::Codex.select();
-    let tmp = tempfile::tempdir().unwrap();
-    let p = tmp.path().join("rollout.jsonl");
-    std::fs::write(
-        &p,
-        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\"},\"timestamp\":\"2026-01-01T00:01:00Z\"}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\"},\"timestamp\":\"2026-01-01T00:02:00Z\"}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\"},\"timestamp\":\"2026-01-01T00:03:00Z\"}\n",
-    )
-    .unwrap();
-    assert_eq!(
-        h.find_last_assistant_marker(&p),
-        Some("2026-01-01T00:03:00Z".to_string())
-    );
+    assert_eq!(HarnessKind::Goose.select().cli_binary(), "goose");
 }
 
 #[test]

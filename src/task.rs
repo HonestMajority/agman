@@ -63,9 +63,8 @@ pub struct RepoEntry {
 /// A single interactive agent session run by the supervisor.
 ///
 /// Records the deterministic session name passed to the harness at launch
-/// (`claude --name <name>` / `codex` post-launch `/rename <name>`) so the
-/// user can manually reattach with `claude --resume <name>` or `codex resume
-/// <name>` from a shell.
+/// (`claude --name <name>`, `codex` post-launch `/rename <name>`, or
+/// `goose --name <name>`) so the user can manually reattach from a shell.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
     pub agent: String,
@@ -79,8 +78,8 @@ pub struct SessionEntry {
     #[serde(default)]
     pub condition: Option<String>,
     /// Which harness was used to spawn this session. Used by the kill path
-    /// to dispatch the right slash command (`/exit` for claude, `/quit` for
-    /// codex). `#[serde(default)]` so legacy `SessionEntry` records without
+    /// to dispatch the right slash command (`/exit` for claude/goose, `/quit`
+    /// for codex). `#[serde(default)]` so legacy `SessionEntry` records without
     /// this field deserialize to `HarnessKind::default() = Claude`. Risk: a
     /// stale unstopped codex session entry from before the upgrade defaults
     /// to Claude and the kill path dispatches the wrong slash command, which
@@ -149,8 +148,7 @@ pub struct TaskMeta {
     pub project: Option<String>,
     /// History of interactive agent sessions run by the supervisor.
     /// Appended to on every agent step; persists across iterations so the
-    /// user can `claude --resume <name>` / `codex resume <name>` any prior
-    /// session manually from a shell. Each entry records the harness that
+    /// user can manually resume a prior harness session from a shell. Each entry records the harness that
     /// spawned it on `SessionEntry.harness` so the kill path can dispatch
     /// the right slash command independently of the current global setting.
     #[serde(default)]

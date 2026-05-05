@@ -19,7 +19,7 @@ impl Tmux {
     /// - lazygit: starts lazygit
     /// - shell: runs git status
     /// - agman: shell where the supervisor launches an interactive agent
-    ///   (claude or codex, per the configured harness)
+    ///   (per the configured harness)
     pub fn create_session_with_windows(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
             tracing::debug!(
@@ -168,6 +168,32 @@ impl Tmux {
         Ok(())
     }
 
+    /// Send literal text to a specific window without pressing Enter.
+    pub fn send_text_to_window(session_name: &str, window_name: &str, text: &str) -> Result<()> {
+        Self::send_text_to_target(&Self::tmux_target(session_name, Some(window_name)), text)
+    }
+
+    /// Send literal text to a session's current pane without pressing Enter.
+    pub fn send_text_to_session(session_name: &str, text: &str) -> Result<()> {
+        Self::send_text_to_target(session_name, text)
+    }
+
+    fn send_text_to_target(target: &str, text: &str) -> Result<()> {
+        let output = Command::new("tmux")
+            .args(["send-keys", "-t", target, text])
+            .output()
+            .context("failed to send text to tmux target")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to send text to tmux target: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
     /// Send Ctrl+C to a specific window to interrupt any running process
     pub fn send_ctrl_c_to_window(session_name: &str, window_name: &str) -> Result<()> {
         Self::send_ctrl_c_target(&Self::tmux_target(session_name, Some(window_name)))
@@ -208,7 +234,7 @@ impl Tmux {
     }
 
     /// Create a simple agent tmux session with a single window running an
-    /// interactive harness (claude or codex). Used for Chief of Staff/PM/researcher
+    /// interactive harness. Used for Chief of Staff/PM/researcher
     /// and task agents.
     ///
     /// `command` is the harness-built shell command to launch (see
@@ -469,8 +495,8 @@ impl Tmux {
     /// Check whether the configured agent harness (or anything that isn't a
     /// shell) is the foreground process in the tmux session.
     ///
-    /// We do not match on the harness's own process name because Claude Code
-    /// (and codex similarly) set `process.title` to the version string, which
+    /// We do not match on the harness's own process name because harness CLIs
+    /// can set `process.title` to a version string, which
     /// changes every release. Instead, we use the inverse: the pane was
     /// launched into a shell, and when the agent runs it takes over the
     /// foreground. So "ready" ≡ "foreground is not a known shell".

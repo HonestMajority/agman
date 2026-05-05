@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::flow::{Flow, FlowStep};
 use crate::git::{self, Git};
-use crate::harness::{self, codex, HarnessKind, LaunchContext, RegisterContext, SessionKey};
+use crate::harness::{self, HarnessKind, LaunchContext, RegisterContext, SessionKey};
 use crate::inbox;
 use crate::project::Project;
 use crate::repo_stats::RepoStats;
@@ -23,7 +23,7 @@ use crate::tmux::Tmux;
 const REQUIRED_TOOLS: &[&str] = &["tmux", "git", "nvim", "lazygit", "gh", "direnv"];
 
 /// Check that all required external tools are present on $PATH. Includes
-/// the configured harness binary (claude or codex). Returns a list of
+/// the configured harness binary. Returns a list of
 /// missing tool names (empty if all present).
 pub fn check_dependencies(config: &Config) -> Vec<String> {
     let harness = config.default_harness();
@@ -46,7 +46,7 @@ pub fn check_dependencies(config: &Config) -> Vec<String> {
 }
 
 /// Return an install hint for a missing tool. The configured harness binary
-/// (claude / codex) defers to the harness's `install_hint`.
+/// defers to the harness's `install_hint`.
 pub fn install_hint(config: &Config, tool: &str) -> String {
     match tool {
         "tmux" => "brew install tmux (macOS) / apt install tmux (Linux)".into(),
@@ -2719,7 +2719,7 @@ pub fn respawn_agent(config: &Config, target: &str, force: bool, timeout_secs: u
 /// harness. The next spawn re-reads `config.harness_kind()` via
 /// `read_or_stamp` and stamps the new value.
 pub fn wipe_long_lived_session_handles(state_dir: &Path) {
-    for fname in ["session-id", "launch-cwd", "harness"] {
+    for fname in ["session-id", "session-name", "launch-cwd", "harness"] {
         let _ = std::fs::remove_file(state_dir.join(fname));
     }
 }
@@ -2733,14 +2733,13 @@ pub fn wipe_long_lived_session_handles(state_dir: &Path) {
 pub struct LongLivedLaunchForTest {
     pub mode: &'static str, // "auto" | "pin" | "resume"
     pub handle: Option<String>,
+    pub session_name: String,
     pub cwd: PathBuf,
     pub is_first_launch: bool,
 }
 
-/// Test-only entrypoint mirroring `prepare_long_lived_launch`, with an
-/// explicit `codex_home_override` so tests don't have to mutate the global
-/// `AGMAN_CODEX_HOME` env var (which collides under default `cargo test`
-/// parallelism). Pass `None` to use the env-var-resolved default.
+/// Test-only entrypoint mirroring `prepare_long_lived_launch`. The final
+/// argument is retained for compatibility with older tests and ignored.
 /// See `LongLivedLaunchForTest`.
 #[doc(hidden)]
 pub fn prepare_long_lived_launch_for_test(
@@ -2749,16 +2748,9 @@ pub fn prepare_long_lived_launch_for_test(
     cwd: &Path,
     kind: HarnessKind,
     force_fresh: bool,
-    codex_home_override: Option<&Path>,
+    _codex_home_override: Option<&Path>,
 ) -> Result<LongLivedLaunchForTest> {
-    let prep = prepare_long_lived_launch_inner(
-        state_dir,
-        base_name,
-        cwd,
-        kind,
-        force_fresh,
-        codex_home_override,
-    )?;
+    let prep = prepare_long_lived_launch_inner(state_dir, base_name, cwd, kind, force_fresh)?;
     let (mode, handle) = match &prep.mode {
         LaunchMode::Auto => ("auto", None),
         LaunchMode::Pin(h) => ("pin", Some(h.clone())),
@@ -2767,6 +2759,7 @@ pub fn prepare_long_lived_launch_for_test(
     Ok(LongLivedLaunchForTest {
         mode,
         handle,
+        session_name: prep.session_name,
         cwd: prep.cwd,
         is_first_launch: prep.is_first_launch,
     })
@@ -2774,16 +2767,19 @@ pub fn prepare_long_lived_launch_for_test(
 
 /// Result of preparing a long-lived agent launch — what to feed into
 /// `Harness::build_session_command` and whether to run the post-launch
-/// registration step (`/rename` for codex; no-op for claude).
+/// registration step (`/rename` for codex; no-op for claude/goose).
 struct LongLivedLaunch {
     /// Mode + the owned UUID/name backing the borrowed `SessionKey` returned
     /// by `session_key`. The handle lives inside the variant, so a `Pin` /
     /// `Resume` without a handle is unrepresentable.
     mode: LaunchMode,
     /// Working directory to actually launch in. Equals the stamped
-    /// `<state_dir>/launch-cwd` when codex is resuming; otherwise the
+    /// `<state_dir>/launch-cwd` when codex/goose are resuming; otherwise the
     /// caller-supplied cwd.
     cwd: PathBuf,
+    /// Stamped unique generation name. Passed as the harness session name
+    /// for fresh launches and as the resume key for codex/goose.
+    session_name: String,
     /// First time we've launched this long-lived agent (or `force_fresh`
     /// was set). Gates whether we run `register_long_lived_session`.
     is_first_launch: bool,
@@ -2812,17 +2808,13 @@ impl LongLivedLaunch {
 /// launch we mint one and write it; on subsequent launches we read it
 /// back and use `Resume(uuid)`.
 ///
-/// Codex path: keyed off the deterministic `base_name`. We check
-/// `~/.codex/session_index.jsonl` for an entry matching the name. If
-/// present, we resume — using the stamped `<state_dir>/launch-cwd` as
-/// the launch cwd so codex doesn't pop a directory picker. If absent,
-/// we Auto-launch and stamp the launch cwd (idempotent) so future
-/// resumes pick the same dir.
+/// Codex/goose path: keyed off `<state_dir>/session-name`. On first launch
+/// we mint a unique generation name and stamp `<state_dir>/launch-cwd`;
+/// on subsequent launches we resume that exact stamped name from the
+/// stamped cwd.
 ///
-/// `force_fresh` short-circuits both paths: caller (respawn_agent) has
-/// already wiped the handles; we return Auto + the freshly-resolved
-/// launch cwd, and the codex path also stamps that cwd so the next
-/// (non-forced) launch can resume.
+/// `force_fresh` short-circuits all paths: caller (respawn_agent) has
+/// already wiped the handles; we mint a fresh generation.
 fn prepare_long_lived_launch(
     state_dir: &Path,
     base_name: &str,
@@ -2830,23 +2822,19 @@ fn prepare_long_lived_launch(
     kind: HarnessKind,
     force_fresh: bool,
 ) -> Result<LongLivedLaunch> {
-    prepare_long_lived_launch_inner(state_dir, base_name, cwd, kind, force_fresh, None)
+    prepare_long_lived_launch_inner(state_dir, base_name, cwd, kind, force_fresh)
 }
 
-/// Inner implementation shared by production callers and the test seam. The
-/// `codex_home_override` parameter lets tests inject a `TempDir` for the
-/// codex home directory without touching the process-global `AGMAN_CODEX_HOME`
-/// env var. Production passes `None` and resolves the path via
-/// `harness::harness_home(Codex)` exactly as before.
 fn prepare_long_lived_launch_inner(
     state_dir: &Path,
     base_name: &str,
     cwd: &Path,
     kind: HarnessKind,
     force_fresh: bool,
-    codex_home_override: Option<&Path>,
 ) -> Result<LongLivedLaunch> {
     std::fs::create_dir_all(state_dir).context("failed to create agent state dir")?;
+    let (session_name, fresh_session_name) =
+        read_or_create_session_name(state_dir, base_name, force_fresh)?;
 
     match kind {
         HarnessKind::Claude => {
@@ -2858,6 +2846,7 @@ fn prepare_long_lived_launch_inner(
                         return Ok(LongLivedLaunch {
                             mode: LaunchMode::Resume(trimmed.to_string()),
                             cwd: cwd.to_path_buf(),
+                            session_name,
                             is_first_launch: false,
                         });
                     }
@@ -2870,17 +2859,14 @@ fn prepare_long_lived_launch_inner(
             Ok(LongLivedLaunch {
                 mode: LaunchMode::Pin(uuid),
                 cwd: cwd.to_path_buf(),
+                session_name,
                 is_first_launch: true,
             })
         }
-        HarnessKind::Codex => {
+        HarnessKind::Codex | HarnessKind::Goose => {
             let cwd_path = Config::launch_cwd_path(state_dir);
-            let resolved_home: PathBuf = codex_home_override
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| harness::harness_home(HarnessKind::Codex));
-            let has_session = !force_fresh && codex::codex_has_session(&resolved_home, base_name);
 
-            if has_session {
+            if !force_fresh && !fresh_session_name {
                 // Prefer the stamped launch-cwd if it still exists;
                 // otherwise fall back to the freshly-resolved cwd.
                 let resume_cwd = std::fs::read_to_string(&cwd_path)
@@ -2889,8 +2875,9 @@ fn prepare_long_lived_launch_inner(
                     .filter(|p| p.exists())
                     .unwrap_or_else(|| cwd.to_path_buf());
                 Ok(LongLivedLaunch {
-                    mode: LaunchMode::Resume(base_name.to_string()),
+                    mode: LaunchMode::Resume(session_name.clone()),
                     cwd: resume_cwd,
+                    session_name,
                     is_first_launch: false,
                 })
             } else {
@@ -2905,11 +2892,85 @@ fn prepare_long_lived_launch_inner(
                 Ok(LongLivedLaunch {
                     mode: LaunchMode::Auto,
                     cwd: cwd.to_path_buf(),
+                    session_name,
                     is_first_launch: true,
                 })
             }
         }
     }
+}
+
+fn read_or_create_session_name(
+    state_dir: &Path,
+    base_name: &str,
+    force_fresh: bool,
+) -> Result<(String, bool)> {
+    let path = state_dir.join("session-name");
+    if !force_fresh {
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                return Ok((trimmed.to_string(), false));
+            }
+        }
+    }
+
+    let session_name = unique_session_name(base_name);
+    std::fs::write(&path, &session_name)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok((session_name, true))
+}
+
+fn unique_session_name(base_name: &str) -> String {
+    let base = sanitize_session_name_base(base_name);
+    let timestamp = chrono::Utc::now().format("%y%m%d-%H%M%S");
+    let random = uuid::Uuid::new_v4().simple().to_string();
+    format!("{base}-{timestamp}-{}", &random[..8])
+}
+
+fn sanitize_session_name_base(base_name: &str) -> String {
+    let mut out = String::with_capacity(base_name.len());
+    let mut last_was_dash = false;
+    for ch in base_name.chars() {
+        let next = if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            last_was_dash = false;
+            ch
+        } else if !last_was_dash {
+            last_was_dash = true;
+            '-'
+        } else {
+            continue;
+        };
+        out.push(next);
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "agman-agent".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn prepare_goose_identity_file(
+    kind: HarnessKind,
+    state_dir: &Path,
+    session_name: &str,
+    identity: &str,
+    rewrite: bool,
+) -> Result<Option<PathBuf>> {
+    if kind != HarnessKind::Goose {
+        return Ok(None);
+    }
+    let path = harness::goose::identity_file_path(state_dir, session_name);
+    if rewrite || !path.exists() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        std::fs::write(&path, identity)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    Ok(Some(path))
 }
 
 /// Start the Chief of Staff agent session.
@@ -2935,6 +2996,13 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
     tracing::info!(session = session_name, telegram_enabled, harness = %kind, force_fresh, "starting Chief of Staff session");
 
     let prep = prepare_long_lived_launch(&cos_dir, &agent_name, &cos_dir, kind, force_fresh)?;
+    let identity_file = prepare_goose_identity_file(
+        kind,
+        &cos_dir,
+        &prep.session_name,
+        &prompt,
+        prep.is_first_launch,
+    )?;
     // Pre-stamp workspace trust so the harness's first-launch trust dialog
     // doesn't block. Idempotent and cheap; failure is fatal because the
     // dialog is unrecoverable (the agent never reaches a usable state).
@@ -2948,7 +3016,8 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
         })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &prompt,
-        name: &agent_name,
+        name: &prep.session_name,
+        identity_file: identity_file.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
         session_key: prep.session_key(),
@@ -2958,7 +3027,7 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
     Tmux::create_agent_session(session_name, &cmd, Some(&prep.cwd))?;
 
     if !already_existed && prep.is_first_launch {
-        register_long_lived_session(harness.as_ref(), session_name, &agent_name, kind);
+        register_long_lived_session(harness.as_ref(), session_name, &prep.session_name, kind);
     }
     Ok(())
 }
@@ -3027,6 +3096,13 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
 
     let prep =
         prepare_long_lived_launch(&project_dir, &agent_name, &project_dir, kind, force_fresh)?;
+    let identity_file = prepare_goose_identity_file(
+        kind,
+        &project_dir,
+        &prep.session_name,
+        &prompt,
+        prep.is_first_launch,
+    )?;
     harness
         .ensure_workspace_trusted(&prep.cwd)
         .with_context(|| {
@@ -3038,7 +3114,8 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
         })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &prompt,
-        name: &agent_name,
+        name: &prep.session_name,
+        identity_file: identity_file.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
         session_key: prep.session_key(),
@@ -3047,7 +3124,7 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
     let already_existed = Tmux::session_exists(&session_name);
     Tmux::create_agent_session(&session_name, &cmd, Some(&prep.cwd))?;
     if !already_existed && prep.is_first_launch {
-        register_long_lived_session(harness.as_ref(), &session_name, &agent_name, kind);
+        register_long_lived_session(harness.as_ref(), &session_name, &prep.session_name, kind);
     }
     Ok(())
 }
@@ -3137,6 +3214,13 @@ pub fn start_researcher_session(
 
     let cwd = work_dir.as_deref().unwrap_or(&dir);
     let prep = prepare_long_lived_launch(&dir, &agent_name, cwd, kind, force_fresh)?;
+    let identity_file = prepare_goose_identity_file(
+        kind,
+        &dir,
+        &prep.session_name,
+        &prompt,
+        prep.is_first_launch,
+    )?;
     harness
         .ensure_workspace_trusted(&prep.cwd)
         .with_context(|| {
@@ -3149,7 +3233,8 @@ pub fn start_researcher_session(
         })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &prompt,
-        name: &agent_name,
+        name: &prep.session_name,
+        identity_file: identity_file.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
         session_key: prep.session_key(),
@@ -3158,7 +3243,7 @@ pub fn start_researcher_session(
     let already_existed = Tmux::session_exists(&session_name);
     Tmux::create_agent_session(&session_name, &cmd, Some(&prep.cwd))?;
     if !already_existed && prep.is_first_launch {
-        register_long_lived_session(harness.as_ref(), &session_name, &agent_name, kind);
+        register_long_lived_session(harness.as_ref(), &session_name, &prep.session_name, kind);
     }
 
     Ok(())
@@ -3231,7 +3316,7 @@ pub fn archive_researcher(config: &Config, project: &str, name: &str) -> Result<
 
 /// Resume an archived researcher: start a new tmux session and flip status
 /// to Running. `start_researcher_session` will pick up any stamped
-/// session-id (claude) or session_index entry (codex) and resume the
+/// session-id (claude) or session-name (codex/goose) and resume the
 /// underlying conversation if available; archive does not delete those
 /// handles.
 pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
@@ -3601,265 +3686,6 @@ pub fn get_task_log_tail(config: &Config, task_id: &str, n: usize) -> Result<Str
     let lines: Vec<&str> = contents.lines().collect();
     let start = lines.len().saturating_sub(n);
     Ok(lines[start..].join("\n"))
-}
-
-// ---------------------------------------------------------------------------
-// Chat unread tracking
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct ChatLastViewed(std::collections::HashMap<String, ChatViewedEntry>);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChatViewedEntry {
-    /// Canonicalised path to the harness transcript file that was current
-    /// at the time the user viewed the chat.
-    transcript_path: String,
-    /// Harness-defined opaque marker for the last assistant message
-    /// (claude: uuid, codex: timestamp/hash).
-    last_marker: String,
-}
-
-impl ChatLastViewed {
-    fn load(path: &Path) -> Self {
-        let data = match std::fs::read_to_string(path) {
-            Ok(d) => d,
-            Err(_) => return Self::default(),
-        };
-        serde_json::from_str(&data).unwrap_or_default()
-    }
-
-    fn save(&self, path: &Path) {
-        if let Ok(data) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, data);
-        }
-    }
-}
-
-pub struct ChatPollResult {
-    pub unread_names: Vec<String>,
-}
-
-/// Read the per-agent harness stamp at `<state_dir>/harness`, falling back
-/// to the global default when the stamp is absent or unparseable.
-fn agent_harness_kind(config: &Config, state_dir: &Path) -> HarnessKind {
-    let stamp = state_dir.join("harness");
-    if let Ok(raw) = std::fs::read_to_string(&stamp) {
-        if let Ok(k) = raw.trim().parse() {
-            return k;
-        }
-    }
-    config.harness_kind()
-}
-
-fn check_agent_unread(
-    harness: &dyn crate::harness::Harness,
-    last_viewed: &ChatLastViewed,
-    agent_key: &str,
-    cwd: &Path,
-) -> bool {
-    let Some(transcript) = harness.latest_transcript(cwd) else {
-        return false;
-    };
-    check_agent_unread_with_transcript(harness, last_viewed, agent_key, transcript)
-}
-
-/// Test-friendly variant of `check_agent_unread` that takes the resolved
-/// transcript path directly, bypassing the env-var-aware
-/// `harness.latest_transcript()` lookup.
-fn check_agent_unread_with_transcript(
-    harness: &dyn crate::harness::Harness,
-    last_viewed: &ChatLastViewed,
-    agent_key: &str,
-    transcript: PathBuf,
-) -> bool {
-    let Some(marker) = harness.find_last_assistant_marker(&transcript) else {
-        return false;
-    };
-    let canonical = std::fs::canonicalize(&transcript)
-        .ok()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| transcript.to_string_lossy().to_string());
-    !matches!(
-        last_viewed.0.get(agent_key),
-        Some(entry) if entry.transcript_path == canonical && entry.last_marker == marker
-    )
-}
-
-/// Collect names of agents with unread assistant messages
-/// (Chief of Staff + all projects).
-pub fn count_unread_chat_messages(config: &Config) -> ChatPollResult {
-    count_unread_chat_messages_inner(config, None, None)
-}
-
-/// Test-only variant that accepts explicit harness home overrides so tests
-/// can isolate transcript lookups to a `TempDir` without touching the
-/// process-global `AGMAN_CLAUDE_HOME` / `AGMAN_CODEX_HOME` env vars.
-#[doc(hidden)]
-pub fn count_unread_chat_messages_for_test(
-    config: &Config,
-    claude_home: Option<&Path>,
-    codex_home: Option<&Path>,
-) -> ChatPollResult {
-    count_unread_chat_messages_inner(config, claude_home, codex_home)
-}
-
-fn count_unread_chat_messages_inner(
-    config: &Config,
-    claude_home_override: Option<&Path>,
-    codex_home_override: Option<&Path>,
-) -> ChatPollResult {
-    let last_viewed = ChatLastViewed::load(&config.chat_last_viewed_path());
-    let mut unread_names: Vec<String> = Vec::new();
-
-    // Chief of Staff
-    let cos_dir = config.chief_of_staff_dir();
-    if cos_dir.exists() {
-        let kind = agent_harness_kind(config, &cos_dir);
-        let harness = kind.select();
-        if agent_unread_with_overrides(
-            harness.as_ref(),
-            kind,
-            &last_viewed,
-            "chief-of-staff",
-            &cos_dir,
-            claude_home_override,
-            codex_home_override,
-        ) {
-            unread_names.push("CoS".to_string());
-        }
-    }
-
-    // Projects
-    if let Ok(entries) = std::fs::read_dir(config.projects_dir()) {
-        for entry in entries.flatten() {
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let project_name = match entry.file_name().into_string() {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-            let cwd = config.project_dir(&project_name);
-            let kind = agent_harness_kind(config, &cwd);
-            let harness = kind.select();
-            let agent_key = format!("project:{project_name}");
-            if agent_unread_with_overrides(
-                harness.as_ref(),
-                kind,
-                &last_viewed,
-                &agent_key,
-                &cwd,
-                claude_home_override,
-                codex_home_override,
-            ) {
-                unread_names.push(project_name);
-            }
-        }
-    }
-
-    tracing::debug!(?unread_names, "chat poll result");
-    ChatPollResult { unread_names }
-}
-
-/// Resolve unread state for a single agent, optionally overriding the
-/// harness home directory. Production callers pass `None`/`None` and fall
-/// back to the env-var-aware trait method; tests pass an explicit `TempDir`.
-fn agent_unread_with_overrides(
-    harness: &dyn crate::harness::Harness,
-    kind: HarnessKind,
-    last_viewed: &ChatLastViewed,
-    agent_key: &str,
-    cwd: &Path,
-    claude_home_override: Option<&Path>,
-    codex_home_override: Option<&Path>,
-) -> bool {
-    let override_home = match kind {
-        HarnessKind::Claude => claude_home_override,
-        HarnessKind::Codex => codex_home_override,
-    };
-    match override_home {
-        Some(home) => {
-            let Some(transcript) = harness::latest_transcript_for_test(kind, home, cwd) else {
-                return false;
-            };
-            check_agent_unread_with_transcript(harness, last_viewed, agent_key, transcript)
-        }
-        None => check_agent_unread(harness, last_viewed, agent_key, cwd),
-    }
-}
-
-/// Mark a chat agent as viewed by recording the current transcript path
-/// and last-assistant marker keyed by `agent_key` (`"ceo"` or
-/// `"project:<name>"`).
-pub fn mark_chat_viewed(config: &Config, agent_key: &str) -> Result<()> {
-    mark_chat_viewed_inner(config, agent_key, None, None)
-}
-
-/// Test-only variant that accepts explicit harness home overrides. See
-/// `count_unread_chat_messages_for_test` for the rationale.
-#[doc(hidden)]
-pub fn mark_chat_viewed_for_test(
-    config: &Config,
-    agent_key: &str,
-    claude_home: Option<&Path>,
-    codex_home: Option<&Path>,
-) -> Result<()> {
-    mark_chat_viewed_inner(config, agent_key, claude_home, codex_home)
-}
-
-fn mark_chat_viewed_inner(
-    config: &Config,
-    agent_key: &str,
-    claude_home_override: Option<&Path>,
-    codex_home_override: Option<&Path>,
-) -> Result<()> {
-    let cwd = if agent_key == "chief-of-staff" {
-        config.chief_of_staff_dir()
-    } else if let Some(name) = agent_key.strip_prefix("project:") {
-        config.project_dir(name)
-    } else {
-        return Ok(());
-    };
-    if !cwd.exists() {
-        return Ok(());
-    }
-
-    let kind = agent_harness_kind(config, &cwd);
-    let harness = kind.select();
-
-    let override_home = match kind {
-        HarnessKind::Claude => claude_home_override,
-        HarnessKind::Codex => codex_home_override,
-    };
-    let transcript = match override_home {
-        Some(home) => harness::latest_transcript_for_test(kind, home, &cwd),
-        None => harness.latest_transcript(&cwd),
-    };
-    let transcript = match transcript {
-        Some(t) => t,
-        None => return Ok(()),
-    };
-    let marker = match harness.find_last_assistant_marker(&transcript) {
-        Some(m) => m,
-        None => return Ok(()),
-    };
-    let canonical = std::fs::canonicalize(&transcript)
-        .ok()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| transcript.to_string_lossy().to_string());
-
-    let path = config.chat_last_viewed_path();
-    let mut last_viewed = ChatLastViewed::load(&path);
-    last_viewed.0.insert(
-        agent_key.to_string(),
-        ChatViewedEntry {
-            transcript_path: canonical,
-            last_marker: marker,
-        },
-    );
-    last_viewed.save(&path);
-    Ok(())
 }
 
 /// Persist the chosen harness as the global default for newly-spawned agents.

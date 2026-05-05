@@ -1,5 +1,5 @@
 //! Task supervisor: runs agent flow steps as interactive agent sessions
-//! (claude or codex per the configured harness) inside a tmux window (the
+//! via the configured harness inside a tmux window (the
 //! task session's `agman` window) and advances the flow based on sentinel
 //! files.
 //!
@@ -7,8 +7,8 @@
 //! `Harness::build_session_command`. Task agents are disposable: every flow
 //! transition kills the prior process and starts a fresh one with the next
 //! agent's system prompt. agman never resumes any session programmatically —
-//! the user can manually `claude --resume <name>` / `codex resume <name>`
-//! from a shell to revisit a historical conversation.
+//! the user can manually resume from a shell to revisit a historical
+//! conversation.
 //!
 //! The system prompt holds **identity only** — who the agent is and how to
 //! finish — while the dynamic per-launch payload (current TASK.md, any
@@ -174,7 +174,7 @@ pub fn classify(task: &Task) -> PollTarget {
 /// queue the next agent's work, the wrong agent receives it.
 ///
 /// We delegate to the harness's `kill_pane` impl which uses the harness's
-/// own quit slash command (`/exit` for claude, `/quit` for codex) and falls
+/// own quit slash command and falls
 /// back to Ctrl-C — but never SIGTERM/SIGKILL the pane pid (that destroys
 /// the tmux window).
 pub fn kill_current_agent(harness: &dyn crate::harness::Harness, session_name: &str) -> Result<()> {
@@ -213,8 +213,7 @@ fn is_command_flow(config: &Config, flow_name: &str) -> bool {
 /// Build the **system prompt** body for a step (identity only — no TASK.md,
 /// feedback, or git context). Returned inline; the caller passes it to the
 /// harness's `build_session_command` so it ends up on the launch command
-/// line (claude `--system-prompt`) or the harness config (`codex -c
-/// developer_instructions=...`).
+/// line or harness-specific config.
 ///
 /// For stored-command flows the prompt template is *not* embedded here — it
 /// moves to the inbox message via `prepare_inbox_message` so the agent
@@ -248,8 +247,8 @@ fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Resu
 ///
 /// Task agents are disposable. Every flow transition launches a brand-new
 /// agent process with the next agent's system prompt — agman never resumes
-/// programmatically. The user can manually `claude --resume <name>` /
-/// `codex resume <name>` from a shell to revisit a historical conversation.
+/// programmatically. The user can manually resume the harness session from a
+/// shell to revisit a historical conversation.
 ///
 /// Sequence:
 /// 1. Reconcile any prior live session entry whose `stopped_at` was never
@@ -264,8 +263,8 @@ fn prepare_inbox_message(config: &Config, task: &Task, agent_name: &str) -> Resu
 /// 6. `send-keys` the harness-built launch command to `<session>:agman`.
 /// 7. Push a `SessionEntry` and update the displayed agent.
 /// 8. Wait for the pane to flip from shell → agent, then run the harness's
-///    post-launch `register_session_name` step (codex `/rename`; claude
-///    no-ops because `--name` already registered the name).
+///    post-launch `register_session_name` step (codex `/rename`; other
+///    harnesses no-op because launch-time names are enough).
 pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> Result<String> {
     let session_name = supervisor_session(task)?;
     // Task agents have NO per-task harness pin: every step reads the current
@@ -323,6 +322,18 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
     let name = format!("agman-task-{}-step-{}", task.meta.task_id(), step_n);
 
     let working_dir = step_working_dir(task)?;
+    let identity_file = if harness_kind == HarnessKind::Goose {
+        let path = harness::goose::identity_file_path(&task.dir, &name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        std::fs::write(&path, &identity)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        Some(path)
+    } else {
+        None
+    };
     // Pre-stamp workspace trust for the worktree so the harness's first-
     // launch trust dialog doesn't block. Idempotent and cheap; failure is
     // fatal because the dialog is unrecoverable.
@@ -338,6 +349,7 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &identity,
         name: &name,
+        identity_file: identity_file.as_deref(),
         cwd: &working_dir,
         no_alt_screen: matches!(harness_kind, HarnessKind::Codex),
         // Task agents are disposable: every step is a fresh session.
@@ -374,8 +386,8 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
 
     // Post-launch registration. Wait for the pane to flip to the agent
     // (foreground process != shell), then call the harness hook. For
-    // claude this is a no-op (--name already registered the session); for
-    // codex this paste-injects /rename and tails session_index.jsonl.
+    // claude/goose this is a no-op (--name already registered the session);
+    // for codex this paste-injects /rename and tails session_index.jsonl.
     if wait_for_agent_ready(&session_name, std::time::Duration::from_secs(10)) {
         let harness_home = harness::harness_home(harness_kind);
         let _ = harness.register_session_name(&RegisterContext {
@@ -1029,8 +1041,8 @@ pub fn honor_stop(config: &Config, task: &mut Task) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), "supervisor honoring stop");
     if let Ok(session) = supervisor_session(task) {
         // Use the harness recorded on the most recent SessionEntry so the
-        // kill path dispatches the right slash command (`/exit` for claude,
-        // `/quit` for codex) even if the global setting has flipped since
+        // kill path dispatches the right harness-specific slash command even
+        // if the global setting has flipped since
         // this session was launched. Fall back to the global only when
         // there is no session history (defensive — shouldn't happen for an
         // active session being killed).
@@ -1177,6 +1189,7 @@ mod tests {
         let cmd = h.build_session_command(&LaunchContext {
             identity: "Identity body",
             name: "agman-task-myrepo--feat-x-step-1",
+            identity_file: None,
             cwd: &cwd,
             no_alt_screen: false,
             session_key: SessionKey::Auto,
@@ -1210,6 +1223,7 @@ mod tests {
             let cmd = h.build_session_command(&LaunchContext {
                 identity: "Identity body",
                 name: "agman-task-myrepo--feat-x-step-1",
+                identity_file: None,
                 cwd: &cwd,
                 no_alt_screen: true,
                 session_key: key,
@@ -1229,6 +1243,7 @@ mod tests {
         let cmd = h.build_session_command(&LaunchContext {
             identity: "Identity body",
             name: "agman-task-myrepo--feat-x-step-1",
+            identity_file: None,
             cwd: &cwd,
             no_alt_screen: true,
             session_key: SessionKey::Auto,
