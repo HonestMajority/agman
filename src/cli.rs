@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use agman::task::TaskStatus;
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(name = "agman")]
 #[command(about = "Agent Manager - Orchestrate stateless AI agents across isolated git worktrees")]
 #[command(version)]
@@ -221,14 +221,14 @@ EXAMPLES:
         /// Project name (defaults to "chief-of-staff" for CoS-level researchers)
         #[arg(long)]
         project: Option<String>,
-        /// Repository name (for working directory context)
+        /// Repository name (for working directory context; cannot be combined with --task)
         #[arg(long)]
         repo: Option<String>,
-        /// Branch name (used with --repo for worktree resolution)
-        #[arg(long)]
+        /// Branch name (used with --repo for worktree resolution; cannot be combined with --task)
+        #[arg(long, requires = "repo")]
         branch: Option<String>,
-        /// Task ID to inherit working directory from
-        #[arg(long)]
+        /// Task ID to inherit working directory from (cannot be combined with --repo/--branch)
+        #[arg(long, conflicts_with_all = ["repo", "branch"])]
         task: Option<String>,
         /// Research description/question
         #[arg(long, short, allow_hyphen_values = true)]
@@ -284,6 +284,67 @@ impl StatusFilter {
             StatusFilter::Stopped => TaskStatus::Stopped,
             StatusFilter::InputNeeded => TaskStatus::InputNeeded,
             StatusFilter::OnHold => TaskStatus::OnHold,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn create_researcher_rejects_branch_without_repo() {
+        let err = Cli::try_parse_from([
+            "agman",
+            "create-researcher",
+            "probe",
+            "--branch",
+            "feature-x",
+        ])
+        .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn create_researcher_rejects_task_with_repo_context() {
+        let err = Cli::try_parse_from([
+            "agman",
+            "create-researcher",
+            "probe",
+            "--task",
+            "myrepo--feature-x",
+            "--repo",
+            "myrepo",
+        ])
+        .unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn create_researcher_allows_repo_and_branch_context() {
+        let cli = Cli::try_parse_from([
+            "agman",
+            "create-researcher",
+            "probe",
+            "--repo",
+            "myrepo",
+            "--branch",
+            "feature-x",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Commands::CreateResearcher {
+                repo, branch, task, ..
+            }) => {
+                assert_eq!(repo.as_deref(), Some("myrepo"));
+                assert_eq!(branch.as_deref(), Some("feature-x"));
+                assert!(task.is_none());
+            }
+            other => panic!("expected create-researcher command, got {other:?}"),
         }
     }
 }
