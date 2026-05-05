@@ -9,6 +9,11 @@ use std::time::Duration;
 use super::{Harness, HarnessKind, LaunchContext, RegisterContext, SessionKey};
 
 const TOOL_ALLOWLIST: &str = "read,bash,edit,write,grep,find,ls";
+const NAME_REGISTRATION_INITIAL_DELAY: Duration = Duration::from_millis(500);
+const NAME_REGISTRATION_RETRY_DELAY: Duration = Duration::from_millis(500);
+const NAME_REGISTRATION_SUBMIT_DELAY: Duration = Duration::from_millis(500);
+const NAME_REGISTRATION_SECOND_SUBMIT_DELAY: Duration = Duration::from_millis(120);
+const NAME_REGISTRATION_MAX_ATTEMPTS: u32 = 3;
 
 pub struct PiHarness;
 
@@ -62,11 +67,11 @@ impl Harness for PiHarness {
         let cmd = format!("/name {}", ctx.name);
 
         let sent = register_session_name_with_retry(
-            || paste_text(&target, &cmd),
+            || submit_slash_command(&target, &cmd),
             ctx.name,
-            Duration::from_millis(500),
-            Duration::from_millis(500),
-            3,
+            NAME_REGISTRATION_INITIAL_DELAY,
+            NAME_REGISTRATION_RETRY_DELAY,
+            NAME_REGISTRATION_MAX_ATTEMPTS,
         )?;
 
         if sent {
@@ -110,7 +115,7 @@ fn safe_path_component(name: &str) -> String {
 }
 
 fn register_session_name_with_retry<F>(
-    mut paste_attempt: F,
+    mut submit_attempt: F,
     name: &str,
     initial_delay: Duration,
     retry_delay: Duration,
@@ -123,14 +128,14 @@ where
         std::thread::sleep(initial_delay);
     }
     for attempt in 1..=max_attempts {
-        match paste_attempt() {
+        match submit_attempt() {
             Ok(()) => return Ok(true),
             Err(e) => {
                 tracing::warn!(
                     attempt,
                     name,
                     error = %e,
-                    "pi /name: paste attempt failed; will retry"
+                    "pi /name: submit attempt failed; will retry"
                 );
                 if attempt < max_attempts && !retry_delay.is_zero() {
                     std::thread::sleep(retry_delay);
@@ -141,10 +146,73 @@ where
     Ok(false)
 }
 
-/// Paste `text` into a tmux target as a single block followed by Enter,
-/// using load-buffer + paste-buffer so spaces and shell metacharacters
-/// survive.
-fn paste_text(target: &str, text: &str) -> Result<()> {
+fn submit_slash_command(target: &str, text: &str) -> Result<()> {
+    submit_slash_command_with_runner(
+        target,
+        text,
+        NAME_REGISTRATION_SUBMIT_DELAY,
+        NAME_REGISTRATION_SECOND_SUBMIT_DELAY,
+        run_tmux_submit_action,
+    )
+}
+
+/// Submit Pi slash commands with a raw paste and delayed Enter keys.
+///
+/// Pi's prompt can leave bracket-pasted slash commands in the editor with a
+/// blank continuation line. The command text is single-line, so raw tmux paste
+/// is sufficient and avoids bracket-paste editor state; the second `Enter`
+/// covers the observed case where the first submit creates the blank line that
+/// a manual Enter then accepts.
+fn submit_slash_command_with_runner<F>(
+    target: &str,
+    text: &str,
+    submit_delay: Duration,
+    second_submit_delay: Duration,
+    mut run: F,
+) -> Result<()>
+where
+    F: FnMut(PiSubmitAction) -> Result<()>,
+{
+    run(PiSubmitAction::LoadBuffer(text.to_string()))?;
+    run(PiSubmitAction::PasteBufferRaw {
+        target: target.to_string(),
+    })?;
+
+    if !submit_delay.is_zero() {
+        std::thread::sleep(submit_delay);
+    }
+    run(PiSubmitAction::SendKey {
+        target: target.to_string(),
+        key: "Enter",
+    })?;
+
+    if !second_submit_delay.is_zero() {
+        std::thread::sleep(second_submit_delay);
+    }
+    run(PiSubmitAction::SendKey {
+        target: target.to_string(),
+        key: "Enter",
+    })?;
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PiSubmitAction {
+    LoadBuffer(String),
+    PasteBufferRaw { target: String },
+    SendKey { target: String, key: &'static str },
+}
+
+fn run_tmux_submit_action(action: PiSubmitAction) -> Result<()> {
+    match action {
+        PiSubmitAction::LoadBuffer(text) => load_tmux_buffer(&text),
+        PiSubmitAction::PasteBufferRaw { target } => paste_tmux_buffer_raw(&target),
+        PiSubmitAction::SendKey { target, key } => send_tmux_key(&target, key),
+    }
+}
+
+fn load_tmux_buffer(text: &str) -> Result<()> {
     let mut child = Command::new("tmux")
         .args(["load-buffer", "-"])
         .stdin(Stdio::piped())
@@ -163,9 +231,12 @@ fn paste_text(target: &str, text: &str) -> Result<()> {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    Ok(())
+}
 
+fn paste_tmux_buffer_raw(target: &str) -> Result<()> {
     let paste = Command::new("tmux")
-        .args(["paste-buffer", "-p", "-t", target])
+        .args(["paste-buffer", "-t", target])
         .output()?;
     if !paste.status.success() {
         anyhow::bail!(
@@ -173,16 +244,87 @@ fn paste_text(target: &str, text: &str) -> Result<()> {
             String::from_utf8_lossy(&paste.stderr)
         );
     }
+    Ok(())
+}
 
-    std::thread::sleep(Duration::from_millis(200));
-    let enter = Command::new("tmux")
-        .args(["send-keys", "-t", target, "Enter"])
+fn send_tmux_key(target: &str, key: &str) -> Result<()> {
+    let send = Command::new("tmux")
+        .args(["send-keys", "-t", target, key])
         .output()?;
-    if !enter.status.success() {
+    if !send.status.success() {
         anyhow::bail!(
-            "tmux send-keys (Enter) failed: {}",
-            String::from_utf8_lossy(&enter.stderr)
+            "tmux send-keys ({key}) failed: {}",
+            String::from_utf8_lossy(&send.stderr)
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::anyhow;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn pi_submit_slash_command_uses_raw_paste_and_double_enter() {
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let actions_in_runner = Arc::clone(&actions);
+
+        submit_slash_command_with_runner(
+            "agman-test:agman",
+            "/name agman-task-test-step-1",
+            Duration::ZERO,
+            Duration::ZERO,
+            move |action| {
+                actions_in_runner.lock().unwrap().push(action);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            actions.lock().unwrap().as_slice(),
+            &[
+                PiSubmitAction::LoadBuffer("/name agman-task-test-step-1".to_string()),
+                PiSubmitAction::PasteBufferRaw {
+                    target: "agman-test:agman".to_string()
+                },
+                PiSubmitAction::SendKey {
+                    target: "agman-test:agman".to_string(),
+                    key: "Enter"
+                },
+                PiSubmitAction::SendKey {
+                    target: "agman-test:agman".to_string(),
+                    key: "Enter"
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn pi_register_session_name_retries_submit_failures() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_in_submit = Arc::clone(&attempts);
+
+        let result = register_session_name_with_retry(
+            move || {
+                let n = attempts_in_submit.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == 1 {
+                    Err(anyhow!("tmux not ready"))
+                } else {
+                    Ok(())
+                }
+            },
+            "agman-task-test-step-1",
+            Duration::ZERO,
+            Duration::ZERO,
+            3,
+        )
+        .unwrap();
+
+        assert!(result);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
 }
