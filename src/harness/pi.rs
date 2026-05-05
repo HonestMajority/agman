@@ -69,7 +69,7 @@ impl Harness for PiHarness {
         };
         let cmd = format!("/name {}", ctx.name);
 
-        if wait_for_prompt_ready(&target, NAME_REGISTRATION_PROMPT_READY_TIMEOUT) {
+        if wait_for_prompt_ready(&target, ctx.name, NAME_REGISTRATION_PROMPT_READY_TIMEOUT) {
             tracing::debug!(
                 session = ctx.session,
                 name = ctx.name,
@@ -131,9 +131,10 @@ fn safe_path_component(name: &str) -> String {
     name.replace(['/', '\\'], "-")
 }
 
-fn wait_for_prompt_ready(target: &str, timeout: Duration) -> bool {
+fn wait_for_prompt_ready(target: &str, current_name: &str, timeout: Duration) -> bool {
     wait_for_prompt_ready_with_runner(
         target,
+        current_name,
         timeout,
         NAME_REGISTRATION_PROMPT_READY_POLL_DELAY,
         capture_tmux_pane_tail,
@@ -142,6 +143,7 @@ fn wait_for_prompt_ready(target: &str, timeout: Duration) -> bool {
 
 fn wait_for_prompt_ready_with_runner<F>(
     target: &str,
+    current_name: &str,
     timeout: Duration,
     poll_delay: Duration,
     mut capture: F,
@@ -152,7 +154,9 @@ where
     let deadline = Instant::now() + timeout;
     loop {
         match capture(target) {
-            Ok(text) if pane_text_has_prompt_ready_cue(&text) => return true,
+            Ok(text) if pane_text_has_prompt_ready_cue_after_marker(&text, current_name) => {
+                return true;
+            }
             Ok(_) => {}
             Err(e) => {
                 tracing::debug!(
@@ -172,8 +176,12 @@ where
     }
 }
 
-fn pane_text_has_prompt_ready_cue(text: &str) -> bool {
-    text.contains("/ commands") && text.contains("ctrl+o")
+fn pane_text_has_prompt_ready_cue_after_marker(text: &str, current_name: &str) -> bool {
+    let Some(marker_index) = text.rfind(current_name) else {
+        return false;
+    };
+    let suffix = &text[marker_index..];
+    suffix.contains("/ commands") && suffix.contains("ctrl+o")
 }
 
 fn register_session_name_with_retry<F>(
@@ -344,20 +352,60 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn pi_prompt_ready_requires_commands_and_ctrl_o() {
-        assert!(!pane_text_has_prompt_ready_cue("pi v0.73.0\n/ commands"));
-        assert!(!pane_text_has_prompt_ready_cue("pi v0.73.0\nctrl+o"));
-        assert!(pane_text_has_prompt_ready_cue(
-            "pi v0.73.0\n/ commands\nctrl+o"
+    fn pi_prompt_ready_requires_current_name_marker_and_readiness_cues() {
+        let current_name = "agman-task-test-step-2";
+
+        assert!(!pane_text_has_prompt_ready_cue_after_marker(
+            "pi v0.73.0\n/ commands\nctrl+o",
+            current_name
+        ));
+        assert!(!pane_text_has_prompt_ready_cue_after_marker(
+            &format!("{current_name}\n/ commands"),
+            current_name
+        ));
+        assert!(!pane_text_has_prompt_ready_cue_after_marker(
+            &format!("{current_name}\nctrl+o"),
+            current_name
+        ));
+        assert!(pane_text_has_prompt_ready_cue_after_marker(
+            &format!("{current_name}\n/ commands\nctrl+o"),
+            current_name
         ));
     }
 
     #[test]
-    fn pi_wait_for_prompt_ready_polls_until_ready_cue() {
+    fn pi_prompt_ready_ignores_stale_cues_before_current_name_marker() {
+        let current_name = "agman-task-test-step-2";
+        let pane_text = format!(
+            "agman-task-test-step-1\n/ commands\nctrl+o\nSession name set: agman-task-test-step-1\n{current_name}\nstarting pi"
+        );
+
+        assert!(!pane_text_has_prompt_ready_cue_after_marker(
+            &pane_text,
+            current_name
+        ));
+    }
+
+    #[test]
+    fn pi_prompt_ready_accepts_cues_after_current_name_marker() {
+        let current_name = "agman-task-test-step-2";
+        let pane_text = format!(
+            "agman-task-test-step-1\n/ commands\nctrl+o\n{current_name}\npi v0.73.0\n/ commands\nctrl+o"
+        );
+
+        assert!(pane_text_has_prompt_ready_cue_after_marker(
+            &pane_text,
+            current_name
+        ));
+    }
+
+    #[test]
+    fn pi_wait_for_prompt_ready_polls_until_ready_cue_after_current_name_marker() {
+        let current_name = "agman-task-test-step-2";
         let captures = Arc::new(Mutex::new(vec![
-            "pane_current_command=node".to_string(),
-            "pi v0.73.0\n/ commands".to_string(),
-            "pi v0.73.0\n/ commands\nctrl+o".to_string(),
+            "agman-task-test-step-1\n/ commands\nctrl+o".to_string(),
+            format!("{current_name}\n/ commands"),
+            format!("{current_name}\n/ commands\nctrl+o"),
         ]));
         let captures_in_runner = Arc::clone(&captures);
         let attempts = Arc::new(AtomicU32::new(0));
@@ -365,6 +413,7 @@ mod tests {
 
         let ready = wait_for_prompt_ready_with_runner(
             "agman-test:agman",
+            current_name,
             Duration::from_secs(1),
             Duration::ZERO,
             move |target| {
@@ -385,11 +434,12 @@ mod tests {
 
         let ready = wait_for_prompt_ready_with_runner(
             "agman-test:agman",
+            "agman-task-test-step-2",
             Duration::ZERO,
             Duration::ZERO,
             move |_| {
                 attempts_in_runner.fetch_add(1, Ordering::SeqCst);
-                Ok("pi v0.73.0\n/ commands".to_string())
+                Ok("agman-task-test-step-1\n/ commands\nctrl+o".to_string())
             },
         );
 
