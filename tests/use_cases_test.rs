@@ -1661,7 +1661,6 @@ fn save_and_load_config_file_roundtrip() {
 
     let cf = agman::config::ConfigFile {
         repos_dir: Some("/tmp/my-repos".to_string()),
-        break_interval_mins: None,
         archive_retention_days: None,
         telegram_bot_token: None,
         telegram_chat_id: None,
@@ -1692,8 +1691,8 @@ fn save_and_load_telegram_config() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    // Save break interval first to verify it's preserved
-    agman::use_cases::save_break_interval(&config, 42).unwrap();
+    // Save archive retention first to verify it's preserved
+    agman::use_cases::save_archive_retention(&config, 42).unwrap();
 
     agman::use_cases::save_telegram_config(
         &config,
@@ -1707,8 +1706,8 @@ fn save_and_load_telegram_config() {
     assert_eq!(chat_id.unwrap(), "-100999");
 
     // Verify other config fields are preserved
-    let mins = agman::use_cases::load_break_interval(&config).as_secs() / 60;
-    assert_eq!(mins, 42);
+    let days = agman::use_cases::load_archive_retention(&config);
+    assert_eq!(days, 42);
 }
 
 // ---------------------------------------------------------------------------
@@ -2322,31 +2321,6 @@ fn parse_search_items_json_prs() {
     assert_eq!(items[1].number, 55);
     assert!(!items[1].is_draft);
     assert_eq!(items[1].kind, GithubItemKind::PullRequest);
-}
-
-// ---------------------------------------------------------------------------
-// Break interval config
-// ---------------------------------------------------------------------------
-
-#[test]
-fn break_interval_default_when_no_config() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    config.ensure_dirs().unwrap();
-
-    let interval = use_cases::load_break_interval(&config);
-    assert_eq!(interval, std::time::Duration::from_secs(40 * 60));
-}
-
-#[test]
-fn break_interval_config_roundtrip() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    config.ensure_dirs().unwrap();
-
-    use_cases::save_break_interval(&config, 25).unwrap();
-    let interval = use_cases::load_break_interval(&config);
-    assert_eq!(interval, std::time::Duration::from_secs(25 * 60));
 }
 
 // ---------------------------------------------------------------------------

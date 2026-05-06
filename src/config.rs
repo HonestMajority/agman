@@ -33,7 +33,6 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConfigFile {
     pub repos_dir: Option<String>,
-    pub break_interval_mins: Option<u64>,
     pub archive_retention_days: Option<u64>,
     pub telegram_bot_token: Option<String>,
     pub telegram_chat_id: Option<String>,
@@ -238,10 +237,6 @@ impl Config {
     /// for newly-launched long-lived agents.
     pub fn default_harness(&self) -> Box<dyn Harness> {
         self.harness_kind().select()
-    }
-
-    pub fn break_state_path(&self) -> PathBuf {
-        self.base_dir.join("last_break_reset")
     }
 
     // --- Chief of Staff & Project paths ---

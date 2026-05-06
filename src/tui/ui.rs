@@ -13,11 +13,11 @@ use agman::task::{QueueItem, TaskStatus};
 use agman::use_cases::{self, TelegramHealth};
 
 use std::sync::atomic::Ordering;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::app::{
     App, BranchSource, DirKind, DirPickerOrigin, NotesFocus, PreviewPane, RestartWizardStep, View,
-    WizardStep, BREAK_WARNING_SECS,
+    WizardStep,
 };
 use super::vim::VimMode;
 
@@ -31,30 +31,6 @@ fn vim_mode_color(mode: VimMode) -> Color {
 }
 
 fn clock_title(app: &App) -> Line<'static> {
-    let elapsed = app.last_break_reset.elapsed();
-    let break_spans = if elapsed >= app.break_interval {
-        let overdue_mins = (elapsed - app.break_interval).as_secs() / 60;
-        vec![Span::styled(
-            format!(" \u{2615} +{}m ", overdue_mins),
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Rgb(255, 140, 40))
-                .add_modifier(Modifier::BOLD),
-        )]
-    } else if elapsed >= app.break_interval - Duration::from_secs(BREAK_WARNING_SECS) {
-        let remaining_mins = (app.break_interval - elapsed).as_secs() / 60;
-        vec![Span::styled(
-            format!(" \u{2615} {}m ", remaining_mins),
-            Style::default().fg(Color::Rgb(180, 140, 60)),
-        )]
-    } else {
-        let remaining_mins = (app.break_interval - elapsed).as_secs() / 60;
-        vec![Span::styled(
-            format!(" \u{2615} {}m ", remaining_mins),
-            Style::default().fg(Color::DarkGray),
-        )]
-    };
-
     let unread_count = app.notifications.iter().filter(|n| n.unread).count();
 
     let notif_spans = if !app.gh_notif_first_poll_done {
@@ -110,8 +86,7 @@ fn clock_title(app: &App) -> Line<'static> {
         Style::default().fg(Color::DarkGray),
     );
 
-    let mut spans = break_spans;
-    spans.extend(notif_spans);
+    let mut spans = notif_spans;
     spans.extend(keybase_spans);
     spans.push(clock_span);
 
@@ -1992,26 +1967,6 @@ fn telegram_health_spans(app: &App) -> Vec<Span<'static>> {
     ]
 }
 
-fn break_hint_spans(app: &App) -> Vec<Span<'static>> {
-    let break_due = app.last_break_reset.elapsed() >= app.break_interval;
-    if break_due {
-        vec![
-            Span::styled(
-                "b",
-                Style::default()
-                    .fg(Color::Rgb(255, 140, 40))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" break  ", Style::default().fg(Color::DarkGray)),
-        ]
-    } else {
-        vec![
-            Span::styled("b", Style::default().fg(Color::Rgb(180, 140, 60))),
-            Span::styled(" break  ", Style::default().fg(Color::DarkGray)),
-        ]
-    }
-}
-
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let help_text = match app.view {
         View::ProjectList => {
@@ -2074,7 +2029,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(",", Style::default().fg(Color::LightYellow)),
                 Span::styled(" settings  ", Style::default().fg(Color::DarkGray)),
             ]);
-            spans.extend(break_hint_spans(app));
             spans
         }
         View::TaskList => {
@@ -4277,16 +4231,11 @@ fn draw_archive_preview(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
-    let break_mins = app.break_interval.as_secs() / 60;
     let retention_days = app.archive_retention_days;
     let harness_kind = app.config.harness_kind();
 
     let selected_style = Style::default().bg(Color::Rgb(40, 40, 50));
 
-    let break_display = format!(
-        "  Break interval      \u{25C0}  {} min  \u{25B6}",
-        break_mins
-    );
     let retention_display = format!(
         "  Archive retention   \u{25C0}  {} days \u{25B6}",
         retention_days
@@ -4318,9 +4267,9 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     // If editing a telegram field, we render the TextArea separately. Token
-    // is now at row 3 (after break/retention/harness); chat-id at 4.
-    let editing_token = app.settings_editing && app.settings_selected == 3;
-    let editing_chat_id = app.settings_editing && app.settings_selected == 4;
+    // is now at row 2 (after retention/harness); chat-id at 3.
+    let editing_token = app.settings_editing && app.settings_selected == 2;
+    let editing_chat_id = app.settings_editing && app.settings_selected == 3;
 
     let token_row_text = format!(
         "  Telegram bot token  {}",
@@ -4337,25 +4286,13 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
 
     let items = vec![
         ListItem::new(Line::from(vec![
-            Span::styled(&break_display, Style::default().fg(Color::White)),
-            Span::styled(
-                "    (h/l to adjust, 5\u{2013}120 min)",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]))
-        .style(if app.settings_selected == 0 {
-            selected_style
-        } else {
-            Style::default()
-        }),
-        ListItem::new(Line::from(vec![
             Span::styled(&retention_display, Style::default().fg(Color::White)),
             Span::styled(
                 "    (h/l to adjust, 7\u{2013}365 days)",
                 Style::default().fg(Color::DarkGray),
             ),
         ]))
-        .style(if app.settings_selected == 1 {
+        .style(if app.settings_selected == 0 {
             selected_style
         } else {
             Style::default()
@@ -4367,7 +4304,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ),
         ]))
-        .style(if app.settings_selected == 2 {
+        .style(if app.settings_selected == 1 {
             selected_style
         } else {
             Style::default()
@@ -4380,7 +4317,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::raw("")
             },
         ]))
-        .style(if app.settings_selected == 3 {
+        .style(if app.settings_selected == 2 {
             selected_style
         } else {
             Style::default()
@@ -4393,7 +4330,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::raw("")
             },
         ]))
-        .style(if app.settings_selected == 4 {
+        .style(if app.settings_selected == 3 {
             selected_style
         } else {
             Style::default()
@@ -4415,7 +4352,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Overlay TextArea widget when editing a telegram field
     if editing_token || editing_chat_id {
-        let row_index = if editing_token { 3 } else { 4 };
+        let row_index = if editing_token { 2 } else { 3 };
         // The label prefix is 22 chars ("  Telegram bot token  " / "  Telegram chat ID    ")
         let label_width = 22u16;
         if inner_area.height > row_index && inner_area.width > label_width {
