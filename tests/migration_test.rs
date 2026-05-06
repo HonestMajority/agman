@@ -74,7 +74,10 @@ fn migration_renames_researchers_to_assistants_and_stamps_kind() {
 
     let assistants_dir = config.assistants_dir();
     assert!(assistants_dir.exists(), "assistants dir should exist");
-    assert!(!legacy_root.exists(), "legacy researchers dir should be gone");
+    assert!(
+        !legacy_root.exists(),
+        "legacy researchers dir should be gone"
+    );
 
     let new_entry = assistants_dir.join("alpha--scout");
     assert!(new_entry.exists());
@@ -92,10 +95,7 @@ fn migration_renames_researchers_to_assistants_and_stamps_kind() {
         Some("myrepo"),
         "kind.repo should carry over the legacy repo"
     );
-    assert_eq!(
-        kind.get("branch").and_then(|v| v.as_str()),
-        Some("main")
-    );
+    assert_eq!(kind.get("branch").and_then(|v| v.as_str()), Some("main"));
     assert!(kind.get("task_id").map(|v| v.is_null()).unwrap_or(false));
 
     // Top-level repo/branch/task_id are gone.

@@ -666,19 +666,14 @@ fn draw_assistant_wizard(f: &mut Frame, app: &mut App) {
     let footer_height = if has_error { 2 } else { 1 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(5),
-            Constraint::Length(footer_height),
-        ])
+        .constraints([Constraint::Min(5), Constraint::Length(footer_height)])
         .split(inner);
 
     match wizard.step {
         AssistantWizardStep::Kind => draw_assistant_wizard_kind(f, wizard, chunks[0]),
         AssistantWizardStep::Name => draw_assistant_wizard_name(f, wizard, chunks[0]),
         AssistantWizardStep::Worktrees => draw_assistant_wizard_worktrees(f, wizard, chunks[0]),
-        AssistantWizardStep::Description => {
-            draw_assistant_wizard_description(f, wizard, chunks[0])
-        }
+        AssistantWizardStep::Description => draw_assistant_wizard_description(f, wizard, chunks[0]),
     }
 
     let footer_spans: Vec<Span> = if let Some(ref err) = wizard.error_message {
@@ -728,11 +723,7 @@ fn draw_assistant_wizard(f: &mut Frame, app: &mut App) {
     f.render_widget(footer, chunks[1]);
 }
 
-fn draw_assistant_wizard_kind(
-    f: &mut Frame,
-    wizard: &super::app::AssistantWizard,
-    area: Rect,
-) {
+fn draw_assistant_wizard_kind(f: &mut Frame, wizard: &super::app::AssistantWizard, area: Rect) {
     use super::app::AssistantWizardKind;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -748,19 +739,18 @@ fn draw_assistant_wizard_kind(
     } else {
         Style::default().fg(Color::Gray)
     };
-    let researcher = Paragraph::new(Line::from(vec![Span::styled(
-        " Researcher  —  long-lived investigator scoped to one task/branch ",
-        researcher_style,
-    )]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(if researcher_selected {
+    let researcher =
+        Paragraph::new(Line::from(vec![Span::styled(
+            " Researcher  —  long-lived investigator scoped to one task/branch ",
+            researcher_style,
+        )]))
+        .block(Block::default().borders(Borders::ALL).border_style(
+            Style::default().fg(if researcher_selected {
                 Color::LightCyan
             } else {
                 Color::DarkGray
-            })),
-    );
+            }),
+        ));
     f.render_widget(researcher, chunks[0]);
 
     let reviewer_selected = matches!(wizard.kind, AssistantWizardKind::Reviewer);
@@ -772,27 +762,22 @@ fn draw_assistant_wizard_kind(
     } else {
         Style::default().fg(Color::Gray)
     };
-    let reviewer = Paragraph::new(Line::from(vec![Span::styled(
-        " Reviewer    —  scoped to one or more (repo, branch) worktrees ",
-        reviewer_style,
-    )]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(if reviewer_selected {
+    let reviewer =
+        Paragraph::new(Line::from(vec![Span::styled(
+            " Reviewer    —  scoped to one or more (repo, branch) worktrees ",
+            reviewer_style,
+        )]))
+        .block(Block::default().borders(Borders::ALL).border_style(
+            Style::default().fg(if reviewer_selected {
                 Color::LightCyan
             } else {
                 Color::DarkGray
-            })),
-    );
+            }),
+        ));
     f.render_widget(reviewer, chunks[1]);
 }
 
-fn draw_assistant_wizard_name(
-    f: &mut Frame,
-    wizard: &mut super::app::AssistantWizard,
-    area: Rect,
-) {
+fn draw_assistant_wizard_name(f: &mut Frame, wizard: &mut super::app::AssistantWizard, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3)])
@@ -2882,9 +2867,7 @@ fn draw_wizard_footer_direct(
         // Show contextual help
         let help = match step {
             WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
-            WizardStep::EnterDescription => {
-                "Ctrl+S: create task (empty = setup only)  Esc: back"
-            }
+            WizardStep::EnterDescription => "Ctrl+S: create task (empty = setup only)  Esc: back",
         };
         Line::from(Span::styled(help, Style::default().fg(Color::DarkGray)))
     };
@@ -4813,10 +4796,8 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
     let mut items: Vec<ListItem> = Vec::new();
     let mut groups_shown: usize = 0;
 
-    let kinds: [(&str, &[(usize, &agman::assistant::Assistant)]); 2] = [
-        ("Researchers", &researchers),
-        ("Reviewers", &reviewers),
-    ];
+    let kinds: [(&str, &[(usize, &agman::assistant::Assistant)]); 2] =
+        [("Researchers", &researchers), ("Reviewers", &reviewers)];
 
     for (kind_label, kind_members) in kinds {
         if kind_members.is_empty() {
@@ -4873,7 +4854,12 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
 
         // Owned tuples — keeping the per-status vec by value avoids tying
         // `items`' lifetime to short-lived stack borrows.
-        let status_groups: [(&'static str, &'static str, Color, Vec<(usize, &agman::assistant::Assistant)>); 3] = [
+        let status_groups: [(
+            &'static str,
+            &'static str,
+            Color,
+            Vec<(usize, &agman::assistant::Assistant)>,
+        ); 3] = [
             ("Running", "●", Color::LightGreen, running),
             ("Stopped", "○", Color::Yellow, stopped),
             ("Archived", "○", Color::DarkGray, archived),

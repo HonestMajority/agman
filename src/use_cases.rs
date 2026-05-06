@@ -3313,7 +3313,11 @@ fn resolve_reviewer_worktrees(config: &Config, spec: &ReviewerSpec) -> Result<Re
     for (repo, branch) in &spec.branches {
         let repo_path = config.repo_path_for(parent_dir, repo);
         if !repo_path.exists() {
-            anyhow::bail!("repository '{}' does not exist at {}", repo, repo_path.display());
+            anyhow::bail!(
+                "repository '{}' does not exist at {}",
+                repo,
+                repo_path.display()
+            );
         }
         if let Some(path) = Git::find_worktree_for_branch(&repo_path, branch)? {
             planned.push((repo.clone(), branch.clone(), Plan::Existing { path }));

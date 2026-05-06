@@ -147,8 +147,8 @@ fn rewrite_legacy_assistant_meta(dir: &Path) -> Result<()> {
         }),
     );
 
-    let new_contents =
-        serde_json::to_string_pretty(&value).context("failed to serialize updated assistant meta")?;
+    let new_contents = serde_json::to_string_pretty(&value)
+        .context("failed to serialize updated assistant meta")?;
     std::fs::write(&meta_path, new_contents)
         .with_context(|| format!("failed to write {}", meta_path.display()))?;
     tracing::info!(path = %meta_path.display(), "migration: rewrote assistant meta.json to new kind shape");

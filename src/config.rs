@@ -1139,4 +1139,3 @@ IMPORTANT:
 When you're done, signal completion by creating the `.agent-done` sentinel in the task directory.
 (See the Supervisor Sentinel section appended below for the exact path.)
 "#;
-

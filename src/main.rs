@@ -193,11 +193,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Some(Commands::ListAssistants {
-            project,
-            cos,
-            kind,
-        }) => {
+        Some(Commands::ListAssistants { project, cos, kind }) => {
             let filter = if cos {
                 Some("chief-of-staff")
             } else {
@@ -847,8 +843,7 @@ fn cmd_create_researcher(
         Some(d) => resolve_text_arg(Some(&d), None, "description")?,
         None => String::new(),
     };
-    let assistant =
-        use_cases::create_researcher(config, project, name, &desc, repo, branch, task)?;
+    let assistant = use_cases::create_researcher(config, project, name, &desc, repo, branch, task)?;
     use_cases::start_assistant_session(config, project, name, false)?;
     println!(
         "Researcher '{}' created for project '{}' (tmux: {})",

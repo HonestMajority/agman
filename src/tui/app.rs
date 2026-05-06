@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
+use agman::assistant::Assistant;
 use agman::command::StoredCommand;
 use agman::config::Config;
 use agman::dismissed_notifications::DismissedNotifications;
@@ -23,7 +24,6 @@ use agman::git::Git;
 use agman::inbox;
 use agman::project::Project;
 use agman::repo_stats::RepoStats;
-use agman::assistant::Assistant;
 use agman::supervisor;
 use agman::task::{Task, TaskStatus};
 use agman::tmux::Tmux;
@@ -153,10 +153,7 @@ impl DirectoryPicker {
     }
 
     pub fn is_repo_select_mode(&self) -> bool {
-        matches!(
-            self.origin,
-            DirPickerOrigin::RepoSelect
-        )
+        matches!(self.origin, DirPickerOrigin::RepoSelect)
     }
 
     fn refresh_entries(&mut self) {
@@ -3232,33 +3229,31 @@ impl App {
             wizard.error_message = None;
 
             match wizard.step {
-                AssistantWizardStep::Kind => {
-                    match key.code {
-                        KeyCode::Esc => {
-                            self.assistant_wizard = None;
-                            self.view = View::AssistantList;
-                        }
-                        KeyCode::Char('j')
-                        | KeyCode::Down
-                        | KeyCode::Char('k')
-                        | KeyCode::Up
-                        | KeyCode::Char('h')
-                        | KeyCode::Char('l')
-                        | KeyCode::Left
-                        | KeyCode::Right
-                        | KeyCode::Tab
-                        | KeyCode::BackTab => {
-                            wizard.kind = match wizard.kind {
-                                AssistantWizardKind::Researcher => AssistantWizardKind::Reviewer,
-                                AssistantWizardKind::Reviewer => AssistantWizardKind::Researcher,
-                            };
-                        }
-                        KeyCode::Enter => {
-                            wizard.step = AssistantWizardStep::Name;
-                        }
-                        _ => {}
+                AssistantWizardStep::Kind => match key.code {
+                    KeyCode::Esc => {
+                        self.assistant_wizard = None;
+                        self.view = View::AssistantList;
                     }
-                }
+                    KeyCode::Char('j')
+                    | KeyCode::Down
+                    | KeyCode::Char('k')
+                    | KeyCode::Up
+                    | KeyCode::Char('h')
+                    | KeyCode::Char('l')
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Tab
+                    | KeyCode::BackTab => {
+                        wizard.kind = match wizard.kind {
+                            AssistantWizardKind::Researcher => AssistantWizardKind::Reviewer,
+                            AssistantWizardKind::Reviewer => AssistantWizardKind::Researcher,
+                        };
+                    }
+                    KeyCode::Enter => {
+                        wizard.step = AssistantWizardStep::Name;
+                    }
+                    _ => {}
+                },
                 AssistantWizardStep::Name => {
                     if key.code == KeyCode::Esc {
                         // First content step — Esc cancels the wizard.
@@ -3313,10 +3308,9 @@ impl App {
                         }
                         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             // Add a new row after the selected one.
-                            wizard.worktree_rows.insert(
-                                wizard.selected_row + 1,
-                                ReviewerWorktreeRow::new(),
-                            );
+                            wizard
+                                .worktree_rows
+                                .insert(wizard.selected_row + 1, ReviewerWorktreeRow::new());
                             wizard.selected_row += 1;
                             wizard.worktree_rows[wizard.selected_row].branch_focus = false;
                         }
@@ -3406,12 +3400,9 @@ impl App {
                 ) {
                     Ok(_assistant) => {
                         tracing::info!(project = %project, name = %name, "created researcher via wizard");
-                        if let Err(e) = use_cases::start_assistant_session(
-                            &self.config,
-                            &project,
-                            &name,
-                            false,
-                        ) {
+                        if let Err(e) =
+                            use_cases::start_assistant_session(&self.config, &project, &name, false)
+                        {
                             tracing::warn!(
                                 project = %project, name = %name, error = %e,
                                 "failed to start assistant session"
@@ -3468,12 +3459,9 @@ impl App {
                 match use_cases::create_reviewer(&self.config, &project, &name, &desc, spec) {
                     Ok(_assistant) => {
                         tracing::info!(project = %project, name = %name, "created reviewer via wizard");
-                        if let Err(e) = use_cases::start_assistant_session(
-                            &self.config,
-                            &project,
-                            &name,
-                            false,
-                        ) {
+                        if let Err(e) =
+                            use_cases::start_assistant_session(&self.config, &project, &name, false)
+                        {
                             tracing::warn!(
                                 project = %project, name = %name, error = %e,
                                 "failed to start assistant session"
@@ -5014,7 +5002,6 @@ impl App {
         }
         Ok(false)
     }
-
 
     fn delete_queue_item(&mut self) -> Result<()> {
         if let Some(task) = self.tasks.get(self.selected_index) {

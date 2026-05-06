@@ -19,9 +19,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::assistant::{Assistant, AssistantKind, AssistantStatus};
 use crate::config::Config;
 use crate::inbox;
-use crate::assistant::{Assistant, AssistantKind, AssistantStatus};
 use crate::use_cases;
 
 // ---------------------------------------------------------------------------
@@ -468,11 +468,7 @@ enum AssistantKindFilter {
     Reviewer,
 }
 
-fn resolve_assistant_tag(
-    config: &Config,
-    name: &str,
-    kind: AssistantKindFilter,
-) -> Option<String> {
+fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter) -> Option<String> {
     if name.is_empty() {
         return None;
     }

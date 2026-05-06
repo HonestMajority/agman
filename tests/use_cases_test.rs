@@ -27,7 +27,8 @@ fn create_task_with_new_branch() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     // Task directory and meta exist
@@ -78,7 +79,8 @@ fn create_task_with_existing_worktree() {
         "new",
         WorktreeSource::ExistingWorktree(wt_path.clone()),
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     assert_eq!(task.meta.primary_repo().worktree_path, wt_path);
@@ -106,7 +108,8 @@ fn create_task_reuses_existing_worktree() {
         "new",
         WorktreeSource::ExistingBranch,
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     assert_eq!(task.meta.primary_repo().worktree_path, wt_path);
@@ -145,7 +148,8 @@ fn create_task_with_custom_base_branch() {
             base_branch: Some("feature-base".to_string()),
         },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     // Task directory and meta exist
@@ -225,7 +229,8 @@ fn archive_task() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     let task_dir = task.dir.clone();
@@ -279,7 +284,8 @@ fn archive_task_saved() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     use_cases::archive_task(&config, &mut task, true).unwrap();
@@ -306,7 +312,8 @@ fn permanently_delete_archived_task() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     let task_dir = task.dir.clone();
@@ -357,7 +364,8 @@ fn fully_delete_task() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     let task_dir = task.dir.clone();
@@ -978,7 +986,8 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     let worktree_path = task.meta.primary_repo().worktree_path.clone();
@@ -1005,7 +1014,8 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     assert!(task2.meta.primary_repo().worktree_path.exists());
@@ -1110,7 +1120,8 @@ fn set_linked_pr() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     // Add an origin remote pointing to a GitHub URL
@@ -1154,7 +1165,8 @@ fn set_linked_pr_owned_flag() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     let wt = task.meta.primary_repo().worktree_path.clone();
@@ -1209,7 +1221,8 @@ fn create_multi_repo_task() {
         "Implement cross-repo feature",
         "new-multi",
         parent_dir.clone(),
-        None)
+        None,
+    )
     .unwrap();
 
     // Task directory and meta exist
@@ -1307,7 +1320,8 @@ fn archive_multi_repo_task() {
         "Multi archive test",
         "new-multi",
         parent_dir,
-        None)
+        None,
+    )
     .unwrap();
 
     // Manually populate repos (simulating what setup_repos_from_task_md would do)
@@ -1382,7 +1396,8 @@ fn setup_repos_from_task_md() {
         "Build cross-repo feature",
         "new-multi",
         parent_dir,
-        None)
+        None,
+    )
     .unwrap();
 
     assert!(task.meta.repos.is_empty());
@@ -1682,7 +1697,8 @@ fn create_task_with_slash_in_branch_name() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     // Task directory is flat (no nested dirs from the slash)
@@ -2250,7 +2266,8 @@ fn toggle_archive_saved() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
-        None)
+        None,
+    )
     .unwrap();
 
     use_cases::archive_task(&config, &mut task, false).unwrap();
@@ -2450,7 +2467,8 @@ fn setup_repos_from_task_md_multi_repo_different_parent_dir() {
         "Fix across repos",
         "new-multi",
         other_repos.clone(),
-        None)
+        None,
+    )
     .unwrap();
 
     assert!(task.meta.repos.is_empty());
@@ -2508,7 +2526,8 @@ fn create_task_with_repo_outside_repos_dir() {
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         Some(external_dir.clone()),
-        None)
+        None,
+    )
     .unwrap();
 
     // Task directory and meta exist
@@ -2940,8 +2959,7 @@ fn delete_project() {
 
     // Researcher should now be archived
     let reloaded_researcher =
-        agman::assistant::Assistant::load(config.assistant_dir("backend", "explore-auth"))
-            .unwrap();
+        agman::assistant::Assistant::load(config.assistant_dir("backend", "explore-auth")).unwrap();
     assert_eq!(
         reloaded_researcher.meta.status,
         agman::assistant::AssistantStatus::Archived
@@ -3212,8 +3230,8 @@ fn create_assistant_reviewer_with_existing_worktree_records_agman_created_false(
 
     // Pre-create a worktree for `feat-x`. The reviewer should adopt it
     // unchanged (`agman_created = false`).
-    let wt = agman::git::Git::create_worktree_quiet(&config, "myrepo", "feat-x", None, None)
-        .unwrap();
+    let wt =
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "feat-x", None, None).unwrap();
     assert!(wt.exists());
 
     let assistant = use_cases::create_reviewer(
@@ -3293,9 +3311,11 @@ fn create_assistant_reviewer_origin_only_branch_creates_worktree() {
 
     // The `feat-y` branch should exist on origin but not as a local branch
     // and not in any worktree.
-    assert!(agman::git::Git::find_worktree_for_branch(&clone_path, "feat-y")
-        .unwrap()
-        .is_none());
+    assert!(
+        agman::git::Git::find_worktree_for_branch(&clone_path, "feat-y")
+            .unwrap()
+            .is_none()
+    );
     assert!(!agman::git::Git::local_branch_exists(&clone_path, "feat-y"));
 
     let assistant = use_cases::create_reviewer(
@@ -3341,9 +3361,11 @@ fn create_assistant_reviewer_local_branch_no_worktree_bails() {
         .output()
         .unwrap();
     assert!(agman::git::Git::local_branch_exists(&repo_path, "feat-z"));
-    assert!(agman::git::Git::find_worktree_for_branch(&repo_path, "feat-z")
-        .unwrap()
-        .is_none());
+    assert!(
+        agman::git::Git::find_worktree_for_branch(&repo_path, "feat-z")
+            .unwrap()
+            .is_none()
+    );
 
     let err = use_cases::create_reviewer(
         &config,
@@ -3379,8 +3401,7 @@ fn archive_assistant_reviewer_cleans_only_agman_created_entries() {
 
     // Pre-existing worktree for `keep-me`.
     let preexisting =
-        agman::git::Git::create_worktree_quiet(&config, "myrepo", "keep-me", None, None)
-            .unwrap();
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "keep-me", None, None).unwrap();
     assert!(preexisting.exists());
 
     // Hand-build the reviewer entries: one agman-created, one not. We bypass
@@ -3420,21 +3441,27 @@ fn archive_assistant_reviewer_cleans_only_agman_created_entries() {
     use_cases::archive_assistant(&config, "reviews", "rv4").unwrap();
 
     // The agman-created worktree + branch should be gone.
-    assert!(!agman_created_path.exists(), "agman_created worktree should be removed");
+    assert!(
+        !agman_created_path.exists(),
+        "agman_created worktree should be removed"
+    );
     assert!(
         !agman::git::Git::local_branch_exists(&repo_path, "owned-by-agman"),
         "agman_created branch should be deleted"
     );
     // The pre-existing worktree + branch should be left alone.
-    assert!(preexisting.exists(), "pre-existing worktree must survive archive");
+    assert!(
+        preexisting.exists(),
+        "pre-existing worktree must survive archive"
+    );
     assert!(
         agman::git::Git::local_branch_exists(&repo_path, "keep-me"),
         "pre-existing branch must survive archive"
     );
 
     // Status flipped to Archived.
-    let reloaded = agman::assistant::Assistant::load(config.assistant_dir("reviews", "rv4"))
-        .unwrap();
+    let reloaded =
+        agman::assistant::Assistant::load(config.assistant_dir("reviews", "rv4")).unwrap();
     assert_eq!(
         reloaded.meta.status,
         agman::assistant::AssistantStatus::Archived

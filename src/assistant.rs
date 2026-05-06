@@ -176,8 +176,8 @@ impl Assistant {
     pub fn save_meta(&mut self) -> Result<()> {
         self.meta.updated_at = Utc::now();
         let meta_path = self.dir.join("meta.json");
-        let contents =
-            serde_json::to_string_pretty(&self.meta).context("failed to serialize assistant meta")?;
+        let contents = serde_json::to_string_pretty(&self.meta)
+            .context("failed to serialize assistant meta")?;
         std::fs::write(&meta_path, contents)
             .with_context(|| format!("failed to write {}", meta_path.display()))?;
         Ok(())
