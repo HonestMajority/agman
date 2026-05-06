@@ -3557,10 +3557,14 @@ pub fn list_assistants(
         None => Assistant::list_all(config)?,
     };
     if let Some(k) = kind {
-        all.retain(|a| match (&a.meta.kind, k) {
-            (AssistantKind::Researcher { .. }, AssistantKindLabel::Researcher) => true,
-            (AssistantKind::Reviewer { .. }, AssistantKindLabel::Reviewer) => true,
-            _ => false,
+        all.retain(|a| {
+            matches!(
+                (&a.meta.kind, k),
+                (
+                    AssistantKind::Researcher { .. },
+                    AssistantKindLabel::Researcher
+                ) | (AssistantKind::Reviewer { .. }, AssistantKindLabel::Reviewer)
+            )
         });
     }
     Ok(all)

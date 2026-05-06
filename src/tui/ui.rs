@@ -4682,6 +4682,13 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
     use agman::config::Config;
     use agman::tmux::Tmux;
 
+    type AssistantStatusGroup<'a> = (
+        &'static str,
+        &'static str,
+        Color,
+        Vec<(usize, &'a agman::assistant::Assistant)>,
+    );
+
     let title_text = if app.current_project.as_deref() == Some("chief-of-staff") {
         " CoS Assistants ".to_string()
     } else if let Some(ref project) = app.current_project {
@@ -4854,12 +4861,7 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
 
         // Owned tuples — keeping the per-status vec by value avoids tying
         // `items`' lifetime to short-lived stack borrows.
-        let status_groups: [(
-            &'static str,
-            &'static str,
-            Color,
-            Vec<(usize, &agman::assistant::Assistant)>,
-        ); 3] = [
+        let status_groups: [AssistantStatusGroup<'_>; 3] = [
             ("Running", "●", Color::LightGreen, running),
             ("Stopped", "○", Color::Yellow, stopped),
             ("Archived", "○", Color::DarkGray, archived),

@@ -482,10 +482,17 @@ fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter)
     let matches: Vec<&Assistant> = assistants
         .iter()
         .filter(|a| a.meta.name == name && a.meta.status == AssistantStatus::Running)
-        .filter(|a| match (&a.meta.kind, kind) {
-            (AssistantKind::Researcher { .. }, AssistantKindFilter::Researcher) => true,
-            (AssistantKind::Reviewer { .. }, AssistantKindFilter::Reviewer) => true,
-            _ => false,
+        .filter(|a| {
+            matches!(
+                (&a.meta.kind, kind),
+                (
+                    AssistantKind::Researcher { .. },
+                    AssistantKindFilter::Researcher
+                ) | (
+                    AssistantKind::Reviewer { .. },
+                    AssistantKindFilter::Reviewer
+                )
+            )
         })
         .collect();
     match matches.len() {
