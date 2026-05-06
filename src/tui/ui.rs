@@ -110,7 +110,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::ProjectWizard
             | View::ProjectPicker
             | View::ProjectDeleteConfirm
-            | View::ResearcherWizard
+            | View::AssistantWizard
             | View::RespawnConfirm
     );
 
@@ -206,10 +206,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_project_list(f, app, chunks[0]);
             draw_project_delete_confirm(f, app);
         }
-        View::ResearcherList => draw_researcher_list(f, app, chunks[0]),
-        View::ResearcherWizard => {
-            draw_researcher_list(f, app, chunks[0]);
-            draw_researcher_wizard(f, app);
+        View::AssistantList => draw_assistant_list(f, app, chunks[0]),
+        View::AssistantWizard => {
+            draw_assistant_list(f, app, chunks[0]);
+            draw_assistant_wizard(f, app);
         }
         View::RespawnConfirm => {
             // Draw the underlying view behind the modal
@@ -632,100 +632,287 @@ fn draw_project_wizard(f: &mut Frame, app: &mut App) {
     f.render_widget(footer, chunks[2]);
 }
 
-fn draw_researcher_wizard(f: &mut Frame, app: &mut App) {
-    let area = centered_rect(60, 40, f.area());
+fn draw_assistant_wizard(f: &mut Frame, app: &mut App) {
+    use super::app::{AssistantWizardKind, AssistantWizardStep};
+
+    // Reviewer worktrees can grow tall — give the modal more room than the
+    // legacy researcher wizard.
+    let area = centered_rect(70, 70, f.area());
     f.render_widget(Clear, area);
 
-    let wizard = match &mut app.researcher_wizard {
+    let wizard = match &mut app.assistant_wizard {
         Some(w) => w,
         None => return,
     };
 
+    let kind_label = match wizard.kind {
+        AssistantWizardKind::Researcher => "Researcher",
+        AssistantWizardKind::Reviewer => "Reviewer",
+    };
+    let title = format!(" New {} — {} ", kind_label, wizard.project);
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = outer.inner(area);
+    f.render_widget(outer, area);
+
     let has_error = wizard.error_message.is_some();
     let footer_height = if has_error { 2 } else { 1 };
-
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),             // name field
-            Constraint::Min(5),                // description field
-            Constraint::Length(footer_height), // help/error
+            Constraint::Min(5),
+            Constraint::Length(footer_height),
         ])
-        .split(area);
+        .split(inner);
 
-    // Name field
-    let name_focused = !wizard.description_focus;
-    let name_border_color = if name_focused {
-        Color::LightCyan
-    } else {
-        Color::DarkGray
-    };
-    wizard.name_editor.set_block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(name_border_color))
-            .title(Span::styled(
-                format!(" New Researcher — {} — Name ", wizard.project),
-                Style::default()
-                    .fg(Color::LightMagenta)
-                    .add_modifier(Modifier::BOLD),
-            )),
-    );
-    wizard.name_editor.set_cursor_style(if name_focused {
-        Style::default().bg(Color::LightCyan).fg(Color::Black)
-    } else {
-        Style::default()
-    });
-    f.render_widget(&wizard.name_editor, chunks[0]);
-
-    // Description field
-    let desc_focused = wizard.description_focus;
-    let desc_border_color = if desc_focused {
-        Color::LightCyan
-    } else {
-        Color::DarkGray
-    };
-    let mode = wizard.description_editor.mode();
-    let mode_indicator = if desc_focused {
-        format!(" [{}] ", mode.indicator())
-    } else {
-        String::new()
-    };
-    wizard.description_editor.textarea.set_block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(desc_border_color))
-            .title(Span::styled(
-                format!(" Research Question{mode_indicator}"),
-                Style::default().fg(Color::DarkGray),
-            )),
-    );
-    if desc_focused {
-        wizard
-            .description_editor
-            .textarea
-            .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+    match wizard.step {
+        AssistantWizardStep::Kind => draw_assistant_wizard_kind(f, wizard, chunks[0]),
+        AssistantWizardStep::Name => draw_assistant_wizard_name(f, wizard, chunks[0]),
+        AssistantWizardStep::Worktrees => draw_assistant_wizard_worktrees(f, wizard, chunks[0]),
+        AssistantWizardStep::Description => {
+            draw_assistant_wizard_description(f, wizard, chunks[0])
+        }
     }
-    f.render_widget(&wizard.description_editor.textarea, chunks[1]);
 
-    // Footer: error or help text
-    let footer_spans = if let Some(ref err) = wizard.error_message {
+    let footer_spans: Vec<Span> = if let Some(ref err) = wizard.error_message {
         vec![Span::styled(
             err.clone(),
             Style::default().fg(Color::LightRed),
         )]
     } else {
-        vec![
-            Span::styled("Tab", Style::default().fg(Color::LightCyan)),
-            Span::styled(" switch field  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
-            Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::LightCyan)),
-            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-        ]
+        match wizard.step {
+            AssistantWizardStep::Kind => vec![
+                Span::styled("←/→", Style::default().fg(Color::LightCyan)),
+                Span::styled(" switch  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ],
+            AssistantWizardStep::Name => vec![
+                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
+                Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            ],
+            AssistantWizardStep::Worktrees => vec![
+                Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                Span::styled(" next field  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Ctrl+A", Style::default().fg(Color::LightGreen)),
+                Span::styled(" add row  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Ctrl+D", Style::default().fg(Color::LightRed)),
+                Span::styled(" remove row  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
+                Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+                Span::styled(" back", Style::default().fg(Color::DarkGray)),
+            ],
+            AssistantWizardStep::Description => vec![
+                Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
+                Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc Esc", Style::default().fg(Color::LightCyan)),
+                Span::styled(" back", Style::default().fg(Color::DarkGray)),
+            ],
+        }
     };
     let footer = Paragraph::new(Line::from(footer_spans)).alignment(Alignment::Center);
-    f.render_widget(footer, chunks[2]);
+    f.render_widget(footer, chunks[1]);
+}
+
+fn draw_assistant_wizard_kind(
+    f: &mut Frame,
+    wizard: &super::app::AssistantWizard,
+    area: Rect,
+) {
+    use super::app::AssistantWizardKind;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Length(3)])
+        .split(area);
+
+    let researcher_selected = matches!(wizard.kind, AssistantWizardKind::Researcher);
+    let researcher_style = if researcher_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let researcher = Paragraph::new(Line::from(vec![Span::styled(
+        " Researcher  —  long-lived investigator scoped to one task/branch ",
+        researcher_style,
+    )]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if researcher_selected {
+                Color::LightCyan
+            } else {
+                Color::DarkGray
+            })),
+    );
+    f.render_widget(researcher, chunks[0]);
+
+    let reviewer_selected = matches!(wizard.kind, AssistantWizardKind::Reviewer);
+    let reviewer_style = if reviewer_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let reviewer = Paragraph::new(Line::from(vec![Span::styled(
+        " Reviewer    —  scoped to one or more (repo, branch) worktrees ",
+        reviewer_style,
+    )]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if reviewer_selected {
+                Color::LightCyan
+            } else {
+                Color::DarkGray
+            })),
+    );
+    f.render_widget(reviewer, chunks[1]);
+}
+
+fn draw_assistant_wizard_name(
+    f: &mut Frame,
+    wizard: &mut super::app::AssistantWizard,
+    area: Rect,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3)])
+        .split(area);
+    wizard.name_editor.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightCyan))
+            .title(Span::styled(
+                " Name ",
+                Style::default().fg(Color::LightCyan),
+            )),
+    );
+    wizard
+        .name_editor
+        .set_cursor_style(Style::default().bg(Color::LightCyan).fg(Color::Black));
+    f.render_widget(&wizard.name_editor, chunks[0]);
+}
+
+fn draw_assistant_wizard_worktrees(
+    f: &mut Frame,
+    wizard: &mut super::app::AssistantWizard,
+    area: Rect,
+) {
+    // One block per row, each split horizontally into repo and branch fields.
+    // Borders highlight the focused field; the selected row is the only one
+    // with a coloured border at all.
+    let row_count = wizard.worktree_rows.len();
+    let constraints: Vec<Constraint> = (0..row_count).map(|_| Constraint::Length(3)).collect();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+
+    let selected_row = wizard.selected_row;
+    for (i, row) in wizard.worktree_rows.iter_mut().enumerate() {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .split(chunks[i]);
+
+        let row_is_selected = i == selected_row;
+        let repo_focused = row_is_selected && !row.branch_focus;
+        let branch_focused = row_is_selected && row.branch_focus;
+
+        row.repo_editor.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if repo_focused {
+                    Color::LightCyan
+                } else if row_is_selected {
+                    Color::Cyan
+                } else {
+                    Color::DarkGray
+                }))
+                .title(Span::styled(
+                    format!(" repo #{} ", i + 1),
+                    Style::default().fg(if row_is_selected {
+                        Color::LightCyan
+                    } else {
+                        Color::DarkGray
+                    }),
+                )),
+        );
+        row.repo_editor.set_cursor_style(if repo_focused {
+            Style::default().bg(Color::LightCyan).fg(Color::Black)
+        } else {
+            Style::default()
+        });
+        f.render_widget(&row.repo_editor, cols[0]);
+
+        row.branch_editor.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if branch_focused {
+                    Color::LightCyan
+                } else if row_is_selected {
+                    Color::Cyan
+                } else {
+                    Color::DarkGray
+                }))
+                .title(Span::styled(
+                    " branch ",
+                    Style::default().fg(if row_is_selected {
+                        Color::LightCyan
+                    } else {
+                        Color::DarkGray
+                    }),
+                )),
+        );
+        row.branch_editor.set_cursor_style(if branch_focused {
+            Style::default().bg(Color::LightCyan).fg(Color::Black)
+        } else {
+            Style::default()
+        });
+        f.render_widget(&row.branch_editor, cols[1]);
+    }
+}
+
+fn draw_assistant_wizard_description(
+    f: &mut Frame,
+    wizard: &mut super::app::AssistantWizard,
+    area: Rect,
+) {
+    let mode = wizard.description_editor.mode();
+    let mode_indicator = format!(" [{}] ", mode.indicator());
+    wizard.description_editor.textarea.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::LightCyan))
+            .title(Span::styled(
+                format!(" Description{mode_indicator}"),
+                Style::default().fg(Color::LightCyan),
+            )),
+    );
+    wizard
+        .description_editor
+        .textarea
+        .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
+    f.render_widget(&wizard.description_editor.textarea, area);
 }
 
 fn draw_project_picker(f: &mut Frame, app: &mut App) {
@@ -1944,7 +2131,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("c", Style::default().fg(Color::LightYellow)),
                 Span::styled(" CoS chat  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("w", Style::default().fg(Color::LightYellow)),
-                Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" assistants  ", Style::default().fg(Color::DarkGray)),
             ];
             // Show migrate hint when (unassigned) is selected
             let is_unassigned =
@@ -2001,8 +2188,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("v", Style::default().fg(Color::LightGreen)),
-                Span::styled(" review  ", Style::default().fg(Color::DarkGray)),
             ];
             // Show PM chat hint when in a project scope
             if app
@@ -2094,7 +2279,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("z", Style::default().fg(Color::LightYellow)),
                 Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("w", Style::default().fg(Color::LightYellow)),
-                Span::styled(" researchers  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" assistants  ", Style::default().fg(Color::DarkGray)),
             ]);
             if app.current_project.is_some() {
                 spans.extend([
@@ -2496,10 +2681,10 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             ]
         }
         View::RespawnConfirm => vec![],
-        View::ResearcherList | View::ResearcherWizard => {
+        View::AssistantList | View::AssistantWizard => {
             let enter_label = if app
-                .researchers
-                .get(app.researcher_list_index)
+                .assistants
+                .get(app.assistant_list_index)
                 .is_some_and(|r| r.meta.status == AssistantStatus::Archived)
             {
                 " resume  "
@@ -2543,7 +2728,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     if matches!(
         app.view,
-        View::ProjectList | View::TaskList | View::ResearcherList
+        View::ProjectList | View::TaskList | View::AssistantList
     ) {
         let tg = telegram_health_spans(app);
         if !tg.is_empty() {
@@ -4510,16 +4695,16 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
+fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
     use agman::config::Config;
     use agman::tmux::Tmux;
 
     let title_text = if app.current_project.as_deref() == Some("chief-of-staff") {
-        " CoS Researchers ".to_string()
+        " CoS Assistants ".to_string()
     } else if let Some(ref project) = app.current_project {
-        format!(" Researchers — {} ", project)
+        format!(" Assistants — {} ", project)
     } else {
-        " Researchers ".to_string()
+        " Assistants ".to_string()
     };
     let block = Block::default()
         .title(Line::from(vec![
@@ -4530,18 +4715,18 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("({}) ", app.researchers.len()),
+                format!("({}) ", app.assistants.len()),
                 Style::default().fg(Color::DarkGray),
             ),
         ]))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
-    if app.researchers.is_empty() {
+    if app.assistants.is_empty() {
         let empty_msg = if app.current_project.as_deref() == Some("chief-of-staff") {
-            "No CoS researchers. Press 'n' to create one."
+            "No CoS assistants. Press 'n' to create one."
         } else {
-            "No researchers. Press 'n' to create one."
+            "No assistants. Press 'n' to create one."
         };
         let text = Paragraph::new(empty_msg)
             .alignment(Alignment::Center)
@@ -4569,7 +4754,7 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
     const COL_GAP: &str = "   ";
 
     let name_width = app
-        .researchers
+        .assistants
         .iter()
         .map(|r| r.meta.name.len())
         .max()
@@ -4577,7 +4762,7 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         .clamp(MIN_NAME_WIDTH, MAX_NAME_WIDTH);
 
     let project_width = app
-        .researchers
+        .assistants
         .iter()
         .map(|r| r.meta.project.len())
         .max()
@@ -4613,82 +4798,44 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(header), chunks[0]);
 
-    // Partition assistants into 3 groups by effective status
-    let mut running: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
-    let mut stopped: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
-    let mut archived: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
-
-    for (i, a) in app.researchers.iter().enumerate() {
-        if a.meta.status == AssistantStatus::Archived {
-            archived.push((i, a));
-        } else {
-            let session_name = match a.meta.kind {
-                AssistantKind::Researcher { .. } => {
-                    Config::researcher_tmux_session(&a.meta.project, &a.meta.name)
-                }
-                AssistantKind::Reviewer { .. } => {
-                    Config::reviewer_tmux_session(&a.meta.project, &a.meta.name)
-                }
-            };
-            if Tmux::session_exists(&session_name) {
-                running.push((i, a));
-            } else {
-                stopped.push((i, a));
-            }
+    // Top-level grouping is by kind (Researchers / Reviewers); within each
+    // kind we still surface status — running / stopped / archived — so the
+    // user can scan the same way as the legacy view, just twice.
+    let mut researchers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
+    let mut reviewers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
+    for (i, a) in app.assistants.iter().enumerate() {
+        match a.meta.kind {
+            AssistantKind::Researcher { .. } => researchers.push((i, a)),
+            AssistantKind::Reviewer { .. } => reviewers.push((i, a)),
         }
     }
 
-    // Build items with section headers and separators
     let mut items: Vec<ListItem> = Vec::new();
-    let mut researcher_index: usize = 0;
     let mut groups_shown: usize = 0;
 
-    struct ResearcherGroup<'a> {
-        name: &'a str,
-        icon: &'a str,
-        color: Color,
-        members: &'a [(usize, &'a agman::assistant::Assistant)],
-    }
-
-    let groups = [
-        ResearcherGroup {
-            name: "Running",
-            icon: "●",
-            color: Color::LightGreen,
-            members: &running,
-        },
-        ResearcherGroup {
-            name: "Stopped",
-            icon: "○",
-            color: Color::Yellow,
-            members: &stopped,
-        },
-        ResearcherGroup {
-            name: "Archived",
-            icon: "○",
-            color: Color::DarkGray,
-            members: &archived,
-        },
+    let kinds: [(&str, &[(usize, &agman::assistant::Assistant)]); 2] = [
+        ("Researchers", &researchers),
+        ("Reviewers", &reviewers),
     ];
 
-    for group in &groups {
-        if group.members.is_empty() {
+    for (kind_label, kind_members) in kinds {
+        if kind_members.is_empty() {
             continue;
         }
 
-        // Blank separator between groups
         if groups_shown > 0 {
             items.push(ListItem::new(Line::from("")));
         }
 
-        // Section header
-        let label = format!("── {} ({}) ", group.name, group.members.len());
-        let fill = (inner.width as usize).saturating_sub(label.len());
-        let header_line = Line::from(vec![
+        // Top-level kind header — wider rule, brighter colour to distinguish
+        // it from the inner status sub-headers.
+        let kind_text = format!("─── {} ({}) ", kind_label, kind_members.len());
+        let fill = (inner.width as usize).saturating_sub(kind_text.len());
+        let kind_header = Line::from(vec![
             Span::styled(
-                label,
+                kind_text,
                 Style::default()
-                    .fg(group.color)
+                    .fg(Color::LightMagenta)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -4696,97 +4843,158 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Rgb(60, 60, 60)),
             ),
         ]);
-        items.push(ListItem::new(header_line));
+        items.push(ListItem::new(kind_header));
         groups_shown += 1;
 
-        for (orig_idx, r) in group.members {
-            let is_selected = *orig_idx == app.researcher_list_index;
-
-            // Derive status from group metadata — no redundant tmux check
-            let status_str = group.name.to_lowercase();
-            let status_color = group.color;
-
-            // Truncate name if needed
-            let display_name = if r.meta.name.len() > name_width {
-                format!("{}…", &r.meta.name[..name_width.saturating_sub(1)])
+        // Within each kind, partition by effective status so running ones
+        // stay at the top.
+        let mut running: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
+        let mut stopped: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
+        let mut archived: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
+        for (i, a) in kind_members {
+            if a.meta.status == AssistantStatus::Archived {
+                archived.push((*i, a));
             } else {
-                r.meta.name.clone()
-            };
-
-            // Truncate project if needed
-            let display_project = if r.meta.project.len() > project_width {
-                format!("{}…", &r.meta.project[..project_width.saturating_sub(1)])
-            } else {
-                r.meta.project.clone()
-            };
-
-            // Truncate description
-            let desc = if desc_width == 0 {
-                String::new()
-            } else if r.meta.description.len() > desc_width {
-                format!("{}…", &r.meta.description[..desc_width.saturating_sub(1)])
-            } else {
-                r.meta.description.clone()
-            };
-
-            let text_style = if is_selected {
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-
-            let stall_key = format!("researcher:{}--{}", r.meta.project, r.meta.name);
-            let is_stalled = app.stalled_targets().contains(&stall_key.as_str());
-
-            let mut spans = vec![
-                Span::raw(" "),
-                Span::styled(group.icon, Style::default().fg(status_color)),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{:<width$}", display_name, width = name_width),
-                    text_style,
-                ),
-                Span::raw(COL_GAP),
-                Span::styled(
-                    format!("{:<width$}", display_project, width = project_width),
-                    if is_selected {
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Cyan)
-                    },
-                ),
-                Span::raw(COL_GAP),
-                Span::styled(
-                    format!("{:<width$}", status_str, width = STATUS_WIDTH),
-                    Style::default().fg(status_color),
-                ),
-                Span::raw(COL_GAP),
-                Span::styled(desc, Style::default().fg(Color::DarkGray)),
-            ];
-            if is_stalled {
-                spans.push(Span::styled(
-                    "  ⚠ stalled",
-                    Style::default().fg(Color::Yellow),
-                ));
+                let session_name = match a.meta.kind {
+                    AssistantKind::Researcher { .. } => {
+                        Config::researcher_tmux_session(&a.meta.project, &a.meta.name)
+                    }
+                    AssistantKind::Reviewer { .. } => {
+                        Config::reviewer_tmux_session(&a.meta.project, &a.meta.name)
+                    }
+                };
+                if Tmux::session_exists(&session_name) {
+                    running.push((*i, a));
+                } else {
+                    stopped.push((*i, a));
+                }
             }
-            let line = Line::from(spans);
+        }
 
-            let row_style = if is_selected {
-                Style::default().bg(Color::Rgb(40, 40, 50))
-            } else {
-                Style::default()
-            };
+        // Owned tuples — keeping the per-status vec by value avoids tying
+        // `items`' lifetime to short-lived stack borrows.
+        let status_groups: [(&'static str, &'static str, Color, Vec<(usize, &agman::assistant::Assistant)>); 3] = [
+            ("Running", "●", Color::LightGreen, running),
+            ("Stopped", "○", Color::Yellow, stopped),
+            ("Archived", "○", Color::DarkGray, archived),
+        ];
 
-            items.push(ListItem::new(line).style(row_style));
-            researcher_index += 1;
+        let mut sub_groups_shown: usize = 0;
+        for (sub_name, sub_icon, sub_color, sub_members) in &status_groups {
+            if sub_members.is_empty() {
+                continue;
+            }
+
+            // Blank separator between status sub-groups.
+            if sub_groups_shown > 0 {
+                items.push(ListItem::new(Line::from("")));
+            }
+
+            let label = format!("  ── {} ({}) ", sub_name, sub_members.len());
+            let fill = (inner.width as usize).saturating_sub(label.len());
+            let header_line = Line::from(vec![
+                Span::styled(
+                    label,
+                    Style::default().fg(*sub_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "─".repeat(fill),
+                    Style::default().fg(Color::Rgb(60, 60, 60)),
+                ),
+            ]);
+            items.push(ListItem::new(header_line));
+            sub_groups_shown += 1;
+
+            for (orig_idx, r) in sub_members {
+                let is_selected = *orig_idx == app.assistant_list_index;
+
+                let status_str = sub_name.to_lowercase();
+                let status_color = *sub_color;
+
+                let display_name = if r.meta.name.len() > name_width {
+                    format!("{}…", &r.meta.name[..name_width.saturating_sub(1)])
+                } else {
+                    r.meta.name.clone()
+                };
+
+                let display_project = if r.meta.project.len() > project_width {
+                    format!("{}…", &r.meta.project[..project_width.saturating_sub(1)])
+                } else {
+                    r.meta.project.clone()
+                };
+
+                let desc = if desc_width == 0 {
+                    String::new()
+                } else if r.meta.description.len() > desc_width {
+                    format!("{}…", &r.meta.description[..desc_width.saturating_sub(1)])
+                } else {
+                    r.meta.description.clone()
+                };
+
+                let text_style = if is_selected {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+
+                // Stall key uses the kind-specific prefix the inbox poller
+                // emits, so the indicator stays in sync with the warning the
+                // poller raises.
+                let stall_prefix = match r.meta.kind {
+                    AssistantKind::Researcher { .. } => "researcher",
+                    AssistantKind::Reviewer { .. } => "reviewer",
+                };
+                let stall_key = format!("{}:{}--{}", stall_prefix, r.meta.project, r.meta.name);
+                let is_stalled = app.stalled_targets().contains(&stall_key.as_str());
+
+                let mut spans = vec![
+                    Span::raw(" "),
+                    Span::styled(*sub_icon, Style::default().fg(status_color)),
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("{:<width$}", display_name, width = name_width),
+                        text_style,
+                    ),
+                    Span::raw(COL_GAP),
+                    Span::styled(
+                        format!("{:<width$}", display_project, width = project_width),
+                        if is_selected {
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Cyan)
+                        },
+                    ),
+                    Span::raw(COL_GAP),
+                    Span::styled(
+                        format!("{:<width$}", status_str, width = STATUS_WIDTH),
+                        Style::default().fg(status_color),
+                    ),
+                    Span::raw(COL_GAP),
+                    Span::styled(desc, Style::default().fg(Color::DarkGray)),
+                ];
+                if is_stalled {
+                    spans.push(Span::styled(
+                        "  ⚠ stalled",
+                        Style::default().fg(Color::Yellow),
+                    ));
+                }
+                let line = Line::from(spans);
+
+                let row_style = if is_selected {
+                    Style::default().bg(Color::Rgb(40, 40, 50))
+                } else {
+                    Style::default()
+                };
+
+                items.push(ListItem::new(line).style(row_style));
+            }
         }
     }
 
-    let _ = researcher_index; // suppress unused warning
     let list = List::new(items);
     f.render_widget(list, chunks[1]);
 }

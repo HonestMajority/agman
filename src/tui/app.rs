@@ -75,8 +75,8 @@ pub enum View {
     ProjectWizard,
     ProjectPicker,
     ProjectDeleteConfirm,
-    ResearcherList,
-    ResearcherWizard,
+    AssistantList,
+    AssistantWizard,
     RespawnConfirm,
 }
 
@@ -340,11 +340,68 @@ pub struct ProjectWizard {
     pub error_message: Option<String>,
 }
 
-pub struct ResearcherWizard {
+/// Steps in the create-assistant wizard.
+///
+/// Researchers go directly from `Name` → `Description` (matching the legacy
+/// flow). Reviewers insert a `Worktrees` step between name and description
+/// where the user adds one or more `(repo, branch)` rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssistantWizardStep {
+    /// Step 0: pick the kind (Researcher | Reviewer).
+    Kind,
+    /// Step 1: enter the assistant name.
+    Name,
+    /// Step 2 (Reviewer only): edit the (repo, branch) row list.
+    Worktrees,
+    /// Step 3 (or step 2 for Researcher): enter the description.
+    Description,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssistantWizardKind {
+    Researcher,
+    Reviewer,
+}
+
+/// One editable `(repo, branch)` row in the reviewer wizard.
+pub struct ReviewerWorktreeRow {
+    pub repo_editor: TextArea<'static>,
+    pub branch_editor: TextArea<'static>,
+    /// false = repo focused, true = branch focused
+    pub branch_focus: bool,
+}
+
+impl ReviewerWorktreeRow {
+    pub fn new() -> Self {
+        let mut repo_editor = TextArea::default();
+        repo_editor.set_cursor_line_style(ratatui::style::Style::default());
+        let mut branch_editor = TextArea::default();
+        branch_editor.set_cursor_line_style(ratatui::style::Style::default());
+        Self {
+            repo_editor,
+            branch_editor,
+            branch_focus: false,
+        }
+    }
+
+    pub fn repo(&self) -> String {
+        self.repo_editor.lines().join("").trim().to_string()
+    }
+
+    pub fn branch(&self) -> String {
+        self.branch_editor.lines().join("").trim().to_string()
+    }
+}
+
+pub struct AssistantWizard {
+    pub kind: AssistantWizardKind,
+    pub step: AssistantWizardStep,
     pub name_editor: TextArea<'static>,
     pub description_editor: VimTextArea<'static>,
-    /// false = name field focused, true = description field focused
-    pub description_focus: bool,
+    /// Reviewer-only: editable `(repo, branch)` rows. The `selected_row` is
+    /// the row currently focused for j/k navigation in the worktrees step.
+    pub worktree_rows: Vec<ReviewerWorktreeRow>,
+    pub selected_row: usize,
     pub error_message: Option<String>,
     pub project: String,
 }
@@ -635,14 +692,14 @@ pub struct App {
     pub project_task_counts: std::collections::HashMap<String, (usize, usize, usize)>, // (total, active, unseen_stopped)
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
-    pub researcher_wizard: Option<ResearcherWizard>,
+    pub assistant_wizard: Option<AssistantWizard>,
     // Project picker (for task migration/move)
     pub project_picker: Option<ProjectPicker>,
     // Project deletion
     pub project_to_delete: Option<String>,
-    // Researchers
-    pub researchers: Vec<Assistant>,
-    pub researcher_list_index: usize,
+    // Assistants (researchers + reviewers)
+    pub assistants: Vec<Assistant>,
+    pub assistant_list_index: usize,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
@@ -683,7 +740,7 @@ pub struct App {
     // Sleep inhibition (macOS: caffeinate -s for system sleep assertion only)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
-    // Active tmux popup (CoS/PM chat, researcher attach). Polled each main-loop
+    // Active tmux popup (CoS/PM chat, assistant attach). Polled each main-loop
     // tick so inbox delivery and PR polls keep running while a
     // popup is open.
     popup: Option<ActivePopup>,
@@ -846,11 +903,11 @@ impl App {
             unassigned_unseen_stopped_count: 0,
             project_task_counts: std::collections::HashMap::new(),
             project_wizard: None,
-            researcher_wizard: None,
+            assistant_wizard: None,
             project_picker: None,
             project_to_delete: None,
-            researchers: Vec::new(),
-            researcher_list_index: 0,
+            assistants: Vec::new(),
+            assistant_list_index: 0,
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -1030,16 +1087,16 @@ impl App {
         }
     }
 
-    /// Refresh the researcher list, filtered by `current_project` if set.
-    pub fn refresh_researchers(&mut self) {
-        self.researchers =
-            use_cases::list_researchers(&self.config, self.current_project.as_deref())
+    /// Refresh the assistant list, filtered by `current_project` if set.
+    pub fn refresh_assistants(&mut self) {
+        self.assistants =
+            use_cases::list_assistants(&self.config, self.current_project.as_deref(), None)
                 .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "failed to list researchers");
+                    tracing::warn!(error = %e, "failed to list assistants");
                     Vec::new()
                 });
-        if self.researcher_list_index >= self.researchers.len() && !self.researchers.is_empty() {
-            self.researcher_list_index = self.researchers.len() - 1;
+        if self.assistant_list_index >= self.assistants.len() && !self.assistants.is_empty() {
+            self.assistant_list_index = self.assistants.len() - 1;
         }
     }
 
@@ -2337,8 +2394,8 @@ impl App {
             View::ProjectWizard => self.handle_project_wizard_event(event),
             View::ProjectPicker => self.handle_project_picker_event(event),
             View::ProjectDeleteConfirm => self.handle_project_delete_confirm_event(event),
-            View::ResearcherList => self.handle_researcher_list_event(event),
-            View::ResearcherWizard => self.handle_researcher_wizard_event(event),
+            View::AssistantList => self.handle_assistant_list_event(event),
+            View::AssistantWizard => self.handle_assistant_wizard_event(event),
             View::RespawnConfirm => self.handle_respawn_confirm_event(event),
         }
     }
@@ -2507,9 +2564,9 @@ impl App {
                 }
                 KeyCode::Char('w') => {
                     self.current_project = Some("chief-of-staff".to_string());
-                    self.researcher_list_index = 0;
-                    self.refresh_researchers();
-                    self.view = View::ResearcherList;
+                    self.assistant_list_index = 0;
+                    self.refresh_assistants();
+                    self.view = View::AssistantList;
                 }
                 KeyCode::Char(',') => {
                     self.settings_selected = 0;
@@ -2714,15 +2771,15 @@ impl App {
                     let project_name = if self.selected_project_index < self.projects.len() {
                         Some(self.projects[self.selected_project_index].meta.name.clone())
                     } else {
-                        None // "(unassigned)" pseudo-project — no researchers to show
+                        None // "(unassigned)" pseudo-project — no assistants to show
                     };
                     if let Some(name) = project_name {
                         self.current_project = Some(name);
-                        self.researcher_list_index = 0;
-                        self.refresh_researchers();
-                        self.view = View::ResearcherList;
+                        self.assistant_list_index = 0;
+                        self.refresh_assistants();
+                        self.view = View::AssistantList;
                     } else {
-                        self.set_status("No researchers for unassigned tasks".to_string());
+                        self.set_status("No assistants for unassigned tasks".to_string());
                     }
                 }
                 _ => {}
@@ -2731,7 +2788,7 @@ impl App {
         Ok(false)
     }
 
-    fn handle_researcher_list_event(&mut self, event: Event) -> Result<bool> {
+    fn handle_assistant_list_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
@@ -2743,26 +2800,26 @@ impl App {
                     self.should_quit = true;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    if !self.researchers.is_empty()
-                        && self.researcher_list_index < self.researchers.len() - 1
+                    if !self.assistants.is_empty()
+                        && self.assistant_list_index < self.assistants.len() - 1
                     {
-                        self.researcher_list_index += 1;
+                        self.assistant_list_index += 1;
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    if self.researcher_list_index > 0 {
-                        self.researcher_list_index -= 1;
+                    if self.assistant_list_index > 0 {
+                        self.assistant_list_index -= 1;
                     }
                 }
                 KeyCode::Enter => {
-                    // Attach to researcher tmux session, resuming archived ones
+                    // Attach to assistant tmux session, resuming archived ones
                     if self.popup.is_some() {
                         return Ok(false);
                     }
-                    if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
-                        let project = researcher.meta.project.clone();
-                        let name = researcher.meta.name.clone();
-                        let session_name = match researcher.meta.kind {
+                    if let Some(assistant) = self.assistants.get(self.assistant_list_index) {
+                        let project = assistant.meta.project.clone();
+                        let name = assistant.meta.name.clone();
+                        let session_name = match assistant.meta.kind {
                             agman::assistant::AssistantKind::Researcher { .. } => {
                                 Config::researcher_tmux_session(&project, &name)
                             }
@@ -2777,9 +2834,9 @@ impl App {
                                 Ok(()) => {
                                     tracing::info!(
                                         session = &session_name,
-                                        "resumed researcher session"
+                                        "resumed assistant session"
                                     );
-                                    self.refresh_researchers();
+                                    self.refresh_assistants();
                                 }
                                 Err(e) => {
                                     self.set_status(format!("Failed to resume: {e}"));
@@ -2792,7 +2849,7 @@ impl App {
                             Ok(child) => {
                                 tracing::info!(
                                     session = &session_name,
-                                    "attached to researcher session"
+                                    "attached to assistant session"
                                 );
                                 self.popup = Some(ActivePopup { child });
                             }
@@ -2803,7 +2860,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('n') => {
-                    // Create new researcher
+                    // Create new assistant
                     let project = if let Some(ref p) = self.current_project {
                         p.clone()
                     } else if let Some(first) = self.projects.first() {
@@ -2812,31 +2869,34 @@ impl App {
                         self.set_status("No project available".to_string());
                         return Ok(false);
                     };
-                    tracing::info!(project = %project, "opening researcher wizard");
+                    tracing::info!(project = %project, "opening assistant wizard");
                     let mut name_editor = TextArea::default();
                     name_editor.set_cursor_line_style(ratatui::style::Style::default());
-                    self.researcher_wizard = Some(ResearcherWizard {
+                    self.assistant_wizard = Some(AssistantWizard {
+                        kind: AssistantWizardKind::Researcher,
+                        step: AssistantWizardStep::Kind,
                         name_editor,
                         description_editor: VimTextArea::new(),
-                        description_focus: false,
+                        worktree_rows: vec![ReviewerWorktreeRow::new()],
+                        selected_row: 0,
                         error_message: None,
                         project,
                     });
-                    self.view = View::ResearcherWizard;
+                    self.view = View::AssistantWizard;
                 }
                 KeyCode::Char('d') => {
-                    // Archive selected researcher
-                    if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
-                        let project = researcher.meta.project.clone();
-                        let name = researcher.meta.name.clone();
-                        match use_cases::archive_researcher(&self.config, &project, &name) {
+                    // Archive selected assistant
+                    if let Some(assistant) = self.assistants.get(self.assistant_list_index) {
+                        let project = assistant.meta.project.clone();
+                        let name = assistant.meta.name.clone();
+                        match use_cases::archive_assistant(&self.config, &project, &name) {
                             Ok(()) => {
-                                self.set_status(format!("Archived researcher '{name}'"));
-                                self.refresh_researchers();
-                                if self.researcher_list_index >= self.researchers.len()
-                                    && !self.researchers.is_empty()
+                                self.set_status(format!("Archived assistant '{name}'"));
+                                self.refresh_assistants();
+                                if self.assistant_list_index >= self.assistants.len()
+                                    && !self.assistants.is_empty()
                                 {
-                                    self.researcher_list_index = self.researchers.len() - 1;
+                                    self.assistant_list_index = self.assistants.len() - 1;
                                 }
                             }
                             Err(e) => {
@@ -3151,107 +3211,293 @@ impl App {
         Ok(false)
     }
 
-    fn handle_researcher_wizard_event(&mut self, event: Event) -> Result<bool> {
+    fn handle_assistant_wizard_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                 self.should_quit = true;
                 return Ok(false);
             }
 
-            // Ctrl+S to submit
+            // Ctrl+S submits from any step. The wizard validates required
+            // fields and surfaces inline errors so the user never has to
+            // play guess-the-step.
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-                if let Some(wizard) = &self.researcher_wizard {
-                    let name = wizard.name_editor.lines().join("").trim().to_string();
-                    let desc = wizard.description_editor.lines_joined();
-                    let desc = desc.trim().to_string();
-                    let project = wizard.project.clone();
-
-                    if name.is_empty() {
-                        if let Some(w) = &mut self.researcher_wizard {
-                            w.error_message = Some("Researcher name is required".to_string());
-                        }
-                        return Ok(false);
-                    }
-
-                    match use_cases::create_researcher(
-                        &self.config,
-                        &project,
-                        &name,
-                        &desc,
-                        None,
-                        None,
-                        None,
-                    ) {
-                        Ok(_researcher) => {
-                            tracing::info!(project = %project, name = %name, "created researcher via wizard");
-                            // Start the session
-                            if let Err(e) = use_cases::start_researcher_session(
-                                &self.config,
-                                &project,
-                                &name,
-                                false,
-                            ) {
-                                tracing::warn!(
-                                    project = %project, name = %name, error = %e,
-                                    "failed to start researcher session"
-                                );
-                            }
-                            self.set_status(format!("Created researcher: {name}"));
-                            self.researcher_wizard = None;
-                            self.view = View::ResearcherList;
-                            self.refresh_researchers();
-                        }
-                        Err(e) => {
-                            tracing::warn!(project = %project, name = %name, error = %e, "failed to create researcher");
-                            if let Some(w) = &mut self.researcher_wizard {
-                                w.error_message = Some(format!("{e}"));
-                            }
-                        }
-                    }
-                }
+                self.submit_assistant_wizard();
                 return Ok(false);
             }
 
-            if let Some(wizard) = &mut self.researcher_wizard {
-                wizard.error_message = None;
-                let input = Input::from(event.clone());
+            let Some(wizard) = self.assistant_wizard.as_mut() else {
+                return Ok(false);
+            };
+            wizard.error_message = None;
 
-                // Tab to switch focus between name and description
-                if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
-                    wizard.description_focus = !wizard.description_focus;
-                    if wizard.description_focus {
-                        wizard.description_editor.set_insert_mode();
+            match wizard.step {
+                AssistantWizardStep::Kind => {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.assistant_wizard = None;
+                            self.view = View::AssistantList;
+                        }
+                        KeyCode::Char('j')
+                        | KeyCode::Down
+                        | KeyCode::Char('k')
+                        | KeyCode::Up
+                        | KeyCode::Char('h')
+                        | KeyCode::Char('l')
+                        | KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Tab
+                        | KeyCode::BackTab => {
+                            wizard.kind = match wizard.kind {
+                                AssistantWizardKind::Researcher => AssistantWizardKind::Reviewer,
+                                AssistantWizardKind::Reviewer => AssistantWizardKind::Researcher,
+                            };
+                        }
+                        KeyCode::Enter => {
+                            wizard.step = AssistantWizardStep::Name;
+                        }
+                        _ => {}
                     }
-                    return Ok(false);
                 }
-
-                if wizard.description_focus {
+                AssistantWizardStep::Name => {
+                    if key.code == KeyCode::Esc {
+                        // First content step — Esc cancels the wizard.
+                        self.assistant_wizard = None;
+                        self.view = View::AssistantList;
+                        return Ok(false);
+                    }
+                    if key.code == KeyCode::Enter {
+                        // Advance: reviewers go to worktrees, researchers
+                        // skip straight to description.
+                        wizard.step = match wizard.kind {
+                            AssistantWizardKind::Researcher => AssistantWizardStep::Description,
+                            AssistantWizardKind::Reviewer => AssistantWizardStep::Worktrees,
+                        };
+                        if matches!(wizard.step, AssistantWizardStep::Description) {
+                            wizard.description_editor.set_insert_mode();
+                        }
+                        return Ok(false);
+                    }
+                    let input = Input::from(event.clone());
+                    wizard.name_editor.input(input);
+                }
+                AssistantWizardStep::Worktrees => {
+                    match key.code {
+                        KeyCode::Esc => {
+                            wizard.step = AssistantWizardStep::Name;
+                        }
+                        KeyCode::Tab => {
+                            // Tab cycles repo → branch → next row's repo.
+                            let len = wizard.worktree_rows.len();
+                            let cur = wizard.selected_row;
+                            let row = &mut wizard.worktree_rows[cur];
+                            if !row.branch_focus {
+                                row.branch_focus = true;
+                            } else if cur + 1 < len {
+                                row.branch_focus = false;
+                                wizard.selected_row += 1;
+                            } else {
+                                // Last field of last row — advance to description.
+                                wizard.step = AssistantWizardStep::Description;
+                                wizard.description_editor.set_insert_mode();
+                            }
+                        }
+                        KeyCode::BackTab => {
+                            let row = &mut wizard.worktree_rows[wizard.selected_row];
+                            if row.branch_focus {
+                                row.branch_focus = false;
+                            } else if wizard.selected_row > 0 {
+                                wizard.selected_row -= 1;
+                                wizard.worktree_rows[wizard.selected_row].branch_focus = true;
+                            }
+                        }
+                        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            // Add a new row after the selected one.
+                            wizard.worktree_rows.insert(
+                                wizard.selected_row + 1,
+                                ReviewerWorktreeRow::new(),
+                            );
+                            wizard.selected_row += 1;
+                            wizard.worktree_rows[wizard.selected_row].branch_focus = false;
+                        }
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            // Remove the selected row, but never the last one.
+                            if wizard.worktree_rows.len() > 1 {
+                                wizard.worktree_rows.remove(wizard.selected_row);
+                                if wizard.selected_row >= wizard.worktree_rows.len() {
+                                    wizard.selected_row = wizard.worktree_rows.len() - 1;
+                                }
+                            }
+                        }
+                        KeyCode::Enter => {
+                            // Enter advances field-by-field, mirroring Tab.
+                            let len = wizard.worktree_rows.len();
+                            let cur = wizard.selected_row;
+                            let row = &mut wizard.worktree_rows[cur];
+                            if !row.branch_focus {
+                                row.branch_focus = true;
+                            } else if cur + 1 < len {
+                                row.branch_focus = false;
+                                wizard.selected_row += 1;
+                            } else {
+                                wizard.step = AssistantWizardStep::Description;
+                                wizard.description_editor.set_insert_mode();
+                            }
+                        }
+                        _ => {
+                            let input = Input::from(event.clone());
+                            let row = &mut wizard.worktree_rows[wizard.selected_row];
+                            if row.branch_focus {
+                                row.branch_editor.input(input);
+                            } else {
+                                row.repo_editor.input(input);
+                            }
+                        }
+                    }
+                }
+                AssistantWizardStep::Description => {
+                    let input = Input::from(event.clone());
                     let was_insert = wizard.description_editor.mode() == VimMode::Insert;
                     wizard.description_editor.input(input.clone());
                     let is_normal_now = wizard.description_editor.mode() == VimMode::Normal;
-
-                    // Esc in normal mode goes back to name field
+                    // Esc in normal mode steps back to the previous step.
                     if input.key == Key::Esc && !was_insert && is_normal_now {
-                        wizard.description_focus = false;
+                        wizard.step = match wizard.kind {
+                            AssistantWizardKind::Researcher => AssistantWizardStep::Name,
+                            AssistantWizardKind::Reviewer => AssistantWizardStep::Worktrees,
+                        };
                     }
-                } else {
-                    // Name field: Esc cancels wizard
-                    if key.code == KeyCode::Esc {
-                        self.researcher_wizard = None;
-                        self.view = View::ResearcherList;
-                        return Ok(false);
-                    }
-                    // Enter in name field moves to description
-                    if key.code == KeyCode::Enter {
-                        wizard.description_focus = true;
-                        wizard.description_editor.set_insert_mode();
-                        return Ok(false);
-                    }
-                    wizard.name_editor.input(input);
                 }
             }
         }
         Ok(false)
+    }
+
+    /// Validate and submit the assistant wizard. On success the wizard closes
+    /// and the new assistant is started; on failure the error message is
+    /// surfaced inline so the user can correct and resubmit.
+    fn submit_assistant_wizard(&mut self) {
+        let Some(wizard) = self.assistant_wizard.as_ref() else {
+            return;
+        };
+        let kind = wizard.kind;
+        let project = wizard.project.clone();
+        let name = wizard.name_editor.lines().join("").trim().to_string();
+        let desc = wizard.description_editor.lines_joined().trim().to_string();
+
+        if name.is_empty() {
+            if let Some(w) = self.assistant_wizard.as_mut() {
+                w.error_message = Some("Assistant name is required".to_string());
+                w.step = AssistantWizardStep::Name;
+            }
+            return;
+        }
+
+        match kind {
+            AssistantWizardKind::Researcher => {
+                match use_cases::create_researcher(
+                    &self.config,
+                    &project,
+                    &name,
+                    &desc,
+                    None,
+                    None,
+                    None,
+                ) {
+                    Ok(_assistant) => {
+                        tracing::info!(project = %project, name = %name, "created researcher via wizard");
+                        if let Err(e) = use_cases::start_assistant_session(
+                            &self.config,
+                            &project,
+                            &name,
+                            false,
+                        ) {
+                            tracing::warn!(
+                                project = %project, name = %name, error = %e,
+                                "failed to start assistant session"
+                            );
+                        }
+                        self.set_status(format!("Created researcher: {name}"));
+                        self.assistant_wizard = None;
+                        self.view = View::AssistantList;
+                        self.refresh_assistants();
+                    }
+                    Err(e) => {
+                        tracing::warn!(project = %project, name = %name, error = %e, "failed to create researcher");
+                        if let Some(w) = self.assistant_wizard.as_mut() {
+                            w.error_message = Some(format!("{e}"));
+                        }
+                    }
+                }
+            }
+            AssistantWizardKind::Reviewer => {
+                // Collect (repo, branch) rows; reject empties so we don't
+                // hand a half-filled row to the use-case.
+                let mut branches: Vec<(String, String)> = Vec::new();
+                for row in &wizard.worktree_rows {
+                    let r = row.repo();
+                    let b = row.branch();
+                    if r.is_empty() && b.is_empty() {
+                        continue;
+                    }
+                    if r.is_empty() || b.is_empty() {
+                        if let Some(w) = self.assistant_wizard.as_mut() {
+                            w.error_message = Some(
+                                "Each row needs both a repo and a branch (Ctrl+D to remove)"
+                                    .to_string(),
+                            );
+                            w.step = AssistantWizardStep::Worktrees;
+                        }
+                        return;
+                    }
+                    branches.push((r, b));
+                }
+                if branches.is_empty() {
+                    if let Some(w) = self.assistant_wizard.as_mut() {
+                        w.error_message =
+                            Some("Reviewer needs at least one (repo, branch) pair".to_string());
+                        w.step = AssistantWizardStep::Worktrees;
+                    }
+                    return;
+                }
+
+                let spec = use_cases::ReviewerSpec {
+                    branches,
+                    parent_dir: None,
+                };
+                match use_cases::create_reviewer(&self.config, &project, &name, &desc, spec) {
+                    Ok(_assistant) => {
+                        tracing::info!(project = %project, name = %name, "created reviewer via wizard");
+                        if let Err(e) = use_cases::start_assistant_session(
+                            &self.config,
+                            &project,
+                            &name,
+                            false,
+                        ) {
+                            tracing::warn!(
+                                project = %project, name = %name, error = %e,
+                                "failed to start assistant session"
+                            );
+                        }
+                        self.set_status(format!("Created reviewer: {name}"));
+                        self.assistant_wizard = None;
+                        self.view = View::AssistantList;
+                        self.refresh_assistants();
+                    }
+                    Err(e) => {
+                        tracing::warn!(project = %project, name = %name, error = %e, "failed to create reviewer");
+                        // The three-step decision tree raises a loud,
+                        // user-actionable error for the local-branch case;
+                        // surface it verbatim so the user can either fix
+                        // the branch state or pick a different one.
+                        if let Some(w) = self.assistant_wizard.as_mut() {
+                            w.error_message = Some(format!("{e}"));
+                            w.step = AssistantWizardStep::Worktrees;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn handle_project_picker_event(&mut self, event: Event) -> Result<bool> {
@@ -6230,8 +6476,8 @@ pub fn run_tui(config: Config) -> Result<()> {
             if last_refresh.elapsed() >= refresh_interval {
                 if app.view == View::ProjectList {
                     app.refresh_projects();
-                } else if app.view == View::ResearcherList {
-                    app.refresh_researchers();
+                } else if app.view == View::AssistantList {
+                    app.refresh_assistants();
                 } else if app.view == View::TaskList {
                     app.refresh_tasks_for_project();
                     // Check for stranded queue items on stopped tasks
