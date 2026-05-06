@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::assistant::{Assistant, AssistantKind, AssistantStatus, ReviewerWorktree};
 use crate::config::Config;
 use crate::flow::{Flow, FlowStep};
 use crate::git::{self, Git};
@@ -11,7 +12,6 @@ use crate::harness::{self, HarnessKind, LaunchContext, RegisterContext, SessionK
 use crate::inbox;
 use crate::project::Project;
 use crate::repo_stats::RepoStats;
-use crate::researcher::{Researcher, ResearcherStatus};
 use crate::supervisor;
 use crate::task::{QueueItem, RepoEntry, Task, TaskStatus};
 use crate::tmux::Tmux;
@@ -127,7 +127,6 @@ pub fn create_task(
     description: &str,
     flow_name: &str,
     worktree_source: WorktreeSource,
-    review_after: bool,
     parent_dir: Option<PathBuf>,
     project: Option<String>,
 ) -> Result<Task> {
@@ -135,7 +134,6 @@ pub fn create_task(
         repo = repo_name,
         branch = branch_name,
         flow = flow_name,
-        review_after,
         "creating task"
     );
     let parent_dir_ref = parent_dir.as_deref();
@@ -214,18 +212,13 @@ pub fn create_task(
         task.meta.parent_dir = parent_dir;
     }
 
-    // Set review_after flag if requested
-    if review_after {
-        task.meta.review_after = true;
-    }
-
     // Assign to project if specified
     if project.is_some() {
         task.meta.project = project;
     }
 
     // Save if any optional fields were set after creation
-    if task.meta.parent_dir.is_some() || task.meta.review_after || task.meta.project.is_some() {
+    if task.meta.parent_dir.is_some() || task.meta.project.is_some() {
         task.save_meta()?;
     }
 
@@ -244,7 +237,6 @@ pub fn create_task(
 /// This is the pure business logic behind multi-repo task creation in the wizard.
 /// It does NOT create tmux sessions or start flows — those are side effects
 /// handled by the TUI caller.
-#[allow(clippy::too_many_arguments)]
 pub fn create_multi_repo_task(
     config: &Config,
     name: &str,
@@ -252,7 +244,6 @@ pub fn create_multi_repo_task(
     description: &str,
     flow_name: &str,
     parent_dir: PathBuf,
-    review_after: bool,
     project: Option<String>,
 ) -> Result<Task> {
     tracing::info!(
@@ -260,7 +251,6 @@ pub fn create_multi_repo_task(
         branch = branch_name,
         flow = flow_name,
         parent_dir = %parent_dir.display(),
-        review_after,
         "creating multi-repo task"
     );
 
@@ -277,18 +267,13 @@ pub fn create_multi_repo_task(
         parent_dir,
     )?;
 
-    // Set review_after flag if requested
-    if review_after {
-        task.meta.review_after = true;
-    }
-
     // Assign to project if specified
     if project.is_some() {
         task.meta.project = project;
     }
 
     // Save if any optional fields were set after creation
-    if task.meta.review_after || task.meta.project.is_some() {
+    if task.meta.project.is_some() {
         task.save_meta()?;
     }
 
@@ -746,37 +731,6 @@ pub fn create_setup_only_task(
     tracing::info!(task_id = %task.meta.task_id(), "setup-only task created");
 
     Ok(task)
-}
-
-/// Create a review task for an existing branch.
-///
-/// Similar to `create_task` but uses a review-specific description
-/// and doesn't require a user-provided description.
-/// Does NOT create tmux sessions or run commands — those are side effects.
-pub fn create_review_task(
-    config: &Config,
-    repo_name: &str,
-    branch_name: &str,
-    worktree_source: WorktreeSource,
-    parent_dir: Option<PathBuf>,
-) -> Result<Task> {
-    tracing::info!(
-        repo = repo_name,
-        branch = branch_name,
-        "creating review task"
-    );
-    let description = format!("Review branch {}", branch_name);
-    create_task(
-        config,
-        repo_name,
-        branch_name,
-        &description,
-        "new",
-        worktree_source,
-        false,
-        parent_dir,
-        None,
-    )
 }
 
 /// Parse repo names from the `# Repos` section in TASK.md content.
@@ -2055,23 +2009,22 @@ pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
         archived_count += 1;
     }
 
-    // Archive all non-archived researchers
-    let researchers = Researcher::list_for_project(config, project_name)?;
-    let mut researcher_archived_count = 0;
-    for researcher in &researchers {
-        if researcher.meta.status == crate::researcher::ResearcherStatus::Archived {
+    // Archive all non-archived assistants (researchers and reviewers).
+    let assistants = Assistant::list_for_project(config, project_name)?;
+    let mut assistant_archived_count = 0;
+    for assistant in &assistants {
+        if assistant.meta.status == AssistantStatus::Archived {
             continue;
         }
-        if let Err(e) = archive_researcher(config, &researcher.meta.project, &researcher.meta.name)
-        {
+        if let Err(e) = archive_assistant(config, &assistant.meta.project, &assistant.meta.name) {
             tracing::warn!(
                 project = %project_name,
-                researcher = %researcher.meta.name,
+                assistant = %assistant.meta.name,
                 error = %e,
-                "failed to archive researcher during project deletion"
+                "failed to archive assistant during project deletion"
             );
         } else {
-            researcher_archived_count += 1;
+            assistant_archived_count += 1;
         }
     }
 
@@ -2081,7 +2034,7 @@ pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
     // Remove project directory
     std::fs::remove_dir_all(config.project_dir(project_name))?;
 
-    tracing::info!(project = %project_name, archived_count, researcher_archived_count, "deleted project");
+    tracing::info!(project = %project_name, archived_count, assistant_archived_count, "deleted project");
 
     Ok(())
 }
@@ -2101,12 +2054,22 @@ pub struct TaskSummary {
     pub queued_count: usize,
 }
 
-/// Summary of a researcher for the aggregated status view.
-pub struct ResearcherSummary {
+/// Summary of an assistant (researcher or reviewer) for the aggregated
+/// status view. The kind is exposed so renderers can group/label as needed.
+pub struct AssistantSummary {
     pub name: String,
     pub project: String,
     pub status: String,
     pub description: String,
+    pub kind: AssistantKindLabel,
+}
+
+/// Lightweight kind discriminator for status views — avoids leaking the
+/// full `AssistantKind` payload (which carries kind-specific metadata).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssistantKindLabel {
+    Researcher,
+    Reviewer,
 }
 
 /// A group of tasks belonging to a project.
@@ -2114,7 +2077,7 @@ pub struct ProjectGroup {
     pub name: String,
     pub tasks: Vec<TaskSummary>,
     pub archived_count: usize,
-    pub researchers: Vec<ResearcherSummary>,
+    pub assistants: Vec<AssistantSummary>,
     pub held: bool,
 }
 
@@ -2123,7 +2086,7 @@ pub struct AggregatedStatus {
     pub projects: Vec<ProjectGroup>,
     pub unassigned: Vec<TaskSummary>,
     pub archived_unassigned: usize,
-    pub chief_of_staff_researchers: Vec<ResearcherSummary>,
+    pub chief_of_staff_assistants: Vec<AssistantSummary>,
 }
 
 fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
@@ -2142,27 +2105,37 @@ fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
     }
 }
 
-/// Build researcher summaries for a given project, filtering out archived ones.
-fn load_researcher_summaries(config: &Config, project: &str) -> Vec<ResearcherSummary> {
-    let researchers = match Researcher::list_for_project(config, project) {
-        Ok(r) => r,
+/// Build assistant summaries for a given project, filtering out archived ones.
+fn load_assistant_summaries(config: &Config, project: &str) -> Vec<AssistantSummary> {
+    let assistants = match Assistant::list_for_project(config, project) {
+        Ok(a) => a,
         Err(_) => return Vec::new(),
     };
-    researchers
+    assistants
         .into_iter()
-        .filter(|r| r.meta.status != ResearcherStatus::Archived)
-        .map(|r| {
-            let session = Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
+        .filter(|a| a.meta.status != AssistantStatus::Archived)
+        .map(|a| {
+            let (session, kind) = match a.meta.kind {
+                AssistantKind::Researcher { .. } => (
+                    Config::researcher_tmux_session(&a.meta.project, &a.meta.name),
+                    AssistantKindLabel::Researcher,
+                ),
+                AssistantKind::Reviewer { .. } => (
+                    Config::reviewer_tmux_session(&a.meta.project, &a.meta.name),
+                    AssistantKindLabel::Reviewer,
+                ),
+            };
             let status = if Tmux::session_exists(&session) {
                 "running"
             } else {
                 "stopped"
             };
-            ResearcherSummary {
-                name: r.meta.name,
-                project: r.meta.project,
+            AssistantSummary {
+                name: a.meta.name,
+                project: a.meta.project,
                 status: status.to_string(),
-                description: r.meta.description,
+                description: a.meta.description,
+                kind,
             }
         })
         .collect()
@@ -2184,10 +2157,10 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
         let tasks = list_project_tasks(config, &project.meta.name)?;
         let summaries: Vec<TaskSummary> =
             tasks.iter().map(|t| task_to_summary(config, t)).collect();
-        let researchers = load_researcher_summaries(config, &project.meta.name);
+        let assistants = load_assistant_summaries(config, &project.meta.name);
 
-        // Skip projects with no active tasks and no active researchers
-        if summaries.is_empty() && researchers.is_empty() {
+        // Skip projects with no active tasks and no active assistants
+        if summaries.is_empty() && assistants.is_empty() {
             continue;
         }
 
@@ -2199,7 +2172,7 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
             name: project.meta.name.clone(),
             tasks: summaries,
             archived_count,
-            researchers,
+            assistants,
             held: project.meta.held,
         });
     }
@@ -2212,13 +2185,13 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
 
     let archived_unassigned = archived.iter().filter(|t| t.meta.project.is_none()).count();
 
-    let chief_of_staff_researchers = load_researcher_summaries(config, "chief-of-staff");
+    let chief_of_staff_assistants = load_assistant_summaries(config, "chief-of-staff");
 
     Ok(AggregatedStatus {
         projects: project_groups,
         unassigned,
         archived_unassigned,
-        chief_of_staff_researchers,
+        chief_of_staff_assistants,
     })
 }
 
@@ -2301,7 +2274,6 @@ pub fn create_pm_task(
         description,
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
         Some(project.to_string()),
     )?;
@@ -2317,12 +2289,34 @@ pub enum SendTarget {
     ChiefOfStaff,
     Telegram,
     Project(String),
-    Researcher { project: String, name: String },
+    /// A long-lived assistant (researcher or reviewer). The kind is recorded
+    /// on disk in `meta.json` and is irrelevant for routing — both prefixes
+    /// resolve to the same `assistants/<project>--<name>/inbox.jsonl`.
+    Assistant {
+        project: String,
+        name: String,
+        prefix: AssistantPrefix,
+    },
     Task(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssistantPrefix {
+    Researcher,
+    Reviewer,
+}
+
+impl AssistantPrefix {
+    fn as_str(&self) -> &'static str {
+        match self {
+            AssistantPrefix::Researcher => "researcher",
+            AssistantPrefix::Reviewer => "reviewer",
+        }
+    }
+}
+
 const VALID_TARGETS_HINT: &str =
-    "valid targets: chief-of-staff, telegram, <project>, researcher:<project>--<name>, task:<repo>--<branch>";
+    "valid targets: chief-of-staff, telegram, <project>, researcher:<project>--<name>, reviewer:<project>--<name>, task:<repo>--<branch>";
 
 pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     if target.is_empty() {
@@ -2340,30 +2334,39 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
         return Ok(SendTarget::Telegram);
     }
 
-    if let Some(researcher_id) = target.strip_prefix("researcher:") {
-        let pos = researcher_id.find("--").ok_or_else(|| {
-            anyhow::anyhow!(
-                "invalid researcher id '{researcher_id}': expected 'researcher:<project>--<name>'"
-            )
-        })?;
-        let project = &researcher_id[..pos];
-        let name = &researcher_id[pos + 2..];
-        if project.is_empty() || name.is_empty() {
-            anyhow::bail!(
-                "invalid researcher id '{researcher_id}': expected 'researcher:<project>--<name>'"
-            );
+    for (prefix_str, prefix) in [
+        ("researcher:", AssistantPrefix::Researcher),
+        ("reviewer:", AssistantPrefix::Reviewer),
+    ] {
+        if let Some(rest) = target.strip_prefix(prefix_str) {
+            let pos = rest.find("--").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "invalid {kind} id '{rest}': expected '{kind}:<project>--<name>'",
+                    kind = prefix.as_str()
+                )
+            })?;
+            let project = &rest[..pos];
+            let name = &rest[pos + 2..];
+            if project.is_empty() || name.is_empty() {
+                anyhow::bail!(
+                    "invalid {kind} id '{rest}': expected '{kind}:<project>--<name>'",
+                    kind = prefix.as_str()
+                );
+            }
+            let dir = config.assistant_dir(project, name);
+            if !dir.exists() {
+                anyhow::bail!(
+                    "unknown {kind} '{rest}' — no assistant found at {}",
+                    dir.display(),
+                    kind = prefix.as_str()
+                );
+            }
+            return Ok(SendTarget::Assistant {
+                project: project.to_string(),
+                name: name.to_string(),
+                prefix,
+            });
         }
-        let dir = config.researcher_dir(project, name);
-        if !dir.exists() {
-            anyhow::bail!(
-                "unknown researcher '{researcher_id}' — no researcher found at {}",
-                dir.display()
-            );
-        }
-        return Ok(SendTarget::Researcher {
-            project: project.to_string(),
-            name: name.to_string(),
-        });
     }
 
     if let Some(task_id) = target.strip_prefix("task:") {
@@ -2420,7 +2423,7 @@ pub fn agent_inbox_path(config: &Config, id: &str) -> Result<PathBuf> {
         SendTarget::ChiefOfStaff => config.chief_of_staff_inbox(),
         SendTarget::Telegram => config.telegram_outbox(),
         SendTarget::Project(name) => config.project_inbox(&name),
-        SendTarget::Researcher { project, name } => config.researcher_inbox(&project, &name),
+        SendTarget::Assistant { project, name, .. } => config.assistant_inbox(&project, &name),
         SendTarget::Task(task_id) => config.task_inbox(&task_id),
     })
 }
@@ -2436,21 +2439,34 @@ fn agent_ref_for(id: String) -> AgentRef {
     } else if let Some(rest) = id.strip_prefix("researcher:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
         format!("R:{name}")
+    } else if let Some(rest) = id.strip_prefix("reviewer:") {
+        let name = rest.rsplit("--").next().unwrap_or(rest);
+        format!("Rv:{name}")
     } else {
         format!("PM:{id}")
     };
     AgentRef { id, label }
 }
 
+/// Send-message id prefix for an assistant, derived from its kind.
+fn assistant_send_id(a: &Assistant) -> String {
+    let prefix = match a.meta.kind {
+        AssistantKind::Researcher { .. } => "researcher",
+        AssistantKind::Reviewer { .. } => "reviewer",
+    };
+    format!("{prefix}:{}--{}", a.meta.project, a.meta.name)
+}
+
 /// Agents reachable from `current` via a Telegram `/ls` switch list.
 ///
 /// - From `"chief-of-staff"`: all PMs (sorted by name) plus all CoS-level
-///   researchers (`project == "chief-of-staff"`) with `status == Running`.
-/// - From `"<project>"`: that project's researchers (`Running` only) plus
+///   assistants (researchers and reviewers in `project == "chief-of-staff"`)
+///   with `status == Running`.
+/// - From `"<project>"`: that project's assistants (`Running` only) plus
 ///   `"chief-of-staff"`.
-/// - From `"researcher:<proj>--<name>"`: its parent (`"chief-of-staff"` if
-///   `proj == "chief-of-staff"`, otherwise the project) plus
-///   `"chief-of-staff"` — de-duplicated by id.
+/// - From `"researcher:<proj>--<name>"` or `"reviewer:<proj>--<name>"`: its
+///   parent (`"chief-of-staff"` if `proj == "chief-of-staff"`, otherwise the
+///   project) plus `"chief-of-staff"` — de-duplicated by id.
 pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
     let mut ids: Vec<String> = Vec::new();
 
@@ -2461,16 +2477,19 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
                     ids.push(p.meta.name);
                 }
             }
-            if let Ok(researchers) = Researcher::list_for_project(config, "chief-of-staff") {
-                for r in researchers {
-                    if r.meta.status == ResearcherStatus::Running {
-                        ids.push(format!("researcher:chief-of-staff--{}", r.meta.name));
+            if let Ok(assistants) = Assistant::list_for_project(config, "chief-of-staff") {
+                for a in assistants {
+                    if a.meta.status == AssistantStatus::Running {
+                        ids.push(assistant_send_id(&a));
                     }
                 }
             }
         }
         other => {
-            if let Some(rest) = other.strip_prefix("researcher:") {
+            let assistant_prefix = ["researcher:", "reviewer:"]
+                .iter()
+                .find_map(|p| other.strip_prefix(p));
+            if let Some(rest) = assistant_prefix {
                 let pos = rest.find("--");
                 if let Some(pos) = pos {
                     let project = &rest[..pos];
@@ -2484,10 +2503,10 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
                 }
             } else {
                 // Project-scoped view.
-                if let Ok(researchers) = Researcher::list_for_project(config, other) {
-                    for r in researchers {
-                        if r.meta.status == ResearcherStatus::Running {
-                            ids.push(format!("researcher:{}--{}", other, r.meta.name));
+                if let Ok(assistants) = Assistant::list_for_project(config, other) {
+                    for a in assistants {
+                        if a.meta.status == AssistantStatus::Running {
+                            ids.push(assistant_send_id(&a));
                         }
                     }
                 }
@@ -3190,10 +3209,33 @@ pub fn agent_session_running(session_name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Researcher management
+// Assistant management (Researcher + Reviewer)
 // ---------------------------------------------------------------------------
 
-/// Create a new researcher for a project.
+/// Tmux session name for an assistant, dispatched on kind. Researchers keep
+/// the legacy `agman-researcher-…` naming so existing sessions resume after
+/// the assistant rename; reviewers use `agman-reviewer-…`.
+fn assistant_tmux_session(meta: &crate::assistant::AssistantMeta) -> String {
+    match meta.kind {
+        AssistantKind::Researcher { .. } => {
+            Config::researcher_tmux_session(&meta.project, &meta.name)
+        }
+        AssistantKind::Reviewer { .. } => Config::reviewer_tmux_session(&meta.project, &meta.name),
+    }
+}
+
+/// Send-message id for an assistant (e.g. `"researcher:<proj>--<name>"`),
+/// dispatched on kind.
+fn assistant_send_target_id(meta: &crate::assistant::AssistantMeta) -> String {
+    let prefix = match meta.kind {
+        AssistantKind::Researcher { .. } => "researcher",
+        AssistantKind::Reviewer { .. } => "reviewer",
+    };
+    format!("{prefix}:{}--{}", meta.project, meta.name)
+}
+
+/// Create a new researcher for a project. Researcher kind is the legacy
+/// behavior; the assistant abstraction is what's new.
 pub fn create_researcher(
     config: &Config,
     project: &str,
@@ -3202,8 +3244,128 @@ pub fn create_researcher(
     repo: Option<String>,
     branch: Option<String>,
     task_id: Option<String>,
-) -> Result<Researcher> {
-    // Validate project exists (skip for CoS-level researchers)
+) -> Result<Assistant> {
+    let kind = AssistantKind::Researcher {
+        repo,
+        branch,
+        task_id,
+    };
+    create_assistant(config, project, name, description, kind)
+}
+
+/// Resolved (`(repo, branch)`, worktree path, `agman_created`) for a reviewer
+/// before persisting the assistant. Built by `resolve_reviewer_worktrees`.
+type ReviewerEntries = Vec<ReviewerWorktree>;
+
+/// Spec for a reviewer at create time: which `(repo, branch)` pairs to scope
+/// it to. The `parent_dir` knob mirrors the task code path — non-`None` means
+/// repos live outside `config.repos_dir`. Used only by tests today; the CLI
+/// always passes `None`.
+#[derive(Debug, Clone)]
+pub struct ReviewerSpec {
+    pub branches: Vec<(String, String)>,
+    pub parent_dir: Option<PathBuf>,
+}
+
+/// Create a new reviewer assistant. For each `(repo, branch)` pair the
+/// resolution rules are:
+/// 1. If a worktree already exists for that branch → use it as-is
+///    (`agman_created = false`). No fetch, no writes.
+/// 2. Else if a *local* branch exists without a worktree → bail loudly.
+///    The user must either put the branch in a worktree first or delete the
+///    local branch so we can fetch a clean copy from origin.
+/// 3. Else → fetch origin, verify `origin/<branch>`, create a fresh worktree
+///    at the standard path (`agman_created = true`).
+///
+/// The bail in step 2 happens **before** any fetch or worktree-add, so a
+/// multi-branch reviewer failing on branch 3 of 5 doesn't litter state.
+pub fn create_reviewer(
+    config: &Config,
+    project: &str,
+    name: &str,
+    description: &str,
+    spec: ReviewerSpec,
+) -> Result<Assistant> {
+    if spec.branches.is_empty() {
+        anyhow::bail!("reviewer requires at least one --branch <repo>:<branch>");
+    }
+    let worktrees = resolve_reviewer_worktrees(config, &spec)?;
+    let kind = AssistantKind::Reviewer { worktrees };
+    create_assistant(config, project, name, description, kind)
+}
+
+/// Walk the `(repo, branch)` list applying the three-step decision tree.
+/// Returns the resolved `ReviewerWorktree` entries on success. On failure,
+/// returns the first error encountered without creating any worktrees that
+/// were resolved by step 3 in earlier iterations — callers should treat the
+/// reviewer as not-created.
+fn resolve_reviewer_worktrees(config: &Config, spec: &ReviewerSpec) -> Result<ReviewerEntries> {
+    // Two-phase to honour the "no littering" rule: phase 1 classifies every
+    // entry without side effects, bailing on the local-branch-no-worktree
+    // case; phase 2 actually creates worktrees from origin for entries that
+    // need one.
+    enum Plan {
+        Existing { path: PathBuf },
+        FromOrigin,
+    }
+    let parent_dir = spec.parent_dir.as_deref();
+    let mut planned: Vec<(String, String, Plan)> = Vec::with_capacity(spec.branches.len());
+    for (repo, branch) in &spec.branches {
+        let repo_path = config.repo_path_for(parent_dir, repo);
+        if !repo_path.exists() {
+            anyhow::bail!("repository '{}' does not exist at {}", repo, repo_path.display());
+        }
+        if let Some(path) = Git::find_worktree_for_branch(&repo_path, branch)? {
+            planned.push((repo.clone(), branch.clone(), Plan::Existing { path }));
+            continue;
+        }
+        if Git::local_branch_exists(&repo_path, branch) {
+            anyhow::bail!(
+                "branch '{}' exists locally in {} but is not checked out in a worktree. \
+                 Either put it in a worktree first or delete the local branch so the \
+                 reviewer can fetch a clean copy from origin.",
+                branch,
+                repo
+            );
+        }
+        planned.push((repo.clone(), branch.clone(), Plan::FromOrigin));
+    }
+
+    let mut entries = Vec::with_capacity(planned.len());
+    for (repo, branch, plan) in planned {
+        match plan {
+            Plan::Existing { path } => {
+                entries.push(ReviewerWorktree {
+                    repo,
+                    branch,
+                    path,
+                    agman_created: false,
+                });
+            }
+            Plan::FromOrigin => {
+                let path = Git::create_worktree_from_origin(config, &repo, &branch, parent_dir)?;
+                entries.push(ReviewerWorktree {
+                    repo,
+                    branch,
+                    path,
+                    agman_created: true,
+                });
+            }
+        }
+    }
+    Ok(entries)
+}
+
+/// Shared assistant-creation backbone. Validates the project, persists the
+/// meta, and queues the description into the assistant's inbox so the TUI
+/// poller delivers it once the harness is ready.
+fn create_assistant(
+    config: &Config,
+    project: &str,
+    name: &str,
+    description: &str,
+    kind: AssistantKind,
+) -> Result<Assistant> {
     if project != "chief-of-staff" {
         let project_dir = config.project_dir(project);
         if !project_dir.exists() {
@@ -3211,34 +3373,44 @@ pub fn create_researcher(
         }
     }
 
-    tracing::info!(project = project, name = name, "creating researcher");
-    let researcher = Researcher::create(config, project, name, description, repo, branch, task_id)?;
+    tracing::info!(
+        project = project,
+        name = name,
+        kind = match kind {
+            AssistantKind::Researcher { .. } => "researcher",
+            AssistantKind::Reviewer { .. } => "reviewer",
+        },
+        "creating assistant"
+    );
+    let assistant = Assistant::create(config, project, name, description, kind)?;
 
-    // Write the research description to the inbox so the TUI poller delivers it
-    // to the tmux session once Claude Code is ready (instead of direct injection).
+    // Queue the description as the first inbox message so the TUI poller
+    // delivers it to the tmux session once the harness is ready.
     if !description.is_empty() {
-        let inbox_path = config.researcher_inbox(project, name);
+        let inbox_path = config.assistant_inbox(project, name);
         crate::inbox::append_message(&inbox_path, "user", description)?;
         tracing::debug!(
             project = project,
             name = name,
-            "queued research description to inbox"
+            "queued assistant description to inbox"
         );
     }
 
-    Ok(researcher)
+    Ok(assistant)
 }
 
-/// Start a researcher's tmux session under the configured harness. See
-/// `start_chief_of_staff_session` for the `force_fresh` semantics.
-pub fn start_researcher_session(
+/// Start an assistant's tmux session under the configured harness.
+/// Dispatches on kind for prompt template and working-directory resolution;
+/// everything else is kind-agnostic. See `start_chief_of_staff_session` for
+/// the `force_fresh` semantics.
+pub fn start_assistant_session(
     config: &Config,
     project: &str,
     name: &str,
     force_fresh: bool,
 ) -> Result<()> {
-    let dir = config.researcher_dir(project, name);
-    let researcher = Researcher::load(dir.clone())?;
+    let dir = config.assistant_dir(project, name);
+    let assistant = Assistant::load(dir.clone())?;
 
     let kind = harness::read_or_stamp(&dir, config.harness_kind())?;
     let harness = kind.select();
@@ -3246,17 +3418,44 @@ pub fn start_researcher_session(
     let (token, chat_id) = load_telegram_config(config);
     let telegram_enabled = token.as_deref().is_some_and(|t| !t.is_empty())
         && chat_id.as_deref().is_some_and(|c| !c.is_empty());
-    let prompt = build_researcher_prompt(telegram_enabled, project, name);
 
-    // Resolve working directory
-    let work_dir = resolve_researcher_work_dir(config, &researcher);
+    // Kind-dispatched prompt + working-dir resolution.
+    let (prompt, work_dir, agent_base, session_name) = match &assistant.meta.kind {
+        AssistantKind::Researcher { .. } => {
+            let prompt = build_researcher_prompt(telegram_enabled, project, name);
+            let work_dir = resolve_researcher_work_dir(config, &assistant);
+            (
+                prompt,
+                work_dir,
+                format!("agman-r-{project}--{name}"),
+                Config::researcher_tmux_session(project, name),
+            )
+        }
+        AssistantKind::Reviewer { worktrees } => {
+            let prompt = build_reviewer_prompt(telegram_enabled, project, name, worktrees);
+            let cwd = worktrees.first().map(|w| w.path.clone());
+            (
+                prompt,
+                cwd,
+                format!("agman-rv-{project}--{name}"),
+                Config::reviewer_tmux_session(project, name),
+            )
+        }
+    };
 
-    let session_name = Config::researcher_tmux_session(project, name);
-    let agent_name = format!("agman-r-{project}--{name}");
-    tracing::info!(session = &session_name, project = project, name = name, telegram_enabled, harness = %kind, force_fresh, "starting researcher session");
+    tracing::info!(
+        session = &session_name,
+        project = project,
+        name = name,
+        telegram_enabled,
+        harness = %kind,
+        force_fresh,
+        kind = if assistant.is_researcher() { "researcher" } else { "reviewer" },
+        "starting assistant session"
+    );
 
     let cwd = work_dir.as_deref().unwrap_or(&dir);
-    let prep = prepare_long_lived_launch(&dir, &agent_name, cwd, kind, force_fresh)?;
+    let prep = prepare_long_lived_launch(&dir, &agent_base, cwd, kind, force_fresh)?;
     let identity_file = prepare_identity_file_for_harness(
         kind,
         &dir,
@@ -3268,7 +3467,7 @@ pub fn start_researcher_session(
         .ensure_workspace_trusted(&prep.cwd)
         .with_context(|| {
             format!(
-                "failed to pre-stamp workspace trust for researcher '{}--{}' at {}",
+                "failed to pre-stamp workspace trust for assistant '{}--{}' at {}",
                 project,
                 name,
                 prep.cwd.display()
@@ -3293,10 +3492,20 @@ pub fn start_researcher_session(
     Ok(())
 }
 
-/// Resolve the working directory for a researcher session.
-fn resolve_researcher_work_dir(config: &Config, researcher: &Researcher) -> Option<PathBuf> {
+/// Resolve the working directory for a Researcher assistant session.
+/// Reviewers use the first worktree path directly; this helper is researcher-only.
+fn resolve_researcher_work_dir(config: &Config, assistant: &Assistant) -> Option<PathBuf> {
+    let AssistantKind::Researcher {
+        repo,
+        branch,
+        task_id,
+    } = &assistant.meta.kind
+    else {
+        return None;
+    };
+
     // If task_id is set, try to resolve to the task's worktree path
-    if let Some(ref task_id) = researcher.meta.task_id {
+    if let Some(task_id) = task_id {
         // task_id is "<repo>--<branch>" format
         if let Some((repo, branch)) = task_id.split_once("--") {
             if let Ok(task) = Task::load(config, repo, branch) {
@@ -3311,7 +3520,7 @@ fn resolve_researcher_work_dir(config: &Config, researcher: &Researcher) -> Opti
     }
 
     // If repo + branch, resolve to worktree
-    if let (Some(ref repo), Some(ref branch)) = (&researcher.meta.repo, &researcher.meta.branch) {
+    if let (Some(repo), Some(branch)) = (repo, branch) {
         let wt_dir = config
             .repos_dir
             .parent()?
@@ -3323,7 +3532,7 @@ fn resolve_researcher_work_dir(config: &Config, researcher: &Researcher) -> Opti
     }
 
     // If repo only, resolve to main repo dir
-    if let Some(ref repo) = researcher.meta.repo {
+    if let Some(repo) = repo {
         let repo_dir = config.repos_dir.join(repo);
         if repo_dir.exists() {
             return Some(repo_dir);
@@ -3333,46 +3542,104 @@ fn resolve_researcher_work_dir(config: &Config, researcher: &Researcher) -> Opti
     None
 }
 
-/// List researchers, optionally filtered by project.
-pub fn list_researchers(config: &Config, project: Option<&str>) -> Result<Vec<Researcher>> {
-    match project {
-        Some(p) => Researcher::list_for_project(config, p),
-        None => Researcher::list_all(config),
+/// List assistants, optionally filtered by project and/or kind.
+pub fn list_assistants(
+    config: &Config,
+    project: Option<&str>,
+    kind: Option<AssistantKindLabel>,
+) -> Result<Vec<Assistant>> {
+    let mut all = match project {
+        Some(p) => Assistant::list_for_project(config, p)?,
+        None => Assistant::list_all(config)?,
+    };
+    if let Some(k) = kind {
+        all.retain(|a| match (&a.meta.kind, k) {
+            (AssistantKind::Researcher { .. }, AssistantKindLabel::Researcher) => true,
+            (AssistantKind::Reviewer { .. }, AssistantKindLabel::Reviewer) => true,
+            _ => false,
+        });
     }
+    Ok(all)
 }
 
-/// Archive a researcher (kill tmux session, set status to Archived).
-pub fn archive_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
-    let dir = config.researcher_dir(project, name);
-    let mut researcher = Researcher::load(dir)?;
+/// Backwards-compatible researcher list (filters to the Researcher kind).
+pub fn list_researchers(config: &Config, project: Option<&str>) -> Result<Vec<Assistant>> {
+    list_assistants(config, project, Some(AssistantKindLabel::Researcher))
+}
 
-    let session_name = Config::researcher_tmux_session(project, name);
+/// Archive an assistant. Researchers: kill tmux + flip status. Reviewers:
+/// the same plus per-worktree cleanup of any entries we created (`git
+/// worktree remove --force` and `git branch -D` per `agman_created=true`
+/// entry). Worktrees that pre-existed when the reviewer was created are left
+/// alone — see plan for details.
+pub fn archive_assistant(config: &Config, project: &str, name: &str) -> Result<()> {
+    let dir = config.assistant_dir(project, name);
+    let mut assistant = Assistant::load(dir)?;
+
+    let session_name = assistant_tmux_session(&assistant.meta);
     if Tmux::session_exists(&session_name) {
-        tracing::info!(session = &session_name, "killing researcher tmux session");
+        tracing::info!(session = &session_name, "killing assistant tmux session");
         Tmux::kill_session(&session_name)?;
     }
 
-    researcher.meta.status = crate::researcher::ResearcherStatus::Archived;
-    researcher.save_meta()?;
-    tracing::info!(project = project, name = name, "researcher archived");
+    assistant.meta.status = AssistantStatus::Archived;
+    assistant.save_meta()?;
+
+    if let AssistantKind::Reviewer { worktrees } = &assistant.meta.kind {
+        for entry in worktrees {
+            if !entry.agman_created {
+                continue;
+            }
+            let repo_path = config.repo_path(&entry.repo);
+            if let Err(e) = Git::remove_worktree(&repo_path, &entry.path) {
+                tracing::warn!(repo = %entry.repo, branch = %entry.branch, error = %e, "failed to remove reviewer worktree");
+            }
+            if let Err(e) = Git::delete_branch(&repo_path, &entry.branch) {
+                tracing::warn!(repo = %entry.repo, branch = %entry.branch, error = %e, "failed to delete reviewer branch");
+            }
+        }
+    }
+
+    tracing::info!(project = project, name = name, "assistant archived");
     Ok(())
 }
 
-/// Resume an archived researcher: start a new tmux session and flip status
-/// to Running. `start_researcher_session` will pick up any stamped
-/// session-id (claude) or session-name (codex/goose/pi) and resume the
-/// underlying conversation if available; archive does not delete those
-/// handles.
-pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
-    start_researcher_session(config, project, name, false)?;
+/// Backwards-compatible researcher archive — delegates to `archive_assistant`.
+pub fn archive_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
+    archive_assistant(config, project, name)
+}
 
-    let dir = config.researcher_dir(project, name);
-    let mut researcher = Researcher::load(dir)?;
-    researcher.meta.status = crate::researcher::ResearcherStatus::Running;
-    researcher.save_meta()?;
+/// Resume an archived assistant: start a new tmux session and flip status to
+/// Running. `start_assistant_session` will pick up any stamped session-id
+/// (claude) or session-name (codex/goose/pi) and resume the underlying
+/// conversation if available; archive does not delete those handles.
+pub fn resume_assistant(config: &Config, project: &str, name: &str) -> Result<()> {
+    start_assistant_session(config, project, name, false)?;
 
-    tracing::info!(project = project, name = name, "researcher resumed");
+    let dir = config.assistant_dir(project, name);
+    let mut assistant = Assistant::load(dir)?;
+    assistant.meta.status = AssistantStatus::Running;
+    assistant.save_meta()?;
+
+    tracing::info!(project = project, name = name, "assistant resumed");
     Ok(())
+}
+
+/// Backwards-compat alias used by callers that haven't migrated to the new
+/// name yet. Identical to `start_assistant_session`.
+pub fn start_researcher_session(
+    config: &Config,
+    project: &str,
+    name: &str,
+    force_fresh: bool,
+) -> Result<()> {
+    start_assistant_session(config, project, name, force_fresh)
+}
+
+/// Backwards-compat alias used by callers that haven't migrated to the new
+/// name yet. Identical to `resume_assistant`.
+pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
+    resume_assistant(config, project, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -3383,13 +3650,14 @@ pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<(
 /// and which tmux session to deliver them to.
 #[derive(Debug, Clone)]
 pub struct InboxPollTarget {
-    /// `"chief-of-staff"`, `"<project>"`, `"researcher:<project>--<name>"`, or `"task:<id>"`.
+    /// `"chief-of-staff"`, `"<project>"`, `"researcher:<project>--<name>"`,
+    /// `"reviewer:<project>--<name>"`, or `"task:<id>"`.
     pub name: String,
     pub inbox_path: PathBuf,
     pub seq_path: PathBuf,
     pub session_name: String,
     /// Optional window within `session_name` where delivery should happen.
-    /// `None` for single-window sessions (Chief of Staff/PM/researcher);
+    /// `None` for single-window sessions (Chief of Staff/PM/assistant);
     /// `Some("agman")` for task sessions whose interactive harness lives in the
     /// `agman` window.
     pub window: Option<String>,
@@ -3398,7 +3666,7 @@ pub struct InboxPollTarget {
     /// deletes the file, forcing the buffer to restart from zero on the next
     /// observed-ready tick. Currently set only for task targets (the
     /// supervisor touches `<task_dir>/.inbox-rearm` across kill→relaunch
-    /// transitions). `None` for Chief of Staff/PM/researcher targets, whose
+    /// transitions). `None` for Chief of Staff/PM/assistant targets, whose
     /// harness is never restarted under the supervisor.
     pub rearm_path: Option<PathBuf>,
 }
@@ -3450,19 +3718,19 @@ pub fn collect_inbox_poll_targets(
         }
     }
 
-    // Researcher targets
-    match Researcher::list_all(config) {
-        Ok(researchers) => {
-            for r in researchers {
-                if r.meta.status != ResearcherStatus::Running {
+    // Assistant targets (researchers + reviewers, single iteration over disk).
+    match Assistant::list_all(config) {
+        Ok(assistants) => {
+            for a in assistants {
+                if a.meta.status != AssistantStatus::Running {
                     continue;
                 }
-                let session_name = Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
+                let session_name = assistant_tmux_session(&a.meta);
                 if session_exists(&session_name) {
                     targets.push(InboxPollTarget {
-                        name: format!("researcher:{}--{}", r.meta.project, r.meta.name),
-                        inbox_path: config.researcher_inbox(&r.meta.project, &r.meta.name),
-                        seq_path: config.researcher_seq(&r.meta.project, &r.meta.name),
+                        name: assistant_send_target_id(&a.meta),
+                        inbox_path: config.assistant_inbox(&a.meta.project, &a.meta.name),
+                        seq_path: config.assistant_seq(&a.meta.project, &a.meta.name),
                         session_name,
                         window: None,
                         rearm_path: None,
@@ -3471,7 +3739,7 @@ pub fn collect_inbox_poll_targets(
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "collect_inbox_poll_targets: failed to list researchers, skipping researcher targets");
+            tracing::warn!(error = %e, "collect_inbox_poll_targets: failed to list assistants, skipping assistant targets");
         }
     }
 
@@ -3948,6 +4216,136 @@ Additional rules:
 
     format!("{base}{telegram_section}")
 }
+
+/// Build a reviewer assistant's system prompt. Pattern mirrors
+/// `build_researcher_prompt` — same telegram opt-in, same heredoc style — but
+/// the body is reviewer-specific: read-only worktree audits with the explicit
+/// rules from the plan (no fetch, no writes, no GitHub posts).
+pub fn build_reviewer_prompt(
+    telegram_enabled: bool,
+    project_name: &str,
+    reviewer_name: &str,
+    worktrees: &[ReviewerWorktree],
+) -> String {
+    let template = if project_name == "chief-of-staff" {
+        DEFAULT_CHIEF_OF_STAFF_REVIEWER_PROMPT_TEMPLATE
+    } else {
+        DEFAULT_REVIEWER_PROMPT_TEMPLATE
+    };
+    let worktree_block = if worktrees.is_empty() {
+        "(no worktrees configured)".to_string()
+    } else {
+        worktrees
+            .iter()
+            .map(|w| format!("- {}:{} → {}", w.repo, w.branch, w.path.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let base = template
+        .replace("{{PROJECT_NAME}}", project_name)
+        .replace("{{REVIEWER_NAME}}", reviewer_name)
+        .replace("{{WORKTREES}}", &worktree_block);
+    if !telegram_enabled {
+        return base;
+    }
+
+    let telegram_section = format!(
+        r#"
+
+## Telegram
+
+Telegram is connected and the user can switch chats over to you directly. When that happens, messages tagged `[Message from telegram]` will appear in your tmux session.
+
+**The one rule you must never break: acknowledge first, work second, report third.**
+
+`[Message from telegram]` means the user is on their phone and **cannot** see your tmux session. The only way to reach them is via the Telegram send command. The user is staring at their phone waiting for any sign that you saw the message. Silence while you review is not acceptable.
+
+Every `[Message from telegram]` triggers this exact sequence:
+
+1. **IMMEDIATELY acknowledge** — Your very first action, before any review work, is to send a short acknowledgment via Telegram (e.g. "Got it, looking into this now" or "On it — will report back shortly"). Do this BEFORE running any other command.
+2. **Do the work** — Then proceed with the review.
+3. **Report back** — When the review is done (or you've hit a decision point), send a follow-up Telegram message with your findings.
+
+Send command:
+```
+cat <<'AGMAN_MSG' | agman send-message telegram --from "reviewer:{project_name}--{reviewer_name}"
+<your reply>
+AGMAN_MSG
+```
+
+Additional rules:
+- Keep Telegram replies concise — this is a mobile chat, not a report.
+- The user sees `[Rv:{reviewer_name}]` prepended to your replies, so they always know who is speaking.
+- Never leave the user waiting in silence while you work. Acknowledge first, work second, report third.
+"#
+    );
+
+    format!("{base}{telegram_section}")
+}
+
+const DEFAULT_REVIEWER_PROMPT_TEMPLATE: &str = r#"You are a code reviewer assistant for project "{{PROJECT_NAME}}", named "{{REVIEWER_NAME}}".
+
+Your job is to read code from the worktrees listed below — including uncommitted, staged, and unstaged changes — and deliver opinions back to the PM. You are stateless between questions but the session is long-lived: the PM may follow up with more questions on the same review.
+
+## Worktrees
+
+{{WORKTREES}}
+
+The local filesystem is authoritative. Treat each worktree as the source of truth for what the branch currently looks like.
+
+## Hard rules
+
+- Do **not** fetch from origin. The user updates the worktree themselves and asks you to look again — never run `git fetch`, `git pull`, or any other network-touching git command.
+- Do **not** write to disk. No new files, no edits, no commits, no notes-to-self.
+- Do **not** post to GitHub. No `gh pr review`, no comments, no labels, no merges.
+- Do **not** open a PR or interact with one. PR-URL → branch translation is the PM's job; you only see the worktrees above.
+- Do **not** write a `REVIEW.md` or any artifact file.
+
+## Communication
+
+Messages from the PM appear in your tmux session tagged `[Message from {{PROJECT_NAME}}]:`. The PM **cannot** see your tmux session — you MUST reply using `agman send-message`. Never just type a response in tmux expecting the PM to see it.
+
+Reply via:
+```
+cat <<'AGMAN_MSG' | agman send-message {{PROJECT_NAME}} --from "reviewer:{{PROJECT_NAME}}--{{REVIEWER_NAME}}"
+<your findings>
+AGMAN_MSG
+```
+
+Keep findings concise and specific — file paths, line numbers, and the actual issue. The PM will follow up with more questions if they need to dig deeper.
+"#;
+
+const DEFAULT_CHIEF_OF_STAFF_REVIEWER_PROMPT_TEMPLATE: &str = r#"You are a code reviewer assistant for the Chief of Staff, named "{{REVIEWER_NAME}}".
+
+Your job is to read code from the worktrees listed below — including uncommitted, staged, and unstaged changes — and deliver opinions back to the Chief of Staff. You are stateless between questions but the session is long-lived: the CoS may follow up with more questions on the same review.
+
+## Worktrees
+
+{{WORKTREES}}
+
+The local filesystem is authoritative. Treat each worktree as the source of truth for what the branch currently looks like.
+
+## Hard rules
+
+- Do **not** fetch from origin. Never run `git fetch`, `git pull`, or any other network-touching git command.
+- Do **not** write to disk. No new files, no edits, no commits, no notes-to-self.
+- Do **not** post to GitHub. No `gh pr review`, no comments, no labels, no merges.
+- Do **not** open a PR or interact with one. PR-URL → branch translation is the CoS's job; you only see the worktrees above.
+- Do **not** write a `REVIEW.md` or any artifact file.
+
+## Communication
+
+Messages from the Chief of Staff appear tagged `[Message from chief-of-staff]:`. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
+
+Reply via:
+```
+cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "reviewer:chief-of-staff--{{REVIEWER_NAME}}"
+<your findings>
+AGMAN_MSG
+```
+
+Keep findings concise and specific — file paths, line numbers, and the actual issue. The Chief of Staff will follow up with more questions if they need to dig deeper.
+"#;
 
 const DEFAULT_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for project "{{PROJECT_NAME}}", named "{{RESEARCHER_NAME}}".
 

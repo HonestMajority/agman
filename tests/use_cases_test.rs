@@ -26,10 +26,8 @@ fn create_task_with_new_branch() {
         "Build the widget",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     // Task directory and meta exist
@@ -79,10 +77,8 @@ fn create_task_with_existing_worktree() {
         "Work on existing branch",
         "new",
         WorktreeSource::ExistingWorktree(wt_path.clone()),
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     assert_eq!(task.meta.primary_repo().worktree_path, wt_path);
@@ -109,10 +105,8 @@ fn create_task_reuses_existing_worktree() {
         "Reuse existing worktree",
         "new",
         WorktreeSource::ExistingBranch,
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     assert_eq!(task.meta.primary_repo().worktree_path, wt_path);
@@ -122,28 +116,6 @@ fn create_task_reuses_existing_worktree() {
     // TASK.md written to the reused worktree
     let task_content = task.read_task().unwrap();
     assert!(task_content.contains("Reuse existing worktree"));
-}
-
-#[test]
-fn create_task_with_review_after() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let _repo_path = init_test_repo(&tmp, "myrepo");
-
-    let task = use_cases::create_task(
-        &config,
-        "myrepo",
-        "feat-review",
-        "Desc",
-        "new",
-        WorktreeSource::NewBranch { base_branch: None },
-        true,
-        None,
-        None,
-    )
-    .unwrap();
-
-    assert!(task.meta.review_after);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,10 +144,8 @@ fn create_task_with_custom_base_branch() {
         WorktreeSource::NewBranch {
             base_branch: Some("feature-base".to_string()),
         },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     // Task directory and meta exist
@@ -254,10 +224,8 @@ fn archive_task() {
         "desc",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     let task_dir = task.dir.clone();
@@ -310,10 +278,8 @@ fn archive_task_saved() {
         "desc",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     use_cases::archive_task(&config, &mut task, true).unwrap();
@@ -339,10 +305,8 @@ fn permanently_delete_archived_task() {
         "desc",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     let task_dir = task.dir.clone();
@@ -392,10 +356,8 @@ fn fully_delete_task() {
         "desc",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     let task_dir = task.dir.clone();
@@ -998,42 +960,6 @@ fn list_commands() {
 }
 
 // ---------------------------------------------------------------------------
-// Create review task
-// ---------------------------------------------------------------------------
-
-#[test]
-fn create_review_task() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    config.ensure_dirs().unwrap();
-
-    // Create a fake existing worktree
-    let wt_path = config.worktree_path("myrepo", "review-branch");
-    std::fs::create_dir_all(&wt_path).unwrap();
-
-    let _repo_path = init_test_repo(&tmp, "myrepo");
-
-    let task = use_cases::create_review_task(
-        &config,
-        "myrepo",
-        "review-branch",
-        WorktreeSource::ExistingWorktree(wt_path),
-        None,
-    )
-    .unwrap();
-
-    // Task created with review description
-    let task_content = task.read_task().unwrap();
-    assert!(task_content.contains("Review branch review-branch"));
-    assert_eq!(task.meta.name, "myrepo");
-    assert_eq!(task.meta.branch_name, "review-branch");
-
-    // Repo stats incremented
-    let stats = RepoStats::load(&config.repo_stats_path());
-    assert_eq!(stats.counts.get("myrepo"), Some(&1));
-}
-
-// ---------------------------------------------------------------------------
 // Create task reuses existing worktree for existing branch
 // ---------------------------------------------------------------------------
 
@@ -1051,10 +977,8 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
         "Original task",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     let worktree_path = task.meta.primary_repo().worktree_path.clone();
@@ -1080,10 +1004,8 @@ fn create_task_reuses_existing_worktree_for_existing_branch() {
         "Recreated task",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     assert!(task2.meta.primary_repo().worktree_path.exists());
@@ -1187,10 +1109,8 @@ fn set_linked_pr() {
         "Test PR linking",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     // Add an origin remote pointing to a GitHub URL
@@ -1233,10 +1153,8 @@ fn set_linked_pr_owned_flag() {
         "Test owned flag",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     let wt = task.meta.primary_repo().worktree_path.clone();
@@ -1291,9 +1209,7 @@ fn create_multi_repo_task() {
         "Implement cross-repo feature",
         "new-multi",
         parent_dir.clone(),
-        false,
-        None,
-    )
+        None)
     .unwrap();
 
     // Task directory and meta exist
@@ -1391,9 +1307,7 @@ fn archive_multi_repo_task() {
         "Multi archive test",
         "new-multi",
         parent_dir,
-        false,
-        None,
-    )
+        None)
     .unwrap();
 
     // Manually populate repos (simulating what setup_repos_from_task_md would do)
@@ -1468,9 +1382,7 @@ fn setup_repos_from_task_md() {
         "Build cross-repo feature",
         "new-multi",
         parent_dir,
-        false,
-        None,
-    )
+        None)
     .unwrap();
 
     assert!(task.meta.repos.is_empty());
@@ -1530,7 +1442,6 @@ fn migrate_old_tasks_rewrites_meta_json() {
         "flow_step": 0,
         "created_at": "2026-01-01T00:00:00Z",
         "updated_at": "2026-01-01T00:00:00Z",
-        "review_after": false,
         "linked_pr": null,
         "last_review_count": null,
         "review_addressed": false
@@ -1770,10 +1681,8 @@ fn create_task_with_slash_in_branch_name() {
         "Fix something",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     // Task directory is flat (no nested dirs from the slash)
@@ -2340,10 +2249,8 @@ fn toggle_archive_saved() {
         "desc",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         None,
-        None,
-    )
+        None)
     .unwrap();
 
     use_cases::archive_task(&config, &mut task, false).unwrap();
@@ -2543,9 +2450,7 @@ fn setup_repos_from_task_md_multi_repo_different_parent_dir() {
         "Fix across repos",
         "new-multi",
         other_repos.clone(),
-        false,
-        None,
-    )
+        None)
     .unwrap();
 
     assert!(task.meta.repos.is_empty());
@@ -2602,10 +2507,8 @@ fn create_task_with_repo_outside_repos_dir() {
         "Build the external widget",
         "new",
         WorktreeSource::NewBranch { base_branch: None },
-        false,
         Some(external_dir.clone()),
-        None,
-    )
+        None)
     .unwrap();
 
     // Task directory and meta exist
@@ -3022,7 +2925,7 @@ fn delete_project() {
     let researcher = helpers::create_test_researcher(&config, "backend", "explore-auth");
     assert_eq!(
         researcher.meta.status,
-        agman::researcher::ResearcherStatus::Running
+        agman::assistant::AssistantStatus::Running
     );
 
     // Delete the project
@@ -3037,11 +2940,11 @@ fn delete_project() {
 
     // Researcher should now be archived
     let reloaded_researcher =
-        agman::researcher::Researcher::load(config.researcher_dir("backend", "explore-auth"))
+        agman::assistant::Assistant::load(config.assistant_dir("backend", "explore-auth"))
             .unwrap();
     assert_eq!(
         reloaded_researcher.meta.status,
-        agman::researcher::ResearcherStatus::Archived
+        agman::assistant::AssistantStatus::Archived
     );
 }
 
@@ -3213,14 +3116,11 @@ fn use_case_create_researcher() {
     assert_eq!(researcher.meta.description, "Investigate API patterns");
     assert_eq!(
         researcher.meta.status,
-        agman::researcher::ResearcherStatus::Running
+        agman::assistant::AssistantStatus::Running
     );
-    assert!(researcher.meta.repo.is_none());
-    assert!(researcher.meta.branch.is_none());
-    assert!(researcher.meta.task_id.is_none());
 
     // Verify that the research description was written to the inbox
-    let inbox_path = config.researcher_inbox("myproj", "code-explorer");
+    let inbox_path = config.assistant_inbox("myproj", "code-explorer");
     let messages = agman::inbox::read_messages(&inbox_path).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].from, "user");
@@ -3237,7 +3137,7 @@ fn use_case_create_researcher_empty_description_no_inbox() {
     use_cases::create_researcher(&config, "myproj", "quiet-one", "", None, None, None).unwrap();
 
     // No inbox file should be created for empty description
-    let inbox_path = config.researcher_inbox("myproj", "quiet-one");
+    let inbox_path = config.assistant_inbox("myproj", "quiet-one");
     assert!(!inbox_path.exists());
 }
 
@@ -3288,11 +3188,256 @@ fn use_case_archive_researcher() {
     use_cases::archive_researcher(&config, "myproj", "temp-research").unwrap();
 
     // Reload and check status
-    let dir = config.researcher_dir("myproj", "temp-research");
-    let researcher = agman::researcher::Researcher::load(dir).unwrap();
+    let dir = config.assistant_dir("myproj", "temp-research");
+    let researcher = agman::assistant::Assistant::load(dir).unwrap();
     assert_eq!(
         researcher.meta.status,
-        agman::researcher::ResearcherStatus::Archived
+        agman::assistant::AssistantStatus::Archived
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reviewer assistant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_assistant_reviewer_with_existing_worktree_records_agman_created_false() {
+    use agman::assistant::AssistantKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+    let _repo = init_test_repo(&tmp, "myrepo");
+
+    // Pre-create a worktree for `feat-x`. The reviewer should adopt it
+    // unchanged (`agman_created = false`).
+    let wt = agman::git::Git::create_worktree_quiet(&config, "myrepo", "feat-x", None, None)
+        .unwrap();
+    assert!(wt.exists());
+
+    let assistant = use_cases::create_reviewer(
+        &config,
+        "reviews",
+        "rv1",
+        "review feat-x",
+        use_cases::ReviewerSpec {
+            branches: vec![("myrepo".to_string(), "feat-x".to_string())],
+            parent_dir: None,
+        },
+    )
+    .unwrap();
+
+    let AssistantKind::Reviewer { worktrees } = &assistant.meta.kind else {
+        panic!("expected Reviewer kind");
+    };
+    assert_eq!(worktrees.len(), 1);
+    assert_eq!(worktrees[0].repo, "myrepo");
+    assert_eq!(worktrees[0].branch, "feat-x");
+    // Compare via canonicalize() to dodge macOS /var vs /private/var path mismatches.
+    assert_eq!(
+        worktrees[0].path.canonicalize().unwrap(),
+        wt.canonicalize().unwrap()
+    );
+    assert!(
+        !worktrees[0].agman_created,
+        "existing worktree must not be marked agman_created"
+    );
+
+    // Reviewer dir + meta + inbox seed should all exist.
+    assert!(assistant.dir.join("meta.json").exists());
+    let inbox_path = config.assistant_inbox("reviews", "rv1");
+    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].message, "review feat-x");
+}
+
+#[test]
+fn create_assistant_reviewer_origin_only_branch_creates_worktree() {
+    use agman::assistant::AssistantKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+
+    // Set up an "origin" repo + a clone whose origin/<branch> exists but no
+    // local branch is checked out.
+    let origin_path = init_test_repo_at(tmp.path(), "myrepo-origin");
+    // Add a feat-y branch on the origin and commit something to it.
+    let run_in = |dir: &std::path::Path, args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git failed")
+    };
+    run_in(&origin_path, &["checkout", "-b", "feat-y"]);
+    std::fs::write(origin_path.join("hello.txt"), "hi").unwrap();
+    run_in(&origin_path, &["add", "."]);
+    run_in(&origin_path, &["commit", "-m", "feat-y commit"]);
+    run_in(&origin_path, &["checkout", "main"]);
+
+    // Now clone into the standard repos_dir spot.
+    let repos_dir = config.repos_dir.clone();
+    std::fs::create_dir_all(&repos_dir).unwrap();
+    let clone_path = repos_dir.join("myrepo");
+    std::process::Command::new("git")
+        .args([
+            "clone",
+            origin_path.to_str().unwrap(),
+            clone_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("clone failed");
+
+    // The `feat-y` branch should exist on origin but not as a local branch
+    // and not in any worktree.
+    assert!(agman::git::Git::find_worktree_for_branch(&clone_path, "feat-y")
+        .unwrap()
+        .is_none());
+    assert!(!agman::git::Git::local_branch_exists(&clone_path, "feat-y"));
+
+    let assistant = use_cases::create_reviewer(
+        &config,
+        "reviews",
+        "rv2",
+        "review feat-y",
+        use_cases::ReviewerSpec {
+            branches: vec![("myrepo".to_string(), "feat-y".to_string())],
+            parent_dir: None,
+        },
+    )
+    .unwrap();
+
+    let AssistantKind::Reviewer { worktrees } = &assistant.meta.kind else {
+        panic!("expected Reviewer kind");
+    };
+    assert_eq!(worktrees.len(), 1);
+    assert_eq!(worktrees[0].repo, "myrepo");
+    assert_eq!(worktrees[0].branch, "feat-y");
+    assert!(worktrees[0].path.exists(), "worktree should be on disk");
+    assert!(
+        worktrees[0].agman_created,
+        "fetched-from-origin worktree must be marked agman_created"
+    );
+
+    // The local branch `feat-y` should now exist (created from origin).
+    assert!(agman::git::Git::local_branch_exists(&clone_path, "feat-y"));
+}
+
+#[test]
+fn create_assistant_reviewer_local_branch_no_worktree_bails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+    let repo_path = init_test_repo(&tmp, "myrepo");
+
+    // Create a local branch but DO NOT check it out in a worktree.
+    std::process::Command::new("git")
+        .args(["branch", "feat-z"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    assert!(agman::git::Git::local_branch_exists(&repo_path, "feat-z"));
+    assert!(agman::git::Git::find_worktree_for_branch(&repo_path, "feat-z")
+        .unwrap()
+        .is_none());
+
+    let err = use_cases::create_reviewer(
+        &config,
+        "reviews",
+        "rv3",
+        "should fail",
+        use_cases::ReviewerSpec {
+            branches: vec![("myrepo".to_string(), "feat-z".to_string())],
+            parent_dir: None,
+        },
+    )
+    .expect_err("should bail on local-branch-without-worktree");
+
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("feat-z") && msg.contains("not checked out in a worktree"),
+        "expected the documented bail message, got: {msg}"
+    );
+
+    // Nothing should have been created on disk.
+    assert!(!config.assistant_dir("reviews", "rv3").exists());
+}
+
+#[test]
+fn archive_assistant_reviewer_cleans_only_agman_created_entries() {
+    use agman::assistant::AssistantKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+    let repo_path = init_test_repo(&tmp, "myrepo");
+
+    // Pre-existing worktree for `keep-me`.
+    let preexisting =
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "keep-me", None, None)
+            .unwrap();
+    assert!(preexisting.exists());
+
+    // Hand-build the reviewer entries: one agman-created, one not. We bypass
+    // `create_reviewer` here to control `agman_created` precisely.
+    let agman_created_path = config.worktree_path("myrepo", "owned-by-agman");
+    // Create that worktree via the same helper.
+    agman::git::Git::create_worktree_quiet(&config, "myrepo", "owned-by-agman", None, None)
+        .unwrap();
+    assert!(agman_created_path.exists());
+
+    let kind = AssistantKind::Reviewer {
+        worktrees: vec![
+            agman::assistant::ReviewerWorktree {
+                repo: "myrepo".to_string(),
+                branch: "keep-me".to_string(),
+                path: preexisting.clone(),
+                agman_created: false,
+            },
+            agman::assistant::ReviewerWorktree {
+                repo: "myrepo".to_string(),
+                branch: "owned-by-agman".to_string(),
+                path: agman_created_path.clone(),
+                agman_created: true,
+            },
+        ],
+    };
+    let _assistant =
+        agman::assistant::Assistant::create(&config, "reviews", "rv4", "test", kind).unwrap();
+
+    // Sanity: both branches exist locally.
+    assert!(agman::git::Git::local_branch_exists(&repo_path, "keep-me"));
+    assert!(agman::git::Git::local_branch_exists(
+        &repo_path,
+        "owned-by-agman"
+    ));
+
+    use_cases::archive_assistant(&config, "reviews", "rv4").unwrap();
+
+    // The agman-created worktree + branch should be gone.
+    assert!(!agman_created_path.exists(), "agman_created worktree should be removed");
+    assert!(
+        !agman::git::Git::local_branch_exists(&repo_path, "owned-by-agman"),
+        "agman_created branch should be deleted"
+    );
+    // The pre-existing worktree + branch should be left alone.
+    assert!(preexisting.exists(), "pre-existing worktree must survive archive");
+    assert!(
+        agman::git::Git::local_branch_exists(&repo_path, "keep-me"),
+        "pre-existing branch must survive archive"
+    );
+
+    // Status flipped to Archived.
+    let reloaded = agman::assistant::Assistant::load(config.assistant_dir("reviews", "rv4"))
+        .unwrap();
+    assert_eq!(
+        reloaded.meta.status,
+        agman::assistant::AssistantStatus::Archived
     );
 }
 
@@ -3323,10 +3468,49 @@ fn use_case_send_message_to_researcher() {
     .unwrap();
 
     // Verify inbox has the message
-    let inbox_path = config.researcher_inbox("myproj", "investigator");
+    let inbox_path = config.assistant_inbox("myproj", "investigator");
     let contents = std::fs::read_to_string(&inbox_path).unwrap();
     assert!(contents.contains("Please check the error logs"));
     assert!(contents.contains("myproj"));
+}
+
+#[test]
+fn send_message_with_reviewer_prefix_routes_to_assistant_inbox() {
+    use agman::assistant::{Assistant, AssistantKind, ReviewerWorktree};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+
+    // Hand-build a reviewer assistant — we want to test the wire format only.
+    let _ = Assistant::create(
+        &config,
+        "reviews",
+        "rv-route",
+        "",
+        AssistantKind::Reviewer {
+            worktrees: vec![ReviewerWorktree {
+                repo: "myrepo".to_string(),
+                branch: "feat".to_string(),
+                path: tmp.path().to_path_buf(),
+                agman_created: false,
+            }],
+        },
+    )
+    .unwrap();
+
+    use_cases::send_message(
+        &config,
+        "reviewer:reviews--rv-route",
+        "reviews",
+        "Take a look at the diff",
+    )
+    .unwrap();
+
+    let inbox_path = config.assistant_inbox("reviews", "rv-route");
+    let contents = std::fs::read_to_string(&inbox_path).unwrap();
+    assert!(contents.contains("Take a look at the diff"));
 }
 
 // ---------------------------------------------------------------------------
@@ -3357,11 +3541,11 @@ fn use_case_create_chief_of_staff_researcher() {
     assert_eq!(researcher.meta.description, "research question");
     assert_eq!(
         researcher.meta.status,
-        agman::researcher::ResearcherStatus::Running
+        agman::assistant::AssistantStatus::Running
     );
 
     // Verify that the research description was written to the inbox
-    let inbox_path = config.researcher_inbox("chief-of-staff", "my-researcher");
+    let inbox_path = config.assistant_inbox("chief-of-staff", "my-researcher");
     let messages = agman::inbox::read_messages(&inbox_path).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].from, "user");
@@ -3491,16 +3675,16 @@ fn collect_inbox_poll_targets_enumerates_disk() {
                 assert_eq!(t.session_name, Config::pm_tmux_session("beta"));
             }
             "researcher:alpha--r1" => {
-                assert_eq!(t.inbox_path, config.researcher_inbox("alpha", "r1"));
-                assert_eq!(t.seq_path, config.researcher_seq("alpha", "r1"));
+                assert_eq!(t.inbox_path, config.assistant_inbox("alpha", "r1"));
+                assert_eq!(t.seq_path, config.assistant_seq("alpha", "r1"));
                 assert_eq!(
                     t.session_name,
                     Config::researcher_tmux_session("alpha", "r1")
                 );
             }
             "researcher:beta--r2" => {
-                assert_eq!(t.inbox_path, config.researcher_inbox("beta", "r2"));
-                assert_eq!(t.seq_path, config.researcher_seq("beta", "r2"));
+                assert_eq!(t.inbox_path, config.assistant_inbox("beta", "r2"));
+                assert_eq!(t.seq_path, config.assistant_seq("beta", "r2"));
                 assert_eq!(
                     t.session_name,
                     Config::researcher_tmux_session("beta", "r2")
@@ -3661,7 +3845,7 @@ fn append_message_concurrent_seqs() {
 
 #[test]
 fn relative_agent_list_from_chief_of_staff() {
-    use agman::researcher::{Researcher, ResearcherStatus};
+    use agman::assistant::{Assistant, AssistantStatus};
 
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
@@ -3670,12 +3854,12 @@ fn relative_agent_list_from_chief_of_staff() {
     create_test_project(&config, "beta");
     helpers::create_test_researcher(&config, "chief-of-staff", "live");
     let mut archived = helpers::create_test_researcher(&config, "chief-of-staff", "old");
-    archived.meta.status = ResearcherStatus::Archived;
+    archived.meta.status = AssistantStatus::Archived;
     archived.save_meta().unwrap();
 
     // Sanity-check the helper left the archived researcher archived.
-    let archived_reload = Researcher::load(config.researcher_dir("chief-of-staff", "old")).unwrap();
-    assert_eq!(archived_reload.meta.status, ResearcherStatus::Archived);
+    let archived_reload = Assistant::load(config.assistant_dir("chief-of-staff", "old")).unwrap();
+    assert_eq!(archived_reload.meta.status, AssistantStatus::Archived);
 
     let agents = use_cases::relative_agent_list(&config, "chief-of-staff");
     let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
@@ -3688,7 +3872,7 @@ fn relative_agent_list_from_chief_of_staff() {
 
 #[test]
 fn relative_agent_list_from_pm() {
-    use agman::researcher::ResearcherStatus;
+    use agman::assistant::AssistantStatus;
 
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
@@ -3696,7 +3880,7 @@ fn relative_agent_list_from_pm() {
     create_test_project(&config, "alpha");
     helpers::create_test_researcher(&config, "alpha", "live");
     let mut archived = helpers::create_test_researcher(&config, "alpha", "old");
-    archived.meta.status = ResearcherStatus::Archived;
+    archived.meta.status = AssistantStatus::Archived;
     archived.save_meta().unwrap();
 
     let agents = use_cases::relative_agent_list(&config, "alpha");

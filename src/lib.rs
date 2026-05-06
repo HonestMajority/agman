@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod assistant;
 pub mod command;
 pub mod config;
 pub mod dismissed_notifications;
@@ -9,7 +10,6 @@ pub mod inbox;
 pub mod migration;
 pub mod project;
 pub mod repo_stats;
-pub mod researcher;
 pub mod supervisor;
 pub mod task;
 pub mod telegram;

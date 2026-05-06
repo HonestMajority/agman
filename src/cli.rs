@@ -40,7 +40,8 @@ EXAMPLES:
   EOF
   agman send-message chief-of-staff @./message.md")]
     SendMessage {
-        /// Target: "chief-of-staff", "telegram", "researcher:<project>--<name>", or a project name (for the PM)
+        /// Target: "chief-of-staff", "telegram", "researcher:<project>--<name>",
+        /// "reviewer:<project>--<name>", or a project name (for the PM)
         target: String,
         /// Message text (can also be provided via stdin or --file)
         #[arg(allow_hyphen_values = true)]
@@ -207,7 +208,68 @@ EXAMPLES:
         file: Option<std::path::PathBuf>,
     },
 
-    /// Create a researcher (defaults to Chief of Staff-level when --project is omitted)
+    /// Create an assistant (researcher or reviewer). Defaults to Chief of
+    /// Staff-level when --project is omitted.
+    #[command(after_help = "\
+EXAMPLES:
+  agman create-assistant --kind researcher --name api-investigator --description \"Investigate the API latency\"
+  agman create-assistant --kind reviewer --name pr-1247 --project reviews \\
+    --branch galoy:fix-deposit-flow \\
+    --branch lana-dashboard:fix-deposit-flow \\
+    --description \"Review the cross-repo deposit fix\"")]
+    CreateAssistant {
+        /// Assistant kind: researcher or reviewer
+        #[arg(long, value_enum)]
+        kind: AssistantKindArg,
+        /// Assistant name (alphanumeric + hyphens)
+        #[arg(long, short)]
+        name: String,
+        /// Project name (defaults to "chief-of-staff" for CoS-level assistants)
+        #[arg(long)]
+        project: Option<String>,
+        /// Description/initial question
+        #[arg(long, short, allow_hyphen_values = true)]
+        description: Option<String>,
+        // --- Researcher-only flags (rejected for reviewer) ---
+        /// Repository name (researcher only — for working directory context)
+        #[arg(long)]
+        repo: Option<String>,
+        /// Branch name (researcher only — used with --repo for worktree resolution)
+        #[arg(long, conflicts_with = "branch_pair")]
+        branch_for_researcher: Option<String>,
+        /// Task ID to inherit working directory from (researcher only)
+        #[arg(long)]
+        task: Option<String>,
+        // --- Reviewer-only flag (repeatable; rejected for researcher) ---
+        /// `<repo>:<branch>` pair to scope the reviewer to (reviewer only;
+        /// repeat to include multiple). Required for reviewers.
+        #[arg(long = "branch", value_name = "REPO:BRANCH")]
+        branch_pair: Vec<String>,
+    },
+
+    /// List assistants
+    ListAssistants {
+        /// Filter by project name
+        #[arg(long)]
+        project: Option<String>,
+        /// Show only Chief of Staff-level assistants
+        #[arg(long)]
+        cos: bool,
+        /// Filter by kind
+        #[arg(long, value_enum)]
+        kind: Option<AssistantKindArg>,
+    },
+
+    /// Archive an assistant (defaults to Chief of Staff-level when --project is omitted)
+    ArchiveAssistant {
+        /// Assistant name
+        name: String,
+        /// Project name (defaults to "chief-of-staff" for CoS-level assistants)
+        #[arg(long)]
+        project: Option<String>,
+    },
+
+    /// Create a researcher (alias for `create-assistant --kind researcher`).
     #[command(after_help = "\
 EXAMPLES:
   agman create-researcher my-research --description \"Investigate the API latency\"
@@ -235,7 +297,29 @@ EXAMPLES:
         description: Option<String>,
     },
 
-    /// List researchers
+    /// Create a reviewer (alias for `create-assistant --kind reviewer`).
+    #[command(after_help = "\
+EXAMPLES:
+  agman create-reviewer --name pr-1247 --project reviews \\
+    --branch galoy:fix-deposit-flow \\
+    --branch lana-dashboard:fix-deposit-flow \\
+    --description \"Review the cross-repo deposit fix\"")]
+    CreateReviewer {
+        /// Reviewer name (alphanumeric + hyphens)
+        #[arg(long, short)]
+        name: String,
+        /// Project name (defaults to "chief-of-staff")
+        #[arg(long)]
+        project: Option<String>,
+        /// `<repo>:<branch>` pair (repeatable, required at least once)
+        #[arg(long = "branch", value_name = "REPO:BRANCH", required = true)]
+        branch_pair: Vec<String>,
+        /// Description
+        #[arg(long, short, allow_hyphen_values = true)]
+        description: Option<String>,
+    },
+
+    /// List researchers (alias for `list-assistants --kind researcher`).
     ListResearchers {
         /// Filter by project name
         #[arg(long)]
@@ -245,7 +329,7 @@ EXAMPLES:
         cos: bool,
     },
 
-    /// Archive a researcher (defaults to Chief of Staff-level when --project is omitted)
+    /// Archive a researcher (alias for `archive-assistant`).
     ArchiveResearcher {
         /// Researcher name
         name: String,
@@ -267,6 +351,12 @@ EXAMPLES:
     },
     /// Restart the agman TUI binary itself to pick up a new version. Chat sessions are unaffected.
     Restart,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum AssistantKindArg {
+    Researcher,
+    Reviewer,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

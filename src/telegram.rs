@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::inbox;
-use crate::researcher::{Researcher, ResearcherStatus};
+use crate::assistant::{Assistant, AssistantKind, AssistantStatus};
 use crate::use_cases;
 
 // ---------------------------------------------------------------------------
@@ -431,8 +431,11 @@ pub fn parse_sender_tag(text: &str) -> Option<&str> {
 /// - `"CoS"` → `Some("chief-of-staff")`
 /// - `"PM:<id>"` → `Some(id)` if the project agent exists
 /// - `"R:<name>"` → `Some("researcher:<project>--<name>")` when exactly one
-///   running researcher matches; `None` for zero or multiple matches
-///   (ambiguous matches are logged via `tracing::warn`).
+///   running researcher matches; `None` for zero or multiple matches.
+/// - `"Rv:<name>"` → `Some("reviewer:<project>--<name>")` with the same
+///   uniqueness rules.
+///
+/// Ambiguous matches are logged via `tracing::warn`.
 ///
 /// Defensively returns `None` if the resolved id is `"telegram"` to prevent
 /// the bot from looping messages back to itself.
@@ -445,40 +448,10 @@ pub fn resolve_tag_to_agent(config: &Config, tag: &str) -> Option<String> {
         } else {
             None
         }
+    } else if let Some(name) = tag.strip_prefix("Rv:") {
+        resolve_assistant_tag(config, name, AssistantKindFilter::Reviewer)
     } else if let Some(name) = tag.strip_prefix("R:") {
-        if name.is_empty() {
-            None
-        } else {
-            match Researcher::list_all(config) {
-                Ok(researchers) => {
-                    let matches: Vec<&Researcher> = researchers
-                        .iter()
-                        .filter(|r| {
-                            r.meta.name == name && r.meta.status == ResearcherStatus::Running
-                        })
-                        .collect();
-                    match matches.len() {
-                        1 => {
-                            let r = matches[0];
-                            Some(format!("researcher:{}--{}", r.meta.project, r.meta.name))
-                        }
-                        0 => None,
-                        n => {
-                            tracing::warn!(
-                                tag = %name,
-                                count = n,
-                                "telegram: ambiguous researcher tag, falling back"
-                            );
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "telegram: failed to list researchers for tag resolution");
-                    None
-                }
-            }
-        }
+        resolve_assistant_tag(config, name, AssistantKindFilter::Researcher)
     } else {
         None
     }?;
@@ -487,6 +460,58 @@ pub fn resolve_tag_to_agent(config: &Config, tag: &str) -> Option<String> {
         return None;
     }
     Some(resolved)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssistantKindFilter {
+    Researcher,
+    Reviewer,
+}
+
+fn resolve_assistant_tag(
+    config: &Config,
+    name: &str,
+    kind: AssistantKindFilter,
+) -> Option<String> {
+    if name.is_empty() {
+        return None;
+    }
+    let assistants = match Assistant::list_all(config) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "telegram: failed to list assistants for tag resolution");
+            return None;
+        }
+    };
+    let matches: Vec<&Assistant> = assistants
+        .iter()
+        .filter(|a| a.meta.name == name && a.meta.status == AssistantStatus::Running)
+        .filter(|a| match (&a.meta.kind, kind) {
+            (AssistantKind::Researcher { .. }, AssistantKindFilter::Researcher) => true,
+            (AssistantKind::Reviewer { .. }, AssistantKindFilter::Reviewer) => true,
+            _ => false,
+        })
+        .collect();
+    match matches.len() {
+        1 => {
+            let a = matches[0];
+            let prefix = match kind {
+                AssistantKindFilter::Researcher => "researcher",
+                AssistantKindFilter::Reviewer => "reviewer",
+            };
+            Some(format!("{prefix}:{}--{}", a.meta.project, a.meta.name))
+        }
+        0 => None,
+        n => {
+            tracing::warn!(
+                tag = %name,
+                count = n,
+                kind = ?kind,
+                "telegram: ambiguous assistant tag, falling back"
+            );
+            None
+        }
+    }
 }
 
 /// Build the inbox payload for a reply: a one-line context snippet of the
@@ -674,6 +699,7 @@ fn append_dead_letter(path: &Path, msg: &inbox::InboxMessage, reason: &str) -> s
 ///
 /// - `"chief-of-staff"` → `"CoS"`
 /// - `"researcher:<project>--<name>"` → `"R:<name>"` (text after the last `--`)
+/// - `"reviewer:<project>--<name>"` → `"Rv:<name>"` (text after the last `--`)
 /// - anything else → `"PM:<from>"` (default — project names live here)
 pub fn format_sender_tag(from: &str) -> String {
     if from == "chief-of-staff" {
@@ -682,6 +708,10 @@ pub fn format_sender_tag(from: &str) -> String {
     if let Some(rest) = from.strip_prefix("researcher:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
         return format!("R:{name}");
+    }
+    if let Some(rest) = from.strip_prefix("reviewer:") {
+        let name = rest.rsplit("--").next().unwrap_or(rest);
+        return format!("Rv:{name}");
     }
     format!("PM:{from}")
 }
@@ -872,10 +902,12 @@ pub fn parent_of(current: &str) -> Option<String> {
     if current == "chief-of-staff" {
         return None;
     }
-    if let Some(rest) = current.strip_prefix("researcher:") {
-        if let Some(pos) = rest.find("--") {
-            let project = &rest[..pos];
-            return Some(project.to_string());
+    for prefix in ["researcher:", "reviewer:"] {
+        if let Some(rest) = current.strip_prefix(prefix) {
+            if let Some(pos) = rest.find("--") {
+                let project = &rest[..pos];
+                return Some(project.to_string());
+            }
         }
     }
     Some("chief-of-staff".to_string())

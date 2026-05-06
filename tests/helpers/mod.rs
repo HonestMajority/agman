@@ -1,6 +1,6 @@
+use agman::assistant::{Assistant, AssistantKind};
 use agman::config::Config;
 use agman::project::Project;
-use agman::researcher::Researcher;
 use agman::task::{Task, TaskMeta};
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -105,9 +105,20 @@ pub fn create_test_project(config: &Config, name: &str) -> Project {
     Project::create(config, name, &format!("Test project {name}")).unwrap()
 }
 
-/// Create a minimal Researcher for testing.
+/// Create a minimal Researcher-kind Assistant for testing.
 #[allow(dead_code)]
-pub fn create_test_researcher(config: &Config, project: &str, name: &str) -> Researcher {
+pub fn create_test_researcher(config: &Config, project: &str, name: &str) -> Assistant {
     config.ensure_dirs().unwrap();
-    Researcher::create(config, project, name, "test description", None, None, None).unwrap()
+    Assistant::create(
+        config,
+        project,
+        name,
+        "test description",
+        AssistantKind::Researcher {
+            repo: None,
+            branch: None,
+            task_id: None,
+        },
+    )
+    .unwrap()
 }

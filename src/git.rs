@@ -449,6 +449,96 @@ impl Git {
         }
     }
 
+    /// Return the path of an existing worktree checked out for `branch`,
+    /// if any. Wraps `list_worktrees` with a linear scan.
+    pub fn find_worktree_for_branch(repo_path: &Path, branch: &str) -> Result<Option<PathBuf>> {
+        let repo_path_buf = repo_path.to_path_buf();
+        let worktrees = Self::list_worktrees(&repo_path_buf)?;
+        Ok(worktrees
+            .into_iter()
+            .find(|(b, _)| b == branch)
+            .map(|(_, p)| p))
+    }
+
+    /// True if a local branch by this name exists in the repo.
+    pub fn local_branch_exists(repo_path: &Path, branch: &str) -> bool {
+        Self::ref_exists(&repo_path.to_path_buf(), &format!("refs/heads/{}", branch))
+    }
+
+    /// Reviewer-only worktree creation helper.
+    ///
+    /// Always fetches origin first, verifies that `refs/remotes/origin/<branch>`
+    /// exists, and runs `git worktree add -b <branch> <path> origin/<branch>`
+    /// at `<repos_dir>/<repo>-wt/<branch>/`. Bails loudly if origin/<branch>
+    /// doesn't exist.
+    ///
+    /// This is **not** a replacement for
+    /// `create_worktree_for_existing_branch_quiet` — that helper silently
+    /// adopts a local branch if one exists, which the reviewer code path
+    /// explicitly disallows (the caller bails earlier in that case).
+    pub fn create_worktree_from_origin(
+        config: &Config,
+        repo_name: &str,
+        branch_name: &str,
+        parent_dir: Option<&Path>,
+    ) -> Result<PathBuf> {
+        let repo_path = config.repo_path_for(parent_dir, repo_name);
+
+        if !repo_path.exists() {
+            anyhow::bail!("Repository does not exist: {}", repo_path.display());
+        }
+        if !repo_path.join(".git").exists() && !Self::ref_exists(&repo_path, "HEAD") {
+            anyhow::bail!("Not a git repository: {}", repo_path.display());
+        }
+
+        let worktree_base = config.worktree_base_for(parent_dir, repo_name);
+        let worktree_path = config.worktree_path_for(parent_dir, repo_name, branch_name);
+
+        std::fs::create_dir_all(&worktree_base)
+            .context("Failed to create worktree base directory")?;
+
+        // Fetch origin so origin/<branch> is up to date. Non-fatal if there
+        // is no origin — the next check will fail loudly with a clear msg.
+        let _ = Self::fetch_origin(&repo_path)?;
+
+        let remote_ref = format!("refs/remotes/origin/{}", branch_name);
+        if !Self::ref_exists(&repo_path, &remote_ref) {
+            anyhow::bail!(
+                "branch '{}' not found locally or on origin in {}",
+                branch_name,
+                repo_name
+            );
+        }
+
+        let output = Command::new("git")
+            .current_dir(&repo_path)
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                worktree_path.to_str().unwrap(),
+                &format!("origin/{}", branch_name),
+            ])
+            .output()
+            .context("Failed to create worktree from origin")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to create worktree: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        tracing::info!(
+            repo = repo_name,
+            branch = branch_name,
+            path = %worktree_path.display(),
+            "created reviewer worktree from origin"
+        );
+        Ok(worktree_path)
+    }
+
     pub fn list_worktrees(repo_path: &PathBuf) -> Result<Vec<(String, PathBuf)>> {
         let output = Command::new("git")
             .current_dir(repo_path)

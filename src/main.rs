@@ -11,7 +11,7 @@ use agman::supervisor;
 use agman::task::{Task, TaskStatus};
 use agman::tmux::Tmux;
 use agman::use_cases;
-use cli::{Cli, Commands};
+use cli::{AssistantKindArg, Cli, Commands};
 use tui::run_tui;
 
 fn resolve_text_arg(
@@ -152,6 +152,65 @@ fn main() -> Result<()> {
             file,
         }) => cmd_queue_feedback(&config, &task_id, feedback.as_deref(), file.as_deref()),
 
+        Some(Commands::CreateAssistant {
+            kind,
+            name,
+            project,
+            description,
+            repo,
+            branch_for_researcher,
+            task,
+            branch_pair,
+        }) => {
+            let project = project.as_deref().unwrap_or("chief-of-staff");
+            match kind {
+                AssistantKindArg::Researcher => {
+                    if !branch_pair.is_empty() {
+                        anyhow::bail!(
+                            "--branch <repo>:<branch> is reviewer-only; use --branch-for-researcher \
+                             with a plain branch name for researchers"
+                        );
+                    }
+                    cmd_create_researcher(
+                        &config,
+                        project,
+                        &name,
+                        repo,
+                        branch_for_researcher,
+                        task,
+                        description,
+                    )
+                }
+                AssistantKindArg::Reviewer => {
+                    if repo.is_some() || branch_for_researcher.is_some() || task.is_some() {
+                        anyhow::bail!(
+                            "--repo / --branch-for-researcher / --task are researcher-only; \
+                             reviewers use --branch <repo>:<branch> (repeatable)"
+                        );
+                    }
+                    cmd_create_reviewer(&config, project, &name, branch_pair, description)
+                }
+            }
+        }
+
+        Some(Commands::ListAssistants {
+            project,
+            cos,
+            kind,
+        }) => {
+            let filter = if cos {
+                Some("chief-of-staff")
+            } else {
+                project.as_deref()
+            };
+            cmd_list_assistants(&config, filter, kind)
+        }
+
+        Some(Commands::ArchiveAssistant { name, project }) => {
+            let project = project.as_deref().unwrap_or("chief-of-staff");
+            cmd_archive_assistant(&config, project, &name)
+        }
+
         Some(Commands::CreateResearcher {
             name,
             project,
@@ -164,18 +223,28 @@ fn main() -> Result<()> {
             cmd_create_researcher(&config, project, &name, repo, branch, task, description)
         }
 
+        Some(Commands::CreateReviewer {
+            name,
+            project,
+            branch_pair,
+            description,
+        }) => {
+            let project = project.as_deref().unwrap_or("chief-of-staff");
+            cmd_create_reviewer(&config, project, &name, branch_pair, description)
+        }
+
         Some(Commands::ListResearchers { project, cos }) => {
             let filter = if cos {
                 Some("chief-of-staff")
             } else {
                 project.as_deref()
             };
-            cmd_list_researchers(&config, filter)
+            cmd_list_assistants(&config, filter, Some(AssistantKindArg::Researcher))
         }
 
         Some(Commands::ArchiveResearcher { name, project }) => {
             let project = project.as_deref().unwrap_or("chief-of-staff");
-            cmd_archive_researcher(&config, project, &name)
+            cmd_archive_assistant(&config, project, &name)
         }
 
         Some(Commands::RespawnAgent {
@@ -644,10 +713,16 @@ fn format_task_line(t: &use_cases::TaskSummary) {
     );
 }
 
-fn format_researchers_line(researchers: &[use_cases::ResearcherSummary]) -> String {
-    researchers
+fn format_assistants_line(assistants: &[use_cases::AssistantSummary]) -> String {
+    assistants
         .iter()
-        .map(|r| format!("{} ({})", r.name, r.status))
+        .map(|a| {
+            let kind_label = match a.kind {
+                use_cases::AssistantKindLabel::Researcher => "researcher",
+                use_cases::AssistantKindLabel::Reviewer => "reviewer",
+            };
+            format!("{} [{}] ({})", a.name, kind_label, a.status)
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -681,10 +756,10 @@ fn cmd_status(config: &Config) -> Result<()> {
         for t in &group.tasks {
             format_task_line(t);
         }
-        if !group.researchers.is_empty() {
+        if !group.assistants.is_empty() {
             println!(
-                "  Researchers: {}",
-                format_researchers_line(&group.researchers)
+                "  Assistants: {}",
+                format_assistants_line(&group.assistants)
             );
         }
     }
@@ -712,11 +787,11 @@ fn cmd_status(config: &Config) -> Result<()> {
         }
     }
 
-    if !status.chief_of_staff_researchers.is_empty() {
+    if !status.chief_of_staff_assistants.is_empty() {
         println!();
         println!(
-            "Chief of Staff researchers: {}",
-            format_researchers_line(&status.chief_of_staff_researchers)
+            "Chief of Staff assistants: {}",
+            format_assistants_line(&status.chief_of_staff_assistants)
         );
     }
 
@@ -772,56 +847,109 @@ fn cmd_create_researcher(
         Some(d) => resolve_text_arg(Some(&d), None, "description")?,
         None => String::new(),
     };
-    let researcher =
+    let assistant =
         use_cases::create_researcher(config, project, name, &desc, repo, branch, task)?;
-    use_cases::start_researcher_session(config, project, name, false)?;
+    use_cases::start_assistant_session(config, project, name, false)?;
     println!(
         "Researcher '{}' created for project '{}' (tmux: {})",
-        researcher.meta.name,
-        researcher.meta.project,
+        assistant.meta.name,
+        assistant.meta.project,
         Config::researcher_tmux_session(project, name),
     );
     Ok(())
 }
 
-fn cmd_list_researchers(config: &Config, project: Option<&str>) -> Result<()> {
-    let researchers = use_cases::list_researchers(config, project)?;
-    if researchers.is_empty() {
-        println!("No researchers.");
+fn cmd_create_reviewer(
+    config: &Config,
+    project: &str,
+    name: &str,
+    branch_pairs: Vec<String>,
+    description: Option<String>,
+) -> Result<()> {
+    let desc = match description {
+        Some(d) => resolve_text_arg(Some(&d), None, "description")?,
+        None => String::new(),
+    };
+    let mut branches = Vec::with_capacity(branch_pairs.len());
+    for pair in &branch_pairs {
+        let (repo, branch) = pair.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!("--branch must be `<repo>:<branch>` (got `{}`)", pair)
+        })?;
+        if repo.is_empty() || branch.is_empty() {
+            anyhow::bail!("--branch must be `<repo>:<branch>` (got `{}`)", pair);
+        }
+        branches.push((repo.to_string(), branch.to_string()));
+    }
+    let spec = use_cases::ReviewerSpec {
+        branches,
+        parent_dir: None,
+    };
+    let assistant = use_cases::create_reviewer(config, project, name, &desc, spec)?;
+    use_cases::start_assistant_session(config, project, name, false)?;
+    println!(
+        "Reviewer '{}' created for project '{}' (tmux: {})",
+        assistant.meta.name,
+        assistant.meta.project,
+        Config::reviewer_tmux_session(project, name),
+    );
+    Ok(())
+}
+
+fn cmd_list_assistants(
+    config: &Config,
+    project: Option<&str>,
+    kind: Option<AssistantKindArg>,
+) -> Result<()> {
+    let kind_label = kind.map(|k| match k {
+        AssistantKindArg::Researcher => use_cases::AssistantKindLabel::Researcher,
+        AssistantKindArg::Reviewer => use_cases::AssistantKindLabel::Reviewer,
+    });
+    let assistants = use_cases::list_assistants(config, project, kind_label)?;
+    if assistants.is_empty() {
+        println!("No assistants.");
         return Ok(());
     }
 
     println!(
-        "{:<20} {:<20} {:<10} {:<24} DESCRIPTION",
-        "NAME", "PROJECT", "STATUS", "CREATED"
+        "{:<20} {:<10} {:<20} {:<10} {:<24} DESCRIPTION",
+        "NAME", "KIND", "PROJECT", "STATUS", "CREATED"
     );
-    println!("{}", "-".repeat(90));
-    for r in &researchers {
-        let session_name = Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
-        let status = if r.meta.status == agman::researcher::ResearcherStatus::Archived {
+    println!("{}", "-".repeat(110));
+    for a in &assistants {
+        let (session_name, kind_str) = match a.meta.kind {
+            agman::assistant::AssistantKind::Researcher { .. } => (
+                Config::researcher_tmux_session(&a.meta.project, &a.meta.name),
+                "researcher",
+            ),
+            agman::assistant::AssistantKind::Reviewer { .. } => (
+                Config::reviewer_tmux_session(&a.meta.project, &a.meta.name),
+                "reviewer",
+            ),
+        };
+        let status = if a.meta.status == agman::assistant::AssistantStatus::Archived {
             "archived"
         } else if Tmux::session_exists(&session_name) {
             "running"
         } else {
             "stopped"
         };
-        let created = r.meta.created_at.format("%Y-%m-%d %H:%M");
-        let desc = if r.meta.description.len() > 40 {
-            format!("{}...", &r.meta.description[..37])
+        let created = a.meta.created_at.format("%Y-%m-%d %H:%M");
+        let desc = if a.meta.description.len() > 40 {
+            format!("{}...", &a.meta.description[..37])
         } else {
-            r.meta.description.clone()
+            a.meta.description.clone()
         };
         println!(
-            "{:<20} {:<20} {:<10} {:<24} {}",
-            r.meta.name, r.meta.project, status, created, desc
+            "{:<20} {:<10} {:<20} {:<10} {:<24} {}",
+            a.meta.name, kind_str, a.meta.project, status, created, desc
         );
     }
     Ok(())
 }
 
-fn cmd_archive_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
-    use_cases::archive_researcher(config, project, name)?;
-    println!("Researcher '{name}' in project '{project}' archived.");
+fn cmd_archive_assistant(config: &Config, project: &str, name: &str) -> Result<()> {
+    use_cases::archive_assistant(config, project, name)?;
+    println!("Assistant '{name}' in project '{project}' archived.");
     Ok(())
 }
 

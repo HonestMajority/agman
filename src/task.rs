@@ -121,9 +121,6 @@ pub struct TaskMeta {
     /// `parent_dir.is_some()` for backward compatibility.
     #[serde(default)]
     pub multi_repo: Option<bool>,
-    /// When true, run the review-pr command automatically after the flow completes
-    #[serde(default)]
-    pub review_after: bool,
     /// Linked GitHub PR (number + URL), populated when a PR is created
     #[serde(default)]
     pub linked_pr: Option<LinkedPr>,
@@ -207,7 +204,6 @@ impl TaskMeta {
             updated_at: now,
             parent_dir: None,
             multi_repo: Some(false),
-            review_after: false,
             linked_pr: None,
             last_review_count: None,
             review_addressed: false,
@@ -242,7 +238,6 @@ impl TaskMeta {
             updated_at: now,
             parent_dir: Some(parent_dir),
             multi_repo: Some(true),
-            review_after: false,
             linked_pr: None,
             last_review_count: None,
             review_addressed: false,

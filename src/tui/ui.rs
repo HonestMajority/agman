@@ -7,8 +7,8 @@ use ratatui::{
     Frame,
 };
 
+use agman::assistant::{AssistantKind, AssistantStatus};
 use agman::command::StoredCommand;
-use agman::researcher::ResearcherStatus;
 use agman::task::{QueueItem, TaskStatus};
 use agman::use_cases::{self, TelegramHealth};
 
@@ -104,7 +104,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::TaskEditor
             | View::Queue
             | View::RebaseBranchPicker
-            | View::ReviewWizard
             | View::RestartWizard
             | View::DirectoryPicker
             | View::SessionPicker
@@ -162,10 +161,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::RebaseBranchPicker => {
             draw_preview(f, app, chunks[0]);
             draw_rebase_branch_picker(f, app);
-        }
-        View::ReviewWizard => {
-            draw_task_list(f, app, chunks[0]);
-            draw_review_wizard(f, app);
         }
         View::RestartWizard => {
             draw_preview(f, app, chunks[0]);
@@ -1459,10 +1454,10 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
 
     f.render_widget(Clear, area);
 
-    let (task_id, review_after) = app
+    let task_id = app
         .selected_task()
-        .map(|t| (t.meta.task_id(), t.meta.review_after))
-        .unwrap_or_else(|| ("unknown".to_string(), false));
+        .map(|t| t.meta.task_id())
+        .unwrap_or_else(|| "unknown".to_string());
 
     let mode = app.feedback_editor.mode();
     let mode_color = match mode {
@@ -1474,15 +1469,11 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
         .split(area);
 
     // Header
-    let mut header_spans = vec![
+    let header_spans = vec![
         Span::styled("Feedback for: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             task_id,
@@ -1497,12 +1488,6 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
         ),
         Span::styled("]", Style::default().fg(Color::DarkGray)),
     ];
-    if review_after {
-        header_spans.push(Span::styled(
-            "  [review: ON]",
-            Style::default().fg(Color::LightGreen),
-        ));
-    }
     let header = Paragraph::new(Line::from(header_spans)).block(
         Block::default()
             .title(Span::styled(
@@ -1531,27 +1516,6 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
     f.render_widget(&app.feedback_editor.textarea, chunks[1]);
-
-    // Review toggle line
-    let review_label = if review_after {
-        Line::from(vec![
-            Span::styled("  End with review: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                "YES",
-                Style::default()
-                    .fg(Color::LightGreen)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  (Ctrl+R to toggle)", Style::default().fg(Color::DarkGray)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("  End with review: ", Style::default().fg(Color::DarkGray)),
-            Span::styled("no", Style::default().fg(Color::DarkGray)),
-            Span::styled("  (Ctrl+R to toggle)", Style::default().fg(Color::DarkGray)),
-        ])
-    };
-    f.render_widget(Paragraph::new(review_label), chunks[2]);
 }
 
 fn draw_delete_confirm(f: &mut Frame, app: &App, retention_days: u64) {
@@ -2344,22 +2308,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 vec![]
             }
         }
-        View::ReviewWizard => {
-            if app.review_wizard.is_some() {
-                vec![
-                    Span::styled("Tab", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" mode  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                    Span::styled(" start review  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("Esc", Style::default().fg(Color::LightRed)),
-                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
-                ]
-            } else {
-                vec![]
-            }
-        }
         View::DirectoryPicker => {
             vec![
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
@@ -2552,7 +2500,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             let enter_label = if app
                 .researchers
                 .get(app.researcher_list_index)
-                .is_some_and(|r| r.meta.status == ResearcherStatus::Archived)
+                .is_some_and(|r| r.meta.status == AssistantStatus::Archived)
             {
                 " resume  "
             } else {
@@ -2715,23 +2663,10 @@ fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
         VimMode::Operator(_) => Color::LightMagenta,
     };
 
-    let review_indicator = if wizard.review_after {
-        " [review: ON]"
-    } else {
-        ""
-    };
-
     let title = format!(
-        " Describe task goal (empty = setup only) [{}]{} (Ctrl+S to continue) ",
+        " Describe task goal (empty = setup only) [{}] (Ctrl+S to continue) ",
         mode.indicator(),
-        review_indicator,
     );
-
-    // Split area: editor on top, review toggle indicator at bottom
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
-        .split(area);
 
     wizard.description_editor.textarea.set_block(
         Block::default()
@@ -2744,28 +2679,7 @@ fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
         .textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
-    f.render_widget(&wizard.description_editor.textarea, chunks[0]);
-
-    // Review toggle line
-    let review_label = if wizard.review_after {
-        Line::from(vec![
-            Span::styled("  End with review: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                "YES",
-                Style::default()
-                    .fg(Color::LightGreen)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  (Ctrl+R to toggle)", Style::default().fg(Color::DarkGray)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("  End with review: ", Style::default().fg(Color::DarkGray)),
-            Span::styled("no", Style::default().fg(Color::DarkGray)),
-            Span::styled("  (Ctrl+R to toggle)", Style::default().fg(Color::DarkGray)),
-        ])
-    };
-    f.render_widget(Paragraph::new(review_label), chunks[1]);
+    f.render_widget(&wizard.description_editor.textarea, area);
 }
 
 fn draw_wizard_footer_direct(
@@ -2784,7 +2698,7 @@ fn draw_wizard_footer_direct(
         let help = match step {
             WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
             WizardStep::EnterDescription => {
-                "Ctrl+S: create task (empty = setup only)  Ctrl+R: toggle review  Esc: back"
+                "Ctrl+S: create task (empty = setup only)  Esc: back"
             }
         };
         Line::from(Span::styled(help, Style::default().fg(Color::DarkGray)))
@@ -3532,69 +3446,6 @@ fn draw_branch_tabs(
     }
 }
 
-fn draw_review_wizard(f: &mut Frame, app: &mut App) {
-    let area = centered_rect(80, 70, f.area());
-    f.render_widget(Clear, area);
-
-    let error_message = {
-        let wizard = match &app.review_wizard {
-            Some(w) => w,
-            None => return,
-        };
-        wizard.error_message.clone()
-    };
-
-    let block = Block::default()
-        .title(Span::styled(
-            " Review Branch — Branch / Worktree ",
-            Style::default()
-                .fg(Color::LightMagenta)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightMagenta));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(2)])
-        .split(inner);
-
-    if let Some(wizard) = &mut app.review_wizard {
-        draw_branch_tabs(
-            f,
-            wizard.branch_source,
-            &mut wizard.branch_editor,
-            None,
-            false,
-            &wizard.existing_branches,
-            wizard.selected_branch_index,
-            &wizard.existing_worktrees,
-            wizard.selected_worktree_index,
-            " Enter Branch ",
-            " Enter branch name (will look up upstream if not local) ",
-            chunks[0],
-        );
-    }
-
-    // Draw error or help text
-    let content = if let Some(err) = &error_message {
-        Line::from(vec![
-            Span::styled("Error: ", Style::default().fg(Color::LightRed)),
-            Span::styled(err, Style::default().fg(Color::LightRed)),
-        ])
-    } else {
-        Line::from(Span::styled(
-            "Tab: switch source  Enter: start review  Esc: back",
-            Style::default().fg(Color::DarkGray),
-        ))
-    };
-
-    f.render_widget(Paragraph::new(content), chunks[1]);
-}
-
 fn draw_directory_picker(f: &mut Frame, app: &App) {
     let area = centered_rect(70, 70, f.area());
     f.render_widget(Clear, area);
@@ -3605,8 +3456,8 @@ fn draw_directory_picker(f: &mut Frame, app: &App) {
     };
 
     let title = match picker.origin {
-        DirPickerOrigin::NewTask | DirPickerOrigin::Review => " Select Repos Directory ",
-        DirPickerOrigin::RepoSelect | DirPickerOrigin::ReviewRepoSelect => " Select Repository ",
+        DirPickerOrigin::NewTask => " Select Repos Directory ",
+        DirPickerOrigin::RepoSelect => " Select Repository ",
     };
 
     // Split into header and list
@@ -4661,7 +4512,6 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
     use agman::config::Config;
-    use agman::researcher::ResearcherStatus;
     use agman::tmux::Tmux;
 
     let title_text = if app.current_project.as_deref() == Some("chief-of-staff") {
@@ -4763,20 +4613,27 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(header), chunks[0]);
 
-    // Partition researchers into 3 groups by effective status
-    let mut running: Vec<(usize, &agman::researcher::Researcher)> = Vec::new();
-    let mut stopped: Vec<(usize, &agman::researcher::Researcher)> = Vec::new();
-    let mut archived: Vec<(usize, &agman::researcher::Researcher)> = Vec::new();
+    // Partition assistants into 3 groups by effective status
+    let mut running: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
+    let mut stopped: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
+    let mut archived: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
 
-    for (i, r) in app.researchers.iter().enumerate() {
-        if r.meta.status == ResearcherStatus::Archived {
-            archived.push((i, r));
+    for (i, a) in app.researchers.iter().enumerate() {
+        if a.meta.status == AssistantStatus::Archived {
+            archived.push((i, a));
         } else {
-            let session_name = Config::researcher_tmux_session(&r.meta.project, &r.meta.name);
+            let session_name = match a.meta.kind {
+                AssistantKind::Researcher { .. } => {
+                    Config::researcher_tmux_session(&a.meta.project, &a.meta.name)
+                }
+                AssistantKind::Reviewer { .. } => {
+                    Config::reviewer_tmux_session(&a.meta.project, &a.meta.name)
+                }
+            };
             if Tmux::session_exists(&session_name) {
-                running.push((i, r));
+                running.push((i, a));
             } else {
-                stopped.push((i, r));
+                stopped.push((i, a));
             }
         }
     }
@@ -4790,7 +4647,7 @@ fn draw_researcher_list(f: &mut Frame, app: &App, area: Rect) {
         name: &'a str,
         icon: &'a str,
         color: Color,
-        members: &'a [(usize, &'a agman::researcher::Researcher)],
+        members: &'a [(usize, &'a agman::assistant::Assistant)],
     }
 
     let groups = [
