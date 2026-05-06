@@ -1,4 +1,4 @@
-//! Idempotent legacy CEO → Chief of Staff migration.
+//! Idempotent legacy migrations.
 //!
 //! Runs at the top of `Config::ensure_dirs()` so every launch picks up any
 //! leftover state. All steps are best-effort: warnings are logged but the
@@ -6,8 +6,11 @@
 //!
 //! Steps:
 //! 1. Rename `~/.agman/ceo/` → `~/.agman/chief-of-staff/` (bail if both exist).
-//! 2. Rename researcher dirs `ceo--<name>/` → `chief-of-staff--<name>/` and
-//!    rewrite the `project` field inside each `meta.json`.
+//! 2. Rename `~/.agman/researchers/` → `~/.agman/assistants/` (bail if both
+//!    exist) and rewrite each `meta.json` to the new kind-discriminated
+//!    `AssistantMeta` shape with `kind: Researcher`. Also handles the legacy
+//!    `ceo--*` → `chief-of-staff--*` rename inside the assistants dir for
+//!    very old installs that skipped a release.
 //! 3. Rewrite `~/.agman/telegram/current-agent` if it points to `"ceo"` or
 //!    `"researcher:ceo--*"`.
 //! 4. Kill the legacy `agman-ceo` tmux session if it is still running.
@@ -19,10 +22,11 @@ use std::path::Path;
 
 use crate::config::Config;
 
-/// Run the CEO → Chief of Staff migration. Idempotent.
+/// Run all idempotent legacy migrations.
 pub fn run(config: &Config) -> Result<()> {
     migrate_ceo_dir(config)?;
-    migrate_researcher_dirs(config)?;
+    migrate_researchers_to_assistants(config)?;
+    migrate_assistant_dirs(config)?;
     migrate_telegram_current_agent(config)?;
     kill_legacy_tmux_session();
     Ok(())
@@ -54,18 +58,117 @@ fn migrate_ceo_dir(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Step 2: rename researcher dirs `ceo--*` → `chief-of-staff--*` and rewrite
-/// the `project` field in each `meta.json`.
-fn migrate_researcher_dirs(config: &Config) -> Result<()> {
-    let researchers_dir = config.researchers_dir();
-    if !researchers_dir.exists() {
+/// Step 2a: rename `~/.agman/researchers/` → `~/.agman/assistants/` and
+/// rewrite every `meta.json` from the old `ResearcherMeta` shape to the new
+/// kind-discriminated `AssistantMeta` (with `kind: Researcher`).
+fn migrate_researchers_to_assistants(config: &Config) -> Result<()> {
+    let legacy = config.base_dir.join("researchers");
+    let new = config.assistants_dir();
+
+    if !legacy.exists() {
+        return Ok(());
+    }
+    if new.exists() {
+        bail!(
+            "migration: both legacy {} and new {} exist — refusing to merge automatically",
+            legacy.display(),
+            new.display()
+        );
+    }
+
+    std::fs::rename(&legacy, &new)
+        .with_context(|| format!("failed to rename {} to {}", legacy.display(), new.display()))?;
+    tracing::info!(
+        from = %legacy.display(),
+        to = %new.display(),
+        "migration: renamed researchers dir to assistants"
+    );
+
+    // Rewrite each meta.json into the new shape. Best-effort; per-entry
+    // failures are logged but do not abort startup.
+    let entries = match std::fs::read_dir(&new) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(error = %e, dir = %new.display(), "migration: failed to read assistants dir");
+            return Ok(());
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if let Err(e) = rewrite_legacy_assistant_meta(&path) {
+            tracing::warn!(
+                error = %e,
+                dir = %path.display(),
+                "migration: failed to rewrite assistant meta.json"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Rewrite a legacy `ResearcherMeta`-shaped `meta.json` to the new
+/// `AssistantMeta` shape with `kind: Researcher`. Idempotent — files already
+/// in the new shape are left alone.
+fn rewrite_legacy_assistant_meta(dir: &Path) -> Result<()> {
+    let meta_path = dir.join("meta.json");
+    if !meta_path.exists() {
         return Ok(());
     }
 
-    let entries = match std::fs::read_dir(&researchers_dir) {
+    let contents = std::fs::read_to_string(&meta_path)
+        .with_context(|| format!("failed to read {}", meta_path.display()))?;
+    let mut value: serde_json::Value = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse {}", meta_path.display()))?;
+
+    // Already in the new shape — nothing to do.
+    if value.get("kind").is_some() {
+        return Ok(());
+    }
+
+    let obj = match value.as_object_mut() {
+        Some(o) => o,
+        None => return Ok(()),
+    };
+
+    let repo = obj.remove("repo").unwrap_or(serde_json::Value::Null);
+    let branch = obj.remove("branch").unwrap_or(serde_json::Value::Null);
+    let task_id = obj.remove("task_id").unwrap_or(serde_json::Value::Null);
+
+    obj.insert(
+        "kind".to_string(),
+        serde_json::json!({
+            "type": "researcher",
+            "repo": repo,
+            "branch": branch,
+            "task_id": task_id,
+        }),
+    );
+
+    let new_contents = serde_json::to_string_pretty(&value)
+        .context("failed to serialize updated assistant meta")?;
+    std::fs::write(&meta_path, new_contents)
+        .with_context(|| format!("failed to write {}", meta_path.display()))?;
+    tracing::info!(path = %meta_path.display(), "migration: rewrote assistant meta.json to new kind shape");
+    Ok(())
+}
+
+/// Step 2b: rename `ceo--*` → `chief-of-staff--*` directories inside the
+/// (now-renamed) `~/.agman/assistants/` dir, and rewrite the `project` field
+/// inside each `meta.json`. Covers the rare case where a stale install has a
+/// `ceo--<name>` assistant dir alongside a fresh `chief-of-staff/` dir.
+fn migrate_assistant_dirs(config: &Config) -> Result<()> {
+    let assistants_dir = config.assistants_dir();
+    if !assistants_dir.exists() {
+        return Ok(());
+    }
+
+    let entries = match std::fs::read_dir(&assistants_dir) {
         Ok(e) => e,
         Err(e) => {
-            tracing::warn!(error = %e, dir = %researchers_dir.display(), "migration: failed to read researchers dir");
+            tracing::warn!(error = %e, dir = %assistants_dir.display(), "migration: failed to read assistants dir");
             return Ok(());
         }
     };
@@ -84,37 +187,37 @@ fn migrate_researcher_dirs(config: &Config) -> Result<()> {
         };
 
         let new_name = format!("chief-of-staff--{rest}");
-        let new_path = researchers_dir.join(&new_name);
+        let new_path = assistants_dir.join(&new_name);
 
         if new_path.exists() {
             tracing::warn!(
                 legacy = %path.display(),
                 new = %new_path.display(),
-                "migration: target researcher dir already exists, skipping"
+                "migration: target assistant dir already exists, skipping"
             );
             continue;
         }
 
         if let Err(e) = std::fs::rename(&path, &new_path) {
-            tracing::warn!(error = %e, from = %path.display(), to = %new_path.display(), "migration: failed to rename researcher dir");
+            tracing::warn!(error = %e, from = %path.display(), to = %new_path.display(), "migration: failed to rename assistant dir");
             continue;
         }
         tracing::info!(
             from = %path.display(),
             to = %new_path.display(),
-            "migration: renamed researcher dir"
+            "migration: renamed assistant dir"
         );
 
-        if let Err(e) = rewrite_researcher_project(&new_path) {
-            tracing::warn!(error = %e, dir = %new_path.display(), "migration: failed to rewrite researcher meta.json");
+        if let Err(e) = rewrite_assistant_project(&new_path) {
+            tracing::warn!(error = %e, dir = %new_path.display(), "migration: failed to rewrite assistant meta.json");
         }
     }
     Ok(())
 }
 
-/// Rewrite `meta.json` in a researcher dir so `project == "chief-of-staff"`.
+/// Rewrite `meta.json` in an assistant dir so `project == "chief-of-staff"`.
 /// Tolerates missing/malformed files — best-effort.
-fn rewrite_researcher_project(dir: &Path) -> Result<()> {
+fn rewrite_assistant_project(dir: &Path) -> Result<()> {
     let meta_path = dir.join("meta.json");
     if !meta_path.exists() {
         return Ok(());
@@ -143,10 +246,10 @@ fn rewrite_researcher_project(dir: &Path) -> Result<()> {
     }
 
     let new_contents = serde_json::to_string_pretty(&value)
-        .context("failed to serialize updated researcher meta")?;
+        .context("failed to serialize updated assistant meta")?;
     std::fs::write(&meta_path, new_contents)
         .with_context(|| format!("failed to write {}", meta_path.display()))?;
-    tracing::info!(path = %meta_path.display(), "migration: updated researcher meta.json project field");
+    tracing::info!(path = %meta_path.display(), "migration: updated assistant meta.json project field");
     Ok(())
 }
 

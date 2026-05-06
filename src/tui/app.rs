@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
+use agman::assistant::Assistant;
 use agman::command::StoredCommand;
 use agman::config::Config;
 use agman::dismissed_notifications::DismissedNotifications;
@@ -23,7 +24,6 @@ use agman::git::Git;
 use agman::inbox;
 use agman::project::Project;
 use agman::repo_stats::RepoStats;
-use agman::researcher::Researcher;
 use agman::supervisor;
 use agman::task::{Task, TaskStatus};
 use agman::tmux::Tmux;
@@ -64,7 +64,6 @@ pub enum View {
     TaskEditor,
     Queue,
     RebaseBranchPicker,
-    ReviewWizard,
     RestartWizard,
     DirectoryPicker,
     SessionPicker,
@@ -76,8 +75,8 @@ pub enum View {
     ProjectWizard,
     ProjectPicker,
     ProjectDeleteConfirm,
-    ResearcherList,
-    ResearcherWizard,
+    AssistantList,
+    AssistantWizard,
     RespawnConfirm,
 }
 
@@ -92,12 +91,8 @@ struct ActivePopup {
 pub enum DirPickerOrigin {
     /// Fallback: no repos found, pick a repos_dir.
     NewTask,
-    /// Fallback for review wizard: no repos found, pick a repos_dir.
-    Review,
     /// Repo selection: browse directories to choose a repo or multi-repo parent.
     RepoSelect,
-    /// Review repo selection: like RepoSelect but only allows single git repos (not multi-repo parents).
-    ReviewRepoSelect,
 }
 
 /// Re-export DirKind for use in the picker UI.
@@ -106,7 +101,7 @@ pub use agman::use_cases::DirKind;
 pub struct DirectoryPicker {
     pub current_dir: PathBuf,
     pub entries: Vec<String>,
-    /// Classification of each entry (parallel to `entries`). Only populated for `RepoSelect`/`ReviewRepoSelect` origins.
+    /// Classification of each entry (parallel to `entries`). Only populated for `RepoSelect` origin.
     pub entry_kinds: Vec<DirKind>,
     pub selected_index: usize,
     pub origin: DirPickerOrigin,
@@ -158,10 +153,7 @@ impl DirectoryPicker {
     }
 
     pub fn is_repo_select_mode(&self) -> bool {
-        matches!(
-            self.origin,
-            DirPickerOrigin::RepoSelect | DirPickerOrigin::ReviewRepoSelect
-        )
+        matches!(self.origin, DirPickerOrigin::RepoSelect)
     }
 
     fn refresh_entries(&mut self) {
@@ -299,39 +291,12 @@ pub struct NewTaskWizard {
     pub base_branch_focus: bool,
     pub description_editor: VimTextArea<'static>,
     pub error_message: Option<String>,
-    pub review_after: bool,
     /// True when a multi-repo parent directory was selected (not a git repo).
     pub is_multi_repo: bool,
 }
 
 impl NewTaskWizard {
     /// The selected repo name.
-    pub fn selected_repo_name(&self) -> &str {
-        &self.selected_repo
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReviewWizardStep {
-    EnterBranch,
-}
-
-pub struct ReviewWizard {
-    pub step: ReviewWizardStep,
-    /// The repo name, selected via DirectoryPicker before creating the wizard.
-    pub selected_repo: String,
-    /// The actual filesystem path of the repo (may be outside repos_dir).
-    pub selected_repo_path: PathBuf,
-    pub branch_source: BranchSource,
-    pub branch_editor: TextArea<'static>,
-    pub existing_branches: Vec<String>,
-    pub selected_branch_index: usize,
-    pub existing_worktrees: Vec<(String, PathBuf)>,
-    pub selected_worktree_index: usize,
-    pub error_message: Option<String>,
-}
-
-impl ReviewWizard {
     pub fn selected_repo_name(&self) -> &str {
         &self.selected_repo
     }
@@ -372,11 +337,68 @@ pub struct ProjectWizard {
     pub error_message: Option<String>,
 }
 
-pub struct ResearcherWizard {
+/// Steps in the create-assistant wizard.
+///
+/// Researchers go directly from `Name` → `Description` (matching the legacy
+/// flow). Reviewers insert a `Worktrees` step between name and description
+/// where the user adds one or more `(repo, branch)` rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssistantWizardStep {
+    /// Step 0: pick the kind (Researcher | Reviewer).
+    Kind,
+    /// Step 1: enter the assistant name.
+    Name,
+    /// Step 2 (Reviewer only): edit the (repo, branch) row list.
+    Worktrees,
+    /// Step 3 (or step 2 for Researcher): enter the description.
+    Description,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssistantWizardKind {
+    Researcher,
+    Reviewer,
+}
+
+/// One editable `(repo, branch)` row in the reviewer wizard.
+pub struct ReviewerWorktreeRow {
+    pub repo_editor: TextArea<'static>,
+    pub branch_editor: TextArea<'static>,
+    /// false = repo focused, true = branch focused
+    pub branch_focus: bool,
+}
+
+impl ReviewerWorktreeRow {
+    pub fn new() -> Self {
+        let mut repo_editor = TextArea::default();
+        repo_editor.set_cursor_line_style(ratatui::style::Style::default());
+        let mut branch_editor = TextArea::default();
+        branch_editor.set_cursor_line_style(ratatui::style::Style::default());
+        Self {
+            repo_editor,
+            branch_editor,
+            branch_focus: false,
+        }
+    }
+
+    pub fn repo(&self) -> String {
+        self.repo_editor.lines().join("").trim().to_string()
+    }
+
+    pub fn branch(&self) -> String {
+        self.branch_editor.lines().join("").trim().to_string()
+    }
+}
+
+pub struct AssistantWizard {
+    pub kind: AssistantWizardKind,
+    pub step: AssistantWizardStep,
     pub name_editor: TextArea<'static>,
     pub description_editor: VimTextArea<'static>,
-    /// false = name field focused, true = description field focused
-    pub description_focus: bool,
+    /// Reviewer-only: editable `(repo, branch)` rows. The `selected_row` is
+    /// the row currently focused for j/k navigation in the worktrees step.
+    pub worktree_rows: Vec<ReviewerWorktreeRow>,
+    pub selected_row: usize,
     pub error_message: Option<String>,
     pub project: String,
 }
@@ -464,54 +486,6 @@ fn query_pr_state(worktree_path: &std::path::Path, pr_number: u64) -> Option<(bo
         .unwrap_or(0);
 
     Some((is_merged, review_count))
-}
-
-/// Look up the PR number for a branch using `gh pr list`.
-/// Returns `None` if no PR is found or on any error.
-fn lookup_pr_for_branch(worktree_path: &std::path::Path, branch_name: &str) -> Option<u64> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--head",
-            branch_name,
-            "--json",
-            "number",
-            "--limit",
-            "1",
-        ])
-        .current_dir(worktree_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let arr = json.as_array()?;
-    let first = arr.first()?;
-    first.get("number")?.as_u64()
-}
-
-/// Fetch the author login for a PR via `gh pr view`.
-/// Returns `None` on any error so linking gracefully falls back.
-fn fetch_pr_author(worktree_path: &std::path::Path, pr_number: u64) -> Option<String> {
-    let output = Command::new("gh")
-        .args(["pr", "view", &pr_number.to_string(), "--json", "author"])
-        .current_dir(worktree_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    json.get("author")?
-        .get("login")?
-        .as_str()
-        .map(|s| s.to_string())
 }
 
 /// Run PR queries for all eligible tasks. This is the blocking work that
@@ -627,7 +601,6 @@ pub struct App {
     pub should_quit: bool,
     pub status_message: Option<(String, Instant)>,
     pub wizard: Option<NewTaskWizard>,
-    pub review_wizard: Option<ReviewWizard>,
     pub output_log: Vec<String>,
     pub output_scroll: u16,
     pub last_output_time: Option<Instant>,
@@ -716,14 +689,14 @@ pub struct App {
     pub project_task_counts: std::collections::HashMap<String, (usize, usize, usize)>, // (total, active, unseen_stopped)
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
-    pub researcher_wizard: Option<ResearcherWizard>,
+    pub assistant_wizard: Option<AssistantWizard>,
     // Project picker (for task migration/move)
     pub project_picker: Option<ProjectPicker>,
     // Project deletion
     pub project_to_delete: Option<String>,
-    // Researchers
-    pub researchers: Vec<Researcher>,
-    pub researcher_list_index: usize,
+    // Assistants (researchers + reviewers)
+    pub assistants: Vec<Assistant>,
+    pub assistant_list_index: usize,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
@@ -764,7 +737,7 @@ pub struct App {
     // Sleep inhibition (macOS: caffeinate -s for system sleep assertion only)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
-    // Active tmux popup (CoS/PM chat, researcher attach). Polled each main-loop
+    // Active tmux popup (CoS/PM chat, assistant attach). Polled each main-loop
     // tick so inbox delivery and PR polls keep running while a
     // popup is open.
     popup: Option<ActivePopup>,
@@ -858,7 +831,6 @@ impl App {
             should_quit: false,
             status_message: None,
             wizard: None,
-            review_wizard: None,
             output_log: Vec::new(),
             output_scroll: 0,
             last_output_time: None,
@@ -928,11 +900,11 @@ impl App {
             unassigned_unseen_stopped_count: 0,
             project_task_counts: std::collections::HashMap::new(),
             project_wizard: None,
-            researcher_wizard: None,
+            assistant_wizard: None,
             project_picker: None,
             project_to_delete: None,
-            researchers: Vec::new(),
-            researcher_list_index: 0,
+            assistants: Vec::new(),
+            assistant_list_index: 0,
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -1112,16 +1084,16 @@ impl App {
         }
     }
 
-    /// Refresh the researcher list, filtered by `current_project` if set.
-    pub fn refresh_researchers(&mut self) {
-        self.researchers =
-            use_cases::list_researchers(&self.config, self.current_project.as_deref())
+    /// Refresh the assistant list, filtered by `current_project` if set.
+    pub fn refresh_assistants(&mut self) {
+        self.assistants =
+            use_cases::list_assistants(&self.config, self.current_project.as_deref(), None)
                 .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "failed to list researchers");
+                    tracing::warn!(error = %e, "failed to list assistants");
                     Vec::new()
                 });
-        if self.researcher_list_index >= self.researchers.len() && !self.researchers.is_empty() {
-            self.researcher_list_index = self.researchers.len() - 1;
+        if self.assistant_list_index >= self.assistants.len() && !self.assistants.is_empty() {
+            self.assistant_list_index = self.assistants.len() - 1;
         }
     }
 
@@ -1658,40 +1630,10 @@ impl App {
             base_branch_focus: false,
             description_editor,
             error_message: None,
-            review_after: false,
             is_multi_repo: is_multi,
         });
 
         self.view = View::NewTaskWizard;
-        Ok(())
-    }
-
-    /// Create a ReviewWizard from a directory picker selection, starting at `EnterBranch`.
-    fn create_review_wizard_from_picker(
-        &mut self,
-        repo_name: String,
-        repo_path: PathBuf,
-    ) -> Result<()> {
-        let branches = self.scan_branches(&repo_name, &repo_path)?;
-        let worktrees = self.scan_existing_worktrees(&repo_name, &repo_path)?;
-
-        let mut branch_editor = Self::create_plain_editor();
-        branch_editor.set_cursor_line_style(ratatui::style::Style::default());
-
-        self.review_wizard = Some(ReviewWizard {
-            step: ReviewWizardStep::EnterBranch,
-            selected_repo: repo_name,
-            selected_repo_path: repo_path,
-            branch_source: BranchSource::NewBranch,
-            branch_editor,
-            existing_branches: branches,
-            selected_branch_index: 0,
-            existing_worktrees: worktrees,
-            selected_worktree_index: 0,
-            error_message: None,
-        });
-
-        self.view = View::ReviewWizard;
         Ok(())
     }
 
@@ -2207,7 +2149,6 @@ impl App {
         };
 
         let description = wizard.description_editor.lines_joined().trim().to_string();
-        let review_after = wizard.review_after;
 
         // Determine project assignment from current scope
         let project = self
@@ -2229,7 +2170,6 @@ impl App {
                 &description,
                 "new-multi",
                 parent_dir.clone(),
-                review_after,
                 project,
             ) {
                 Ok(t) => t,
@@ -2282,7 +2222,6 @@ impl App {
                 &description,
                 "new",
                 worktree_source,
-                review_after,
                 parent_dir,
                 project,
             ) {
@@ -2427,205 +2366,6 @@ impl App {
         Ok(())
     }
 
-    // === Review Wizard Methods ===
-
-    fn start_review_wizard(&mut self) -> Result<()> {
-        if !self.config.repos_dir.exists() {
-            // No repos_dir configured — use fallback picker to set repos_dir first
-            let start = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-            self.dir_picker = Some(DirectoryPicker::new(start, DirPickerOrigin::Review));
-            self.view = View::DirectoryPicker;
-            self.set_status(format!(
-                "No repos found in {}. Pick a repos directory (s to select, h/l to navigate).",
-                self.config.repos_dir.display()
-            ));
-            return Ok(());
-        }
-
-        let start = self.config.repos_dir.clone();
-        self.dir_picker = Some(DirectoryPicker::new_with_favorites(
-            start,
-            DirPickerOrigin::ReviewRepoSelect,
-            &self.config.repo_stats_path(),
-            self.config.repos_dir.clone(),
-        ));
-        self.view = View::DirectoryPicker;
-        Ok(())
-    }
-
-    fn review_wizard_next_step(&mut self) -> Result<()> {
-        let wizard = match &mut self.review_wizard {
-            Some(w) => w,
-            None => return Ok(()),
-        };
-
-        wizard.error_message = None;
-
-        match wizard.step {
-            ReviewWizardStep::EnterBranch => {
-                let branch_name = match wizard.branch_source {
-                    BranchSource::NewBranch => {
-                        let name = wizard.branch_editor.lines().join("");
-                        let name = name.trim().to_string();
-                        if name.is_empty() {
-                            wizard.error_message = Some("Branch name cannot be empty".to_string());
-                            return Ok(());
-                        }
-                        if name.contains(' ')
-                            || name.contains("..")
-                            || name.starts_with('/')
-                            || name.ends_with('/')
-                        {
-                            wizard.error_message = Some("Invalid branch name format".to_string());
-                            return Ok(());
-                        }
-                        name
-                    }
-                    BranchSource::ExistingBranch => {
-                        if wizard.existing_branches.is_empty() {
-                            wizard.error_message =
-                                Some("No existing branches available".to_string());
-                            return Ok(());
-                        }
-                        wizard.existing_branches[wizard.selected_branch_index].clone()
-                    }
-                    BranchSource::ExistingWorktree => {
-                        if wizard.existing_worktrees.is_empty() {
-                            wizard.error_message =
-                                Some("No existing worktrees available".to_string());
-                            return Ok(());
-                        }
-                        wizard.existing_worktrees[wizard.selected_worktree_index]
-                            .0
-                            .clone()
-                    }
-                };
-
-                // Check if task already exists
-                let repo_name = wizard.selected_repo_name().to_string();
-                let task_dir = self.config.task_dir(&repo_name, &branch_name);
-                if task_dir.exists() {
-                    wizard.error_message = Some(format!(
-                        "Task '{}--{}' already exists",
-                        repo_name, branch_name
-                    ));
-                    return Ok(());
-                }
-
-                self.create_review_task()
-            }
-        }
-    }
-
-    fn review_wizard_prev_step(&mut self) {
-        // Go back from EnterBranch → relaunch the DirectoryPicker in ReviewRepoSelect mode
-        self.review_wizard = None;
-        let _ = self.start_review_wizard();
-    }
-
-    fn create_review_task(&mut self) -> Result<()> {
-        let wizard = match &self.review_wizard {
-            Some(w) => w,
-            None => return Ok(()),
-        };
-
-        let repo_name = wizard.selected_repo_name().to_string();
-        let repo_path = wizard.selected_repo_path.clone();
-        let (branch_name, worktree_source) = match wizard.branch_source {
-            BranchSource::ExistingWorktree => {
-                let (branch, path) =
-                    wizard.existing_worktrees[wizard.selected_worktree_index].clone();
-                (branch, use_cases::WorktreeSource::ExistingWorktree(path))
-            }
-            BranchSource::NewBranch => {
-                let name = wizard.branch_editor.lines().join("").trim().to_string();
-                (name, use_cases::WorktreeSource::ExistingBranch)
-            }
-            BranchSource::ExistingBranch => {
-                let name = wizard.existing_branches[wizard.selected_branch_index].clone();
-                (name, use_cases::WorktreeSource::ExistingBranch)
-            }
-        };
-
-        // Compute parent_dir when repo is outside repos_dir
-        let parent_dir = repo_path.parent().and_then(|p| {
-            if p != self.config.repos_dir {
-                Some(p.to_path_buf())
-            } else {
-                None
-            }
-        });
-
-        self.log_output(format!(
-            "Creating review task {}--{}...",
-            repo_name, branch_name
-        ));
-
-        // Delegate business logic to use_cases
-        let mut task = match use_cases::create_review_task(
-            &self.config,
-            &repo_name,
-            &branch_name,
-            worktree_source,
-            parent_dir,
-        ) {
-            Ok(t) => t,
-            Err(e) => {
-                self.log_output(format!("  Error: {}", e));
-                if let Some(w) = &mut self.review_wizard {
-                    w.error_message = Some(format!("Failed to create review task: {}", e));
-                }
-                return Ok(());
-            }
-        };
-
-        // Best-effort: look up the PR for this branch and link it
-        if let Some(pr_number) =
-            lookup_pr_for_branch(&task.meta.primary_repo().worktree_path, &branch_name)
-        {
-            let task_id = task.meta.task_id();
-            let wt = task.meta.primary_repo().worktree_path.clone();
-            let author = fetch_pr_author(&wt, pr_number);
-            match use_cases::set_linked_pr(&mut task, pr_number, &wt, false, author) {
-                Ok(()) => {
-                    tracing::info!(task_id = %task_id, pr_number, branch = %branch_name, "linked PR to review task");
-                }
-                Err(e) => {
-                    tracing::warn!(task_id = %task_id, branch = %branch_name, error = %e, "failed to set linked PR");
-                }
-            }
-        } else {
-            tracing::debug!(branch = %branch_name, "no PR found for branch, skipping PR link");
-        }
-
-        // Side effects: create tmux session and run review command
-        let worktree_path = task.meta.primary_repo().worktree_path.clone();
-        self.log_output("  Creating tmux session...".to_string());
-        if let Err(e) = Tmux::create_session_with_windows(
-            &task.meta.primary_repo().tmux_session,
-            &worktree_path,
-        ) {
-            self.log_output(format!("  Error: {}", e));
-            if let Some(w) = &mut self.review_wizard {
-                w.error_message = Some(format!("Failed to create tmux session: {}", e));
-            }
-            return Ok(());
-        }
-
-        let task_id = task.meta.task_id();
-        let review_cmd = format!("agman run-command {} review-pr", task_id);
-        let _ =
-            Tmux::send_keys_to_window(&task.meta.primary_repo().tmux_session, "agman", &review_cmd);
-
-        // Success - close wizard and refresh
-        self.review_wizard = None;
-        self.view = View::TaskList;
-        self.refresh_tasks_and_select(&task_id);
-        self.set_status(format!("Review started: {}", task_id));
-
-        Ok(())
-    }
-
     pub fn handle_event(&mut self, event: Event) -> Result<bool> {
         self.clear_old_status();
 
@@ -2640,7 +2380,6 @@ impl App {
             View::TaskEditor => self.handle_task_editor_event(event),
             View::Queue => self.handle_queue_event(event),
             View::RebaseBranchPicker => self.handle_rebase_branch_picker_event(event),
-            View::ReviewWizard => self.handle_review_wizard_event(event),
             View::RestartWizard => self.handle_restart_wizard_event(event),
             View::DirectoryPicker => self.handle_directory_picker_event(event),
             View::SessionPicker => self.handle_session_picker_event(event),
@@ -2652,8 +2391,8 @@ impl App {
             View::ProjectWizard => self.handle_project_wizard_event(event),
             View::ProjectPicker => self.handle_project_picker_event(event),
             View::ProjectDeleteConfirm => self.handle_project_delete_confirm_event(event),
-            View::ResearcherList => self.handle_researcher_list_event(event),
-            View::ResearcherWizard => self.handle_researcher_wizard_event(event),
+            View::AssistantList => self.handle_assistant_list_event(event),
+            View::AssistantWizard => self.handle_assistant_wizard_event(event),
             View::RespawnConfirm => self.handle_respawn_confirm_event(event),
         }
     }
@@ -2822,9 +2561,9 @@ impl App {
                 }
                 KeyCode::Char('w') => {
                     self.current_project = Some("chief-of-staff".to_string());
-                    self.researcher_list_index = 0;
-                    self.refresh_researchers();
-                    self.view = View::ResearcherList;
+                    self.assistant_list_index = 0;
+                    self.refresh_assistants();
+                    self.view = View::AssistantList;
                 }
                 KeyCode::Char(',') => {
                     self.settings_selected = 0;
@@ -2920,10 +2659,6 @@ impl App {
                 KeyCode::Char('n') => {
                     // Start new task wizard
                     self.start_wizard()?;
-                }
-                KeyCode::Char('v') => {
-                    // Start review wizard
-                    self.start_review_wizard()?;
                 }
                 KeyCode::Char('x') => {
                     // Open command list (go to preview first, like f and t)
@@ -3033,15 +2768,15 @@ impl App {
                     let project_name = if self.selected_project_index < self.projects.len() {
                         Some(self.projects[self.selected_project_index].meta.name.clone())
                     } else {
-                        None // "(unassigned)" pseudo-project — no researchers to show
+                        None // "(unassigned)" pseudo-project — no assistants to show
                     };
                     if let Some(name) = project_name {
                         self.current_project = Some(name);
-                        self.researcher_list_index = 0;
-                        self.refresh_researchers();
-                        self.view = View::ResearcherList;
+                        self.assistant_list_index = 0;
+                        self.refresh_assistants();
+                        self.view = View::AssistantList;
                     } else {
-                        self.set_status("No researchers for unassigned tasks".to_string());
+                        self.set_status("No assistants for unassigned tasks".to_string());
                     }
                 }
                 _ => {}
@@ -3050,7 +2785,7 @@ impl App {
         Ok(false)
     }
 
-    fn handle_researcher_list_event(&mut self, event: Event) -> Result<bool> {
+    fn handle_assistant_list_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
@@ -3062,36 +2797,43 @@ impl App {
                     self.should_quit = true;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    if !self.researchers.is_empty()
-                        && self.researcher_list_index < self.researchers.len() - 1
+                    if !self.assistants.is_empty()
+                        && self.assistant_list_index < self.assistants.len() - 1
                     {
-                        self.researcher_list_index += 1;
+                        self.assistant_list_index += 1;
                     }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    if self.researcher_list_index > 0 {
-                        self.researcher_list_index -= 1;
+                    if self.assistant_list_index > 0 {
+                        self.assistant_list_index -= 1;
                     }
                 }
                 KeyCode::Enter => {
-                    // Attach to researcher tmux session, resuming archived ones
+                    // Attach to assistant tmux session, resuming archived ones
                     if self.popup.is_some() {
                         return Ok(false);
                     }
-                    if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
-                        let project = researcher.meta.project.clone();
-                        let name = researcher.meta.name.clone();
-                        let session_name = Config::researcher_tmux_session(&project, &name);
+                    if let Some(assistant) = self.assistants.get(self.assistant_list_index) {
+                        let project = assistant.meta.project.clone();
+                        let name = assistant.meta.name.clone();
+                        let session_name = match assistant.meta.kind {
+                            agman::assistant::AssistantKind::Researcher { .. } => {
+                                Config::researcher_tmux_session(&project, &name)
+                            }
+                            agman::assistant::AssistantKind::Reviewer { .. } => {
+                                Config::reviewer_tmux_session(&project, &name)
+                            }
+                        };
 
                         if !Tmux::session_exists(&session_name) {
                             // Session not running — resume it (works for both archived and crashed running sessions)
-                            match use_cases::resume_researcher(&self.config, &project, &name) {
+                            match use_cases::resume_assistant(&self.config, &project, &name) {
                                 Ok(()) => {
                                     tracing::info!(
                                         session = &session_name,
-                                        "resumed researcher session"
+                                        "resumed assistant session"
                                     );
-                                    self.refresh_researchers();
+                                    self.refresh_assistants();
                                 }
                                 Err(e) => {
                                     self.set_status(format!("Failed to resume: {e}"));
@@ -3104,7 +2846,7 @@ impl App {
                             Ok(child) => {
                                 tracing::info!(
                                     session = &session_name,
-                                    "attached to researcher session"
+                                    "attached to assistant session"
                                 );
                                 self.popup = Some(ActivePopup { child });
                             }
@@ -3115,7 +2857,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('n') => {
-                    // Create new researcher
+                    // Create new assistant
                     let project = if let Some(ref p) = self.current_project {
                         p.clone()
                     } else if let Some(first) = self.projects.first() {
@@ -3124,31 +2866,34 @@ impl App {
                         self.set_status("No project available".to_string());
                         return Ok(false);
                     };
-                    tracing::info!(project = %project, "opening researcher wizard");
+                    tracing::info!(project = %project, "opening assistant wizard");
                     let mut name_editor = TextArea::default();
                     name_editor.set_cursor_line_style(ratatui::style::Style::default());
-                    self.researcher_wizard = Some(ResearcherWizard {
+                    self.assistant_wizard = Some(AssistantWizard {
+                        kind: AssistantWizardKind::Researcher,
+                        step: AssistantWizardStep::Kind,
                         name_editor,
                         description_editor: VimTextArea::new(),
-                        description_focus: false,
+                        worktree_rows: vec![ReviewerWorktreeRow::new()],
+                        selected_row: 0,
                         error_message: None,
                         project,
                     });
-                    self.view = View::ResearcherWizard;
+                    self.view = View::AssistantWizard;
                 }
                 KeyCode::Char('d') => {
-                    // Archive selected researcher
-                    if let Some(researcher) = self.researchers.get(self.researcher_list_index) {
-                        let project = researcher.meta.project.clone();
-                        let name = researcher.meta.name.clone();
-                        match use_cases::archive_researcher(&self.config, &project, &name) {
+                    // Archive selected assistant
+                    if let Some(assistant) = self.assistants.get(self.assistant_list_index) {
+                        let project = assistant.meta.project.clone();
+                        let name = assistant.meta.name.clone();
+                        match use_cases::archive_assistant(&self.config, &project, &name) {
                             Ok(()) => {
-                                self.set_status(format!("Archived researcher '{name}'"));
-                                self.refresh_researchers();
-                                if self.researcher_list_index >= self.researchers.len()
-                                    && !self.researchers.is_empty()
+                                self.set_status(format!("Archived assistant '{name}'"));
+                                self.refresh_assistants();
+                                if self.assistant_list_index >= self.assistants.len()
+                                    && !self.assistants.is_empty()
                                 {
-                                    self.researcher_list_index = self.researchers.len() - 1;
+                                    self.assistant_list_index = self.assistants.len() - 1;
                                 }
                             }
                             Err(e) => {
@@ -3463,107 +3208,284 @@ impl App {
         Ok(false)
     }
 
-    fn handle_researcher_wizard_event(&mut self, event: Event) -> Result<bool> {
+    fn handle_assistant_wizard_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                 self.should_quit = true;
                 return Ok(false);
             }
 
-            // Ctrl+S to submit
+            // Ctrl+S submits from any step. The wizard validates required
+            // fields and surfaces inline errors so the user never has to
+            // play guess-the-step.
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-                if let Some(wizard) = &self.researcher_wizard {
-                    let name = wizard.name_editor.lines().join("").trim().to_string();
-                    let desc = wizard.description_editor.lines_joined();
-                    let desc = desc.trim().to_string();
-                    let project = wizard.project.clone();
-
-                    if name.is_empty() {
-                        if let Some(w) = &mut self.researcher_wizard {
-                            w.error_message = Some("Researcher name is required".to_string());
-                        }
-                        return Ok(false);
-                    }
-
-                    match use_cases::create_researcher(
-                        &self.config,
-                        &project,
-                        &name,
-                        &desc,
-                        None,
-                        None,
-                        None,
-                    ) {
-                        Ok(_researcher) => {
-                            tracing::info!(project = %project, name = %name, "created researcher via wizard");
-                            // Start the session
-                            if let Err(e) = use_cases::start_researcher_session(
-                                &self.config,
-                                &project,
-                                &name,
-                                false,
-                            ) {
-                                tracing::warn!(
-                                    project = %project, name = %name, error = %e,
-                                    "failed to start researcher session"
-                                );
-                            }
-                            self.set_status(format!("Created researcher: {name}"));
-                            self.researcher_wizard = None;
-                            self.view = View::ResearcherList;
-                            self.refresh_researchers();
-                        }
-                        Err(e) => {
-                            tracing::warn!(project = %project, name = %name, error = %e, "failed to create researcher");
-                            if let Some(w) = &mut self.researcher_wizard {
-                                w.error_message = Some(format!("{e}"));
-                            }
-                        }
-                    }
-                }
+                self.submit_assistant_wizard();
                 return Ok(false);
             }
 
-            if let Some(wizard) = &mut self.researcher_wizard {
-                wizard.error_message = None;
-                let input = Input::from(event.clone());
+            let Some(wizard) = self.assistant_wizard.as_mut() else {
+                return Ok(false);
+            };
+            wizard.error_message = None;
 
-                // Tab to switch focus between name and description
-                if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
-                    wizard.description_focus = !wizard.description_focus;
-                    if wizard.description_focus {
-                        wizard.description_editor.set_insert_mode();
+            match wizard.step {
+                AssistantWizardStep::Kind => match key.code {
+                    KeyCode::Esc => {
+                        self.assistant_wizard = None;
+                        self.view = View::AssistantList;
                     }
-                    return Ok(false);
+                    KeyCode::Char('j')
+                    | KeyCode::Down
+                    | KeyCode::Char('k')
+                    | KeyCode::Up
+                    | KeyCode::Char('h')
+                    | KeyCode::Char('l')
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Tab
+                    | KeyCode::BackTab => {
+                        wizard.kind = match wizard.kind {
+                            AssistantWizardKind::Researcher => AssistantWizardKind::Reviewer,
+                            AssistantWizardKind::Reviewer => AssistantWizardKind::Researcher,
+                        };
+                    }
+                    KeyCode::Enter => {
+                        wizard.step = AssistantWizardStep::Name;
+                    }
+                    _ => {}
+                },
+                AssistantWizardStep::Name => {
+                    if key.code == KeyCode::Esc {
+                        // First content step — Esc cancels the wizard.
+                        self.assistant_wizard = None;
+                        self.view = View::AssistantList;
+                        return Ok(false);
+                    }
+                    if key.code == KeyCode::Enter {
+                        // Advance: reviewers go to worktrees, researchers
+                        // skip straight to description.
+                        wizard.step = match wizard.kind {
+                            AssistantWizardKind::Researcher => AssistantWizardStep::Description,
+                            AssistantWizardKind::Reviewer => AssistantWizardStep::Worktrees,
+                        };
+                        if matches!(wizard.step, AssistantWizardStep::Description) {
+                            wizard.description_editor.set_insert_mode();
+                        }
+                        return Ok(false);
+                    }
+                    let input = Input::from(event.clone());
+                    wizard.name_editor.input(input);
                 }
-
-                if wizard.description_focus {
+                AssistantWizardStep::Worktrees => {
+                    match key.code {
+                        KeyCode::Esc => {
+                            wizard.step = AssistantWizardStep::Name;
+                        }
+                        KeyCode::Tab => {
+                            // Tab cycles repo → branch → next row's repo.
+                            let len = wizard.worktree_rows.len();
+                            let cur = wizard.selected_row;
+                            let row = &mut wizard.worktree_rows[cur];
+                            if !row.branch_focus {
+                                row.branch_focus = true;
+                            } else if cur + 1 < len {
+                                row.branch_focus = false;
+                                wizard.selected_row += 1;
+                            } else {
+                                // Last field of last row — advance to description.
+                                wizard.step = AssistantWizardStep::Description;
+                                wizard.description_editor.set_insert_mode();
+                            }
+                        }
+                        KeyCode::BackTab => {
+                            let row = &mut wizard.worktree_rows[wizard.selected_row];
+                            if row.branch_focus {
+                                row.branch_focus = false;
+                            } else if wizard.selected_row > 0 {
+                                wizard.selected_row -= 1;
+                                wizard.worktree_rows[wizard.selected_row].branch_focus = true;
+                            }
+                        }
+                        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            // Add a new row after the selected one.
+                            wizard
+                                .worktree_rows
+                                .insert(wizard.selected_row + 1, ReviewerWorktreeRow::new());
+                            wizard.selected_row += 1;
+                            wizard.worktree_rows[wizard.selected_row].branch_focus = false;
+                        }
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            // Remove the selected row, but never the last one.
+                            if wizard.worktree_rows.len() > 1 {
+                                wizard.worktree_rows.remove(wizard.selected_row);
+                                if wizard.selected_row >= wizard.worktree_rows.len() {
+                                    wizard.selected_row = wizard.worktree_rows.len() - 1;
+                                }
+                            }
+                        }
+                        KeyCode::Enter => {
+                            // Enter advances field-by-field, mirroring Tab.
+                            let len = wizard.worktree_rows.len();
+                            let cur = wizard.selected_row;
+                            let row = &mut wizard.worktree_rows[cur];
+                            if !row.branch_focus {
+                                row.branch_focus = true;
+                            } else if cur + 1 < len {
+                                row.branch_focus = false;
+                                wizard.selected_row += 1;
+                            } else {
+                                wizard.step = AssistantWizardStep::Description;
+                                wizard.description_editor.set_insert_mode();
+                            }
+                        }
+                        _ => {
+                            let input = Input::from(event.clone());
+                            let row = &mut wizard.worktree_rows[wizard.selected_row];
+                            if row.branch_focus {
+                                row.branch_editor.input(input);
+                            } else {
+                                row.repo_editor.input(input);
+                            }
+                        }
+                    }
+                }
+                AssistantWizardStep::Description => {
+                    let input = Input::from(event.clone());
                     let was_insert = wizard.description_editor.mode() == VimMode::Insert;
                     wizard.description_editor.input(input.clone());
                     let is_normal_now = wizard.description_editor.mode() == VimMode::Normal;
-
-                    // Esc in normal mode goes back to name field
+                    // Esc in normal mode steps back to the previous step.
                     if input.key == Key::Esc && !was_insert && is_normal_now {
-                        wizard.description_focus = false;
+                        wizard.step = match wizard.kind {
+                            AssistantWizardKind::Researcher => AssistantWizardStep::Name,
+                            AssistantWizardKind::Reviewer => AssistantWizardStep::Worktrees,
+                        };
                     }
-                } else {
-                    // Name field: Esc cancels wizard
-                    if key.code == KeyCode::Esc {
-                        self.researcher_wizard = None;
-                        self.view = View::ResearcherList;
-                        return Ok(false);
-                    }
-                    // Enter in name field moves to description
-                    if key.code == KeyCode::Enter {
-                        wizard.description_focus = true;
-                        wizard.description_editor.set_insert_mode();
-                        return Ok(false);
-                    }
-                    wizard.name_editor.input(input);
                 }
             }
         }
         Ok(false)
+    }
+
+    /// Validate and submit the assistant wizard. On success the wizard closes
+    /// and the new assistant is started; on failure the error message is
+    /// surfaced inline so the user can correct and resubmit.
+    fn submit_assistant_wizard(&mut self) {
+        let Some(wizard) = self.assistant_wizard.as_ref() else {
+            return;
+        };
+        let kind = wizard.kind;
+        let project = wizard.project.clone();
+        let name = wizard.name_editor.lines().join("").trim().to_string();
+        let desc = wizard.description_editor.lines_joined().trim().to_string();
+
+        if name.is_empty() {
+            if let Some(w) = self.assistant_wizard.as_mut() {
+                w.error_message = Some("Assistant name is required".to_string());
+                w.step = AssistantWizardStep::Name;
+            }
+            return;
+        }
+
+        match kind {
+            AssistantWizardKind::Researcher => {
+                match use_cases::create_researcher(
+                    &self.config,
+                    &project,
+                    &name,
+                    &desc,
+                    None,
+                    None,
+                    None,
+                ) {
+                    Ok(_assistant) => {
+                        tracing::info!(project = %project, name = %name, "created researcher via wizard");
+                        if let Err(e) =
+                            use_cases::start_assistant_session(&self.config, &project, &name, false)
+                        {
+                            tracing::warn!(
+                                project = %project, name = %name, error = %e,
+                                "failed to start assistant session"
+                            );
+                        }
+                        self.set_status(format!("Created researcher: {name}"));
+                        self.assistant_wizard = None;
+                        self.view = View::AssistantList;
+                        self.refresh_assistants();
+                    }
+                    Err(e) => {
+                        tracing::warn!(project = %project, name = %name, error = %e, "failed to create researcher");
+                        if let Some(w) = self.assistant_wizard.as_mut() {
+                            w.error_message = Some(format!("{e}"));
+                        }
+                    }
+                }
+            }
+            AssistantWizardKind::Reviewer => {
+                // Collect (repo, branch) rows; reject empties so we don't
+                // hand a half-filled row to the use-case.
+                let mut branches: Vec<(String, String)> = Vec::new();
+                for row in &wizard.worktree_rows {
+                    let r = row.repo();
+                    let b = row.branch();
+                    if r.is_empty() && b.is_empty() {
+                        continue;
+                    }
+                    if r.is_empty() || b.is_empty() {
+                        if let Some(w) = self.assistant_wizard.as_mut() {
+                            w.error_message = Some(
+                                "Each row needs both a repo and a branch (Ctrl+D to remove)"
+                                    .to_string(),
+                            );
+                            w.step = AssistantWizardStep::Worktrees;
+                        }
+                        return;
+                    }
+                    branches.push((r, b));
+                }
+                if branches.is_empty() {
+                    if let Some(w) = self.assistant_wizard.as_mut() {
+                        w.error_message =
+                            Some("Reviewer needs at least one (repo, branch) pair".to_string());
+                        w.step = AssistantWizardStep::Worktrees;
+                    }
+                    return;
+                }
+
+                let spec = use_cases::ReviewerSpec {
+                    branches,
+                    parent_dir: None,
+                };
+                match use_cases::create_reviewer(&self.config, &project, &name, &desc, spec) {
+                    Ok(_assistant) => {
+                        tracing::info!(project = %project, name = %name, "created reviewer via wizard");
+                        if let Err(e) =
+                            use_cases::start_assistant_session(&self.config, &project, &name, false)
+                        {
+                            tracing::warn!(
+                                project = %project, name = %name, error = %e,
+                                "failed to start assistant session"
+                            );
+                        }
+                        self.set_status(format!("Created reviewer: {name}"));
+                        self.assistant_wizard = None;
+                        self.view = View::AssistantList;
+                        self.refresh_assistants();
+                    }
+                    Err(e) => {
+                        tracing::warn!(project = %project, name = %name, error = %e, "failed to create reviewer");
+                        // The three-step decision tree raises a loud,
+                        // user-actionable error for the local-branch case;
+                        // surface it verbatim so the user can either fix
+                        // the branch state or pick a different one.
+                        if let Some(w) = self.assistant_wizard.as_mut() {
+                            w.error_message = Some(format!("{e}"));
+                            w.step = AssistantWizardStep::Worktrees;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn handle_project_picker_event(&mut self, event: Event) -> Result<bool> {
@@ -4117,18 +4039,6 @@ impl App {
                 return Ok(false);
             }
 
-            // Toggle review_after on the selected task with Ctrl+R
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
-                if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                    task.meta.review_after = !task.meta.review_after;
-                    let _ = task.save_meta();
-                    let state = if task.meta.review_after { "ON" } else { "OFF" };
-                    tracing::info!(task_id = %task.meta.task_id(), review_after = task.meta.review_after, "toggled review_after to {}", state);
-                    self.set_status(format!("Review after flow: {}", state));
-                }
-                return Ok(false);
-            }
-
             let input = Input::from(event.clone());
             let was_insert = self.feedback_editor.mode() == VimMode::Insert;
 
@@ -4447,14 +4357,6 @@ impl App {
                     {
                         wizard.description_editor.set_normal_mode();
                         self.wizard_next_step()?;
-                        return Ok(false);
-                    }
-
-                    // Toggle review_after with Ctrl+R
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('r')
-                    {
-                        wizard.review_after = !wizard.review_after;
                         return Ok(false);
                     }
 
@@ -5101,99 +5003,6 @@ impl App {
         Ok(false)
     }
 
-    fn handle_review_wizard_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            // Check for Ctrl+C to quit
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                self.should_quit = true;
-                return Ok(false);
-            }
-
-            let wizard = match &mut self.review_wizard {
-                Some(w) => w,
-                None => {
-                    self.view = View::TaskList;
-                    return Ok(false);
-                }
-            };
-
-            // Clear error on any keypress
-            wizard.error_message = None;
-
-            match wizard.step {
-                ReviewWizardStep::EnterBranch => match key.code {
-                    KeyCode::Esc => {
-                        self.review_wizard_prev_step();
-                    }
-                    KeyCode::Tab => {
-                        wizard.branch_source = match wizard.branch_source {
-                            BranchSource::NewBranch => BranchSource::ExistingBranch,
-                            BranchSource::ExistingBranch => BranchSource::ExistingWorktree,
-                            BranchSource::ExistingWorktree => BranchSource::NewBranch,
-                        };
-                    }
-                    KeyCode::BackTab => {
-                        wizard.branch_source = match wizard.branch_source {
-                            BranchSource::NewBranch => BranchSource::ExistingWorktree,
-                            BranchSource::ExistingBranch => BranchSource::NewBranch,
-                            BranchSource::ExistingWorktree => BranchSource::ExistingBranch,
-                        };
-                    }
-                    KeyCode::Enter => {
-                        self.review_wizard_next_step()?;
-                    }
-                    _ => match wizard.branch_source {
-                        BranchSource::NewBranch => {
-                            let input = Input::from(event.clone());
-                            wizard.branch_editor.input(input);
-                        }
-                        BranchSource::ExistingBranch => match key.code {
-                            KeyCode::Char('j') | KeyCode::Down => {
-                                if !wizard.existing_branches.is_empty() {
-                                    wizard.selected_branch_index = (wizard.selected_branch_index
-                                        + 1)
-                                        % wizard.existing_branches.len();
-                                }
-                            }
-                            KeyCode::Char('k') | KeyCode::Up => {
-                                if !wizard.existing_branches.is_empty() {
-                                    wizard.selected_branch_index =
-                                        if wizard.selected_branch_index == 0 {
-                                            wizard.existing_branches.len() - 1
-                                        } else {
-                                            wizard.selected_branch_index - 1
-                                        };
-                                }
-                            }
-                            _ => {}
-                        },
-                        BranchSource::ExistingWorktree => match key.code {
-                            KeyCode::Char('j') | KeyCode::Down => {
-                                if !wizard.existing_worktrees.is_empty() {
-                                    wizard.selected_worktree_index =
-                                        (wizard.selected_worktree_index + 1)
-                                            % wizard.existing_worktrees.len();
-                                }
-                            }
-                            KeyCode::Char('k') | KeyCode::Up => {
-                                if !wizard.existing_worktrees.is_empty() {
-                                    wizard.selected_worktree_index =
-                                        if wizard.selected_worktree_index == 0 {
-                                            wizard.existing_worktrees.len() - 1
-                                        } else {
-                                            wizard.selected_worktree_index - 1
-                                        };
-                                }
-                            }
-                            _ => {}
-                        },
-                    },
-                },
-            }
-        }
-        Ok(false)
-    }
-
     fn delete_queue_item(&mut self) -> Result<()> {
         if let Some(task) = self.tasks.get(self.selected_index) {
             let queue_len = task.queued_item_count();
@@ -5465,7 +5274,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('l') | KeyCode::Enter => {
-                    // In RepoSelect/ReviewRepoSelect mode: Enter on a git repo or favourite selects it directly
+                    // In RepoSelect mode: Enter on a git repo or favourite selects it directly
                     let should_select = self
                         .dir_picker
                         .as_ref()
@@ -5495,29 +5304,10 @@ impl App {
                             // Select the highlighted entry as a repo or multi-repo parent
                             self.select_repo_from_picker()?;
                         }
-                        Some(DirPickerOrigin::ReviewRepoSelect) => {
-                            // For review: favourites and git repos can be selected, multi-repo navigates in
-                            let is_fav = self
-                                .dir_picker
-                                .as_ref()
-                                .map(|p| p.is_favorite_selected())
-                                .unwrap_or(false);
-                            let kind = self
-                                .dir_picker
-                                .as_ref()
-                                .and_then(|p| p.selected_entry_kind());
-                            if is_fav || kind == Some(DirKind::GitRepo) {
-                                self.select_repo_from_picker()?;
-                            } else if let Some(picker) = &mut self.dir_picker {
-                                // MultiRepoParent or Plain: navigate into instead of selecting
-                                picker.enter_selected();
-                            }
-                        }
-                        Some(DirPickerOrigin::NewTask) | Some(DirPickerOrigin::Review) => {
+                        Some(DirPickerOrigin::NewTask) => {
                             // Select current directory as repos_dir (fallback mode)
                             if let Some(picker) = self.dir_picker.take() {
                                 let selected_dir = picker.current_dir.clone();
-                                let origin = picker.origin;
 
                                 let mut config_file =
                                     agman::config::load_config_file(&self.config.base_dir);
@@ -5535,16 +5325,7 @@ impl App {
                                 self.config.repos_dir = selected_dir;
                                 tracing::info!(repos_dir = %self.config.repos_dir.display(), "repos_dir updated via directory picker");
 
-                                match origin {
-                                    DirPickerOrigin::NewTask => {
-                                        self.start_wizard()?;
-                                    }
-                                    DirPickerOrigin::Review => {
-                                        self.start_review_wizard()?;
-                                    }
-                                    DirPickerOrigin::RepoSelect
-                                    | DirPickerOrigin::ReviewRepoSelect => unreachable!(),
-                                }
+                                self.start_wizard()?;
                             }
                         }
                         None => {}
@@ -5556,7 +5337,7 @@ impl App {
         Ok(false)
     }
 
-    /// Handle a repo selection from the directory picker (RepoSelect/ReviewRepoSelect mode).
+    /// Handle a repo selection from the directory picker (RepoSelect mode).
     fn select_repo_from_picker(&mut self) -> Result<()> {
         let (entry_kind, entry_path, entry_name, origin, is_fav) = match &self.dir_picker {
             Some(picker) => {
@@ -5589,19 +5370,6 @@ impl App {
                     self.create_wizard_from_picker(entry_name, entry_path, true)?;
                 }
                 DirKind::Plain => {
-                    if let Some(picker) = &mut self.dir_picker {
-                        picker.enter_selected();
-                    }
-                }
-            },
-            DirPickerOrigin::ReviewRepoSelect => match entry_kind {
-                DirKind::GitRepo => {
-                    self.dir_picker = None;
-                    tracing::info!(repo = %entry_name, path = %entry_path.display(), "selected git repo from review picker");
-                    self.create_review_wizard_from_picker(entry_name, entry_path)?;
-                }
-                DirKind::MultiRepoParent | DirKind::Plain => {
-                    // Navigate into — review wizard only accepts single git repos
                     if let Some(picker) = &mut self.dir_picker {
                         picker.enter_selected();
                     }
@@ -6695,8 +6463,8 @@ pub fn run_tui(config: Config) -> Result<()> {
             if last_refresh.elapsed() >= refresh_interval {
                 if app.view == View::ProjectList {
                     app.refresh_projects();
-                } else if app.view == View::ResearcherList {
-                    app.refresh_researchers();
+                } else if app.view == View::AssistantList {
+                    app.refresh_assistants();
                 } else if app.view == View::TaskList {
                     app.refresh_tasks_for_project();
                     // Check for stranded queue items on stopped tasks

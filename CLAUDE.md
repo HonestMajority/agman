@@ -124,9 +124,15 @@ Storage layout for harness stamps:
   chief-of-staff/pi-sessions/        ← pi
   projects/<name>/harness
   projects/<name>/session-name
-  researchers/<project>--<n>/harness
-  researchers/<project>--<n>/session-name
+  assistants/<project>--<n>/harness
+  assistants/<project>--<n>/session-name
 ```
+
+Note: `~/.agman/researchers/` was renamed to `~/.agman/assistants/`.
+Both Researcher- and Reviewer-kind assistants share the same on-disk layout;
+the kind discriminator lives inside `meta.json`. A first-launch migration
+moves any legacy `researchers/` dir to `assistants/` and stamps each
+`meta.json` with `kind: { type: "researcher", … }`.
 
 ### Stop Conditions
 - `AGENT_DONE` - Agent finished its work, advance to next step

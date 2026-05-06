@@ -116,8 +116,8 @@ impl Config {
         std::fs::create_dir_all(&self.commands_dir)
             .context("Failed to create commands directory")?;
         std::fs::create_dir_all(&self.notes_dir).context("Failed to create notes directory")?;
-        std::fs::create_dir_all(self.researchers_dir())
-            .context("Failed to create researchers directory")?;
+        std::fs::create_dir_all(self.assistants_dir())
+            .context("Failed to create assistants directory")?;
         Ok(())
     }
 
@@ -324,31 +324,43 @@ impl Config {
         self.base_dir.join("whisper").join("ggml-base.bin")
     }
 
-    // --- Researcher paths ---
+    // --- Assistant paths ---
+    //
+    // Both Researchers and Reviewers share the on-disk layout under
+    // `~/.agman/assistants/<project>--<name>/`. The kind discriminator lives
+    // inside `meta.json`. Tmux session names diverge by kind so a researcher
+    // and reviewer with the same name+project don't collide on resume.
 
-    pub fn researchers_dir(&self) -> PathBuf {
-        self.base_dir.join("researchers")
+    pub fn assistants_dir(&self) -> PathBuf {
+        self.base_dir.join("assistants")
     }
 
-    pub fn researcher_dir(&self, project: &str, name: &str) -> PathBuf {
-        self.researchers_dir().join(format!("{project}--{name}"))
+    pub fn assistant_dir(&self, project: &str, name: &str) -> PathBuf {
+        self.assistants_dir().join(format!("{project}--{name}"))
     }
 
-    pub fn researcher_inbox(&self, project: &str, name: &str) -> PathBuf {
-        self.researcher_dir(project, name).join("inbox.jsonl")
+    pub fn assistant_inbox(&self, project: &str, name: &str) -> PathBuf {
+        self.assistant_dir(project, name).join("inbox.jsonl")
     }
 
-    pub fn researcher_seq(&self, project: &str, name: &str) -> PathBuf {
-        self.researcher_dir(project, name).join("inbox.seq")
+    pub fn assistant_seq(&self, project: &str, name: &str) -> PathBuf {
+        self.assistant_dir(project, name).join("inbox.seq")
     }
 
-    /// Pinned claude session UUID for a researcher.
-    pub fn researcher_session_id(&self, project: &str, name: &str) -> PathBuf {
-        self.researcher_dir(project, name).join("session-id")
+    /// Pinned claude session UUID for an assistant.
+    pub fn assistant_session_id(&self, project: &str, name: &str) -> PathBuf {
+        self.assistant_dir(project, name).join("session-id")
     }
 
+    /// Tmux session name for a researcher. Preserved as-is so existing
+    /// researcher sessions resume after the assistant rename.
     pub fn researcher_tmux_session(project: &str, name: &str) -> String {
         format!("agman-researcher-{project}--{name}")
+    }
+
+    /// Tmux session name for a reviewer.
+    pub fn reviewer_tmux_session(project: &str, name: &str) -> String {
+        format!("agman-reviewer-{project}--{name}")
     }
 
     // --- Project template paths ---
@@ -372,11 +384,6 @@ impl Config {
             std::fs::write(&new_flow, DEFAULT_FLOW)?;
         }
 
-        let review_flow = self.flow_path("review");
-        if force || !review_flow.exists() {
-            std::fs::write(&review_flow, REVIEW_FLOW)?;
-        }
-
         let continue_flow = self.flow_path("continue");
         if force || !continue_flow.exists() {
             std::fs::write(&continue_flow, CONTINUE_FLOW)?;
@@ -390,7 +397,6 @@ impl Config {
         // Create default prompts if they don't exist
         let prompts = [
             ("coder", CODER_PROMPT),
-            ("reviewer", REVIEWER_PROMPT),
             ("refiner", REFINER_PROMPT),
             ("checker", CHECKER_PROMPT),
             ("repo-inspector", REPO_INSPECTOR_PROMPT),
@@ -400,7 +406,6 @@ impl Config {
             ("ci-fixer", CI_FIXER_PROMPT),
             ("review-addresser", REVIEW_ADDRESSER_PROMPT),
             ("pr-check-monitor", PR_CHECK_MONITOR_PROMPT),
-            ("pr-reviewer", PR_REVIEWER_PROMPT),
             ("local-merge-executor", LOCAL_MERGE_EXECUTOR_PROMPT),
             ("push-rebaser", PUSH_REBASER_PROMPT),
             ("pr-merge-agent", PR_MERGE_AGENT_PROMPT),
@@ -419,7 +424,6 @@ impl Config {
             ("address-review", ADDRESS_REVIEW_COMMAND),
             ("rebase", REBASE_COMMAND),
             ("monitor-pr", MONITOR_PR_COMMAND),
-            ("review-pr", REVIEW_PR_COMMAND),
             ("local-merge", LOCAL_MERGE_COMMAND),
             ("push-and-merge", PUSH_AND_MERGE_COMMAND),
             ("push-and-monitor", PUSH_AND_MONITOR_COMMAND),
@@ -438,18 +442,6 @@ impl Config {
 
 const DEFAULT_FLOW: &str = r#"name: new
 steps:
-  - loop:
-      - agent: coder
-        until: AGENT_DONE
-      - agent: checker
-        until: AGENT_DONE
-    until: TASK_COMPLETE
-"#;
-
-const REVIEW_FLOW: &str = r#"name: review
-steps:
-  - agent: reviewer
-    until: AGENT_DONE
   - loop:
       - agent: coder
         until: AGENT_DONE
@@ -494,19 +486,6 @@ const CODER_PROMPT: &str = r#"You are a coding agent in a coder↔checker loop. 
 6. If — and only if — the next iteration needs context that isn't already obvious from git history (a problem encountered, an approach to avoid, partial state), append a short ## Notes section at the bottom of TASK.md. Skip this for clean, straightforward work.
 
 Don't ask questions. Make reasonable assumptions. When done, signal completion via the `.agent-done` sentinel (see the Supervisor Sentinel section appended below for the exact path).
-"#;
-
-const REVIEWER_PROMPT: &str = r#"You are a code review agent. Your job is to review code quality and suggest improvements.
-
-Instructions:
-1. Review the code for correctness, style, and best practices
-2. Check for potential bugs or security issues
-3. Suggest improvements where appropriate
-4. Document your findings
-
-When you're done reviewing, signal completion by creating the `.agent-done` sentinel in the task directory.
-If critical issues need human attention, create the `.input-needed` sentinel instead.
-(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
 const REFINER_PROMPT: &str = r#"You are a refiner agent. Your job is to synthesize feedback and create a clear, fresh context for the next agent.
@@ -1022,15 +1001,6 @@ If merge fails, review times out, or there are unrecoverable issues, create the 
 (See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
 
-const REVIEW_PR_COMMAND: &str = r#"name: Review PR
-id: review-pr
-description: Reviews the current PR or full branch diff if no PR exists, and sends findings to the project PM
-
-steps:
-  - agent: pr-reviewer
-    until: AGENT_DONE
-"#;
-
 const LOCAL_MERGE_COMMAND: &str = r#"name: Local Merge
 id: local-merge
 description: Merge current branch into a local branch, with conflict resolution via rebase
@@ -1168,80 +1138,4 @@ IMPORTANT:
 
 When you're done, signal completion by creating the `.agent-done` sentinel in the task directory.
 (See the Supervisor Sentinel section appended below for the exact path.)
-"#;
-
-const PR_REVIEWER_PROMPT: &str = r#"You are a PR review agent. Your job is to review the current branch's changes thoroughly and deliver your findings to the project PM.
-
-Instructions:
-
-0. First, check if a `.pr-link` file exists in the repo root. If it does, read the PR number from the first line and use `gh pr view <number>` to review that specific PR. Skip to step 2 using the linked PR.
-
-1. If no `.pr-link` file exists, check if a PR exists for the current branch:
-   ```
-   gh pr view
-   ```
-
-2. **If a PR exists:**
-   - Read the PR description and metadata: `gh pr view --json title,body,baseRefName,headRefName`
-   - Get the full diff: `gh pr diff`
-   - Check for existing review comments: `gh pr view --json reviews,comments`
-   - Check CI status: `gh pr checks`
-   - Review the code changes thoroughly
-
-3. **If no PR exists:**
-   - Determine the base branch (try origin/main, then origin/master)
-   - Get the full diff: `git diff origin/main..HEAD` (or origin/master)
-   - Review all commits: `git log origin/main..HEAD --oneline`
-   - Review the code changes thoroughly
-
-4. Find your task_id and project name. Your task directory path is listed under `# Task Directory` above. Read its `meta.json` to get the project:
-   ```
-   jq -r '.project' <task_dir>/meta.json
-   ```
-   The task_id is the task directory's basename (format `<repo>--<branch>`).
-
-5. Send your review findings to the project's PM via `agman send-message`. Use a heredoc for the multi-line body:
-   ```
-   agman send-message <project> --from <task_id> - <<'EOF'
-   # Code Review
-
-   ## Summary
-   [Brief overview of what this branch does]
-
-   ## Changes Reviewed
-   [List of files changed and what each change does]
-
-   ## Findings
-
-   ### Issues
-   [Any bugs, security issues, or correctness problems found]
-
-   ### Suggestions
-   [Code quality improvements, better patterns, or refactoring ideas]
-
-   ### Positive Notes
-   [Things that are well done]
-
-   ## CI Status
-   [Current CI status if PR exists]
-
-   ## Verdict
-   [Overall assessment: approve, request changes, or needs discussion]
-   EOF
-   ```
-
-   If `meta.json` has no `project` field (unassigned task), skip the send-message step and print the review findings to stdout instead so they appear in the agman pane.
-
-6. Be thorough but practical — focus on real issues, not style nitpicks.
-
-IMPORTANT:
-- Do NOT ask questions or wait for input
-- Do NOT push anything or interact with the PR on GitHub
-- Do NOT make any code changes — only deliver the review
-- Do NOT write a `REVIEW.md` file — the review goes through `agman send-message` (or stdout for unassigned tasks)
-- Be constructive and specific in your feedback
-
-When the review has been delivered, signal completion by creating the `.agent-done` sentinel in the task directory.
-If you cannot complete the review, create the `.input-needed` sentinel instead.
-(See the Supervisor Sentinel section appended below for the exact paths.)
 "#;
