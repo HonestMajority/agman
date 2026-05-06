@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
-use agman::break_persist;
 use agman::command::StoredCommand;
 use agman::config::Config;
 use agman::dismissed_notifications::DismissedNotifications;
@@ -32,9 +31,6 @@ use agman::use_cases;
 
 use super::ui;
 use super::vim::{VimMode, VimTextArea};
-
-pub const BREAK_WARNING_SECS: u64 = 5 * 60;
-pub const BREAK_PERSIST_MAX_AGE: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Telegram watchdog: how often the main loop checks the bot heartbeat.
 const TELEGRAM_WATCHDOG_INTERVAL: Duration = Duration::from_secs(5);
@@ -698,9 +694,6 @@ pub struct App {
     show_prs_poll_rx: tokio_mpsc::UnboundedReceiver<use_cases::ShowPrsData>,
     show_prs_poll_active: bool,
     pub last_show_prs_poll: Instant,
-    // Break reminder
-    pub break_interval: Duration,
-    pub last_break_reset: Instant,
     // Settings view
     pub settings_selected: usize,
     pub settings_editing: bool,
@@ -848,12 +841,7 @@ impl App {
             telegram_chat_id_editor.set_cursor_line_style(ratatui::style::Style::default());
         }
 
-        let break_interval = use_cases::load_break_interval(&config);
         let archive_retention_days = use_cases::load_archive_retention(&config);
-
-        let last_break_reset =
-            break_persist::load_break_reset(&config.break_state_path(), BREAK_PERSIST_MAX_AGE)
-                .unwrap_or_else(Instant::now);
 
         Ok(Self {
             config,
@@ -922,8 +910,6 @@ impl App {
             show_prs_poll_rx,
             show_prs_poll_active: false,
             last_show_prs_poll: Instant::now() - Duration::from_secs(60),
-            break_interval,
-            last_break_reset,
             settings_selected: 0,
             settings_editing: false,
             archive_retention_days,
@@ -2803,14 +2789,6 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('b') => {
-                    self.last_break_reset = Instant::now();
-                    break_persist::save_break_reset(
-                        &self.config.break_state_path(),
-                        &self.last_break_reset,
-                    );
-                    tracing::info!("break timer reset");
-                }
                 KeyCode::Char('o') => match NotesView::new(self.config.notes_dir.clone()) {
                     Ok(nv) => {
                         tracing::info!("opening notes view");
@@ -3228,10 +3206,10 @@ impl App {
                         self.settings_editing = false;
                     }
                     _ => match self.settings_selected {
-                        3 => {
+                        2 => {
                             self.telegram_token_editor.input(event);
                         }
-                        4 => {
+                        3 => {
                             self.telegram_chat_id_editor.input(event);
                         }
                         _ => {}
@@ -3248,7 +3226,7 @@ impl App {
                     self.view = View::TaskList;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    if self.settings_selected < 4 {
+                    if self.settings_selected < 3 {
                         self.settings_selected += 1;
                     }
                 }
@@ -3259,10 +3237,10 @@ impl App {
                 }
                 KeyCode::Enter => {
                     // Enter editing mode for text fields
-                    if self.settings_selected == 3 || self.settings_selected == 4 {
+                    if self.settings_selected == 2 || self.settings_selected == 3 {
                         self.settings_editing = true;
                         // Move cursor to end of current value
-                        let editor = if self.settings_selected == 3 {
+                        let editor = if self.settings_selected == 2 {
                             &mut self.telegram_token_editor
                         } else {
                             &mut self.telegram_chat_id_editor
@@ -3274,25 +3252,6 @@ impl App {
                 KeyCode::Char('h') | KeyCode::Left => {
                     match self.settings_selected {
                         0 => {
-                            // Decrease break interval by 5 mins (min 5)
-                            let current_mins = self.break_interval.as_secs() / 60;
-                            if current_mins > 5 {
-                                let new_mins = current_mins - 5;
-                                tracing::info!(
-                                    old_mins = current_mins,
-                                    new_mins,
-                                    "break interval changed"
-                                );
-                                self.break_interval = Duration::from_secs(new_mins * 60);
-                                if let Err(e) =
-                                    use_cases::save_break_interval(&self.config, new_mins)
-                                {
-                                    tracing::error!(error = %e, "failed to save break interval");
-                                    self.set_status(format!("Failed to save: {e}"));
-                                }
-                            }
-                        }
-                        1 => {
                             // Decrease archive retention by 7 days (min 7)
                             if self.archive_retention_days > 7 {
                                 let new_days = self.archive_retention_days - 7;
@@ -3310,7 +3269,7 @@ impl App {
                                 }
                             }
                         }
-                        2 => {
+                        1 => {
                             // Cycle harness left through HarnessKind::ALL
                             self.cycle_harness(-1);
                         }
@@ -3320,25 +3279,6 @@ impl App {
                 KeyCode::Char('l') | KeyCode::Right => {
                     match self.settings_selected {
                         0 => {
-                            // Increase break interval by 5 mins (max 120)
-                            let current_mins = self.break_interval.as_secs() / 60;
-                            if current_mins < 120 {
-                                let new_mins = current_mins + 5;
-                                tracing::info!(
-                                    old_mins = current_mins,
-                                    new_mins,
-                                    "break interval changed"
-                                );
-                                self.break_interval = Duration::from_secs(new_mins * 60);
-                                if let Err(e) =
-                                    use_cases::save_break_interval(&self.config, new_mins)
-                                {
-                                    tracing::error!(error = %e, "failed to save break interval");
-                                    self.set_status(format!("Failed to save: {e}"));
-                                }
-                            }
-                        }
-                        1 => {
                             // Increase archive retention by 7 days (max 365)
                             if self.archive_retention_days < 365 {
                                 let new_days = self.archive_retention_days + 7;
@@ -3356,7 +3296,7 @@ impl App {
                                 }
                             }
                         }
-                        2 => {
+                        1 => {
                             // Cycle harness right through HarnessKind::ALL
                             self.cycle_harness(1);
                         }
@@ -6634,7 +6574,6 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        break_persist::save_break_reset(&self.config.break_state_path(), &self.last_break_reset);
         self.stop_caffeinate();
     }
 }
@@ -6864,7 +6803,6 @@ pub fn run_tui(config: Config) -> Result<()> {
         // If user confirmed restart, exec the new binary
         #[cfg(unix)]
         if app.should_restart {
-            break_persist::save_break_reset(&app.config.break_state_path(), &app.last_break_reset);
             app.stop_caffeinate();
             eprintln!("agman updated — restarting...");
             let err = Command::new("agman").exec();

@@ -188,7 +188,6 @@ User-installed prompts in `~/.agman/prompts/` (`refiner.md`, `prompt-builder.md`
 - `c` - Clear review-addressed
 - `d` - Delete task
 - `i` - Inbox (notifications), `p` - PRs, `m` - Notes
-- `b` - Break timer reset
 - `,` - Settings
 - `Ctrl+C` - Quit
 
