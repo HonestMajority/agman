@@ -358,6 +358,11 @@ impl Config {
         format!("agman-researcher-{project}--{name}")
     }
 
+    /// Tmux session name for an operator.
+    pub fn operator_tmux_session(project: &str, name: &str) -> String {
+        format!("agman-operator-{project}--{name}")
+    }
+
     /// Tmux session name for a reviewer.
     pub fn reviewer_tmux_session(project: &str, name: &str) -> String {
         format!("agman-reviewer-{project}--{name}")

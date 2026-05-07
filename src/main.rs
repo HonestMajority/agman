@@ -186,13 +186,33 @@ fn main() -> Result<()> {
                         description,
                     )
                 }
+                AssistantKindArg::Operator => {
+                    if browser {
+                        anyhow::bail!("--browser is tester-only");
+                    }
+                    if !branch_pair.is_empty() {
+                        anyhow::bail!(
+                            "--branch <repo>:<branch> is reviewer/tester-only; use --branch-for-researcher \
+                             with a plain branch name for operators"
+                        );
+                    }
+                    cmd_create_operator(
+                        &config,
+                        project,
+                        &name,
+                        repo,
+                        branch_for_researcher,
+                        task,
+                        description,
+                    )
+                }
                 AssistantKindArg::Reviewer => {
                     if browser {
                         anyhow::bail!("--browser is tester-only");
                     }
                     if repo.is_some() || branch_for_researcher.is_some() || task.is_some() {
                         anyhow::bail!(
-                            "--repo / --branch-for-researcher / --task are researcher-only; \
+                            "--repo / --branch-for-researcher / --task are researcher/operator-only; \
                              reviewers use --branch <repo>:<branch> (repeatable)"
                         );
                     }
@@ -201,7 +221,7 @@ fn main() -> Result<()> {
                 AssistantKindArg::Tester => {
                     if repo.is_some() || branch_for_researcher.is_some() || task.is_some() {
                         anyhow::bail!(
-                            "--repo / --branch-for-researcher / --task are researcher-only; \
+                            "--repo / --branch-for-researcher / --task are researcher/operator-only; \
                              testers use --branch <repo>:<branch> (repeatable)"
                         );
                     }
@@ -234,6 +254,18 @@ fn main() -> Result<()> {
         }) => {
             let project = project.as_deref().unwrap_or("chief-of-staff");
             cmd_create_researcher(&config, project, &name, repo, branch, task, description)
+        }
+
+        Some(Commands::CreateOperator {
+            name,
+            project,
+            repo,
+            branch,
+            task,
+            description,
+        }) => {
+            let project = project.as_deref().unwrap_or("chief-of-staff");
+            cmd_create_operator(&config, project, &name, repo, branch, task, description)
         }
 
         Some(Commands::CreateReviewer {
@@ -743,6 +775,7 @@ fn format_assistants_line(assistants: &[use_cases::AssistantSummary]) -> String 
         .map(|a| {
             let kind_label = match a.kind {
                 use_cases::AssistantKindLabel::Researcher => "researcher",
+                use_cases::AssistantKindLabel::Operator => "operator",
                 use_cases::AssistantKindLabel::Reviewer => "reviewer",
                 use_cases::AssistantKindLabel::Tester => "tester",
             };
@@ -883,6 +916,30 @@ fn cmd_create_researcher(
     Ok(())
 }
 
+fn cmd_create_operator(
+    config: &Config,
+    project: &str,
+    name: &str,
+    repo: Option<String>,
+    branch: Option<String>,
+    task: Option<String>,
+    description: Option<String>,
+) -> Result<()> {
+    let desc = match description {
+        Some(d) => resolve_text_arg(Some(&d), None, "description")?,
+        None => String::new(),
+    };
+    let assistant = use_cases::create_operator(config, project, name, &desc, repo, branch, task)?;
+    use_cases::start_assistant_session(config, project, name, false)?;
+    println!(
+        "Operator '{}' created for project '{}' (tmux: {})",
+        assistant.meta.name,
+        assistant.meta.project,
+        Config::operator_tmux_session(project, name),
+    );
+    Ok(())
+}
+
 fn cmd_create_reviewer(
     config: &Config,
     project: &str,
@@ -960,6 +1017,7 @@ fn cmd_list_assistants(
 ) -> Result<()> {
     let kind_label = kind.map(|k| match k {
         AssistantKindArg::Researcher => use_cases::AssistantKindLabel::Researcher,
+        AssistantKindArg::Operator => use_cases::AssistantKindLabel::Operator,
         AssistantKindArg::Reviewer => use_cases::AssistantKindLabel::Reviewer,
         AssistantKindArg::Tester => use_cases::AssistantKindLabel::Tester,
     });
@@ -979,6 +1037,10 @@ fn cmd_list_assistants(
             agman::assistant::AssistantKind::Researcher { .. } => (
                 Config::researcher_tmux_session(&a.meta.project, &a.meta.name),
                 "researcher",
+            ),
+            agman::assistant::AssistantKind::Operator { .. } => (
+                Config::operator_tmux_session(&a.meta.project, &a.meta.name),
+                "operator",
             ),
             agman::assistant::AssistantKind::Reviewer { .. } => (
                 Config::reviewer_tmux_session(&a.meta.project, &a.meta.name),

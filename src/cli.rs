@@ -208,11 +208,12 @@ EXAMPLES:
         file: Option<std::path::PathBuf>,
     },
 
-    /// Create an assistant (researcher, reviewer, or tester). Defaults to Chief of
+    /// Create an assistant (researcher, operator, reviewer, or tester). Defaults to Chief of
     /// Staff-level when --project is omitted.
     #[command(after_help = "\
 EXAMPLES:
   agman create-assistant --kind researcher --name api-investigator --description \"Investigate the API latency\"
+  agman create-assistant --kind operator --name docs-updater --description \"Update the launch notes\"
   agman create-assistant --kind reviewer --name pr-1247 --project reviews \\
     --branch galoy:fix-deposit-flow \\
     --branch lana-dashboard:fix-deposit-flow \\
@@ -221,7 +222,7 @@ EXAMPLES:
     --branch galoy:fix-deposit-flow --browser \\
     --description \"Exercise the deposit flow in browser\"")]
     CreateAssistant {
-        /// Assistant kind: researcher, reviewer, or tester
+        /// Assistant kind: researcher, operator, reviewer, or tester
         #[arg(long, value_enum)]
         kind: AssistantKindArg,
         /// Assistant name (alphanumeric + hyphens)
@@ -233,14 +234,14 @@ EXAMPLES:
         /// Description/initial question
         #[arg(long, short, allow_hyphen_values = true)]
         description: Option<String>,
-        // --- Researcher-only flags (rejected for reviewer/tester) ---
-        /// Repository name (researcher only — for working directory context)
+        // --- Repo-hint flags (researcher/operator only; rejected for reviewer/tester) ---
+        /// Repository name (researcher/operator only — for working directory context)
         #[arg(long)]
         repo: Option<String>,
-        /// Branch name (researcher only — used with --repo for worktree resolution)
+        /// Branch name (researcher/operator only — used with --repo for worktree resolution)
         #[arg(long, conflicts_with = "branch_pair")]
         branch_for_researcher: Option<String>,
-        /// Task ID to inherit working directory from (researcher only)
+        /// Task ID to inherit working directory from (researcher/operator only)
         #[arg(long)]
         task: Option<String>,
         // --- Worktree-backed flags (repeatable; rejected for researcher) ---
@@ -299,6 +300,21 @@ EXAMPLES:
         #[arg(long)]
         task: Option<String>,
         /// Research description/question
+        #[arg(long, short, allow_hyphen_values = true)]
+        description: Option<String>,
+    },
+
+    /// Create an operator (alias for `create-assistant --kind operator`).
+    CreateOperator {
+        name: String,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+        #[arg(long)]
+        task: Option<String>,
         #[arg(long, short, allow_hyphen_values = true)]
         description: Option<String>,
     },
@@ -386,6 +402,7 @@ EXAMPLES:
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum AssistantKindArg {
     Researcher,
+    Operator,
     Reviewer,
     Tester,
 }

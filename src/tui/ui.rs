@@ -648,6 +648,7 @@ fn draw_assistant_wizard(f: &mut Frame, app: &mut App) {
 
     let kind_label = match wizard.kind {
         AssistantWizardKind::Researcher => "Researcher",
+        AssistantWizardKind::Operator => "Operator",
         AssistantWizardKind::Reviewer => "Reviewer",
         AssistantWizardKind::Tester => "Tester",
     };
@@ -746,6 +747,7 @@ fn draw_assistant_wizard_kind(f: &mut Frame, wizard: &super::app::AssistantWizar
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
+            Constraint::Length(3),
         ])
         .split(area);
 
@@ -771,6 +773,29 @@ fn draw_assistant_wizard_kind(f: &mut Frame, wizard: &super::app::AssistantWizar
             }),
         ));
     f.render_widget(researcher, chunks[0]);
+
+    let operator_selected = matches!(wizard.kind, AssistantWizardKind::Operator);
+    let operator_style = if operator_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let operator =
+        Paragraph::new(Line::from(vec![Span::styled(
+            " Operator    —  takes action in external systems and reports back ",
+            operator_style,
+        )]))
+        .block(Block::default().borders(Borders::ALL).border_style(
+            Style::default().fg(if operator_selected {
+                Color::LightCyan
+            } else {
+                Color::DarkGray
+            }),
+        ));
+    f.render_widget(operator, chunks[3]);
 
     let reviewer_selected = matches!(wizard.kind, AssistantWizardKind::Reviewer);
     let reviewer_style = if reviewer_selected {
@@ -4879,15 +4904,17 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(header), chunks[0]);
 
-    // Top-level grouping is by kind (Researchers / Reviewers / Testers); within each
+    // Top-level grouping is by kind; within each
     // kind we still surface status — running / stopped / archived — so the
-    // user can scan the same way as the legacy view, just twice.
+    // user can scan the same way as the legacy view.
     let mut researchers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
+    let mut operators: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
     let mut reviewers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
     let mut testers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
     for (i, a) in app.assistants.iter().enumerate() {
         match a.meta.kind {
             AssistantKind::Researcher { .. } => researchers.push((i, a)),
+            AssistantKind::Operator { .. } => operators.push((i, a)),
             AssistantKind::Reviewer { .. } => reviewers.push((i, a)),
             AssistantKind::Tester { .. } => testers.push((i, a)),
         }
@@ -4896,8 +4923,9 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
     let mut items: Vec<ListItem> = Vec::new();
     let mut groups_shown: usize = 0;
 
-    let kinds: [(&str, &[(usize, &agman::assistant::Assistant)]); 3] = [
+    let kinds: [(&str, &[(usize, &agman::assistant::Assistant)]); 4] = [
         ("Researchers", &researchers),
+        ("Operators", &operators),
         ("Reviewers", &reviewers),
         ("Testers", &testers),
     ];
@@ -4942,6 +4970,9 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
                 let session_name = match a.meta.kind {
                     AssistantKind::Researcher { .. } => {
                         Config::researcher_tmux_session(&a.meta.project, &a.meta.name)
+                    }
+                    AssistantKind::Operator { .. } => {
+                        Config::operator_tmux_session(&a.meta.project, &a.meta.name)
                     }
                     AssistantKind::Reviewer { .. } => {
                         Config::reviewer_tmux_session(&a.meta.project, &a.meta.name)
@@ -5038,6 +5069,7 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
                 // poller raises.
                 let stall_prefix = match r.meta.kind {
                     AssistantKind::Researcher { .. } => "researcher",
+                    AssistantKind::Operator { .. } => "operator",
                     AssistantKind::Reviewer { .. } => "reviewer",
                     AssistantKind::Tester { .. } => "tester",
                 };

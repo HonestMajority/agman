@@ -49,6 +49,14 @@ pub enum AssistantKind {
         #[serde(default)]
         task_id: Option<String>,
     },
+    Operator {
+        #[serde(default)]
+        repo: Option<String>,
+        #[serde(default)]
+        branch: Option<String>,
+        #[serde(default)]
+        task_id: Option<String>,
+    },
     Reviewer {
         #[serde(default)]
         worktrees: Vec<AssistantWorktree>,
@@ -176,6 +184,11 @@ impl Assistant {
     /// True if this assistant is a Researcher.
     pub fn is_researcher(&self) -> bool {
         matches!(self.meta.kind, AssistantKind::Researcher { .. })
+    }
+
+    /// True if this assistant is an Operator.
+    pub fn is_operator(&self) -> bool {
+        matches!(self.meta.kind, AssistantKind::Operator { .. })
     }
 
     /// True if this assistant is a Reviewer.

@@ -425,13 +425,15 @@ pub fn parse_sender_tag(text: &str) -> Option<&str> {
     Some(&rest[..close])
 }
 
-/// Resolve a sender tag (e.g. `"CoS"`, `"PM:foo"`, `"R:bar"`) back to a
+/// Resolve a sender tag (e.g. `"CoS"`, `"PM:foo"`, `"R:bar"`, `"O:bar"`) back to a
 /// send-target agent id usable with [`use_cases::agent_inbox_path`].
 ///
 /// - `"CoS"` → `Some("chief-of-staff")`
 /// - `"PM:<id>"` → `Some(id)` if the project agent exists
 /// - `"R:<name>"` → `Some("researcher:<project>--<name>")` when exactly one
 ///   running researcher matches; `None` for zero or multiple matches.
+/// - `"O:<name>"` → `Some("operator:<project>--<name>")` with the same
+///   uniqueness rules.
 /// - `"Rv:<name>"` → `Some("reviewer:<project>--<name>")` with the same
 /// - `"T:<name>"` → `Some("tester:<project>--<name>")` with the same
 ///   uniqueness rules.
@@ -451,6 +453,8 @@ pub fn resolve_tag_to_agent(config: &Config, tag: &str) -> Option<String> {
         }
     } else if let Some(name) = tag.strip_prefix("Rv:") {
         resolve_assistant_tag(config, name, AssistantKindFilter::Reviewer)
+    } else if let Some(name) = tag.strip_prefix("O:") {
+        resolve_assistant_tag(config, name, AssistantKindFilter::Operator)
     } else if let Some(name) = tag.strip_prefix("T:") {
         resolve_assistant_tag(config, name, AssistantKindFilter::Tester)
     } else if let Some(name) = tag.strip_prefix("R:") {
@@ -468,6 +472,7 @@ pub fn resolve_tag_to_agent(config: &Config, tag: &str) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssistantKindFilter {
     Researcher,
+    Operator,
     Reviewer,
     Tester,
 }
@@ -493,6 +498,9 @@ fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter)
                     AssistantKind::Researcher { .. },
                     AssistantKindFilter::Researcher
                 ) | (
+                    AssistantKind::Operator { .. },
+                    AssistantKindFilter::Operator
+                ) | (
                     AssistantKind::Reviewer { .. },
                     AssistantKindFilter::Reviewer
                 ) | (AssistantKind::Tester { .. }, AssistantKindFilter::Tester)
@@ -504,6 +512,7 @@ fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter)
             let a = matches[0];
             let prefix = match kind {
                 AssistantKindFilter::Researcher => "researcher",
+                AssistantKindFilter::Operator => "operator",
                 AssistantKindFilter::Reviewer => "reviewer",
                 AssistantKindFilter::Tester => "tester",
             };
@@ -707,6 +716,7 @@ fn append_dead_letter(path: &Path, msg: &inbox::InboxMessage, reason: &str) -> s
 ///
 /// - `"chief-of-staff"` → `"CoS"`
 /// - `"researcher:<project>--<name>"` → `"R:<name>"` (text after the last `--`)
+/// - `"operator:<project>--<name>"` → `"O:<name>"` (text after the last `--`)
 /// - `"reviewer:<project>--<name>"` → `"Rv:<name>"` (text after the last `--`)
 /// - `"tester:<project>--<name>"` → `"T:<name>"` (text after the last `--`)
 /// - anything else → `"PM:<from>"` (default — project names live here)
@@ -717,6 +727,10 @@ pub fn format_sender_tag(from: &str) -> String {
     if let Some(rest) = from.strip_prefix("researcher:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
         return format!("R:{name}");
+    }
+    if let Some(rest) = from.strip_prefix("operator:") {
+        let name = rest.rsplit("--").next().unwrap_or(rest);
+        return format!("O:{name}");
     }
     if let Some(rest) = from.strip_prefix("reviewer:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
@@ -915,7 +929,7 @@ pub fn parent_of(current: &str) -> Option<String> {
     if current == "chief-of-staff" {
         return None;
     }
-    for prefix in ["researcher:", "reviewer:", "tester:"] {
+    for prefix in ["researcher:", "operator:", "reviewer:", "tester:"] {
         if let Some(rest) = current.strip_prefix(prefix) {
             if let Some(pos) = rest.find("--") {
                 let project = &rest[..pos];
