@@ -41,7 +41,7 @@ EXAMPLES:
   agman send-message chief-of-staff @./message.md")]
     SendMessage {
         /// Target: "chief-of-staff", "telegram", "researcher:<project>--<name>",
-        /// "reviewer:<project>--<name>", or a project name (for the PM)
+        /// "reviewer:<project>--<name>", "tester:<project>--<name>", or a project name (for the PM)
         target: String,
         /// Message text (can also be provided via stdin or --file)
         #[arg(allow_hyphen_values = true)]
@@ -208,7 +208,7 @@ EXAMPLES:
         file: Option<std::path::PathBuf>,
     },
 
-    /// Create an assistant (researcher or reviewer). Defaults to Chief of
+    /// Create an assistant (researcher, reviewer, or tester). Defaults to Chief of
     /// Staff-level when --project is omitted.
     #[command(after_help = "\
 EXAMPLES:
@@ -216,9 +216,12 @@ EXAMPLES:
   agman create-assistant --kind reviewer --name pr-1247 --project reviews \\
     --branch galoy:fix-deposit-flow \\
     --branch lana-dashboard:fix-deposit-flow \\
-    --description \"Review the cross-repo deposit fix\"")]
+    --description \"Review the cross-repo deposit fix\"
+  agman create-assistant --kind tester --name browser-pass --project reviews \\
+    --branch galoy:fix-deposit-flow --browser \\
+    --description \"Exercise the deposit flow in browser\"")]
     CreateAssistant {
-        /// Assistant kind: researcher or reviewer
+        /// Assistant kind: researcher, reviewer, or tester
         #[arg(long, value_enum)]
         kind: AssistantKindArg,
         /// Assistant name (alphanumeric + hyphens)
@@ -230,7 +233,7 @@ EXAMPLES:
         /// Description/initial question
         #[arg(long, short, allow_hyphen_values = true)]
         description: Option<String>,
-        // --- Researcher-only flags (rejected for reviewer) ---
+        // --- Researcher-only flags (rejected for reviewer/tester) ---
         /// Repository name (researcher only — for working directory context)
         #[arg(long)]
         repo: Option<String>,
@@ -240,11 +243,14 @@ EXAMPLES:
         /// Task ID to inherit working directory from (researcher only)
         #[arg(long)]
         task: Option<String>,
-        // --- Reviewer-only flag (repeatable; rejected for researcher) ---
-        /// `<repo>:<branch>` pair to scope the reviewer to (reviewer only;
-        /// repeat to include multiple). Required for reviewers.
+        // --- Worktree-backed flags (repeatable; rejected for researcher) ---
+        /// `<repo>:<branch>` pair to scope the reviewer/tester to; repeat
+        /// to include multiple. Required for reviewers and testers.
         #[arg(long = "branch", value_name = "REPO:BRANCH")]
         branch_pair: Vec<String>,
+        /// Request browser automation tools (tester only)
+        #[arg(long, default_value_t = false)]
+        browser: bool,
     },
 
     /// List assistants
@@ -319,6 +325,30 @@ EXAMPLES:
         description: Option<String>,
     },
 
+    /// Create a tester (alias for `create-assistant --kind tester`).
+    #[command(after_help = "\
+EXAMPLES:
+  agman create-tester --name browser-pass --project reviews \\
+    --branch galoy:fix-deposit-flow --browser \\
+    --description \"Exercise the deposit flow\"")]
+    CreateTester {
+        /// Tester name (alphanumeric + hyphens)
+        #[arg(long, short)]
+        name: String,
+        /// Project name (defaults to "chief-of-staff")
+        #[arg(long)]
+        project: Option<String>,
+        /// `<repo>:<branch>` pair (repeatable, required at least once)
+        #[arg(long = "branch", value_name = "REPO:BRANCH", required = true)]
+        branch_pair: Vec<String>,
+        /// Request browser automation tools
+        #[arg(long, default_value_t = false)]
+        browser: bool,
+        /// Description
+        #[arg(long, short, allow_hyphen_values = true)]
+        description: Option<String>,
+    },
+
     /// List researchers (alias for `list-assistants --kind researcher`).
     ListResearchers {
         /// Filter by project name
@@ -357,6 +387,7 @@ EXAMPLES:
 pub enum AssistantKindArg {
     Researcher,
     Reviewer,
+    Tester,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

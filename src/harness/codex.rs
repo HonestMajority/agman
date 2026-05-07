@@ -4,7 +4,9 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::{Harness, HarnessKind, LaunchContext, RegisterContext, SessionKey};
+use super::{
+    AssistantCapabilities, Harness, HarnessKind, LaunchContext, RegisterContext, SessionKey,
+};
 
 pub struct CodexHarness;
 
@@ -43,6 +45,9 @@ impl Harness for CodexHarness {
             if ctx.no_alt_screen {
                 cmd.push_str(" --no-alt-screen");
             }
+            if ctx.capabilities.browser {
+                cmd.push_str(" -c 'mcp_servers.playwright.enabled=true'");
+            }
             cmd.push_str(&format!(" -C '{}'", cwd_str));
             cmd.push_str(&format!(" resume '{}'", escaped_name));
             return cmd;
@@ -69,6 +74,9 @@ impl Harness for CodexHarness {
             cmd.push_str(" --no-alt-screen");
         }
         cmd.push_str(&format!(" -c '{}'", dev_arg_escaped));
+        if ctx.capabilities.browser {
+            cmd.push_str(" -c 'mcp_servers.playwright.enabled=true'");
+        }
         cmd
     }
 
@@ -77,6 +85,14 @@ impl Harness for CodexHarness {
     fn ensure_workspace_trusted(&self, cwd: &Path) -> Result<()> {
         let trust_file = super::harness_home(HarnessKind::Codex).join("config.toml");
         ensure_workspace_trusted_in(&trust_file, cwd)
+    }
+
+    fn ensure_capabilities_configured(&self, caps: &AssistantCapabilities) -> Result<()> {
+        if caps.browser {
+            let config_toml = super::harness_home(HarnessKind::Codex).join("config.toml");
+            ensure_browser_mcp_in(&config_toml)?;
+        }
+        Ok(())
     }
 
     /// Paste-inject `/rename <name>` post-launch and verify the entry shows
@@ -378,6 +394,81 @@ pub fn ensure_workspace_trusted_in(trust_file: &Path, cwd: &Path) -> Result<()> 
     );
 
     write_atomically(trust_file, toml::to_string(&doc)?.as_bytes())
+}
+
+/// Ensure the Playwright MCP server is defined in codex config but disabled
+/// by default. Tester launches opt in per process with a `-c` override.
+pub fn ensure_browser_mcp_in(config_toml_path: &Path) -> Result<()> {
+    use anyhow::Context;
+
+    let mut doc: toml::Value = if config_toml_path.exists() {
+        let text = std::fs::read_to_string(config_toml_path)
+            .with_context(|| format!("read codex config file at {}", config_toml_path.display()))?;
+        if text.trim().is_empty() {
+            toml::Value::Table(toml::value::Table::new())
+        } else {
+            toml::from_str(&text).with_context(|| {
+                format!(
+                    "parse codex config file at {} as TOML",
+                    config_toml_path.display()
+                )
+            })?
+        }
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let root = doc.as_table_mut().ok_or_else(|| {
+        anyhow::anyhow!(
+            "codex config file at {} is not a TOML table",
+            config_toml_path.display()
+        )
+    })?;
+
+    let mcp_servers = root
+        .entry("mcp_servers".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "codex config file at {} has non-table `mcp_servers`",
+                config_toml_path.display()
+            )
+        })?;
+
+    if mcp_servers.contains_key("playwright") {
+        return Ok(());
+    }
+
+    let mut playwright = toml::value::Table::new();
+    playwright.insert(
+        "command".to_string(),
+        toml::Value::String("npx".to_string()),
+    );
+    playwright.insert(
+        "args".to_string(),
+        toml::Value::Array(vec![toml::Value::String(
+            "@playwright/mcp@latest".to_string(),
+        )]),
+    );
+    playwright.insert(
+        "env_vars".to_string(),
+        toml::Value::Array(
+            [
+                "DISPLAY",
+                "WAYLAND_DISPLAY",
+                "XAUTHORITY",
+                "XDG_RUNTIME_DIR",
+            ]
+            .into_iter()
+            .map(|v| toml::Value::String(v.to_string()))
+            .collect(),
+        ),
+    );
+    playwright.insert("enabled".to_string(), toml::Value::Boolean(false));
+    mcp_servers.insert("playwright".to_string(), toml::Value::Table(playwright));
+
+    write_atomically(config_toml_path, toml::to_string(&doc)?.as_bytes())
 }
 
 /// Write `bytes` to `dest` atomically: write to `<dest>.tmp`, fsync, rename.

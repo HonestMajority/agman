@@ -77,6 +77,14 @@ pub fn ensure_workspace_trusted_for_test(
     }
 }
 
+/// Test-only entrypoint for codex browser MCP configuration. Production uses
+/// `CodexHarness::ensure_capabilities_configured`, which resolves the config
+/// path from `harness_home(Codex)`.
+#[doc(hidden)]
+pub fn ensure_browser_mcp_for_test(config_toml_path: &Path) -> Result<()> {
+    codex::ensure_browser_mcp_in(config_toml_path)
+}
+
 /// Identifies which harness to use. Persisted in config + per-agent stamps.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -170,6 +178,12 @@ pub enum SessionKey<'a> {
     Resume(&'a str),
 }
 
+/// Optional assistant capabilities requested at launch time.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct AssistantCapabilities {
+    pub browser: bool,
+}
+
 /// Static input for `Harness::build_session_command`. Names follow the
 /// harness's resume / session-listing convention so the user can reattach
 /// manually from a shell (`claude --resume <id>`, `codex resume <name>`, or
@@ -197,6 +211,8 @@ pub struct LaunchContext<'a> {
     /// pane content (needed by the inbox snippet-verification loop). Claude
     /// ignores.
     pub no_alt_screen: bool,
+    /// Optional assistant capabilities. Non-assistant launches pass default.
+    pub capabilities: AssistantCapabilities,
     /// Whether this launch pins a fresh session, resumes a prior one, or
     /// neither. See `SessionKey` for the per-variant behaviour.
     pub session_key: SessionKey<'a>,
@@ -239,6 +255,12 @@ pub trait Harness: Send + Sync {
     /// trust dialog is unrecoverable for agman (the agent never reaches a
     /// usable state and `/rename` paste-injects run as shell commands).
     fn ensure_workspace_trusted(&self, cwd: &Path) -> Result<()>;
+
+    /// Ensure any requested assistant capabilities are configured before
+    /// launch. Harnesses that do not need setup use the default no-op.
+    fn ensure_capabilities_configured(&self, _caps: &AssistantCapabilities) -> Result<()> {
+        Ok(())
+    }
 
     /// Post-launch step. Called once `is_session_ready_in` reports the
     /// foreground process is no longer a shell.

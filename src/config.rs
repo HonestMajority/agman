@@ -326,7 +326,7 @@ impl Config {
 
     // --- Assistant paths ---
     //
-    // Both Researchers and Reviewers share the on-disk layout under
+    // Assistants share the on-disk layout under
     // `~/.agman/assistants/<project>--<name>/`. The kind discriminator lives
     // inside `meta.json`. Tmux session names diverge by kind so a researcher
     // and reviewer with the same name+project don't collide on resume.
@@ -361,6 +361,11 @@ impl Config {
     /// Tmux session name for a reviewer.
     pub fn reviewer_tmux_session(project: &str, name: &str) -> String {
         format!("agman-reviewer-{project}--{name}")
+    }
+
+    /// Tmux session name for a tester.
+    pub fn tester_tmux_session(project: &str, name: &str) -> String {
+        format!("agman-tester-{project}--{name}")
     }
 
     // --- Project template paths ---

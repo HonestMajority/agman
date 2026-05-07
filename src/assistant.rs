@@ -16,20 +16,25 @@ pub enum AssistantStatus {
     Archived,
 }
 
-/// One worktree entry tracked by a Reviewer assistant.
+/// One worktree entry tracked by a worktree-backed assistant.
 ///
 /// `agman_created` records whether agman set up the worktree (and the local
 /// branch) itself — drives archive cleanup. Worktrees that already existed
 /// when the reviewer was created are left intact on archive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReviewerWorktree {
+pub struct AssistantWorktree {
     pub repo: String,
     pub branch: String,
     pub path: PathBuf,
     pub agman_created: bool,
 }
 
-/// Discriminator for the two assistant kinds. Each kind carries its own
+#[derive(Default, Serialize, Deserialize, Clone, Copy, Debug)]
+pub struct TesterCapabilities {
+    pub browser: bool,
+}
+
+/// Discriminator for the assistant kinds. Each kind carries its own
 /// kind-specific metadata; everything else (harness stamping, inbox, tmux,
 /// telegram switcher, send-message routing, poll-target enumeration) is
 /// kind-agnostic and lives on the surrounding [`AssistantMeta`].
@@ -46,7 +51,13 @@ pub enum AssistantKind {
     },
     Reviewer {
         #[serde(default)]
-        worktrees: Vec<ReviewerWorktree>,
+        worktrees: Vec<AssistantWorktree>,
+    },
+    Tester {
+        #[serde(default)]
+        worktrees: Vec<AssistantWorktree>,
+        #[serde(default)]
+        capabilities: TesterCapabilities,
     },
 }
 
@@ -170,6 +181,11 @@ impl Assistant {
     /// True if this assistant is a Reviewer.
     pub fn is_reviewer(&self) -> bool {
         matches!(self.meta.kind, AssistantKind::Reviewer { .. })
+    }
+
+    /// True if this assistant is a Tester.
+    pub fn is_tester(&self) -> bool {
+        matches!(self.meta.kind, AssistantKind::Tester { .. })
     }
 
     /// Write meta.json to disk. Stamps `updated_at` before writing.

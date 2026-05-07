@@ -67,6 +67,9 @@ impl Harness for ClaudeHarness {
                 cmd.push_str(&format!(" --resume '{}'", escaped_uuid));
             }
         }
+        if ctx.capabilities.browser {
+            cmd.push_str(" --chrome");
+        }
         cmd
     }
 

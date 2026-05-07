@@ -36,6 +36,7 @@ fn claude_build_session_command_emits_system_prompt_and_name() {
         session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Auto,
     });
     assert!(cmd.starts_with("claude"));
@@ -57,6 +58,7 @@ fn claude_build_session_command_escapes_inner_single_quotes() {
         session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Auto,
     });
     // Single-quote escape in shell: ' becomes '\''
@@ -77,6 +79,7 @@ fn claude_build_session_command_pins_session_id_when_provided() {
         session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Pin(uuid),
     });
     assert!(cmd.contains(&format!("--session-id '{uuid}'")));
@@ -98,6 +101,7 @@ fn claude_build_session_command_resumes_when_provided() {
         session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Resume(uuid),
     });
     assert!(cmd.contains(&format!("--resume '{uuid}'")));
@@ -126,6 +130,7 @@ fn codex_build_session_command_emits_developer_instructions_and_no_alt_screen() 
         session_dir: None,
         cwd: &cwd(),
         no_alt_screen: true,
+        capabilities: Default::default(),
         session_key: SessionKey::Auto,
     });
     assert!(cmd.starts_with("codex"));
@@ -164,6 +169,7 @@ fn codex_build_session_command_does_not_emit_skip_git_repo_check() {
             session_dir: None,
             cwd: &work_dir,
             no_alt_screen: true,
+            capabilities: Default::default(),
             session_key: key,
         });
         assert!(
@@ -195,6 +201,7 @@ fn codex_build_session_command_always_bypasses_approvals_and_sandbox() {
             session_dir: None,
             cwd: &work_dir,
             no_alt_screen: true,
+            capabilities: Default::default(),
             session_key: key,
         });
         assert!(
@@ -218,6 +225,7 @@ fn codex_build_session_command_emits_resume_subcommand() {
         session_dir: None,
         cwd: &work_dir,
         no_alt_screen: true,
+        capabilities: Default::default(),
         session_key: SessionKey::Resume("agman-chief-of-staff"),
     });
     assert!(cmd.starts_with("codex"));
@@ -247,6 +255,7 @@ fn codex_build_session_command_escapes_triple_quotes_in_body() {
         session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Auto,
     });
     assert!(cmd.contains("Pre \\\"\\\"\\\" mid"));
@@ -265,6 +274,7 @@ fn goose_build_session_command_emits_auto_mode_moim_and_name() {
         session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Auto,
     });
     assert!(cmd.starts_with("GOOSE_MODE=auto "));
@@ -288,6 +298,7 @@ fn goose_build_session_command_resumes_by_name() {
         session_dir: None,
         cwd: &cwd(),
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Resume("agman-goose"),
     });
     assert!(cmd.contains("goose session"));
@@ -308,6 +319,7 @@ fn pi_build_session_command_emits_offline_identity_session_dir_and_tools() {
         session_dir: Some(&session_dir),
         cwd: &cwd(),
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Auto,
     });
 
@@ -335,6 +347,7 @@ fn pi_build_session_command_resumes_with_continue_and_no_session_id() {
         session_dir: Some(&session_dir),
         cwd: &cwd(),
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Resume("agman-pi"),
     });
 
@@ -360,6 +373,7 @@ fn pi_build_session_command_shell_quotes_single_quotes_in_paths() {
         session_dir: Some(&session_dir),
         cwd: &cwd(),
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Auto,
     });
 
