@@ -5,6 +5,7 @@ mod tui;
 use anyhow::{Context, Result};
 use clap::Parser;
 
+use agman::assistant::TesterCapabilities;
 use agman::command;
 use agman::config::Config;
 use agman::supervisor;
@@ -161,13 +162,17 @@ fn main() -> Result<()> {
             branch_for_researcher,
             task,
             branch_pair,
+            browser,
         }) => {
             let project = project.as_deref().unwrap_or("chief-of-staff");
             match kind {
                 AssistantKindArg::Researcher => {
+                    if browser {
+                        anyhow::bail!("--browser is tester-only");
+                    }
                     if !branch_pair.is_empty() {
                         anyhow::bail!(
-                            "--branch <repo>:<branch> is reviewer-only; use --branch-for-researcher \
+                            "--branch <repo>:<branch> is reviewer/tester-only; use --branch-for-researcher \
                              with a plain branch name for researchers"
                         );
                     }
@@ -182,6 +187,9 @@ fn main() -> Result<()> {
                     )
                 }
                 AssistantKindArg::Reviewer => {
+                    if browser {
+                        anyhow::bail!("--browser is tester-only");
+                    }
                     if repo.is_some() || branch_for_researcher.is_some() || task.is_some() {
                         anyhow::bail!(
                             "--repo / --branch-for-researcher / --task are researcher-only; \
@@ -189,6 +197,15 @@ fn main() -> Result<()> {
                         );
                     }
                     cmd_create_reviewer(&config, project, &name, branch_pair, description)
+                }
+                AssistantKindArg::Tester => {
+                    if repo.is_some() || branch_for_researcher.is_some() || task.is_some() {
+                        anyhow::bail!(
+                            "--repo / --branch-for-researcher / --task are researcher-only; \
+                             testers use --branch <repo>:<branch> (repeatable)"
+                        );
+                    }
+                    cmd_create_tester(&config, project, &name, branch_pair, browser, description)
                 }
             }
         }
@@ -227,6 +244,17 @@ fn main() -> Result<()> {
         }) => {
             let project = project.as_deref().unwrap_or("chief-of-staff");
             cmd_create_reviewer(&config, project, &name, branch_pair, description)
+        }
+
+        Some(Commands::CreateTester {
+            name,
+            project,
+            branch_pair,
+            browser,
+            description,
+        }) => {
+            let project = project.as_deref().unwrap_or("chief-of-staff");
+            cmd_create_tester(&config, project, &name, branch_pair, browser, description)
         }
 
         Some(Commands::ListResearchers { project, cos }) => {
@@ -716,6 +744,7 @@ fn format_assistants_line(assistants: &[use_cases::AssistantSummary]) -> String 
             let kind_label = match a.kind {
                 use_cases::AssistantKindLabel::Researcher => "researcher",
                 use_cases::AssistantKindLabel::Reviewer => "reviewer",
+                use_cases::AssistantKindLabel::Tester => "tester",
             };
             format!("{} [{}] ({})", a.name, kind_label, a.status)
         })
@@ -865,17 +894,8 @@ fn cmd_create_reviewer(
         Some(d) => resolve_text_arg(Some(&d), None, "description")?,
         None => String::new(),
     };
-    let mut branches = Vec::with_capacity(branch_pairs.len());
-    for pair in &branch_pairs {
-        let (repo, branch) = pair.split_once(':').ok_or_else(|| {
-            anyhow::anyhow!("--branch must be `<repo>:<branch>` (got `{}`)", pair)
-        })?;
-        if repo.is_empty() || branch.is_empty() {
-            anyhow::bail!("--branch must be `<repo>:<branch>` (got `{}`)", pair);
-        }
-        branches.push((repo.to_string(), branch.to_string()));
-    }
-    let spec = use_cases::ReviewerSpec {
+    let branches = parse_branch_pairs(&branch_pairs)?;
+    let spec = use_cases::WorktreeSpec {
         branches,
         parent_dir: None,
     };
@@ -890,6 +910,49 @@ fn cmd_create_reviewer(
     Ok(())
 }
 
+fn cmd_create_tester(
+    config: &Config,
+    project: &str,
+    name: &str,
+    branch_pairs: Vec<String>,
+    browser: bool,
+    description: Option<String>,
+) -> Result<()> {
+    let desc = match description {
+        Some(d) => resolve_text_arg(Some(&d), None, "description")?,
+        None => String::new(),
+    };
+    let branches = parse_branch_pairs(&branch_pairs)?;
+    let spec = use_cases::WorktreeSpec {
+        branches,
+        parent_dir: None,
+    };
+    let capabilities = TesterCapabilities { browser };
+    let assistant = use_cases::create_tester(config, project, name, &desc, spec, capabilities)?;
+    use_cases::start_assistant_session(config, project, name, false)?;
+    println!(
+        "Tester '{}' created for project '{}' (tmux: {})",
+        assistant.meta.name,
+        assistant.meta.project,
+        Config::tester_tmux_session(project, name),
+    );
+    Ok(())
+}
+
+fn parse_branch_pairs(branch_pairs: &[String]) -> Result<Vec<(String, String)>> {
+    let mut branches = Vec::with_capacity(branch_pairs.len());
+    for pair in branch_pairs {
+        let (repo, branch) = pair.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!("--branch must be `<repo>:<branch>` (got `{}`)", pair)
+        })?;
+        if repo.is_empty() || branch.is_empty() {
+            anyhow::bail!("--branch must be `<repo>:<branch>` (got `{}`)", pair);
+        }
+        branches.push((repo.to_string(), branch.to_string()));
+    }
+    Ok(branches)
+}
+
 fn cmd_list_assistants(
     config: &Config,
     project: Option<&str>,
@@ -898,6 +961,7 @@ fn cmd_list_assistants(
     let kind_label = kind.map(|k| match k {
         AssistantKindArg::Researcher => use_cases::AssistantKindLabel::Researcher,
         AssistantKindArg::Reviewer => use_cases::AssistantKindLabel::Reviewer,
+        AssistantKindArg::Tester => use_cases::AssistantKindLabel::Tester,
     });
     let assistants = use_cases::list_assistants(config, project, kind_label)?;
     if assistants.is_empty() {
@@ -919,6 +983,10 @@ fn cmd_list_assistants(
             agman::assistant::AssistantKind::Reviewer { .. } => (
                 Config::reviewer_tmux_session(&a.meta.project, &a.meta.name),
                 "reviewer",
+            ),
+            agman::assistant::AssistantKind::Tester { .. } => (
+                Config::tester_tmux_session(&a.meta.project, &a.meta.name),
+                "tester",
             ),
         };
         let status = if a.meta.status == agman::assistant::AssistantStatus::Archived {

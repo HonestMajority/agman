@@ -340,17 +340,19 @@ pub struct ProjectWizard {
 /// Steps in the create-assistant wizard.
 ///
 /// Researchers go directly from `Name` → `Description` (matching the legacy
-/// flow). Reviewers insert a `Worktrees` step between name and description
-/// where the user adds one or more `(repo, branch)` rows.
+/// flow). Worktree-backed assistants insert a `Worktrees` step; testers add
+/// an optional capabilities step before description.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssistantWizardStep {
-    /// Step 0: pick the kind (Researcher | Reviewer).
+    /// Step 0: pick the kind (Researcher | Reviewer | Tester).
     Kind,
     /// Step 1: enter the assistant name.
     Name,
-    /// Step 2 (Reviewer only): edit the (repo, branch) row list.
+    /// Step 2 (Reviewer/Tester only): edit the (repo, branch) row list.
     Worktrees,
-    /// Step 3 (or step 2 for Researcher): enter the description.
+    /// Step 3 (Tester only): optional capability toggles.
+    Capabilities,
+    /// Final step: enter the description.
     Description,
 }
 
@@ -358,6 +360,7 @@ pub enum AssistantWizardStep {
 pub enum AssistantWizardKind {
     Researcher,
     Reviewer,
+    Tester,
 }
 
 /// One editable `(repo, branch)` row in the reviewer wizard.
@@ -395,10 +398,11 @@ pub struct AssistantWizard {
     pub step: AssistantWizardStep,
     pub name_editor: TextArea<'static>,
     pub description_editor: VimTextArea<'static>,
-    /// Reviewer-only: editable `(repo, branch)` rows. The `selected_row` is
+    /// Reviewer/Tester-only: editable `(repo, branch)` rows. The `selected_row` is
     /// the row currently focused for j/k navigation in the worktrees step.
     pub worktree_rows: Vec<ReviewerWorktreeRow>,
     pub selected_row: usize,
+    pub browser_capability: bool,
     pub error_message: Option<String>,
     pub project: String,
 }
@@ -2823,6 +2827,9 @@ impl App {
                             agman::assistant::AssistantKind::Reviewer { .. } => {
                                 Config::reviewer_tmux_session(&project, &name)
                             }
+                            agman::assistant::AssistantKind::Tester { .. } => {
+                                Config::tester_tmux_session(&project, &name)
+                            }
                         };
 
                         if !Tmux::session_exists(&session_name) {
@@ -2876,6 +2883,7 @@ impl App {
                         description_editor: VimTextArea::new(),
                         worktree_rows: vec![ReviewerWorktreeRow::new()],
                         selected_row: 0,
+                        browser_capability: false,
                         error_message: None,
                         project,
                     });
@@ -3223,6 +3231,7 @@ impl App {
                 return Ok(false);
             }
 
+            let global_harness = self.config.harness_kind();
             let Some(wizard) = self.assistant_wizard.as_mut() else {
                 return Ok(false);
             };
@@ -3236,17 +3245,24 @@ impl App {
                     }
                     KeyCode::Char('j')
                     | KeyCode::Down
-                    | KeyCode::Char('k')
-                    | KeyCode::Up
-                    | KeyCode::Char('h')
                     | KeyCode::Char('l')
-                    | KeyCode::Left
                     | KeyCode::Right
-                    | KeyCode::Tab
-                    | KeyCode::BackTab => {
+                    | KeyCode::Tab => {
                         wizard.kind = match wizard.kind {
                             AssistantWizardKind::Researcher => AssistantWizardKind::Reviewer,
+                            AssistantWizardKind::Reviewer => AssistantWizardKind::Tester,
+                            AssistantWizardKind::Tester => AssistantWizardKind::Researcher,
+                        };
+                    }
+                    KeyCode::Char('k')
+                    | KeyCode::Up
+                    | KeyCode::Char('h')
+                    | KeyCode::Left
+                    | KeyCode::BackTab => {
+                        wizard.kind = match wizard.kind {
+                            AssistantWizardKind::Researcher => AssistantWizardKind::Tester,
                             AssistantWizardKind::Reviewer => AssistantWizardKind::Researcher,
+                            AssistantWizardKind::Tester => AssistantWizardKind::Reviewer,
                         };
                     }
                     KeyCode::Enter => {
@@ -3266,7 +3282,9 @@ impl App {
                         // skip straight to description.
                         wizard.step = match wizard.kind {
                             AssistantWizardKind::Researcher => AssistantWizardStep::Description,
-                            AssistantWizardKind::Reviewer => AssistantWizardStep::Worktrees,
+                            AssistantWizardKind::Reviewer | AssistantWizardKind::Tester => {
+                                AssistantWizardStep::Worktrees
+                            }
                         };
                         if matches!(wizard.step, AssistantWizardStep::Description) {
                             wizard.description_editor.set_insert_mode();
@@ -3292,9 +3310,18 @@ impl App {
                                 row.branch_focus = false;
                                 wizard.selected_row += 1;
                             } else {
-                                // Last field of last row — advance to description.
-                                wizard.step = AssistantWizardStep::Description;
-                                wizard.description_editor.set_insert_mode();
+                                // Last field of last row — testers get an
+                                // optional capabilities step first.
+                                wizard.step = match wizard.kind {
+                                    AssistantWizardKind::Tester => {
+                                        AssistantWizardStep::Capabilities
+                                    }
+                                    AssistantWizardKind::Researcher
+                                    | AssistantWizardKind::Reviewer => {
+                                        wizard.description_editor.set_insert_mode();
+                                        AssistantWizardStep::Description
+                                    }
+                                };
                             }
                         }
                         KeyCode::BackTab => {
@@ -3334,8 +3361,16 @@ impl App {
                                 row.branch_focus = false;
                                 wizard.selected_row += 1;
                             } else {
-                                wizard.step = AssistantWizardStep::Description;
-                                wizard.description_editor.set_insert_mode();
+                                wizard.step = match wizard.kind {
+                                    AssistantWizardKind::Tester => {
+                                        AssistantWizardStep::Capabilities
+                                    }
+                                    AssistantWizardKind::Researcher
+                                    | AssistantWizardKind::Reviewer => {
+                                        wizard.description_editor.set_insert_mode();
+                                        AssistantWizardStep::Description
+                                    }
+                                };
                             }
                         }
                         _ => {
@@ -3349,6 +3384,28 @@ impl App {
                         }
                     }
                 }
+                AssistantWizardStep::Capabilities => match key.code {
+                    KeyCode::Esc | KeyCode::BackTab => {
+                        wizard.step = AssistantWizardStep::Worktrees;
+                    }
+                    KeyCode::Enter | KeyCode::Tab => {
+                        wizard.step = AssistantWizardStep::Description;
+                        wizard.description_editor.set_insert_mode();
+                    }
+                    KeyCode::Char(' ')
+                    | KeyCode::Char('h')
+                    | KeyCode::Char('l')
+                    | KeyCode::Left
+                    | KeyCode::Right => {
+                        if !matches!(
+                            global_harness,
+                            agman::harness::HarnessKind::Goose | agman::harness::HarnessKind::Pi
+                        ) {
+                            wizard.browser_capability = !wizard.browser_capability;
+                        }
+                    }
+                    _ => {}
+                },
                 AssistantWizardStep::Description => {
                     let input = Input::from(event.clone());
                     let was_insert = wizard.description_editor.mode() == VimMode::Insert;
@@ -3359,6 +3416,7 @@ impl App {
                         wizard.step = match wizard.kind {
                             AssistantWizardKind::Researcher => AssistantWizardStep::Name,
                             AssistantWizardKind::Reviewer => AssistantWizardStep::Worktrees,
+                            AssistantWizardKind::Tester => AssistantWizardStep::Capabilities,
                         };
                     }
                 }
@@ -3378,6 +3436,7 @@ impl App {
         let project = wizard.project.clone();
         let name = wizard.name_editor.lines().join("").trim().to_string();
         let desc = wizard.description_editor.lines_joined().trim().to_string();
+        let browser_capability = wizard.browser_capability;
 
         if name.is_empty() {
             if let Some(w) = self.assistant_wizard.as_mut() {
@@ -3452,7 +3511,7 @@ impl App {
                     return;
                 }
 
-                let spec = use_cases::ReviewerSpec {
+                let spec = use_cases::WorktreeSpec {
                     branches,
                     parent_dir: None,
                 };
@@ -3478,6 +3537,74 @@ impl App {
                         // user-actionable error for the local-branch case;
                         // surface it verbatim so the user can either fix
                         // the branch state or pick a different one.
+                        if let Some(w) = self.assistant_wizard.as_mut() {
+                            w.error_message = Some(format!("{e}"));
+                            w.step = AssistantWizardStep::Worktrees;
+                        }
+                    }
+                }
+            }
+            AssistantWizardKind::Tester => {
+                let mut branches: Vec<(String, String)> = Vec::new();
+                for row in &wizard.worktree_rows {
+                    let r = row.repo();
+                    let b = row.branch();
+                    if r.is_empty() && b.is_empty() {
+                        continue;
+                    }
+                    if r.is_empty() || b.is_empty() {
+                        if let Some(w) = self.assistant_wizard.as_mut() {
+                            w.error_message = Some(
+                                "Each row needs both a repo and a branch (Ctrl+D to remove)"
+                                    .to_string(),
+                            );
+                            w.step = AssistantWizardStep::Worktrees;
+                        }
+                        return;
+                    }
+                    branches.push((r, b));
+                }
+                if branches.is_empty() {
+                    if let Some(w) = self.assistant_wizard.as_mut() {
+                        w.error_message =
+                            Some("Tester needs at least one (repo, branch) pair".to_string());
+                        w.step = AssistantWizardStep::Worktrees;
+                    }
+                    return;
+                }
+
+                let spec = use_cases::WorktreeSpec {
+                    branches,
+                    parent_dir: None,
+                };
+                let capabilities = agman::assistant::TesterCapabilities {
+                    browser: browser_capability,
+                };
+                match use_cases::create_tester(
+                    &self.config,
+                    &project,
+                    &name,
+                    &desc,
+                    spec,
+                    capabilities,
+                ) {
+                    Ok(_assistant) => {
+                        tracing::info!(project = %project, name = %name, "created tester via wizard");
+                        if let Err(e) =
+                            use_cases::start_assistant_session(&self.config, &project, &name, false)
+                        {
+                            tracing::warn!(
+                                project = %project, name = %name, error = %e,
+                                "failed to start assistant session"
+                            );
+                        }
+                        self.set_status(format!("Created tester: {name}"));
+                        self.assistant_wizard = None;
+                        self.view = View::AssistantList;
+                        self.refresh_assistants();
+                    }
+                    Err(e) => {
+                        tracing::warn!(project = %project, name = %name, error = %e, "failed to create tester");
                         if let Some(w) = self.assistant_wizard.as_mut() {
                             w.error_message = Some(format!("{e}"));
                             w.step = AssistantWizardStep::Worktrees;

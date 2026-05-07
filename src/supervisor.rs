@@ -427,6 +427,7 @@ pub fn start_agent_step(config: &Config, task: &mut Task, agent_name: &str) -> R
         session_dir: session_dir.as_deref(),
         cwd: &working_dir,
         no_alt_screen: matches!(harness_kind, HarnessKind::Codex),
+        capabilities: Default::default(),
         // Task agents are disposable: every step is a fresh session.
         session_key: SessionKey::Auto,
     });
@@ -1268,6 +1269,7 @@ mod tests {
             session_dir: None,
             cwd: &cwd,
             no_alt_screen: false,
+            capabilities: Default::default(),
             session_key: SessionKey::Auto,
         });
         assert!(cmd.contains("--dangerously-skip-permissions"));
@@ -1303,6 +1305,7 @@ mod tests {
                 session_dir: None,
                 cwd: &cwd,
                 no_alt_screen: true,
+                capabilities: Default::default(),
                 session_key: key,
             });
             assert!(
@@ -1324,6 +1327,7 @@ mod tests {
             session_dir: None,
             cwd: &cwd,
             no_alt_screen: true,
+            capabilities: Default::default(),
             session_key: SessionKey::Auto,
         });
         assert!(cmd.starts_with("codex"));

@@ -4,11 +4,15 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::assistant::{Assistant, AssistantKind, AssistantStatus, ReviewerWorktree};
+use crate::assistant::{
+    Assistant, AssistantKind, AssistantStatus, AssistantWorktree, TesterCapabilities,
+};
 use crate::config::Config;
 use crate::flow::{Flow, FlowStep};
 use crate::git::{self, Git};
-use crate::harness::{self, HarnessKind, LaunchContext, RegisterContext, SessionKey};
+use crate::harness::{
+    self, AssistantCapabilities, HarnessKind, LaunchContext, RegisterContext, SessionKey,
+};
 use crate::inbox;
 use crate::project::Project;
 use crate::repo_stats::RepoStats;
@@ -2054,7 +2058,7 @@ pub struct TaskSummary {
     pub queued_count: usize,
 }
 
-/// Summary of an assistant (researcher or reviewer) for the aggregated
+/// Summary of an assistant for the aggregated
 /// status view. The kind is exposed so renderers can group/label as needed.
 pub struct AssistantSummary {
     pub name: String,
@@ -2070,6 +2074,7 @@ pub struct AssistantSummary {
 pub enum AssistantKindLabel {
     Researcher,
     Reviewer,
+    Tester,
 }
 
 /// A group of tasks belonging to a project.
@@ -2123,6 +2128,10 @@ fn load_assistant_summaries(config: &Config, project: &str) -> Vec<AssistantSumm
                 AssistantKind::Reviewer { .. } => (
                     Config::reviewer_tmux_session(&a.meta.project, &a.meta.name),
                     AssistantKindLabel::Reviewer,
+                ),
+                AssistantKind::Tester { .. } => (
+                    Config::tester_tmux_session(&a.meta.project, &a.meta.name),
+                    AssistantKindLabel::Tester,
                 ),
             };
             let status = if Tmux::session_exists(&session) {
@@ -2304,6 +2313,7 @@ pub enum SendTarget {
 pub enum AssistantPrefix {
     Researcher,
     Reviewer,
+    Tester,
 }
 
 impl AssistantPrefix {
@@ -2311,12 +2321,13 @@ impl AssistantPrefix {
         match self {
             AssistantPrefix::Researcher => "researcher",
             AssistantPrefix::Reviewer => "reviewer",
+            AssistantPrefix::Tester => "tester",
         }
     }
 }
 
 const VALID_TARGETS_HINT: &str =
-    "valid targets: chief-of-staff, telegram, <project>, researcher:<project>--<name>, reviewer:<project>--<name>, task:<repo>--<branch>";
+    "valid targets: chief-of-staff, telegram, <project>, researcher:<project>--<name>, reviewer:<project>--<name>, tester:<project>--<name>, task:<repo>--<branch>";
 
 pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     if target.is_empty() {
@@ -2337,6 +2348,7 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     for (prefix_str, prefix) in [
         ("researcher:", AssistantPrefix::Researcher),
         ("reviewer:", AssistantPrefix::Reviewer),
+        ("tester:", AssistantPrefix::Tester),
     ] {
         if let Some(rest) = target.strip_prefix(prefix_str) {
             let pos = rest.find("--").ok_or_else(|| {
@@ -2442,6 +2454,9 @@ fn agent_ref_for(id: String) -> AgentRef {
     } else if let Some(rest) = id.strip_prefix("reviewer:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
         format!("Rv:{name}")
+    } else if let Some(rest) = id.strip_prefix("tester:") {
+        let name = rest.rsplit("--").next().unwrap_or(rest);
+        format!("T:{name}")
     } else {
         format!("PM:{id}")
     };
@@ -2453,6 +2468,7 @@ fn assistant_send_id(a: &Assistant) -> String {
     let prefix = match a.meta.kind {
         AssistantKind::Researcher { .. } => "researcher",
         AssistantKind::Reviewer { .. } => "reviewer",
+        AssistantKind::Tester { .. } => "tester",
     };
     format!("{prefix}:{}--{}", a.meta.project, a.meta.name)
 }
@@ -2460,11 +2476,11 @@ fn assistant_send_id(a: &Assistant) -> String {
 /// Agents reachable from `current` via a Telegram `/ls` switch list.
 ///
 /// - From `"chief-of-staff"`: all PMs (sorted by name) plus all CoS-level
-///   assistants (researchers and reviewers in `project == "chief-of-staff"`)
+///   assistants in `project == "chief-of-staff"`
 ///   with `status == Running`.
 /// - From `"<project>"`: that project's assistants (`Running` only) plus
 ///   `"chief-of-staff"`.
-/// - From `"researcher:<proj>--<name>"` or `"reviewer:<proj>--<name>"`: its
+/// - From `"researcher:<proj>--<name>"`, `"reviewer:<proj>--<name>"`, or `"tester:<proj>--<name>"`: its
 ///   parent (`"chief-of-staff"` if `proj == "chief-of-staff"`, otherwise the
 ///   project) plus `"chief-of-staff"` — de-duplicated by id.
 pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
@@ -2486,7 +2502,7 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
             }
         }
         other => {
-            let assistant_prefix = ["researcher:", "reviewer:"]
+            let assistant_prefix = ["researcher:", "reviewer:", "tester:"]
                 .iter()
                 .find_map(|p| other.strip_prefix(p));
             if let Some(rest) = assistant_prefix {
@@ -3081,6 +3097,7 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
         session_dir: prep.session_dir.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
+        capabilities: Default::default(),
         session_key: prep.session_key(),
     });
 
@@ -3180,6 +3197,7 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
         session_dir: prep.session_dir.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
+        capabilities: Default::default(),
         session_key: prep.session_key(),
     });
 
@@ -3209,18 +3227,19 @@ pub fn agent_session_running(session_name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Assistant management (Researcher + Reviewer)
+// Assistant management (Researcher + Reviewer + Tester)
 // ---------------------------------------------------------------------------
 
 /// Tmux session name for an assistant, dispatched on kind. Researchers keep
 /// the legacy `agman-researcher-…` naming so existing sessions resume after
-/// the assistant rename; reviewers use `agman-reviewer-…`.
+/// the assistant rename; reviewers/testers use kind-specific names.
 fn assistant_tmux_session(meta: &crate::assistant::AssistantMeta) -> String {
     match meta.kind {
         AssistantKind::Researcher { .. } => {
             Config::researcher_tmux_session(&meta.project, &meta.name)
         }
         AssistantKind::Reviewer { .. } => Config::reviewer_tmux_session(&meta.project, &meta.name),
+        AssistantKind::Tester { .. } => Config::tester_tmux_session(&meta.project, &meta.name),
     }
 }
 
@@ -3230,6 +3249,7 @@ fn assistant_send_target_id(meta: &crate::assistant::AssistantMeta) -> String {
     let prefix = match meta.kind {
         AssistantKind::Researcher { .. } => "researcher",
         AssistantKind::Reviewer { .. } => "reviewer",
+        AssistantKind::Tester { .. } => "tester",
     };
     format!("{prefix}:{}--{}", meta.project, meta.name)
 }
@@ -3254,15 +3274,15 @@ pub fn create_researcher(
 }
 
 /// Resolved (`(repo, branch)`, worktree path, `agman_created`) for a reviewer
-/// before persisting the assistant. Built by `resolve_reviewer_worktrees`.
-type ReviewerEntries = Vec<ReviewerWorktree>;
+/// before persisting the assistant. Built by `resolve_assistant_worktrees`.
+type AssistantEntries = Vec<AssistantWorktree>;
 
 /// Spec for a reviewer at create time: which `(repo, branch)` pairs to scope
 /// it to. The `parent_dir` knob mirrors the task code path — non-`None` means
 /// repos live outside `config.repos_dir`. Used only by tests today; the CLI
 /// always passes `None`.
 #[derive(Debug, Clone)]
-pub struct ReviewerSpec {
+pub struct WorktreeSpec {
     pub branches: Vec<(String, String)>,
     pub parent_dir: Option<PathBuf>,
 }
@@ -3284,22 +3304,50 @@ pub fn create_reviewer(
     project: &str,
     name: &str,
     description: &str,
-    spec: ReviewerSpec,
+    spec: WorktreeSpec,
 ) -> Result<Assistant> {
     if spec.branches.is_empty() {
         anyhow::bail!("reviewer requires at least one --branch <repo>:<branch>");
     }
-    let worktrees = resolve_reviewer_worktrees(config, &spec)?;
+    let worktrees = resolve_assistant_worktrees(config, &spec)?;
     let kind = AssistantKind::Reviewer { worktrees };
     create_assistant(config, project, name, description, kind)
 }
 
+pub fn create_tester(
+    config: &Config,
+    project: &str,
+    name: &str,
+    description: &str,
+    spec: WorktreeSpec,
+    capabilities: TesterCapabilities,
+) -> Result<Assistant> {
+    if spec.branches.is_empty() {
+        anyhow::bail!("tester requires at least one --branch <repo>:<branch>");
+    }
+    let worktrees = resolve_assistant_worktrees(config, &spec)?;
+    let harness_kind = config.harness_kind();
+    if capabilities.browser && matches!(harness_kind, HarnessKind::Goose | HarnessKind::Pi) {
+        let note = format!(
+            "note: browser capability not available on harness {}; tester spawned without it",
+            harness_kind
+        );
+        tracing::warn!(harness = %harness_kind, "browser capability not available; tester spawned without it");
+        println!("{note}");
+    }
+    let kind = AssistantKind::Tester {
+        worktrees,
+        capabilities,
+    };
+    create_assistant(config, project, name, description, kind)
+}
+
 /// Walk the `(repo, branch)` list applying the three-step decision tree.
-/// Returns the resolved `ReviewerWorktree` entries on success. On failure,
+/// Returns the resolved `AssistantWorktree` entries on success. On failure,
 /// returns the first error encountered without creating any worktrees that
 /// were resolved by step 3 in earlier iterations — callers should treat the
 /// reviewer as not-created.
-fn resolve_reviewer_worktrees(config: &Config, spec: &ReviewerSpec) -> Result<ReviewerEntries> {
+fn resolve_assistant_worktrees(config: &Config, spec: &WorktreeSpec) -> Result<AssistantEntries> {
     // Two-phase to honour the "no littering" rule: phase 1 classifies every
     // entry without side effects, bailing on the local-branch-no-worktree
     // case; phase 2 actually creates worktrees from origin for entries that
@@ -3339,7 +3387,7 @@ fn resolve_reviewer_worktrees(config: &Config, spec: &ReviewerSpec) -> Result<Re
     for (repo, branch, plan) in planned {
         match plan {
             Plan::Existing { path } => {
-                entries.push(ReviewerWorktree {
+                entries.push(AssistantWorktree {
                     repo,
                     branch,
                     path,
@@ -3348,7 +3396,7 @@ fn resolve_reviewer_worktrees(config: &Config, spec: &ReviewerSpec) -> Result<Re
             }
             Plan::FromOrigin => {
                 let path = Git::create_worktree_from_origin(config, &repo, &branch, parent_dir)?;
-                entries.push(ReviewerWorktree {
+                entries.push(AssistantWorktree {
                     repo,
                     branch,
                     path,
@@ -3383,6 +3431,7 @@ fn create_assistant(
         kind = match kind {
             AssistantKind::Researcher { .. } => "researcher",
             AssistantKind::Reviewer { .. } => "reviewer",
+            AssistantKind::Tester { .. } => "tester",
         },
         "creating assistant"
     );
@@ -3424,7 +3473,7 @@ pub fn start_assistant_session(
         && chat_id.as_deref().is_some_and(|c| !c.is_empty());
 
     // Kind-dispatched prompt + working-dir resolution.
-    let (prompt, work_dir, agent_base, session_name) = match &assistant.meta.kind {
+    let (prompt, work_dir, agent_base, session_name, capabilities) = match &assistant.meta.kind {
         AssistantKind::Researcher { .. } => {
             let prompt = build_researcher_prompt(telegram_enabled, project, name);
             let work_dir = resolve_researcher_work_dir(config, &assistant);
@@ -3433,6 +3482,7 @@ pub fn start_assistant_session(
                 work_dir,
                 format!("agman-r-{project}--{name}"),
                 Config::researcher_tmux_session(project, name),
+                AssistantCapabilities::default(),
             )
         }
         AssistantKind::Reviewer { worktrees } => {
@@ -3443,8 +3493,38 @@ pub fn start_assistant_session(
                 cwd,
                 format!("agman-rv-{project}--{name}"),
                 Config::reviewer_tmux_session(project, name),
+                AssistantCapabilities::default(),
             )
         }
+        AssistantKind::Tester {
+            worktrees,
+            capabilities,
+        } => {
+            let prompt = build_tester_prompt(
+                telegram_enabled,
+                project,
+                name,
+                worktrees,
+                *capabilities,
+                kind,
+            );
+            let cwd = worktrees.first().map(|w| w.path.clone());
+            (
+                prompt,
+                cwd,
+                format!("agman-t-{project}--{name}"),
+                Config::tester_tmux_session(project, name),
+                AssistantCapabilities {
+                    browser: capabilities.browser,
+                },
+            )
+        }
+    };
+
+    let assistant_kind = match &assistant.meta.kind {
+        AssistantKind::Researcher { .. } => "researcher",
+        AssistantKind::Reviewer { .. } => "reviewer",
+        AssistantKind::Tester { .. } => "tester",
     };
 
     tracing::info!(
@@ -3454,7 +3534,7 @@ pub fn start_assistant_session(
         telegram_enabled,
         harness = %kind,
         force_fresh,
-        kind = if assistant.is_researcher() { "researcher" } else { "reviewer" },
+        kind = assistant_kind,
         "starting assistant session"
     );
 
@@ -3477,6 +3557,14 @@ pub fn start_assistant_session(
                 prep.cwd.display()
             )
         })?;
+    harness
+        .ensure_capabilities_configured(&capabilities)
+        .with_context(|| {
+            format!(
+                "failed to configure assistant capabilities for '{}--{}'",
+                project, name
+            )
+        })?;
     let cmd = harness.build_session_command(&LaunchContext {
         identity: &prompt,
         name: &prep.session_name,
@@ -3484,6 +3572,7 @@ pub fn start_assistant_session(
         session_dir: prep.session_dir.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: matches!(kind, HarnessKind::Codex),
+        capabilities,
         session_key: prep.session_key(),
     });
 
@@ -3564,6 +3653,7 @@ pub fn list_assistants(
                     AssistantKind::Researcher { .. },
                     AssistantKindLabel::Researcher
                 ) | (AssistantKind::Reviewer { .. }, AssistantKindLabel::Reviewer)
+                    | (AssistantKind::Tester { .. }, AssistantKindLabel::Tester)
             )
         });
     }
@@ -3575,8 +3665,8 @@ pub fn list_researchers(config: &Config, project: Option<&str>) -> Result<Vec<As
     list_assistants(config, project, Some(AssistantKindLabel::Researcher))
 }
 
-/// Archive an assistant. Researchers: kill tmux + flip status. Reviewers:
-/// the same plus per-worktree cleanup of any entries we created (`git
+/// Archive an assistant. Researchers: kill tmux + flip status. Reviewers and
+/// testers add per-worktree cleanup of any entries we created (`git
 /// worktree remove --force` and `git branch -D` per `agman_created=true`
 /// entry). Worktrees that pre-existed when the reviewer was created are left
 /// alone — see plan for details.
@@ -3593,19 +3683,22 @@ pub fn archive_assistant(config: &Config, project: &str, name: &str) -> Result<(
     assistant.meta.status = AssistantStatus::Archived;
     assistant.save_meta()?;
 
-    if let AssistantKind::Reviewer { worktrees } = &assistant.meta.kind {
-        for entry in worktrees {
-            if !entry.agman_created {
-                continue;
-            }
-            let repo_path = config.repo_path(&entry.repo);
-            if let Err(e) = Git::remove_worktree(&repo_path, &entry.path) {
-                tracing::warn!(repo = %entry.repo, branch = %entry.branch, error = %e, "failed to remove reviewer worktree");
-            }
-            if let Err(e) = Git::delete_branch(&repo_path, &entry.branch) {
-                tracing::warn!(repo = %entry.repo, branch = %entry.branch, error = %e, "failed to delete reviewer branch");
+    match &assistant.meta.kind {
+        AssistantKind::Reviewer { worktrees } | AssistantKind::Tester { worktrees, .. } => {
+            for entry in worktrees {
+                if !entry.agman_created {
+                    continue;
+                }
+                let repo_path = config.repo_path(&entry.repo);
+                if let Err(e) = Git::remove_worktree(&repo_path, &entry.path) {
+                    tracing::warn!(repo = %entry.repo, branch = %entry.branch, error = %e, "failed to remove assistant worktree");
+                }
+                if let Err(e) = Git::delete_branch(&repo_path, &entry.branch) {
+                    tracing::warn!(repo = %entry.repo, branch = %entry.branch, error = %e, "failed to delete assistant branch");
+                }
             }
         }
+        AssistantKind::Researcher { .. } => {}
     }
 
     tracing::info!(project = project, name = name, "assistant archived");
@@ -4025,7 +4118,7 @@ You have full agman command access. When the CEO directs you to do something —
 
 ## Information Intake
 
-PMs send you summaries at natural stopping points: a task finished, a task blocked, a researcher reported back, a significant progress milestone. Read every summary, hold it in working memory, but do not respond unless the PM asked you a question or you need to nudge them on something the CEO has pre-authorized.
+PMs send you summaries at natural stopping points: a task finished, a task blocked, a researcher or tester reported back, a significant progress milestone. Read every summary, hold it in working memory, but do not respond unless the PM asked you a question or you need to nudge them on something the CEO has pre-authorized.
 
 Always cross-reference your mental model against current ground truth before answering status questions. Never reply purely from memory — verify with:
 - agman list-projects — overview of all projects with PM status and task counts
@@ -4043,6 +4136,7 @@ You CAN do anything the CEO directs you to do. Available write commands:
 - agman feedback <task-id> "..."
 - agman send-message <target> --from chief-of-staff
 - agman create-researcher <name> [--project <name>]
+- agman create-tester --name <name> [--project <name>] --branch <repo>:<branch> [--browser]
 - agman archive-researcher <name> [--project <name>]
 - agman respawn-agent <target> (rare)
 - All project-template commands (list-templates, get-template, etc.)
@@ -4233,7 +4327,7 @@ pub fn build_reviewer_prompt(
     telegram_enabled: bool,
     project_name: &str,
     reviewer_name: &str,
-    worktrees: &[ReviewerWorktree],
+    worktrees: &[AssistantWorktree],
 ) -> String {
     let template = if project_name == "chief-of-staff" {
         DEFAULT_CHIEF_OF_STAFF_REVIEWER_PROMPT_TEMPLATE
@@ -4289,6 +4383,81 @@ Additional rules:
     );
 
     format!("{base}{telegram_section}")
+}
+
+pub fn build_tester_prompt(
+    telegram_enabled: bool,
+    project_name: &str,
+    tester_name: &str,
+    worktrees: &[AssistantWorktree],
+    caps: TesterCapabilities,
+    harness_kind: HarnessKind,
+) -> String {
+    let template = if project_name == "chief-of-staff" {
+        DEFAULT_CHIEF_OF_STAFF_TESTER_PROMPT_TEMPLATE
+    } else {
+        DEFAULT_TESTER_PROMPT_TEMPLATE
+    };
+    let browser_block = if caps.browser
+        && matches!(harness_kind, HarnessKind::Claude | HarnessKind::Codex)
+    {
+        "\n## Browser\n\nYou have browser-driving tools available. Use them to interact with the running app.\n"
+    } else {
+        ""
+    };
+    let base = template
+        .replace("{{PROJECT_NAME}}", project_name)
+        .replace("{{TESTER_NAME}}", tester_name)
+        .replace("{{WORKTREES}}", &format_worktree_block(worktrees))
+        .replace("{{BROWSER_BLOCK}}", browser_block);
+    if !telegram_enabled {
+        return base;
+    }
+
+    let telegram_section = format!(
+        r#"
+
+## Telegram
+
+Telegram is connected and the user can switch chats over to you directly. When that happens, messages tagged `[Message from telegram]` will appear in your tmux session.
+
+**The one rule you must never break: acknowledge first, work second, report third.**
+
+`[Message from telegram]` means the user is on their phone and **cannot** see your tmux session. The only way to reach them is via the Telegram send command. The user is staring at their phone waiting for any sign that you saw the message. Silence while you test is not acceptable.
+
+Every `[Message from telegram]` triggers this exact sequence:
+
+1. **IMMEDIATELY acknowledge** — Your very first action, before any testing work, is to send a short acknowledgment via Telegram (e.g. "Got it, looking into this now" or "On it — will report back shortly"). Do this BEFORE running any other command.
+2. **Do the work** — Then proceed with the testing.
+3. **Report back** — When the testing is done (or you've hit a decision point), send a follow-up Telegram message with what you found.
+
+Send command:
+```
+cat <<'AGMAN_MSG' | agman send-message telegram --from "tester:{project_name}--{tester_name}"
+<your reply>
+AGMAN_MSG
+```
+
+Additional rules:
+- Keep Telegram replies concise — this is a mobile chat, not a report.
+- The user sees `[T:{tester_name}]` prepended to your replies, so they always know who is speaking.
+- Never leave the user waiting in silence while you work. Acknowledge first, work second, report third.
+"#
+    );
+
+    format!("{base}{telegram_section}")
+}
+
+fn format_worktree_block(worktrees: &[AssistantWorktree]) -> String {
+    if worktrees.is_empty() {
+        "(no worktrees configured)".to_string()
+    } else {
+        worktrees
+            .iter()
+            .map(|w| format!("- {}:{} → {}", w.repo, w.branch, w.path.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 const DEFAULT_REVIEWER_PROMPT_TEMPLATE: &str = r#"You are a code reviewer assistant for project "{{PROJECT_NAME}}", named "{{REVIEWER_NAME}}".
@@ -4355,6 +4524,72 @@ AGMAN_MSG
 Keep findings concise and specific — file paths, line numbers, and the actual issue. The Chief of Staff will follow up with more questions if they need to dig deeper.
 "#;
 
+const DEFAULT_TESTER_PROMPT_TEMPLATE: &str = r#"You are a tester assistant for project "{{PROJECT_NAME}}", named "{{TESTER_NAME}}".
+
+Your job is to verify behavior — run tests, exercise endpoints, interact with the app, and report what you find. You are stateless between questions but the session is long-lived: the PM may follow up with more questions on the same test pass.
+
+## Worktrees
+
+{{WORKTREES}}
+
+The local filesystem is authoritative. Treat each worktree as the source of truth for what the branch currently looks like.
+
+{{BROWSER_BLOCK}}
+## Hard rules
+
+- You may write to the worktree (logs, screenshots, coverage reports, scratch scripts). You may run dev servers, seed local databases, and execute test runners.
+- Do **not** commit, tag, or push. No `git commit`, no `git tag`, no `git push`.
+- Do **not** post to GitHub. No `gh pr review`, no `gh pr comment`, no comments, no labels, no merges.
+- Do **not** open a PR or interact with one. PR-URL → branch translation is the PM's job; you only see the worktrees above.
+- Do **not** start detached processes. No `nohup`, `disown`, `setsid`, or similar backgrounding that would survive tmux cleanup.
+
+## Communication
+
+Messages from the PM appear in your tmux session tagged `[Message from {{PROJECT_NAME}}]:`. The PM **cannot** see your tmux session — you MUST reply using `agman send-message`. Never just type a response in tmux expecting the PM to see it.
+
+Reply via:
+```
+cat <<'AGMAN_MSG' | agman send-message {{PROJECT_NAME}} --from "tester:{{PROJECT_NAME}}--{{TESTER_NAME}}"
+<what you tested and what you found>
+AGMAN_MSG
+```
+
+Keep findings concise and specific — commands run, behavior observed, failures, logs, screenshots, and any uncertainty. The PM will follow up with more questions if they need to dig deeper.
+"#;
+
+const DEFAULT_CHIEF_OF_STAFF_TESTER_PROMPT_TEMPLATE: &str = r#"You are a tester assistant for the Chief of Staff, named "{{TESTER_NAME}}".
+
+Your job is to verify behavior — run tests, exercise endpoints, interact with the app, and report what you find. You are stateless between questions but the session is long-lived: the CoS may follow up with more questions on the same test pass.
+
+## Worktrees
+
+{{WORKTREES}}
+
+The local filesystem is authoritative. Treat each worktree as the source of truth for what the branch currently looks like.
+
+{{BROWSER_BLOCK}}
+## Hard rules
+
+- You may write to the worktree (logs, screenshots, coverage reports, scratch scripts). You may run dev servers, seed local databases, and execute test runners.
+- Do **not** commit, tag, or push. No `git commit`, no `git tag`, no `git push`.
+- Do **not** post to GitHub. No `gh pr review`, no `gh pr comment`, no comments, no labels, no merges.
+- Do **not** open a PR or interact with one. PR-URL → branch translation is the CoS's job; you only see the worktrees above.
+- Do **not** start detached processes. No `nohup`, `disown`, `setsid`, or similar backgrounding that would survive tmux cleanup.
+
+## Communication
+
+Messages from the Chief of Staff appear tagged `[Message from chief-of-staff]:`. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
+
+Reply via:
+```
+cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "tester:chief-of-staff--{{TESTER_NAME}}"
+<what you tested and what you found>
+AGMAN_MSG
+```
+
+Keep findings concise and specific — commands run, behavior observed, failures, logs, screenshots, and any uncertainty. The Chief of Staff will follow up with more questions if they need to dig deeper.
+"#;
+
 const DEFAULT_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for project "{{PROJECT_NAME}}", named "{{RESEARCHER_NAME}}".
 
 Your role is to explore, analyze, and answer questions. You are NOT here to make code changes — only to investigate and report findings.
@@ -4417,7 +4652,7 @@ AGMAN_MSG
 
 ### Stopping-Point Summaries
 
-At every natural stopping point — task finished, task blocked, researcher reported back, significant progress — send a brief summary to the Chief of Staff:
+At every natural stopping point — task finished, task blocked, researcher or tester reported back, significant progress — send a brief summary to the Chief of Staff:
 
 cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from {{PROJECT_NAME}}
 <one-paragraph summary: what was done, where things are, why you stopped>
@@ -4433,8 +4668,8 @@ Direct CEO messages always take priority over CoS direction. If they conflict, f
 
 ## Reactive Behavior
 
-- Relay completions: When a task or researcher completes/fails/needs input, send a brief summary to the Chief of Staff with outcome details.
-- Do NOT poll: Tasks and researchers notify you — wait for notifications.
+- Relay completions: When a task, researcher, or tester completes/fails/needs input, send a brief summary to the Chief of Staff with outcome details.
+- Do NOT poll: Tasks, researchers, and testers notify you — wait for notifications.
 
 ## Message Routing
 
@@ -4445,6 +4680,11 @@ AGMAN_MSG
 
 [Message from researcher:{{PROJECT_NAME}}--<name>]: — researcher reports. Reply via send-message.
 cat <<'AGMAN_MSG' | agman send-message researcher:{{PROJECT_NAME}}--<researcher-name> --from {{PROJECT_NAME}}
+<your reply>
+AGMAN_MSG
+
+[Message from tester:{{PROJECT_NAME}}--<name>]: — tester reports. Reply via send-message.
+cat <<'AGMAN_MSG' | agman send-message tester:{{PROJECT_NAME}}--<tester-name> --from {{PROJECT_NAME}}
 <your reply>
 AGMAN_MSG
 

@@ -433,6 +433,7 @@ pub fn parse_sender_tag(text: &str) -> Option<&str> {
 /// - `"R:<name>"` → `Some("researcher:<project>--<name>")` when exactly one
 ///   running researcher matches; `None` for zero or multiple matches.
 /// - `"Rv:<name>"` → `Some("reviewer:<project>--<name>")` with the same
+/// - `"T:<name>"` → `Some("tester:<project>--<name>")` with the same
 ///   uniqueness rules.
 ///
 /// Ambiguous matches are logged via `tracing::warn`.
@@ -450,6 +451,8 @@ pub fn resolve_tag_to_agent(config: &Config, tag: &str) -> Option<String> {
         }
     } else if let Some(name) = tag.strip_prefix("Rv:") {
         resolve_assistant_tag(config, name, AssistantKindFilter::Reviewer)
+    } else if let Some(name) = tag.strip_prefix("T:") {
+        resolve_assistant_tag(config, name, AssistantKindFilter::Tester)
     } else if let Some(name) = tag.strip_prefix("R:") {
         resolve_assistant_tag(config, name, AssistantKindFilter::Researcher)
     } else {
@@ -466,6 +469,7 @@ pub fn resolve_tag_to_agent(config: &Config, tag: &str) -> Option<String> {
 enum AssistantKindFilter {
     Researcher,
     Reviewer,
+    Tester,
 }
 
 fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter) -> Option<String> {
@@ -491,7 +495,7 @@ fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter)
                 ) | (
                     AssistantKind::Reviewer { .. },
                     AssistantKindFilter::Reviewer
-                )
+                ) | (AssistantKind::Tester { .. }, AssistantKindFilter::Tester)
             )
         })
         .collect();
@@ -501,6 +505,7 @@ fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter)
             let prefix = match kind {
                 AssistantKindFilter::Researcher => "researcher",
                 AssistantKindFilter::Reviewer => "reviewer",
+                AssistantKindFilter::Tester => "tester",
             };
             Some(format!("{prefix}:{}--{}", a.meta.project, a.meta.name))
         }
@@ -703,6 +708,7 @@ fn append_dead_letter(path: &Path, msg: &inbox::InboxMessage, reason: &str) -> s
 /// - `"chief-of-staff"` → `"CoS"`
 /// - `"researcher:<project>--<name>"` → `"R:<name>"` (text after the last `--`)
 /// - `"reviewer:<project>--<name>"` → `"Rv:<name>"` (text after the last `--`)
+/// - `"tester:<project>--<name>"` → `"T:<name>"` (text after the last `--`)
 /// - anything else → `"PM:<from>"` (default — project names live here)
 pub fn format_sender_tag(from: &str) -> String {
     if from == "chief-of-staff" {
@@ -715,6 +721,10 @@ pub fn format_sender_tag(from: &str) -> String {
     if let Some(rest) = from.strip_prefix("reviewer:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
         return format!("Rv:{name}");
+    }
+    if let Some(rest) = from.strip_prefix("tester:") {
+        let name = rest.rsplit("--").next().unwrap_or(rest);
+        return format!("T:{name}");
     }
     format!("PM:{from}")
 }
@@ -905,7 +915,7 @@ pub fn parent_of(current: &str) -> Option<String> {
     if current == "chief-of-staff" {
         return None;
     }
-    for prefix in ["researcher:", "reviewer:"] {
+    for prefix in ["researcher:", "reviewer:", "tester:"] {
         if let Some(rest) = current.strip_prefix(prefix) {
             if let Some(pos) = rest.find("--") {
                 let project = &rest[..pos];

@@ -3239,7 +3239,7 @@ fn create_assistant_reviewer_with_existing_worktree_records_agman_created_false(
         "reviews",
         "rv1",
         "review feat-x",
-        use_cases::ReviewerSpec {
+        use_cases::WorktreeSpec {
             branches: vec![("myrepo".to_string(), "feat-x".to_string())],
             parent_dir: None,
         },
@@ -3323,7 +3323,7 @@ fn create_assistant_reviewer_origin_only_branch_creates_worktree() {
         "reviews",
         "rv2",
         "review feat-y",
-        use_cases::ReviewerSpec {
+        use_cases::WorktreeSpec {
             branches: vec![("myrepo".to_string(), "feat-y".to_string())],
             parent_dir: None,
         },
@@ -3372,7 +3372,7 @@ fn create_assistant_reviewer_local_branch_no_worktree_bails() {
         "reviews",
         "rv3",
         "should fail",
-        use_cases::ReviewerSpec {
+        use_cases::WorktreeSpec {
             branches: vec![("myrepo".to_string(), "feat-z".to_string())],
             parent_dir: None,
         },
@@ -3414,13 +3414,13 @@ fn archive_assistant_reviewer_cleans_only_agman_created_entries() {
 
     let kind = AssistantKind::Reviewer {
         worktrees: vec![
-            agman::assistant::ReviewerWorktree {
+            agman::assistant::AssistantWorktree {
                 repo: "myrepo".to_string(),
                 branch: "keep-me".to_string(),
                 path: preexisting.clone(),
                 agman_created: false,
             },
-            agman::assistant::ReviewerWorktree {
+            agman::assistant::AssistantWorktree {
                 repo: "myrepo".to_string(),
                 branch: "owned-by-agman".to_string(),
                 path: agman_created_path.clone(),
@@ -3503,7 +3503,7 @@ fn use_case_send_message_to_researcher() {
 
 #[test]
 fn send_message_with_reviewer_prefix_routes_to_assistant_inbox() {
-    use agman::assistant::{Assistant, AssistantKind, ReviewerWorktree};
+    use agman::assistant::{Assistant, AssistantKind, AssistantWorktree};
 
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
@@ -3517,7 +3517,7 @@ fn send_message_with_reviewer_prefix_routes_to_assistant_inbox() {
         "rv-route",
         "",
         AssistantKind::Reviewer {
-            worktrees: vec![ReviewerWorktree {
+            worktrees: vec![AssistantWorktree {
                 repo: "myrepo".to_string(),
                 branch: "feat".to_string(),
                 path: tmp.path().to_path_buf(),
@@ -3538,6 +3538,441 @@ fn send_message_with_reviewer_prefix_routes_to_assistant_inbox() {
     let inbox_path = config.assistant_inbox("reviews", "rv-route");
     let contents = std::fs::read_to_string(&inbox_path).unwrap();
     assert!(contents.contains("Take a look at the diff"));
+}
+
+// ---------------------------------------------------------------------------
+// Tester assistant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_assistant_tester_with_existing_worktree_records_agman_created_false() {
+    use agman::assistant::{AssistantKind, TesterCapabilities};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+    let _repo = init_test_repo(&tmp, "myrepo");
+
+    let wt =
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "feat-x", None, None).unwrap();
+    assert!(wt.exists());
+
+    let assistant = use_cases::create_tester(
+        &config,
+        "reviews",
+        "t1",
+        "test feat-x",
+        use_cases::WorktreeSpec {
+            branches: vec![("myrepo".to_string(), "feat-x".to_string())],
+            parent_dir: None,
+        },
+        TesterCapabilities::default(),
+    )
+    .unwrap();
+
+    let AssistantKind::Tester {
+        worktrees,
+        capabilities,
+    } = &assistant.meta.kind
+    else {
+        panic!("expected Tester kind");
+    };
+    assert!(!capabilities.browser);
+    assert_eq!(worktrees.len(), 1);
+    assert_eq!(worktrees[0].repo, "myrepo");
+    assert_eq!(worktrees[0].branch, "feat-x");
+    assert_eq!(
+        worktrees[0].path.canonicalize().unwrap(),
+        wt.canonicalize().unwrap()
+    );
+    assert!(!worktrees[0].agman_created);
+}
+
+#[test]
+fn create_assistant_tester_origin_only_branch_creates_worktree() {
+    use agman::assistant::{AssistantKind, TesterCapabilities};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+
+    let origin_path = init_test_repo_at(tmp.path(), "myrepo-origin");
+    let run_in = |dir: &std::path::Path, args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git failed")
+    };
+    run_in(&origin_path, &["checkout", "-b", "feat-y"]);
+    std::fs::write(origin_path.join("hello.txt"), "hi").unwrap();
+    run_in(&origin_path, &["add", "."]);
+    run_in(&origin_path, &["commit", "-m", "feat-y commit"]);
+    run_in(&origin_path, &["checkout", "main"]);
+
+    let repos_dir = config.repos_dir.clone();
+    std::fs::create_dir_all(&repos_dir).unwrap();
+    let clone_path = repos_dir.join("myrepo");
+    std::process::Command::new("git")
+        .args([
+            "clone",
+            origin_path.to_str().unwrap(),
+            clone_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("clone failed");
+
+    assert!(
+        agman::git::Git::find_worktree_for_branch(&clone_path, "feat-y")
+            .unwrap()
+            .is_none()
+    );
+    assert!(!agman::git::Git::local_branch_exists(&clone_path, "feat-y"));
+
+    let assistant = use_cases::create_tester(
+        &config,
+        "reviews",
+        "t2",
+        "test feat-y",
+        use_cases::WorktreeSpec {
+            branches: vec![("myrepo".to_string(), "feat-y".to_string())],
+            parent_dir: None,
+        },
+        TesterCapabilities::default(),
+    )
+    .unwrap();
+
+    let AssistantKind::Tester { worktrees, .. } = &assistant.meta.kind else {
+        panic!("expected Tester kind");
+    };
+    assert_eq!(worktrees.len(), 1);
+    assert_eq!(worktrees[0].repo, "myrepo");
+    assert_eq!(worktrees[0].branch, "feat-y");
+    assert!(worktrees[0].path.exists());
+    assert!(worktrees[0].agman_created);
+    assert!(agman::git::Git::local_branch_exists(&clone_path, "feat-y"));
+}
+
+#[test]
+fn create_assistant_tester_local_branch_no_worktree_bails() {
+    use agman::assistant::TesterCapabilities;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+    let repo_path = init_test_repo(&tmp, "myrepo");
+
+    std::process::Command::new("git")
+        .args(["branch", "feat-z"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    assert!(agman::git::Git::local_branch_exists(&repo_path, "feat-z"));
+
+    let err = use_cases::create_tester(
+        &config,
+        "reviews",
+        "t3",
+        "should fail",
+        use_cases::WorktreeSpec {
+            branches: vec![("myrepo".to_string(), "feat-z".to_string())],
+            parent_dir: None,
+        },
+        TesterCapabilities::default(),
+    )
+    .expect_err("should bail on local-branch-without-worktree");
+
+    let msg = format!("{err:#}");
+    assert!(msg.contains("feat-z") && msg.contains("not checked out in a worktree"));
+    assert!(!config.assistant_dir("reviews", "t3").exists());
+}
+
+#[test]
+fn archive_assistant_tester_cleans_only_agman_created_entries() {
+    use agman::assistant::{AssistantKind, AssistantWorktree, TesterCapabilities};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+    let repo_path = init_test_repo(&tmp, "myrepo");
+
+    let preexisting =
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "keep-me", None, None).unwrap();
+    let agman_created_path = config.worktree_path("myrepo", "owned-by-agman");
+    agman::git::Git::create_worktree_quiet(&config, "myrepo", "owned-by-agman", None, None)
+        .unwrap();
+
+    let kind = AssistantKind::Tester {
+        worktrees: vec![
+            AssistantWorktree {
+                repo: "myrepo".to_string(),
+                branch: "keep-me".to_string(),
+                path: preexisting.clone(),
+                agman_created: false,
+            },
+            AssistantWorktree {
+                repo: "myrepo".to_string(),
+                branch: "owned-by-agman".to_string(),
+                path: agman_created_path.clone(),
+                agman_created: true,
+            },
+        ],
+        capabilities: TesterCapabilities::default(),
+    };
+    let _assistant =
+        agman::assistant::Assistant::create(&config, "reviews", "t4", "test", kind).unwrap();
+
+    use_cases::archive_assistant(&config, "reviews", "t4").unwrap();
+
+    assert!(!agman_created_path.exists());
+    assert!(!agman::git::Git::local_branch_exists(
+        &repo_path,
+        "owned-by-agman"
+    ));
+    assert!(preexisting.exists());
+    assert!(agman::git::Git::local_branch_exists(&repo_path, "keep-me"));
+
+    let reloaded =
+        agman::assistant::Assistant::load(config.assistant_dir("reviews", "t4")).unwrap();
+    assert_eq!(
+        reloaded.meta.status,
+        agman::assistant::AssistantStatus::Archived
+    );
+}
+
+#[test]
+fn send_message_with_tester_prefix_routes_to_assistant_inbox() {
+    use agman::assistant::{Assistant, AssistantKind, AssistantWorktree, TesterCapabilities};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+
+    let _ = Assistant::create(
+        &config,
+        "reviews",
+        "t-route",
+        "",
+        AssistantKind::Tester {
+            worktrees: vec![AssistantWorktree {
+                repo: "myrepo".to_string(),
+                branch: "feat".to_string(),
+                path: tmp.path().to_path_buf(),
+                agman_created: false,
+            }],
+            capabilities: TesterCapabilities::default(),
+        },
+    )
+    .unwrap();
+
+    use_cases::send_message(
+        &config,
+        "tester:reviews--t-route",
+        "reviews",
+        "Please exercise the app",
+    )
+    .unwrap();
+
+    let inbox_path = config.assistant_inbox("reviews", "t-route");
+    let contents = std::fs::read_to_string(&inbox_path).unwrap();
+    assert!(contents.contains("Please exercise the app"));
+}
+
+#[derive(Clone)]
+struct WarnCaptureLayer {
+    events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl<S> tracing_subscriber::Layer<S> for WarnCaptureLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() != tracing::Level::WARN {
+            return;
+        }
+        let mut visitor = WarnVisitor(String::new());
+        event.record(&mut visitor);
+        self.events.lock().unwrap().push(visitor.0);
+    }
+}
+
+struct WarnVisitor(String);
+
+impl tracing::field::Visit for WarnVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.push_str(&format!("{}={value:?};", field.name()));
+    }
+}
+
+fn create_browser_tester_on_harness(harness_kind: agman::harness::HarnessKind) {
+    use agman::assistant::{AssistantKind, TesterCapabilities};
+    use tracing_subscriber::prelude::*;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    use_cases::save_harness(&config, harness_kind).unwrap();
+    let _project = create_test_project(&config, "reviews");
+    let _repo = init_test_repo(&tmp, "myrepo");
+    let wt = agman::git::Git::create_worktree_quiet(&config, "myrepo", "feat-browser", None, None)
+        .unwrap();
+    assert!(wt.exists());
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let layer = WarnCaptureLayer {
+        events: events.clone(),
+    };
+    let subscriber = tracing_subscriber::registry().with(layer);
+    let assistant = tracing::subscriber::with_default(subscriber, || {
+        use_cases::create_tester(
+            &config,
+            "reviews",
+            "browser",
+            "test with browser",
+            use_cases::WorktreeSpec {
+                branches: vec![("myrepo".to_string(), "feat-browser".to_string())],
+                parent_dir: None,
+            },
+            TesterCapabilities { browser: true },
+        )
+    })
+    .unwrap();
+
+    let AssistantKind::Tester { capabilities, .. } = &assistant.meta.kind else {
+        panic!("expected Tester kind");
+    };
+    assert!(capabilities.browser);
+    assert!(events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event.contains("browser capability not available")));
+}
+
+#[test]
+fn create_tester_with_browser_on_goose_logs_warning_and_proceeds() {
+    create_browser_tester_on_harness(agman::harness::HarnessKind::Goose);
+}
+
+#[test]
+fn create_tester_with_browser_on_pi_logs_warning_and_proceeds() {
+    create_browser_tester_on_harness(agman::harness::HarnessKind::Pi);
+}
+
+#[test]
+fn claude_build_session_command_includes_chrome_when_browser_capability_set() {
+    use agman::harness::{AssistantCapabilities, HarnessKind, LaunchContext, SessionKey};
+
+    let cwd = tempfile::tempdir().unwrap();
+    let h = HarnessKind::Claude.select();
+    let cmd = h.build_session_command(&LaunchContext {
+        identity: "Identity body",
+        name: "agman-tester-reviews--browser",
+        identity_file: None,
+        session_dir: None,
+        cwd: cwd.path(),
+        no_alt_screen: false,
+        capabilities: AssistantCapabilities { browser: true },
+        session_key: SessionKey::Auto,
+    });
+    assert!(cmd.contains("--chrome"));
+}
+
+#[test]
+fn codex_build_session_command_includes_browser_enable_override_when_browser_capability_set() {
+    use agman::harness::{AssistantCapabilities, HarnessKind, LaunchContext, SessionKey};
+
+    let cwd = tempfile::tempdir().unwrap();
+    let h = HarnessKind::Codex.select();
+    for session_key in [
+        SessionKey::Auto,
+        SessionKey::Resume("agman-tester-reviews--browser"),
+    ] {
+        let cmd = h.build_session_command(&LaunchContext {
+            identity: "Identity body",
+            name: "agman-tester-reviews--browser",
+            identity_file: None,
+            session_dir: None,
+            cwd: cwd.path(),
+            no_alt_screen: true,
+            capabilities: AssistantCapabilities { browser: true },
+            session_key,
+        });
+        assert!(cmd.contains("-c 'mcp_servers.playwright.enabled=true'"));
+    }
+}
+
+#[test]
+fn codex_ensure_capabilities_configured_writes_disabled_block() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_toml = tmp.path().join("config.toml");
+    std::fs::write(
+        &config_toml,
+        r#"
+model = "gpt-5"
+
+[projects."/tmp/app"]
+trust_level = "trusted"
+"#,
+    )
+    .unwrap();
+
+    agman::harness::ensure_browser_mcp_for_test(&config_toml).unwrap();
+    let first = std::fs::read_to_string(&config_toml).unwrap();
+    agman::harness::ensure_browser_mcp_for_test(&config_toml).unwrap();
+    let second = std::fs::read_to_string(&config_toml).unwrap();
+    assert_eq!(first, second, "second ensure must be idempotent");
+
+    let doc: toml::Value = toml::from_str(&first).unwrap();
+    assert_eq!(doc.get("model").and_then(|v| v.as_str()), Some("gpt-5"));
+    assert_eq!(
+        doc.get("projects")
+            .and_then(|v| v.get("/tmp/app"))
+            .and_then(|v| v.get("trust_level"))
+            .and_then(|v| v.as_str()),
+        Some("trusted")
+    );
+    let playwright = doc
+        .get("mcp_servers")
+        .and_then(|v| v.get("playwright"))
+        .expect("playwright MCP block");
+    assert_eq!(
+        playwright.get("command").and_then(|v| v.as_str()),
+        Some("npx")
+    );
+    assert_eq!(
+        playwright
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()),
+        Some(vec!["@playwright/mcp@latest"])
+    );
+    assert_eq!(
+        playwright
+            .get("env_vars")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()),
+        Some(vec![
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR"
+        ])
+    );
+    assert_eq!(
+        playwright.get("enabled").and_then(|v| v.as_bool()),
+        Some(false)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -4225,6 +4660,7 @@ fn long_lived_first_launch_claude_stamps_session_id() {
         session_dir: None,
         cwd: &prep.cwd,
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Pin(&uuid),
     });
     assert!(cmd.contains(&format!("--session-id '{uuid}'")));
@@ -4305,6 +4741,7 @@ fn long_lived_resume_claude_emits_resume_flag() {
         session_dir: None,
         cwd: &prep.cwd,
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Resume(pinned_uuid),
     });
     assert!(cmd.contains(&format!("--resume '{pinned_uuid}'")));
@@ -4355,6 +4792,7 @@ fn long_lived_resume_codex_emits_resume_subcommand() {
         session_dir: None,
         cwd: &prep.cwd,
         no_alt_screen: true,
+        capabilities: Default::default(),
         session_key: SessionKey::Resume(&prep.session_name),
     });
     assert!(cmd.contains(&format!(" resume '{stamped_name}'")));
@@ -4406,6 +4844,7 @@ fn long_lived_goose_resume_uses_session_name_launch_cwd_and_identity_path() {
         session_dir: None,
         cwd: &prep.cwd,
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Resume(&prep.session_name),
     });
     assert!(cmd.contains("GOOSE_MODE=auto"));
@@ -4480,6 +4919,7 @@ fn long_lived_pi_first_launch_stamps_name_cwd_session_dir_and_identity() {
         session_dir: prep.session_dir.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: agman::harness::SessionKey::Auto,
     });
     assert!(cmd.contains("pi --offline"));
@@ -4546,6 +4986,7 @@ fn long_lived_pi_resume_uses_session_dir_continue_and_stamped_cwd() {
         session_dir: prep.session_dir.as_deref(),
         cwd: &prep.cwd,
         no_alt_screen: false,
+        capabilities: Default::default(),
         session_key: SessionKey::Resume(&prep.session_name),
     });
     assert!(cmd.contains("--continue"));

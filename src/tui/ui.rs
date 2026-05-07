@@ -640,6 +640,7 @@ fn draw_assistant_wizard(f: &mut Frame, app: &mut App) {
     let area = centered_rect(70, 70, f.area());
     f.render_widget(Clear, area);
 
+    let harness_kind = app.config.harness_kind();
     let wizard = match &mut app.assistant_wizard {
         Some(w) => w,
         None => return,
@@ -648,6 +649,7 @@ fn draw_assistant_wizard(f: &mut Frame, app: &mut App) {
     let kind_label = match wizard.kind {
         AssistantWizardKind::Researcher => "Researcher",
         AssistantWizardKind::Reviewer => "Reviewer",
+        AssistantWizardKind::Tester => "Tester",
     };
     let title = format!(" New {} — {} ", kind_label, wizard.project);
     let outer = Block::default()
@@ -673,6 +675,9 @@ fn draw_assistant_wizard(f: &mut Frame, app: &mut App) {
         AssistantWizardStep::Kind => draw_assistant_wizard_kind(f, wizard, chunks[0]),
         AssistantWizardStep::Name => draw_assistant_wizard_name(f, wizard, chunks[0]),
         AssistantWizardStep::Worktrees => draw_assistant_wizard_worktrees(f, wizard, chunks[0]),
+        AssistantWizardStep::Capabilities => {
+            draw_assistant_wizard_capabilities(f, harness_kind, wizard, chunks[0])
+        }
         AssistantWizardStep::Description => draw_assistant_wizard_description(f, wizard, chunks[0]),
     }
 
@@ -711,6 +716,16 @@ fn draw_assistant_wizard(f: &mut Frame, app: &mut App) {
                 Span::styled("Esc", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
             ],
+            AssistantWizardStep::Capabilities => vec![
+                Span::styled("Space", Style::default().fg(Color::LightCyan)),
+                Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
+                Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
+                Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+                Span::styled(" back", Style::default().fg(Color::DarkGray)),
+            ],
             AssistantWizardStep::Description => vec![
                 Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
                 Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
@@ -727,7 +742,11 @@ fn draw_assistant_wizard_kind(f: &mut Frame, wizard: &super::app::AssistantWizar
     use super::app::AssistantWizardKind;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+        ])
         .split(area);
 
     let researcher_selected = matches!(wizard.kind, AssistantWizardKind::Researcher);
@@ -775,6 +794,29 @@ fn draw_assistant_wizard_kind(f: &mut Frame, wizard: &super::app::AssistantWizar
             }),
         ));
     f.render_widget(reviewer, chunks[1]);
+
+    let tester_selected = matches!(wizard.kind, AssistantWizardKind::Tester);
+    let tester_style = if tester_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let tester =
+        Paragraph::new(Line::from(vec![Span::styled(
+            " Tester      —  runs tests and exercises behavior in worktrees ",
+            tester_style,
+        )]))
+        .block(Block::default().borders(Borders::ALL).border_style(
+            Style::default().fg(if tester_selected {
+                Color::LightCyan
+            } else {
+                Color::DarkGray
+            }),
+        ));
+    f.render_widget(tester, chunks[2]);
 }
 
 fn draw_assistant_wizard_name(f: &mut Frame, wizard: &mut super::app::AssistantWizard, area: Rect) {
@@ -875,6 +917,55 @@ fn draw_assistant_wizard_worktrees(
         });
         f.render_widget(&row.branch_editor, cols[1]);
     }
+}
+
+fn draw_assistant_wizard_capabilities(
+    f: &mut Frame,
+    harness_kind: agman::harness::HarnessKind,
+    wizard: &super::app::AssistantWizard,
+    area: Rect,
+) {
+    let unsupported = matches!(
+        harness_kind,
+        agman::harness::HarnessKind::Goose | agman::harness::HarnessKind::Pi
+    );
+    let label = if wizard.browser_capability {
+        " Browser: on "
+    } else {
+        " Browser: off "
+    };
+    let mut spans = vec![Span::styled(
+        label,
+        if unsupported {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD)
+        },
+    )];
+    if unsupported {
+        spans.push(Span::styled(
+            format!(" (not supported on {harness_kind})"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    let paragraph = Paragraph::new(Line::from(spans)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if unsupported {
+                Color::DarkGray
+            } else {
+                Color::LightCyan
+            }))
+            .title(Span::styled(
+                " Capabilities ",
+                Style::default().fg(Color::LightCyan),
+            )),
+    );
+    f.render_widget(paragraph, area);
 }
 
 fn draw_assistant_wizard_description(
@@ -4788,23 +4879,28 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(header), chunks[0]);
 
-    // Top-level grouping is by kind (Researchers / Reviewers); within each
+    // Top-level grouping is by kind (Researchers / Reviewers / Testers); within each
     // kind we still surface status — running / stopped / archived — so the
     // user can scan the same way as the legacy view, just twice.
     let mut researchers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
     let mut reviewers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
+    let mut testers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
     for (i, a) in app.assistants.iter().enumerate() {
         match a.meta.kind {
             AssistantKind::Researcher { .. } => researchers.push((i, a)),
             AssistantKind::Reviewer { .. } => reviewers.push((i, a)),
+            AssistantKind::Tester { .. } => testers.push((i, a)),
         }
     }
 
     let mut items: Vec<ListItem> = Vec::new();
     let mut groups_shown: usize = 0;
 
-    let kinds: [(&str, &[(usize, &agman::assistant::Assistant)]); 2] =
-        [("Researchers", &researchers), ("Reviewers", &reviewers)];
+    let kinds: [(&str, &[(usize, &agman::assistant::Assistant)]); 3] = [
+        ("Researchers", &researchers),
+        ("Reviewers", &reviewers),
+        ("Testers", &testers),
+    ];
 
     for (kind_label, kind_members) in kinds {
         if kind_members.is_empty() {
@@ -4849,6 +4945,9 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
                     }
                     AssistantKind::Reviewer { .. } => {
                         Config::reviewer_tmux_session(&a.meta.project, &a.meta.name)
+                    }
+                    AssistantKind::Tester { .. } => {
+                        Config::tester_tmux_session(&a.meta.project, &a.meta.name)
                     }
                 };
                 if Tmux::session_exists(&session_name) {
@@ -4911,12 +5010,19 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
                     r.meta.project.clone()
                 };
 
+                let desc_source = match &r.meta.kind {
+                    AssistantKind::Tester { capabilities, .. } => {
+                        let browser = if capabilities.browser { "on" } else { "off" };
+                        format!("{}  Browser: {browser}", r.meta.description)
+                    }
+                    _ => r.meta.description.clone(),
+                };
                 let desc = if desc_width == 0 {
                     String::new()
-                } else if r.meta.description.len() > desc_width {
-                    format!("{}…", &r.meta.description[..desc_width.saturating_sub(1)])
+                } else if desc_source.len() > desc_width {
+                    format!("{}…", &desc_source[..desc_width.saturating_sub(1)])
                 } else {
-                    r.meta.description.clone()
+                    desc_source
                 };
 
                 let text_style = if is_selected {
@@ -4933,6 +5039,7 @@ fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
                 let stall_prefix = match r.meta.kind {
                     AssistantKind::Researcher { .. } => "researcher",
                     AssistantKind::Reviewer { .. } => "reviewer",
+                    AssistantKind::Tester { .. } => "tester",
                 };
                 let stall_key = format!("{}:{}--{}", stall_prefix, r.meta.project, r.meta.name);
                 let is_stalled = app.stalled_targets().contains(&stall_key.as_str());
