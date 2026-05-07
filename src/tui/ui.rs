@@ -795,7 +795,7 @@ fn draw_assistant_wizard_kind(f: &mut Frame, wizard: &super::app::AssistantWizar
                 Color::DarkGray
             }),
         ));
-    f.render_widget(operator, chunks[1]);
+    f.render_widget(operator, chunks[3]);
 
     let reviewer_selected = matches!(wizard.kind, AssistantWizardKind::Reviewer);
     let reviewer_style = if reviewer_selected {
@@ -818,7 +818,7 @@ fn draw_assistant_wizard_kind(f: &mut Frame, wizard: &super::app::AssistantWizar
                 Color::DarkGray
             }),
         ));
-    f.render_widget(reviewer, chunks[2]);
+    f.render_widget(reviewer, chunks[1]);
 
     let tester_selected = matches!(wizard.kind, AssistantWizardKind::Tester);
     let tester_style = if tester_selected {
@@ -841,7 +841,7 @@ fn draw_assistant_wizard_kind(f: &mut Frame, wizard: &super::app::AssistantWizar
                 Color::DarkGray
             }),
         ));
-    f.render_widget(tester, chunks[3]);
+    f.render_widget(tester, chunks[2]);
 }
 
 fn draw_assistant_wizard_name(f: &mut Frame, wizard: &mut super::app::AssistantWizard, area: Rect) {
