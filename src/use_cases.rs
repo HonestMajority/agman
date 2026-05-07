@@ -2073,6 +2073,7 @@ pub struct AssistantSummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssistantKindLabel {
     Researcher,
+    Operator,
     Reviewer,
     Tester,
 }
@@ -2124,6 +2125,10 @@ fn load_assistant_summaries(config: &Config, project: &str) -> Vec<AssistantSumm
                 AssistantKind::Researcher { .. } => (
                     Config::researcher_tmux_session(&a.meta.project, &a.meta.name),
                     AssistantKindLabel::Researcher,
+                ),
+                AssistantKind::Operator { .. } => (
+                    Config::operator_tmux_session(&a.meta.project, &a.meta.name),
+                    AssistantKindLabel::Operator,
                 ),
                 AssistantKind::Reviewer { .. } => (
                     Config::reviewer_tmux_session(&a.meta.project, &a.meta.name),
@@ -2298,8 +2303,8 @@ pub enum SendTarget {
     ChiefOfStaff,
     Telegram,
     Project(String),
-    /// A long-lived assistant (researcher or reviewer). The kind is recorded
-    /// on disk in `meta.json` and is irrelevant for routing — both prefixes
+    /// A long-lived assistant. The kind is recorded
+    /// on disk in `meta.json` and is irrelevant for routing — all assistant prefixes
     /// resolve to the same `assistants/<project>--<name>/inbox.jsonl`.
     Assistant {
         project: String,
@@ -2312,6 +2317,7 @@ pub enum SendTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssistantPrefix {
     Researcher,
+    Operator,
     Reviewer,
     Tester,
 }
@@ -2320,6 +2326,7 @@ impl AssistantPrefix {
     fn as_str(&self) -> &'static str {
         match self {
             AssistantPrefix::Researcher => "researcher",
+            AssistantPrefix::Operator => "operator",
             AssistantPrefix::Reviewer => "reviewer",
             AssistantPrefix::Tester => "tester",
         }
@@ -2327,7 +2334,7 @@ impl AssistantPrefix {
 }
 
 const VALID_TARGETS_HINT: &str =
-    "valid targets: chief-of-staff, telegram, <project>, researcher:<project>--<name>, reviewer:<project>--<name>, tester:<project>--<name>, task:<repo>--<branch>";
+    "valid targets: chief-of-staff, telegram, <project>, researcher:<project>--<name>, operator:<project>--<name>, reviewer:<project>--<name>, tester:<project>--<name>, task:<repo>--<branch>";
 
 pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     if target.is_empty() {
@@ -2347,6 +2354,7 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
 
     for (prefix_str, prefix) in [
         ("researcher:", AssistantPrefix::Researcher),
+        ("operator:", AssistantPrefix::Operator),
         ("reviewer:", AssistantPrefix::Reviewer),
         ("tester:", AssistantPrefix::Tester),
     ] {
@@ -2421,7 +2429,7 @@ pub fn send_message(config: &Config, target: &str, from: &str, message: &str) ->
 /// Shorthand reference to an agent for UI rendering (e.g. Telegram button lists).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRef {
-    /// Agent id in send-message form: `"chief-of-staff"`, `"<project>"`, or `"researcher:<project>--<name>"`.
+    /// Agent id in send-message form: `"chief-of-staff"`, `"<project>"`, or an assistant id.
     pub id: String,
     /// Short human label (e.g. `"CoS"`, `"PM:foo"`, `"R:bar"`).
     pub label: String,
@@ -2451,6 +2459,9 @@ fn agent_ref_for(id: String) -> AgentRef {
     } else if let Some(rest) = id.strip_prefix("researcher:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
         format!("R:{name}")
+    } else if let Some(rest) = id.strip_prefix("operator:") {
+        let name = rest.rsplit("--").next().unwrap_or(rest);
+        format!("O:{name}")
     } else if let Some(rest) = id.strip_prefix("reviewer:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
         format!("Rv:{name}")
@@ -2467,6 +2478,7 @@ fn agent_ref_for(id: String) -> AgentRef {
 fn assistant_send_id(a: &Assistant) -> String {
     let prefix = match a.meta.kind {
         AssistantKind::Researcher { .. } => "researcher",
+        AssistantKind::Operator { .. } => "operator",
         AssistantKind::Reviewer { .. } => "reviewer",
         AssistantKind::Tester { .. } => "tester",
     };
@@ -2480,7 +2492,8 @@ fn assistant_send_id(a: &Assistant) -> String {
 ///   with `status == Running`.
 /// - From `"<project>"`: that project's assistants (`Running` only) plus
 ///   `"chief-of-staff"`.
-/// - From `"researcher:<proj>--<name>"`, `"reviewer:<proj>--<name>"`, or `"tester:<proj>--<name>"`: its
+/// - From an assistant id (`"researcher:<proj>--<name>"`, `"operator:<proj>--<name>"`,
+///   `"reviewer:<proj>--<name>"`, or `"tester:<proj>--<name>"`): its
 ///   parent (`"chief-of-staff"` if `proj == "chief-of-staff"`, otherwise the
 ///   project) plus `"chief-of-staff"` — de-duplicated by id.
 pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
@@ -2502,7 +2515,7 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
             }
         }
         other => {
-            let assistant_prefix = ["researcher:", "reviewer:", "tester:"]
+            let assistant_prefix = ["researcher:", "operator:", "reviewer:", "tester:"]
                 .iter()
                 .find_map(|p| other.strip_prefix(p));
             if let Some(rest) = assistant_prefix {
@@ -2642,9 +2655,12 @@ pub fn wait_for_handoff(
 /// Respawn an agent (Chief of Staff or PM) with a fresh session.
 /// If `force` is false and the session is running, performs a graceful handoff first.
 pub fn respawn_agent(config: &Config, target: &str, force: bool, timeout_secs: u64) -> Result<()> {
-    if target.starts_with("researcher:") {
-        tracing::info!(target = target, "rejected researcher respawn attempt");
-        bail!("Respawning researchers is not supported. Create a new researcher instead.");
+    if ["researcher:", "operator:", "reviewer:", "tester:"]
+        .iter()
+        .any(|prefix| target.starts_with(prefix))
+    {
+        tracing::info!(target = target, "rejected assistant respawn attempt");
+        bail!("Respawning assistants is not supported. Create a new assistant instead.");
     }
 
     // Parse target to determine agent type and resolve paths
@@ -3227,7 +3243,7 @@ pub fn agent_session_running(session_name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Assistant management (Researcher + Reviewer + Tester)
+// Assistant management (Researcher + Operator + Reviewer + Tester)
 // ---------------------------------------------------------------------------
 
 /// Tmux session name for an assistant, dispatched on kind. Researchers keep
@@ -3238,6 +3254,7 @@ fn assistant_tmux_session(meta: &crate::assistant::AssistantMeta) -> String {
         AssistantKind::Researcher { .. } => {
             Config::researcher_tmux_session(&meta.project, &meta.name)
         }
+        AssistantKind::Operator { .. } => Config::operator_tmux_session(&meta.project, &meta.name),
         AssistantKind::Reviewer { .. } => Config::reviewer_tmux_session(&meta.project, &meta.name),
         AssistantKind::Tester { .. } => Config::tester_tmux_session(&meta.project, &meta.name),
     }
@@ -3248,6 +3265,7 @@ fn assistant_tmux_session(meta: &crate::assistant::AssistantMeta) -> String {
 fn assistant_send_target_id(meta: &crate::assistant::AssistantMeta) -> String {
     let prefix = match meta.kind {
         AssistantKind::Researcher { .. } => "researcher",
+        AssistantKind::Operator { .. } => "operator",
         AssistantKind::Reviewer { .. } => "reviewer",
         AssistantKind::Tester { .. } => "tester",
     };
@@ -3266,6 +3284,23 @@ pub fn create_researcher(
     task_id: Option<String>,
 ) -> Result<Assistant> {
     let kind = AssistantKind::Researcher {
+        repo,
+        branch,
+        task_id,
+    };
+    create_assistant(config, project, name, description, kind)
+}
+
+pub fn create_operator(
+    config: &Config,
+    project: &str,
+    name: &str,
+    description: &str,
+    repo: Option<String>,
+    branch: Option<String>,
+    task_id: Option<String>,
+) -> Result<Assistant> {
+    let kind = AssistantKind::Operator {
         repo,
         branch,
         task_id,
@@ -3430,6 +3465,7 @@ fn create_assistant(
         name = name,
         kind = match kind {
             AssistantKind::Researcher { .. } => "researcher",
+            AssistantKind::Operator { .. } => "operator",
             AssistantKind::Reviewer { .. } => "reviewer",
             AssistantKind::Tester { .. } => "tester",
         },
@@ -3474,14 +3510,43 @@ pub fn start_assistant_session(
 
     // Kind-dispatched prompt + working-dir resolution.
     let (prompt, work_dir, agent_base, session_name, capabilities) = match &assistant.meta.kind {
-        AssistantKind::Researcher { .. } => {
+        AssistantKind::Researcher {
+            repo,
+            branch,
+            task_id,
+        } => {
             let prompt = build_researcher_prompt(telegram_enabled, project, name);
-            let work_dir = resolve_researcher_work_dir(config, &assistant);
+            let work_dir = resolve_repo_hinted_work_dir(
+                config,
+                repo.as_deref(),
+                branch.as_deref(),
+                task_id.as_deref(),
+            );
             (
                 prompt,
                 work_dir,
                 format!("agman-r-{project}--{name}"),
                 Config::researcher_tmux_session(project, name),
+                AssistantCapabilities::default(),
+            )
+        }
+        AssistantKind::Operator {
+            repo,
+            branch,
+            task_id,
+        } => {
+            let prompt = build_operator_prompt(telegram_enabled, project, name);
+            let work_dir = resolve_repo_hinted_work_dir(
+                config,
+                repo.as_deref(),
+                branch.as_deref(),
+                task_id.as_deref(),
+            );
+            (
+                prompt,
+                work_dir,
+                format!("agman-o-{project}--{name}"),
+                Config::operator_tmux_session(project, name),
                 AssistantCapabilities::default(),
             )
         }
@@ -3523,6 +3588,7 @@ pub fn start_assistant_session(
 
     let assistant_kind = match &assistant.meta.kind {
         AssistantKind::Researcher { .. } => "researcher",
+        AssistantKind::Operator { .. } => "operator",
         AssistantKind::Reviewer { .. } => "reviewer",
         AssistantKind::Tester { .. } => "tester",
     };
@@ -3585,18 +3651,14 @@ pub fn start_assistant_session(
     Ok(())
 }
 
-/// Resolve the working directory for a Researcher assistant session.
-/// Reviewers use the first worktree path directly; this helper is researcher-only.
-fn resolve_researcher_work_dir(config: &Config, assistant: &Assistant) -> Option<PathBuf> {
-    let AssistantKind::Researcher {
-        repo,
-        branch,
-        task_id,
-    } = &assistant.meta.kind
-    else {
-        return None;
-    };
-
+/// Resolve the working directory for assistant kinds with repo/branch/task hints.
+/// Worktree-backed assistants use the first worktree path directly.
+fn resolve_repo_hinted_work_dir(
+    config: &Config,
+    repo: Option<&str>,
+    branch: Option<&str>,
+    task_id: Option<&str>,
+) -> Option<PathBuf> {
     // If task_id is set, try to resolve to the task's worktree path
     if let Some(task_id) = task_id {
         // task_id is "<repo>--<branch>" format
@@ -3652,7 +3714,8 @@ pub fn list_assistants(
                 (
                     AssistantKind::Researcher { .. },
                     AssistantKindLabel::Researcher
-                ) | (AssistantKind::Reviewer { .. }, AssistantKindLabel::Reviewer)
+                ) | (AssistantKind::Operator { .. }, AssistantKindLabel::Operator)
+                    | (AssistantKind::Reviewer { .. }, AssistantKindLabel::Reviewer)
                     | (AssistantKind::Tester { .. }, AssistantKindLabel::Tester)
             )
         });
@@ -3698,7 +3761,7 @@ pub fn archive_assistant(config: &Config, project: &str, name: &str) -> Result<(
                 }
             }
         }
-        AssistantKind::Researcher { .. } => {}
+        AssistantKind::Researcher { .. } | AssistantKind::Operator { .. } => {}
     }
 
     tracing::info!(project = project, name = name, "assistant archived");
@@ -3752,7 +3815,7 @@ pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<(
 #[derive(Debug, Clone)]
 pub struct InboxPollTarget {
     /// `"chief-of-staff"`, `"<project>"`, `"researcher:<project>--<name>"`,
-    /// `"reviewer:<project>--<name>"`, or `"task:<id>"`.
+    /// `"operator:<project>--<name>"`, `"reviewer:<project>--<name>"`, or `"task:<id>"`.
     pub name: String,
     pub inbox_path: PathBuf,
     pub seq_path: PathBuf,
@@ -3774,7 +3837,7 @@ pub struct InboxPollTarget {
 
 /// Enumerate all inbox delivery targets from disk.
 ///
-/// Reads projects and researchers directly from the filesystem so delivery does
+/// Reads projects and assistants directly from the filesystem so delivery does
 /// not depend on which TUI view the user has visited. `session_exists` is a
 /// predicate — production callers pass `Tmux::session_exists`; tests pass a
 /// stub like `|_| true`.
@@ -4118,7 +4181,7 @@ You have full agman command access. When the CEO directs you to do something —
 
 ## Information Intake
 
-PMs send you summaries at natural stopping points: a task finished, a task blocked, a researcher or tester reported back, a significant progress milestone. Read every summary, hold it in working memory, but do not respond unless the PM asked you a question or you need to nudge them on something the CEO has pre-authorized.
+PMs send you summaries at natural stopping points: a task finished, a task blocked, a researcher, operator, or tester reported back, a significant progress milestone. Read every summary, hold it in working memory, but do not respond unless the PM asked you a question or you need to nudge them on something the CEO has pre-authorized.
 
 Always cross-reference your mental model against current ground truth before answering status questions. Never reply purely from memory — verify with:
 - agman list-projects — overview of all projects with PM status and task counts
@@ -4136,6 +4199,7 @@ You CAN do anything the CEO directs you to do. Available write commands:
 - agman feedback <task-id> "..."
 - agman send-message <target> --from chief-of-staff
 - agman create-researcher <name> [--project <name>]
+- agman create-operator <name> [--project <name>]
 - agman create-tester --name <name> [--project <name>] --branch <repo>:<branch> [--browser]
 - agman archive-researcher <name> [--project <name>]
 - agman respawn-agent <target> (rare)
@@ -4312,6 +4376,57 @@ AGMAN_MSG
 Additional rules:
 - Keep Telegram replies concise — this is a mobile chat, not a report.
 - The user sees `[R:{researcher_name}]` prepended to your replies, so they always know who is speaking.
+- Never leave the user waiting in silence while you work. Acknowledge first, work second, report third.
+"#
+    );
+
+    format!("{base}{telegram_section}")
+}
+
+pub fn build_operator_prompt(
+    telegram_enabled: bool,
+    project_name: &str,
+    operator_name: &str,
+) -> String {
+    let template = if project_name == "chief-of-staff" {
+        DEFAULT_CHIEF_OF_STAFF_OPERATOR_PROMPT_TEMPLATE
+    } else {
+        DEFAULT_OPERATOR_PROMPT_TEMPLATE
+    };
+    let base = template
+        .replace("{{PROJECT_NAME}}", project_name)
+        .replace("{{OPERATOR_NAME}}", operator_name);
+    if !telegram_enabled {
+        return base;
+    }
+
+    let telegram_section = format!(
+        r#"
+
+## Telegram
+
+Telegram is connected and the user can switch chats over to you directly. When that happens, messages tagged `[Message from telegram]` will appear in your tmux session.
+
+**The one rule you must never break: acknowledge first, work second, report third.**
+
+`[Message from telegram]` means the user is on their phone and **cannot** see your tmux session. The only way to reach them is via the Telegram send command. The user is staring at their phone waiting for any sign that you saw the message. Silence while you act is not acceptable.
+
+Every `[Message from telegram]` triggers this exact sequence:
+
+1. **IMMEDIATELY acknowledge** — Your very first action, before making external changes, is to send a short acknowledgment via Telegram (e.g. "Got it, handling this now" or "On it — will report back shortly"). Do this BEFORE running any other command.
+2. **Do the work** — Then proceed with the requested external action.
+3. **Report back** — When the action is done (or you've hit a decision point), send a follow-up Telegram message with the result.
+
+Send command:
+```
+cat <<'AGMAN_MSG' | agman send-message telegram --from "operator:{project_name}--{operator_name}"
+<your reply>
+AGMAN_MSG
+```
+
+Additional rules:
+- Keep Telegram replies concise — this is a mobile chat, not a report.
+- The user sees `[O:{operator_name}]` prepended to your replies, so they always know who is speaking.
 - Never leave the user waiting in silence while you work. Acknowledge first, work second, report third.
 "#
     );
@@ -4621,6 +4736,60 @@ AGMAN_MSG
 Keep reports concise and actionable. When you've completed your research, summarize key findings in a single message.
 "#;
 
+const DEFAULT_OPERATOR_PROMPT_TEMPLATE: &str = r#"You are an operator assistant for project "{{PROJECT_NAME}}", named "{{OPERATOR_NAME}}".
+
+You are an action-taking assistant. Your job is to do the thing your PM asks — edit a Google doc, ack an incident in PagerDuty, post a Slack message, update a Notion page. Use whatever tools are available to you. Report back when done.
+
+External state changes are expected. Hit third-party APIs, drive MCP-backed integrations, mutate documents, post messages — that's the point.
+
+## Hard rules
+
+- Do **not** commit, tag, or push. No `git commit`, no `git tag`, no `git push`.
+- Do **not** post to GitHub PRs or issues. No `gh pr review`, no `gh pr comment`, no comments, no labels, no merges.
+- Do **not** start detached processes. No `nohup`, `disown`, `setsid`, or similar backgrounding that would survive tmux cleanup.
+- Do not do engineering implementation work here. Code work goes through Tasks; Operator is for non-engineering side-tasks.
+
+## Communication
+
+Messages from the PM appear in your tmux session tagged `[Message from {{PROJECT_NAME}}]:`. The PM **cannot** see your tmux session — you MUST reply using `agman send-message`. Never just type a response in tmux expecting the PM to see it.
+
+Reply via:
+```
+cat <<'AGMAN_MSG' | agman send-message {{PROJECT_NAME}} --from "operator:{{PROJECT_NAME}}--{{OPERATOR_NAME}}"
+<what you did and the result>
+AGMAN_MSG
+```
+
+Keep reports concise and specific — what you changed, where, and any uncertainty. When you've completed the requested action, report back in a single message.
+"#;
+
+const DEFAULT_CHIEF_OF_STAFF_OPERATOR_PROMPT_TEMPLATE: &str = r#"You are an operator assistant for the Chief of Staff, named "{{OPERATOR_NAME}}".
+
+You are an action-taking assistant. Your job is to do the thing your PM asks — edit a Google doc, ack an incident in PagerDuty, post a Slack message, update a Notion page. Use whatever tools are available to you. Report back when done.
+
+External state changes are expected. Hit third-party APIs, drive MCP-backed integrations, mutate documents, post messages — that's the point.
+
+## Hard rules
+
+- Do **not** commit, tag, or push. No `git commit`, no `git tag`, no `git push`.
+- Do **not** post to GitHub PRs or issues. No `gh pr review`, no `gh pr comment`, no comments, no labels, no merges.
+- Do **not** start detached processes. No `nohup`, `disown`, `setsid`, or similar backgrounding that would survive tmux cleanup.
+- Do not do engineering implementation work here. Code work goes through Tasks; Operator is for non-engineering side-tasks.
+
+## Communication
+
+Messages from the Chief of Staff appear tagged [Message from chief-of-staff]:. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
+
+Reply via:
+```
+cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "operator:chief-of-staff--{{OPERATOR_NAME}}"
+<what you did and the result>
+AGMAN_MSG
+```
+
+Keep reports concise and specific — what you changed, where, and any uncertainty. When you've completed the requested action, report back in a single message.
+"#;
+
 const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for the "{{PROJECT_NAME}}" project in agman. You manage tasks to accomplish your project's goals.
 
 ## Your Role
@@ -4652,7 +4821,7 @@ AGMAN_MSG
 
 ### Stopping-Point Summaries
 
-At every natural stopping point — task finished, task blocked, researcher or tester reported back, significant progress — send a brief summary to the Chief of Staff:
+At every natural stopping point — task finished, task blocked, researcher, operator, or tester reported back, significant progress — send a brief summary to the Chief of Staff:
 
 cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from {{PROJECT_NAME}}
 <one-paragraph summary: what was done, where things are, why you stopped>
@@ -4668,8 +4837,8 @@ Direct CEO messages always take priority over CoS direction. If they conflict, f
 
 ## Reactive Behavior
 
-- Relay completions: When a task, researcher, or tester completes/fails/needs input, send a brief summary to the Chief of Staff with outcome details.
-- Do NOT poll: Tasks, researchers, and testers notify you — wait for notifications.
+- Relay completions: When a task, researcher, operator, or tester completes/fails/needs input, send a brief summary to the Chief of Staff with outcome details.
+- Do NOT poll: Tasks, researchers, operators, and testers notify you — wait for notifications.
 
 ## Message Routing
 
@@ -4680,6 +4849,11 @@ AGMAN_MSG
 
 [Message from researcher:{{PROJECT_NAME}}--<name>]: — researcher reports. Reply via send-message.
 cat <<'AGMAN_MSG' | agman send-message researcher:{{PROJECT_NAME}}--<researcher-name> --from {{PROJECT_NAME}}
+<your reply>
+AGMAN_MSG
+
+[Message from operator:{{PROJECT_NAME}}--<name>]: — operator reports. Reply via send-message.
+cat <<'AGMAN_MSG' | agman send-message operator:{{PROJECT_NAME}}--<operator-name> --from {{PROJECT_NAME}}
 <your reply>
 AGMAN_MSG
 

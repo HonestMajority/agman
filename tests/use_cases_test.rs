@@ -3146,6 +3146,53 @@ fn use_case_create_researcher() {
 }
 
 #[test]
+fn use_case_create_operator() {
+    use agman::assistant::AssistantKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "myproj");
+
+    let operator = use_cases::create_operator(
+        &config,
+        "myproj",
+        "docs-updater",
+        "Update the release notes",
+        Some("myrepo".to_string()),
+        Some("docs-branch".to_string()),
+        Some("myrepo--docs-branch".to_string()),
+    )
+    .unwrap();
+
+    assert!(operator.dir.join("meta.json").exists());
+    assert_eq!(operator.meta.name, "docs-updater");
+    assert_eq!(operator.meta.project, "myproj");
+    assert_eq!(operator.meta.description, "Update the release notes");
+    assert_eq!(
+        operator.meta.status,
+        agman::assistant::AssistantStatus::Running
+    );
+    let AssistantKind::Operator {
+        repo,
+        branch,
+        task_id,
+    } = &operator.meta.kind
+    else {
+        panic!("expected Operator kind");
+    };
+    assert_eq!(repo.as_deref(), Some("myrepo"));
+    assert_eq!(branch.as_deref(), Some("docs-branch"));
+    assert_eq!(task_id.as_deref(), Some("myrepo--docs-branch"));
+
+    let inbox_path = config.assistant_inbox("myproj", "docs-updater");
+    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "user");
+    assert_eq!(messages[0].message, "Update the release notes");
+}
+
+#[test]
 fn use_case_create_researcher_empty_description_no_inbox() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
@@ -3212,6 +3259,52 @@ fn use_case_archive_researcher() {
         researcher.meta.status,
         agman::assistant::AssistantStatus::Archived
     );
+}
+
+#[test]
+fn archive_assistant_operator_no_op() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "myproj");
+    let repo_path = init_test_repo(&tmp, "myrepo");
+    let worktree_path =
+        agman::git::Git::create_worktree_quiet(&config, "myrepo", "keep-me", None, None).unwrap();
+    let session_name = agman::config::Config::operator_tmux_session("myproj", "ops");
+
+    let tmux_started = std::process::Command::new("tmux")
+        .args(["new-session", "-d", "-s", &session_name, "sleep 60"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if tmux_started {
+        assert!(agman::tmux::Tmux::session_exists(&session_name));
+    }
+
+    use_cases::create_operator(
+        &config,
+        "myproj",
+        "ops",
+        "ack incident",
+        Some("myrepo".to_string()),
+        Some("keep-me".to_string()),
+        None,
+    )
+    .unwrap();
+
+    use_cases::archive_assistant(&config, "myproj", "ops").unwrap();
+
+    let reloaded =
+        agman::assistant::Assistant::load(config.assistant_dir("myproj", "ops")).unwrap();
+    assert_eq!(
+        reloaded.meta.status,
+        agman::assistant::AssistantStatus::Archived
+    );
+    if tmux_started {
+        assert!(!agman::tmux::Tmux::session_exists(&session_name));
+    }
+    assert!(worktree_path.exists());
+    assert!(agman::git::Git::local_branch_exists(&repo_path, "keep-me"));
 }
 
 // ---------------------------------------------------------------------------
@@ -3783,6 +3876,41 @@ fn send_message_with_tester_prefix_routes_to_assistant_inbox() {
     assert!(contents.contains("Please exercise the app"));
 }
 
+#[test]
+fn send_message_with_operator_prefix_routes_to_assistant_inbox() {
+    use agman::assistant::{Assistant, AssistantKind};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _project = create_test_project(&config, "reviews");
+
+    let _ = Assistant::create(
+        &config,
+        "reviews",
+        "o-route",
+        "",
+        AssistantKind::Operator {
+            repo: None,
+            branch: None,
+            task_id: None,
+        },
+    )
+    .unwrap();
+
+    use_cases::send_message(
+        &config,
+        "operator:reviews--o-route",
+        "reviews",
+        "Please update the status doc",
+    )
+    .unwrap();
+
+    let inbox_path = config.assistant_inbox("reviews", "o-route");
+    let contents = std::fs::read_to_string(&inbox_path).unwrap();
+    assert!(contents.contains("Please update the status doc"));
+}
+
 #[derive(Clone)]
 struct WarnCaptureLayer {
     events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -4012,6 +4140,40 @@ fn use_case_create_chief_of_staff_researcher() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].from, "user");
     assert_eq!(messages[0].message, "research question");
+}
+
+#[test]
+fn use_case_create_chief_of_staff_operator() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    // No project directory created — CoS operators don't need one
+
+    let operator = use_cases::create_operator(
+        &config,
+        "chief-of-staff",
+        "my-operator",
+        "update shared doc",
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert!(operator.dir.join("meta.json").exists());
+    assert_eq!(operator.meta.name, "my-operator");
+    assert_eq!(operator.meta.project, "chief-of-staff");
+    assert_eq!(operator.meta.description, "update shared doc");
+    assert_eq!(
+        operator.meta.status,
+        agman::assistant::AssistantStatus::Running
+    );
+
+    let inbox_path = config.assistant_inbox("chief-of-staff", "my-operator");
+    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "user");
+    assert_eq!(messages[0].message, "update shared doc");
 }
 
 // ---------------------------------------------------------------------------
@@ -4367,6 +4529,19 @@ fn relative_agent_list_from_researcher() {
 }
 
 #[test]
+fn relative_agent_list_from_operator() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    create_test_project(&config, "alpha");
+    use_cases::create_operator(&config, "alpha", "live", "do thing", None, None, None).unwrap();
+
+    let agents = use_cases::relative_agent_list(&config, "operator:alpha--live");
+    let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(ids, vec!["alpha", "chief-of-staff"]);
+}
+
+#[test]
 fn relative_agent_list_from_chief_of_staff_researcher_no_duplicate() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
@@ -4436,6 +4611,21 @@ fn researcher_prompt_includes_correct_from() {
     assert!(
         cos_prompt.contains(r#"--from "researcher:chief-of-staff--baz""#),
         "expected chief-of-staff researcher prompt to include --from \"researcher:chief-of-staff--baz\", got:\n{cos_prompt}"
+    );
+}
+
+#[test]
+fn operator_prompt_includes_correct_from() {
+    let proj_prompt = use_cases::build_operator_prompt(true, "proj", "bar");
+    assert!(
+        proj_prompt.contains(r#"--from "operator:proj--bar""#),
+        "expected project operator prompt to include --from \"operator:proj--bar\", got:\n{proj_prompt}"
+    );
+
+    let cos_prompt = use_cases::build_operator_prompt(true, "chief-of-staff", "baz");
+    assert!(
+        cos_prompt.contains(r#"--from "operator:chief-of-staff--baz""#),
+        "expected chief-of-staff operator prompt to include --from \"operator:chief-of-staff--baz\", got:\n{cos_prompt}"
     );
 }
 

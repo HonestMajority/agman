@@ -344,7 +344,7 @@ pub struct ProjectWizard {
 /// an optional capabilities step before description.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssistantWizardStep {
-    /// Step 0: pick the kind (Researcher | Reviewer | Tester).
+    /// Step 0: pick the kind (Researcher | Reviewer | Tester | Operator).
     Kind,
     /// Step 1: enter the assistant name.
     Name,
@@ -361,6 +361,7 @@ pub enum AssistantWizardKind {
     Researcher,
     Reviewer,
     Tester,
+    Operator,
 }
 
 /// One editable `(repo, branch)` row in the reviewer wizard.
@@ -2824,6 +2825,9 @@ impl App {
                             agman::assistant::AssistantKind::Researcher { .. } => {
                                 Config::researcher_tmux_session(&project, &name)
                             }
+                            agman::assistant::AssistantKind::Operator { .. } => {
+                                Config::operator_tmux_session(&project, &name)
+                            }
                             agman::assistant::AssistantKind::Reviewer { .. } => {
                                 Config::reviewer_tmux_session(&project, &name)
                             }
@@ -3251,7 +3255,8 @@ impl App {
                         wizard.kind = match wizard.kind {
                             AssistantWizardKind::Researcher => AssistantWizardKind::Reviewer,
                             AssistantWizardKind::Reviewer => AssistantWizardKind::Tester,
-                            AssistantWizardKind::Tester => AssistantWizardKind::Researcher,
+                            AssistantWizardKind::Tester => AssistantWizardKind::Operator,
+                            AssistantWizardKind::Operator => AssistantWizardKind::Researcher,
                         };
                     }
                     KeyCode::Char('k')
@@ -3260,9 +3265,10 @@ impl App {
                     | KeyCode::Left
                     | KeyCode::BackTab => {
                         wizard.kind = match wizard.kind {
-                            AssistantWizardKind::Researcher => AssistantWizardKind::Tester,
+                            AssistantWizardKind::Researcher => AssistantWizardKind::Operator,
                             AssistantWizardKind::Reviewer => AssistantWizardKind::Researcher,
                             AssistantWizardKind::Tester => AssistantWizardKind::Reviewer,
+                            AssistantWizardKind::Operator => AssistantWizardKind::Tester,
                         };
                     }
                     KeyCode::Enter => {
@@ -3281,7 +3287,9 @@ impl App {
                         // Advance: reviewers go to worktrees, researchers
                         // skip straight to description.
                         wizard.step = match wizard.kind {
-                            AssistantWizardKind::Researcher => AssistantWizardStep::Description,
+                            AssistantWizardKind::Researcher | AssistantWizardKind::Operator => {
+                                AssistantWizardStep::Description
+                            }
                             AssistantWizardKind::Reviewer | AssistantWizardKind::Tester => {
                                 AssistantWizardStep::Worktrees
                             }
@@ -3317,6 +3325,7 @@ impl App {
                                         AssistantWizardStep::Capabilities
                                     }
                                     AssistantWizardKind::Researcher
+                                    | AssistantWizardKind::Operator
                                     | AssistantWizardKind::Reviewer => {
                                         wizard.description_editor.set_insert_mode();
                                         AssistantWizardStep::Description
@@ -3366,6 +3375,7 @@ impl App {
                                         AssistantWizardStep::Capabilities
                                     }
                                     AssistantWizardKind::Researcher
+                                    | AssistantWizardKind::Operator
                                     | AssistantWizardKind::Reviewer => {
                                         wizard.description_editor.set_insert_mode();
                                         AssistantWizardStep::Description
@@ -3414,7 +3424,9 @@ impl App {
                     // Esc in normal mode steps back to the previous step.
                     if input.key == Key::Esc && !was_insert && is_normal_now {
                         wizard.step = match wizard.kind {
-                            AssistantWizardKind::Researcher => AssistantWizardStep::Name,
+                            AssistantWizardKind::Researcher | AssistantWizardKind::Operator => {
+                                AssistantWizardStep::Name
+                            }
                             AssistantWizardKind::Reviewer => AssistantWizardStep::Worktrees,
                             AssistantWizardKind::Tester => AssistantWizardStep::Capabilities,
                         };
@@ -3447,18 +3459,37 @@ impl App {
         }
 
         match kind {
-            AssistantWizardKind::Researcher => {
-                match use_cases::create_researcher(
-                    &self.config,
-                    &project,
-                    &name,
-                    &desc,
-                    None,
-                    None,
-                    None,
-                ) {
+            AssistantWizardKind::Researcher | AssistantWizardKind::Operator => {
+                let (kind_name, create_result) = match kind {
+                    AssistantWizardKind::Researcher => (
+                        "researcher",
+                        use_cases::create_researcher(
+                            &self.config,
+                            &project,
+                            &name,
+                            &desc,
+                            None,
+                            None,
+                            None,
+                        ),
+                    ),
+                    AssistantWizardKind::Operator => (
+                        "operator",
+                        use_cases::create_operator(
+                            &self.config,
+                            &project,
+                            &name,
+                            &desc,
+                            None,
+                            None,
+                            None,
+                        ),
+                    ),
+                    _ => unreachable!(),
+                };
+                match create_result {
                     Ok(_assistant) => {
-                        tracing::info!(project = %project, name = %name, "created researcher via wizard");
+                        tracing::info!(project = %project, name = %name, kind = kind_name, "created assistant via wizard");
                         if let Err(e) =
                             use_cases::start_assistant_session(&self.config, &project, &name, false)
                         {
@@ -3467,13 +3498,13 @@ impl App {
                                 "failed to start assistant session"
                             );
                         }
-                        self.set_status(format!("Created researcher: {name}"));
+                        self.set_status(format!("Created {kind_name}: {name}"));
                         self.assistant_wizard = None;
                         self.view = View::AssistantList;
                         self.refresh_assistants();
                     }
                     Err(e) => {
-                        tracing::warn!(project = %project, name = %name, error = %e, "failed to create researcher");
+                        tracing::warn!(project = %project, name = %name, kind = kind_name, error = %e, "failed to create assistant");
                         if let Some(w) = self.assistant_wizard.as_mut() {
                             w.error_message = Some(format!("{e}"));
                         }
