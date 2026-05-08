@@ -838,7 +838,7 @@ impl App {
             config,
             tasks,
             selected_index: 0,
-            project_pane_focus: ProjectPaneFocus::Tasks,
+            project_pane_focus: ProjectPaneFocus::Assistants,
             view: View::ProjectList,
             preview_content: String::new(),
             logs_editor,
@@ -2677,7 +2677,7 @@ impl App {
                         self.current_project = Some(name);
                         self.selected_index = 0;
                         self.assistant_list_index = 0;
-                        self.project_pane_focus = ProjectPaneFocus::Tasks;
+                        self.project_pane_focus = ProjectPaneFocus::Assistants;
                         self.refresh_tasks_for_project();
                         self.refresh_assistants();
                         self.view = View::TaskList;
