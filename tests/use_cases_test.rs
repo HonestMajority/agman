@@ -4244,17 +4244,16 @@ trust_level = "trusted"
 }
 
 // ---------------------------------------------------------------------------
-// Chief of Staff-level researchers
+// Chief of Staff-level assistants are no longer supported
 // ---------------------------------------------------------------------------
 
 #[test]
-fn use_case_create_chief_of_staff_researcher() {
+fn use_case_create_chief_of_staff_researcher_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
-    // No project directory created — CoS researchers don't need one
 
-    let researcher = use_cases::create_researcher(
+    let err = use_cases::create_researcher(
         &config,
         "chief-of-staff",
         "my-researcher",
@@ -4263,33 +4262,23 @@ fn use_case_create_chief_of_staff_researcher() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert!(researcher.dir.join("meta.json").exists());
-    assert_eq!(researcher.meta.name, "my-researcher");
-    assert_eq!(researcher.meta.project, "chief-of-staff");
-    assert_eq!(researcher.meta.description, "research question");
-    assert_eq!(
-        researcher.meta.status,
-        agman::assistant::AssistantStatus::Running
-    );
-
-    // Verify that the research description was written to the inbox
-    let inbox_path = config.assistant_inbox("chief-of-staff", "my-researcher");
-    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].from, "user");
-    assert_eq!(messages[0].message, "research question");
+    assert!(err
+        .to_string()
+        .contains("chief-of-staff assistants are no longer supported"));
+    assert!(!config
+        .assistant_dir("chief-of-staff", "my-researcher")
+        .exists());
 }
 
 #[test]
-fn use_case_create_chief_of_staff_operator() {
+fn use_case_create_chief_of_staff_operator_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
-    // No project directory created — CoS operators don't need one
 
-    let operator = use_cases::create_operator(
+    let err = use_cases::create_operator(
         &config,
         "chief-of-staff",
         "my-operator",
@@ -4298,22 +4287,32 @@ fn use_case_create_chief_of_staff_operator() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert!(operator.dir.join("meta.json").exists());
-    assert_eq!(operator.meta.name, "my-operator");
-    assert_eq!(operator.meta.project, "chief-of-staff");
-    assert_eq!(operator.meta.description, "update shared doc");
-    assert_eq!(
-        operator.meta.status,
-        agman::assistant::AssistantStatus::Running
-    );
+    assert!(err
+        .to_string()
+        .contains("chief-of-staff assistants are no longer supported"));
+    assert!(!config
+        .assistant_dir("chief-of-staff", "my-operator")
+        .exists());
+}
 
-    let inbox_path = config.assistant_inbox("chief-of-staff", "my-operator");
-    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].from, "user");
-    assert_eq!(messages[0].message, "update shared doc");
+#[test]
+fn purge_chief_of_staff_assistants_removes_legacy_dirs_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    create_test_project(&config, "alpha");
+    helpers::create_test_researcher(&config, "chief-of-staff", "legacy");
+    helpers::create_test_researcher(&config, "alpha", "kept");
+
+    assert!(config.assistant_dir("chief-of-staff", "legacy").exists());
+    assert!(config.assistant_dir("alpha", "kept").exists());
+
+    use_cases::purge_chief_of_staff_assistants(&config);
+
+    assert!(!config.assistant_dir("chief-of-staff", "legacy").exists());
+    assert!(config.assistant_dir("alpha", "kept").exists());
 }
 
 // ---------------------------------------------------------------------------
@@ -4629,9 +4628,9 @@ fn relative_agent_list_from_chief_of_staff() {
     let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
     assert!(ids.contains(&"alpha"));
     assert!(ids.contains(&"beta"));
-    assert!(ids.contains(&"researcher:chief-of-staff--live"));
+    assert!(!ids.contains(&"researcher:chief-of-staff--live"));
     assert!(!ids.iter().any(|id| id.contains("old")));
-    assert_eq!(agents.len(), 3);
+    assert_eq!(agents.len(), 2);
 }
 
 #[test]
@@ -4682,15 +4681,15 @@ fn relative_agent_list_from_operator() {
 }
 
 #[test]
-fn relative_agent_list_from_chief_of_staff_researcher_no_duplicate() {
+fn relative_agent_list_from_legacy_chief_of_staff_researcher_goes_to_chief_of_staff() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
     helpers::create_test_researcher(&config, "chief-of-staff", "live");
 
     let agents = use_cases::relative_agent_list(&config, "researcher:chief-of-staff--live");
-    let cos_count = agents.iter().filter(|a| a.id == "chief-of-staff").count();
-    assert_eq!(cos_count, 1, "chief-of-staff must appear exactly once");
+    let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(ids, vec!["chief-of-staff"]);
 }
 
 #[test]

@@ -2494,15 +2494,12 @@ fn assistant_send_id(a: &Assistant) -> String {
 
 /// Agents reachable from `current` via a Telegram `/ls` switch list.
 ///
-/// - From `"chief-of-staff"`: all PMs (sorted by name) plus all CoS-level
-///   assistants in `project == "chief-of-staff"`
-///   with `status == Running`.
+/// - From `"chief-of-staff"`: all PMs (sorted by name).
 /// - From `"<project>"`: that project's assistants (`Running` only) plus
 ///   `"chief-of-staff"`.
 /// - From an assistant id (`"researcher:<proj>--<name>"`, `"operator:<proj>--<name>"`,
 ///   `"reviewer:<proj>--<name>"`, or `"tester:<proj>--<name>"`): its
-///   parent (`"chief-of-staff"` if `proj == "chief-of-staff"`, otherwise the
-///   project) plus `"chief-of-staff"` — de-duplicated by id.
+///   project plus `"chief-of-staff"` — de-duplicated by id.
 pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
     let mut ids: Vec<String> = Vec::new();
 
@@ -2511,13 +2508,6 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
             if let Ok(projects) = Project::list_all(config) {
                 for p in projects {
                     ids.push(p.meta.name);
-                }
-            }
-            if let Ok(assistants) = Assistant::list_for_project(config, "chief-of-staff") {
-                for a in assistants {
-                    if a.meta.status == AssistantStatus::Running {
-                        ids.push(assistant_send_id(&a));
-                    }
                 }
             }
         }
@@ -2529,12 +2519,9 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
                 let pos = rest.find("--");
                 if let Some(pos) = pos {
                     let project = &rest[..pos];
-                    let parent_id = if project == "chief-of-staff" {
-                        "chief-of-staff".to_string()
-                    } else {
-                        project.to_string()
-                    };
-                    ids.push(parent_id);
+                    if project != "chief-of-staff" {
+                        ids.push(project.to_string());
+                    }
                     ids.push("chief-of-staff".to_string());
                 }
             } else {
@@ -3460,11 +3447,13 @@ fn create_assistant(
     description: &str,
     kind: AssistantKind,
 ) -> Result<Assistant> {
-    if project != "chief-of-staff" {
-        let project_dir = config.project_dir(project);
-        if !project_dir.exists() {
-            anyhow::bail!("project '{}' does not exist", project);
-        }
+    if project == "chief-of-staff" {
+        anyhow::bail!("chief-of-staff assistants are no longer supported; pass a real project");
+    }
+
+    let project_dir = config.project_dir(project);
+    if !project_dir.exists() {
+        anyhow::bail!("project '{}' does not exist", project);
     }
 
     tracing::info!(
@@ -3860,6 +3849,64 @@ pub fn list_archived_assistants(config: &Config, project: &str) -> Vec<(Assistan
         .collect()
 }
 
+pub fn purge_chief_of_staff_assistants(config: &Config) {
+    let assistants_dir = config.assistants_dir();
+    if !assistants_dir.exists() {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(&assistants_dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to scan assistants for chief-of-staff purge");
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("chief-of-staff--"))
+        else {
+            continue;
+        };
+
+        match Assistant::load(path.clone()) {
+            Ok(assistant) => {
+                let session = assistant_tmux_session(&assistant.meta);
+                if let Err(e) = Tmux::kill_session(&session) {
+                    tracing::warn!(session = %session, error = %e, "failed to kill chief-of-staff assistant session");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "failed to load chief-of-staff assistant before purge");
+                for session in [
+                    Config::researcher_tmux_session("chief-of-staff", name),
+                    Config::operator_tmux_session("chief-of-staff", name),
+                    Config::reviewer_tmux_session("chief-of-staff", name),
+                    Config::tester_tmux_session("chief-of-staff", name),
+                ] {
+                    let _ = Tmux::kill_session(&session);
+                }
+            }
+        }
+
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                tracing::info!(name = %name, path = %path.display(), "removed chief-of-staff assistant");
+            }
+            Err(e) => {
+                tracing::warn!(name = %name, path = %path.display(), error = %e, "failed to remove chief-of-staff assistant");
+            }
+        }
+    }
+}
+
 /// Backwards-compatible researcher archive — delegates to `archive_assistant`.
 pub fn archive_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
     archive_assistant(config, project, name)
@@ -3978,7 +4025,7 @@ pub fn collect_inbox_poll_targets(
     match Assistant::list_all(config) {
         Ok(assistants) => {
             for a in assistants {
-                if a.meta.status != AssistantStatus::Running {
+                if a.meta.project == "chief-of-staff" || a.meta.status != AssistantStatus::Running {
                     continue;
                 }
                 let session_name = assistant_tmux_session(&a.meta);

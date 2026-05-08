@@ -208,12 +208,11 @@ EXAMPLES:
         file: Option<std::path::PathBuf>,
     },
 
-    /// Create an assistant (researcher, operator, reviewer, or tester). Defaults to Chief of
-    /// Staff-level when --project is omitted.
+    /// Create a project-scoped assistant (researcher, operator, reviewer, or tester).
     #[command(after_help = "\
 EXAMPLES:
-  agman create-assistant --kind researcher --name api-investigator --description \"Investigate the API latency\"
-  agman create-assistant --kind operator --name docs-updater --description \"Update the launch notes\"
+  agman create-assistant --kind researcher --name api-investigator --project backend --description \"Investigate the API latency\"
+  agman create-assistant --kind operator --name docs-updater --project docs --description \"Update the launch notes\"
   agman create-assistant --kind reviewer --name pr-1247 --project reviews \\
     --branch galoy:fix-deposit-flow \\
     --branch lana-dashboard:fix-deposit-flow \\
@@ -228,9 +227,9 @@ EXAMPLES:
         /// Assistant name (alphanumeric + hyphens)
         #[arg(long, short)]
         name: String,
-        /// Project name (defaults to "chief-of-staff" for CoS-level assistants)
+        /// Project name
         #[arg(long)]
-        project: Option<String>,
+        project: String,
         /// Description/initial question
         #[arg(long, short, allow_hyphen_values = true)]
         description: Option<String>,
@@ -256,40 +255,37 @@ EXAMPLES:
 
     /// List assistants
     ListAssistants {
-        /// Filter by project name
+        /// Project name
         #[arg(long)]
-        project: Option<String>,
-        /// Show only Chief of Staff-level assistants
-        #[arg(long)]
-        cos: bool,
+        project: String,
         /// Filter by kind
         #[arg(long, value_enum)]
         kind: Option<AssistantKindArg>,
     },
 
-    /// Archive an assistant (defaults to Chief of Staff-level when --project is omitted)
+    /// Archive a project-scoped assistant
     ArchiveAssistant {
         /// Assistant name
         name: String,
-        /// Project name (defaults to "chief-of-staff" for CoS-level assistants)
+        /// Project name
         #[arg(long)]
-        project: Option<String>,
+        project: String,
     },
 
     /// Create a researcher (alias for `create-assistant --kind researcher`).
     #[command(after_help = "\
 EXAMPLES:
-  agman create-researcher my-research --description \"Investigate the API latency\"
-  cat <<'EOF' | agman create-researcher my-research --description -
+  agman create-researcher my-research --project backend --description \"Investigate the API latency\"
+  cat <<'EOF' | agman create-researcher my-research --project backend --description -
   Multi-line description via stdin using the - sentinel.
   EOF
-  agman create-researcher my-research --description @./research-desc.md")]
+  agman create-researcher my-research --project backend --description @./research-desc.md")]
     CreateResearcher {
         /// Researcher name (alphanumeric + hyphens)
         name: String,
-        /// Project name (defaults to "chief-of-staff" for CoS-level researchers)
+        /// Project name
         #[arg(long)]
-        project: Option<String>,
+        project: String,
         /// Repository name (for working directory context)
         #[arg(long)]
         repo: Option<String>,
@@ -308,7 +304,7 @@ EXAMPLES:
     CreateOperator {
         name: String,
         #[arg(long)]
-        project: Option<String>,
+        project: String,
         #[arg(long)]
         repo: Option<String>,
         #[arg(long)]
@@ -330,9 +326,9 @@ EXAMPLES:
         /// Reviewer name (alphanumeric + hyphens)
         #[arg(long, short)]
         name: String,
-        /// Project name (defaults to "chief-of-staff")
+        /// Project name
         #[arg(long)]
-        project: Option<String>,
+        project: String,
         /// `<repo>:<branch>` pair (repeatable, required at least once)
         #[arg(long = "branch", value_name = "REPO:BRANCH", required = true)]
         branch_pair: Vec<String>,
@@ -351,9 +347,9 @@ EXAMPLES:
         /// Tester name (alphanumeric + hyphens)
         #[arg(long, short)]
         name: String,
-        /// Project name (defaults to "chief-of-staff")
+        /// Project name
         #[arg(long)]
-        project: Option<String>,
+        project: String,
         /// `<repo>:<branch>` pair (repeatable, required at least once)
         #[arg(long = "branch", value_name = "REPO:BRANCH", required = true)]
         branch_pair: Vec<String>,
@@ -367,21 +363,18 @@ EXAMPLES:
 
     /// List researchers (alias for `list-assistants --kind researcher`).
     ListResearchers {
-        /// Filter by project name
+        /// Project name
         #[arg(long)]
-        project: Option<String>,
-        /// Show only Chief of Staff-level researchers
-        #[arg(long)]
-        cos: bool,
+        project: String,
     },
 
     /// Archive a researcher (alias for `archive-assistant`).
     ArchiveResearcher {
         /// Researcher name
         name: String,
-        /// Project name (defaults to "chief-of-staff" for CoS-level researchers)
+        /// Project name
         #[arg(long)]
-        project: Option<String>,
+        project: String,
     },
 
     /// Respawn an agent with a fresh session (Chief of Staff or PM)
