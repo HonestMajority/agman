@@ -2340,20 +2340,36 @@ fn list_archived_tasks() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    // Create an active task
-    let _active = create_test_task(&config, "repo", "active");
+    let mut active = create_test_task(&config, "repo", "active");
+    active.meta.project = Some("alpha".to_string());
+    active.save_meta().unwrap();
 
-    // Create an archived task
     let mut archived = create_test_task(&config, "repo", "archived");
+    archived.meta.project = Some("alpha".to_string());
     archived.meta.archived_at = Some(chrono::Utc::now());
     archived.save_meta().unwrap();
-    // Write TASK.md for the archived task
     archived.write_task("# Goal\nArchived task goal\n").unwrap();
 
-    let results = use_cases::list_archived_tasks(&config);
+    let mut other_project = create_test_task(&config, "repo", "other-project");
+    other_project.meta.project = Some("beta".to_string());
+    other_project.meta.archived_at = Some(chrono::Utc::now());
+    other_project.save_meta().unwrap();
+
+    let mut unassigned = create_test_task(&config, "repo", "unassigned-archived");
+    unassigned.meta.archived_at = Some(chrono::Utc::now());
+    unassigned.save_meta().unwrap();
+
+    let results = use_cases::list_archived_tasks(&config, "alpha");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0.meta.task_id(), "repo--archived");
     assert!(results[0].1.contains("Archived task goal"));
+
+    let unassigned_results = use_cases::list_archived_tasks(&config, "(unassigned)");
+    assert_eq!(unassigned_results.len(), 1);
+    assert_eq!(
+        unassigned_results[0].0.meta.task_id(),
+        "repo--unassigned-archived"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3307,6 +3323,100 @@ fn archive_assistant_operator_no_op() {
     assert!(agman::git::Git::local_branch_exists(&repo_path, "keep-me"));
 }
 
+#[test]
+fn list_archived_assistants_filters_project_and_builds_preview_content() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _alpha = create_test_project(&config, "alpha");
+    let _beta = create_test_project(&config, "beta");
+
+    let mut older = helpers::create_test_researcher(&config, "alpha", "older");
+    older.meta.status = agman::assistant::AssistantStatus::Archived;
+    older.meta.updated_at = chrono::Utc::now() - chrono::Duration::minutes(10);
+    std::fs::write(
+        older.dir.join("meta.json"),
+        serde_json::to_string_pretty(&older.meta).unwrap(),
+    )
+    .unwrap();
+
+    let mut newer = helpers::create_test_researcher(&config, "alpha", "newer");
+    newer.meta.status = agman::assistant::AssistantStatus::Archived;
+    newer.meta.updated_at = chrono::Utc::now();
+    std::fs::write(
+        newer.dir.join("meta.json"),
+        serde_json::to_string_pretty(&newer.meta).unwrap(),
+    )
+    .unwrap();
+    agman::inbox::append_message(
+        &config.assistant_inbox("alpha", "newer"),
+        "pm",
+        "latest context",
+    )
+    .unwrap();
+
+    let mut other_project = helpers::create_test_researcher(&config, "beta", "hidden");
+    other_project.meta.status = agman::assistant::AssistantStatus::Archived;
+    std::fs::write(
+        other_project.dir.join("meta.json"),
+        serde_json::to_string_pretty(&other_project.meta).unwrap(),
+    )
+    .unwrap();
+    let _active = helpers::create_test_researcher(&config, "alpha", "active");
+
+    let archived = use_cases::list_archived_assistants(&config, "alpha");
+    assert_eq!(archived.len(), 2);
+    assert_eq!(archived[0].0.meta.name, "newer");
+    assert_eq!(archived[1].0.meta.name, "older");
+    assert!(archived[0].1.contains("Type: researcher"));
+    assert!(archived[0].1.contains("latest context"));
+    assert!(!archived.iter().any(|(a, _)| a.meta.project == "beta"));
+    assert!(!archived.iter().any(|(a, _)| a.meta.name == "active"));
+}
+
+#[test]
+fn resume_archived_assistant_round_trip_sets_running() {
+    if std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|output| !output.status.success())
+        .unwrap_or(true)
+    {
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    use_cases::save_harness(&config, agman::harness::HarnessKind::Goose).unwrap();
+    let _project = create_test_project(&config, "alpha");
+    let name = format!("restore-{}", std::process::id());
+
+    let mut assistant = helpers::create_test_researcher(&config, "alpha", &name);
+    assistant.meta.status = agman::assistant::AssistantStatus::Archived;
+    assistant.save_meta().unwrap();
+
+    let session_name = agman::config::Config::researcher_tmux_session("alpha", &name);
+    let created = std::process::Command::new("tmux")
+        .args(["new-session", "-d", "-s", &session_name, "sleep 60"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if !created {
+        return;
+    }
+
+    let result = use_cases::resume_assistant(&config, "alpha", &name);
+    let _ = agman::tmux::Tmux::kill_session(&session_name);
+    result.unwrap();
+
+    let reloaded = agman::assistant::Assistant::load(config.assistant_dir("alpha", &name)).unwrap();
+    assert_eq!(
+        reloaded.meta.status,
+        agman::assistant::AssistantStatus::Running
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Reviewer assistant
 // ---------------------------------------------------------------------------
@@ -3483,7 +3593,7 @@ fn create_assistant_reviewer_local_branch_no_worktree_bails() {
 }
 
 #[test]
-fn archive_assistant_reviewer_cleans_only_agman_created_entries() {
+fn archive_and_permanently_delete_reviewer_preserves_restore_then_cleans_owned_worktrees() {
     use agman::assistant::AssistantKind;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -3533,16 +3643,15 @@ fn archive_assistant_reviewer_cleans_only_agman_created_entries() {
 
     use_cases::archive_assistant(&config, "reviews", "rv4").unwrap();
 
-    // The agman-created worktree + branch should be gone.
+    // Archive is reversible: all worktrees and branches are still present.
     assert!(
-        !agman_created_path.exists(),
-        "agman_created worktree should be removed"
+        agman_created_path.exists(),
+        "agman_created worktree should survive archive"
     );
     assert!(
-        !agman::git::Git::local_branch_exists(&repo_path, "owned-by-agman"),
-        "agman_created branch should be deleted"
+        agman::git::Git::local_branch_exists(&repo_path, "owned-by-agman"),
+        "agman_created branch should survive archive"
     );
-    // The pre-existing worktree + branch should be left alone.
     assert!(
         preexisting.exists(),
         "pre-existing worktree must survive archive"
@@ -3559,6 +3668,26 @@ fn archive_assistant_reviewer_cleans_only_agman_created_entries() {
         reloaded.meta.status,
         agman::assistant::AssistantStatus::Archived
     );
+
+    use_cases::permanently_delete_archived_assistant(&config, reloaded).unwrap();
+
+    assert!(
+        !agman_created_path.exists(),
+        "agman_created worktree should be removed on permanent delete"
+    );
+    assert!(
+        !agman::git::Git::local_branch_exists(&repo_path, "owned-by-agman"),
+        "agman_created branch should be deleted on permanent delete"
+    );
+    assert!(
+        preexisting.exists(),
+        "pre-existing worktree must survive permanent delete"
+    );
+    assert!(
+        agman::git::Git::local_branch_exists(&repo_path, "keep-me"),
+        "pre-existing branch must survive permanent delete"
+    );
+    assert!(!config.assistant_dir("reviews", "rv4").exists());
 }
 
 #[test]
@@ -3784,7 +3913,7 @@ fn create_assistant_tester_local_branch_no_worktree_bails() {
 }
 
 #[test]
-fn archive_assistant_tester_cleans_only_agman_created_entries() {
+fn archive_and_permanently_delete_tester_preserves_restore_then_cleans_owned_worktrees() {
     use agman::assistant::{AssistantKind, AssistantWorktree, TesterCapabilities};
 
     let tmp = tempfile::tempdir().unwrap();
@@ -3821,8 +3950,8 @@ fn archive_assistant_tester_cleans_only_agman_created_entries() {
 
     use_cases::archive_assistant(&config, "reviews", "t4").unwrap();
 
-    assert!(!agman_created_path.exists());
-    assert!(!agman::git::Git::local_branch_exists(
+    assert!(agman_created_path.exists());
+    assert!(agman::git::Git::local_branch_exists(
         &repo_path,
         "owned-by-agman"
     ));
@@ -3835,6 +3964,17 @@ fn archive_assistant_tester_cleans_only_agman_created_entries() {
         reloaded.meta.status,
         agman::assistant::AssistantStatus::Archived
     );
+
+    use_cases::permanently_delete_archived_assistant(&config, reloaded).unwrap();
+
+    assert!(!agman_created_path.exists());
+    assert!(!agman::git::Git::local_branch_exists(
+        &repo_path,
+        "owned-by-agman"
+    ));
+    assert!(preexisting.exists());
+    assert!(agman::git::Git::local_branch_exists(&repo_path, "keep-me"));
+    assert!(!config.assistant_dir("reviews", "t4").exists());
 }
 
 #[test]

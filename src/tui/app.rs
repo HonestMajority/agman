@@ -2750,7 +2750,11 @@ impl App {
                     }
                 }
                 KeyCode::Char('z') => {
-                    self.archive_tasks = use_cases::list_archived_tasks(&self.config);
+                    self.archive_tasks = if let Some(project) = self.current_project.as_deref() {
+                        use_cases::list_archived_tasks(&self.config, project)
+                    } else {
+                        Vec::new()
+                    };
                     self.archive_search = Self::create_plain_editor();
                     self.archive_selected = 0;
                     self.archive_preview = None;

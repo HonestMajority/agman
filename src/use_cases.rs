@@ -385,12 +385,19 @@ pub fn purge_old_archives(config: &Config) -> Result<usize> {
     Ok(purged)
 }
 
-/// List archived tasks with their TASK.md content loaded.
+/// List archived tasks for a project with their TASK.md content loaded.
 ///
 /// Returns (task, task_md_content) pairs for use in the archive view.
-pub fn list_archived_tasks(config: &Config) -> Vec<(Task, String)> {
+pub fn list_archived_tasks(config: &Config, project: &str) -> Vec<(Task, String)> {
     Task::list_archived(config)
         .into_iter()
+        .filter(|task| {
+            if project == "(unassigned)" {
+                task.meta.project.is_none()
+            } else {
+                task.meta.project.as_deref() == Some(project)
+            }
+        })
         .map(|task| {
             let content = task.read_task().unwrap_or_default();
             (task, content)
@@ -3728,24 +3735,42 @@ pub fn list_researchers(config: &Config, project: Option<&str>) -> Result<Vec<As
     list_assistants(config, project, Some(AssistantKindLabel::Researcher))
 }
 
-/// Archive an assistant. Researchers: kill tmux + flip status. Reviewers and
-/// testers add per-worktree cleanup of any entries we created (`git
-/// worktree remove --force` and `git branch -D` per `agman_created=true`
-/// entry). Worktrees that pre-existed when the reviewer was created are left
-/// alone — see plan for details.
-pub fn archive_assistant(config: &Config, project: &str, name: &str) -> Result<()> {
-    let dir = config.assistant_dir(project, name);
-    let mut assistant = Assistant::load(dir)?;
+fn assistant_kind_name(kind: &AssistantKind) -> &'static str {
+    match kind {
+        AssistantKind::Researcher { .. } => "researcher",
+        AssistantKind::Operator { .. } => "operator",
+        AssistantKind::Reviewer { .. } => "reviewer",
+        AssistantKind::Tester { .. } => "tester",
+    }
+}
 
-    let session_name = assistant_tmux_session(&assistant.meta);
-    if Tmux::session_exists(&session_name) {
-        tracing::info!(session = &session_name, "killing assistant tmux session");
-        Tmux::kill_session(&session_name)?;
+fn archived_assistant_content(assistant: &Assistant) -> String {
+    let mut out = format!(
+        "Name: {}\nType: {}\nProject: {}\nStatus: {:?}\nCreated: {}\nUpdated: {}\n\nDescription:\n{}\n",
+        assistant.meta.name,
+        assistant_kind_name(&assistant.meta.kind),
+        assistant.meta.project,
+        assistant.meta.status,
+        assistant.meta.created_at,
+        assistant.meta.updated_at,
+        assistant.meta.description
+    );
+
+    let inbox_path = assistant.dir.join("inbox.jsonl");
+    if let Ok(messages) = inbox::read_messages(&inbox_path) {
+        if !messages.is_empty() {
+            out.push_str("\nInbox:\n");
+            let start = messages.len().saturating_sub(20);
+            for msg in &messages[start..] {
+                out.push_str(&format!("[{}] {}: {}\n", msg.seq, msg.from, msg.message));
+            }
+        }
     }
 
-    assistant.meta.status = AssistantStatus::Archived;
-    assistant.save_meta()?;
+    out
+}
 
+fn cleanup_assistant_worktrees(config: &Config, assistant: &Assistant) {
     match &assistant.meta.kind {
         AssistantKind::Reviewer { worktrees } | AssistantKind::Tester { worktrees, .. } => {
             for entry in worktrees {
@@ -3763,9 +3788,76 @@ pub fn archive_assistant(config: &Config, project: &str, name: &str) -> Result<(
         }
         AssistantKind::Researcher { .. } | AssistantKind::Operator { .. } => {}
     }
+}
+
+/// Archive an assistant by stopping its tmux session and hiding it from active
+/// assistant lists. Worktrees and branches are preserved so archive restore can
+/// resume the assistant in place.
+pub fn archive_assistant(config: &Config, project: &str, name: &str) -> Result<()> {
+    let dir = config.assistant_dir(project, name);
+    let mut assistant = Assistant::load(dir)?;
+
+    let session_name = assistant_tmux_session(&assistant.meta);
+    if Tmux::session_exists(&session_name) {
+        tracing::info!(session = &session_name, "killing assistant tmux session");
+        Tmux::kill_session(&session_name)?;
+    }
+
+    assistant.meta.status = AssistantStatus::Archived;
+    assistant.save_meta()?;
 
     tracing::info!(project = project, name = name, "assistant archived");
     Ok(())
+}
+
+/// Permanently delete an archived assistant. Worktree/branch cleanup is
+/// best-effort; the assistant directory removal is the durable delete step.
+pub fn permanently_delete_archived_assistant(config: &Config, assistant: Assistant) -> Result<()> {
+    if assistant.meta.status != AssistantStatus::Archived {
+        bail!(
+            "assistant '{}--{}' is not archived",
+            assistant.meta.project,
+            assistant.meta.name
+        );
+    }
+
+    let session_name = assistant_tmux_session(&assistant.meta);
+    if let Err(e) = Tmux::kill_session(&session_name) {
+        tracing::warn!(session = %session_name, error = %e, "failed to kill assistant tmux session during permanent delete");
+    }
+
+    cleanup_assistant_worktrees(config, &assistant);
+
+    tracing::info!(
+        project = %assistant.meta.project,
+        name = %assistant.meta.name,
+        "permanently deleting archived assistant"
+    );
+    if assistant.dir.exists() {
+        std::fs::remove_dir_all(&assistant.dir)
+            .with_context(|| format!("failed to remove {}", assistant.dir.display()))?;
+    }
+    Ok(())
+}
+
+/// List archived assistants for one project, sorted by most recently updated.
+pub fn list_archived_assistants(config: &Config, project: &str) -> Vec<(Assistant, String)> {
+    let mut assistants = match Assistant::list_for_project(config, project) {
+        Ok(assistants) => assistants,
+        Err(e) => {
+            tracing::warn!(project = project, error = %e, "failed to list archived assistants");
+            return Vec::new();
+        }
+    };
+    assistants.retain(|assistant| assistant.meta.status == AssistantStatus::Archived);
+    assistants.sort_by(|a, b| b.meta.updated_at.cmp(&a.meta.updated_at));
+    assistants
+        .into_iter()
+        .map(|assistant| {
+            let content = archived_assistant_content(&assistant);
+            (assistant, content)
+        })
+        .collect()
 }
 
 /// Backwards-compatible researcher archive — delegates to `archive_assistant`.
