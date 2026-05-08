@@ -636,8 +636,6 @@ pub struct App {
     pub rebase_branch_list_state: ListState,
     pub pending_branch_command: Option<StoredCommand>,
     pub rebase_branch_search: TextArea<'static>,
-    // Delete mode chooser
-    pub archive_mode_index: usize,
     // Restart task wizard
     pub restart_wizard: Option<RestartWizard>,
     pub should_restart: bool,
@@ -866,7 +864,6 @@ impl App {
             rebase_branch_list_state: ListState::default(),
             pending_branch_command: None,
             rebase_branch_search: Self::create_plain_editor(),
-            archive_mode_index: 0,
             restart_wizard: None,
             should_restart: false,
             last_pr_poll: Instant::now(),
@@ -1413,6 +1410,62 @@ impl App {
         }
     }
 
+    fn open_project_pm_chat(&mut self) {
+        let Some(project_name) = self.current_project.clone() else {
+            return;
+        };
+        if project_name == "(unassigned)" || self.popup.is_some() {
+            return;
+        }
+
+        match use_cases::open_pm_popup(&self.config, &project_name) {
+            Ok(child) => {
+                tracing::info!(project = %project_name, "opened PM popup");
+                self.popup = Some(ActivePopup { child });
+            }
+            Err(e) => {
+                tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
+                self.set_status(format!("Failed to open PM chat: {e}"));
+            }
+        }
+    }
+
+    fn start_project_respawn_confirm(&mut self) {
+        let Some(project_name) = self.current_project.clone() else {
+            return;
+        };
+        if project_name == "(unassigned)" || self.respawn_in_progress.is_some() {
+            return;
+        }
+
+        self.respawn_confirm_target = Some(project_name);
+        self.respawn_confirm_index = 0;
+        self.respawn_confirm_is_chief_of_staff = false;
+        self.respawn_confirm_return_view = View::TaskList;
+        self.view = View::RespawnConfirm;
+    }
+
+    fn start_focused_archive_confirm(&mut self) {
+        let has_selection = match self.project_pane_focus {
+            ProjectPaneFocus::Tasks => !self.tasks.is_empty(),
+            ProjectPaneFocus::Assistants => self.selected_assistant().is_some(),
+        };
+        if has_selection {
+            self.view = View::DeleteConfirm;
+        }
+    }
+
+    fn archive_focused_project_row(&mut self) -> Result<()> {
+        match self.project_pane_focus {
+            ProjectPaneFocus::Tasks => self.archive_task(false)?,
+            ProjectPaneFocus::Assistants => {
+                self.archive_selected_assistant();
+                self.view = View::TaskList;
+            }
+        }
+        Ok(())
+    }
+
     fn open_archive(&mut self, kind: ArchiveKind) {
         self.archive_kind = kind;
         match kind {
@@ -1658,43 +1711,6 @@ impl App {
             "Archived"
         };
         self.set_status(format!("{}: {}", label, task_id));
-        self.view = View::TaskList;
-        Ok(())
-    }
-
-    fn fully_delete_task(&mut self) -> Result<()> {
-        if self.tasks.is_empty() {
-            return Ok(());
-        }
-
-        let task = self.tasks.remove(self.selected_index);
-        let task_id = task.meta.task_id();
-
-        tracing::info!(task_id = %task_id, "TUI: full delete requested");
-        self.log_output(format!("Fully deleting task {}...", task_id));
-
-        // Kill tmux sessions for all repos (side effect)
-        if task.meta.has_repos() {
-            for repo in &task.meta.repos {
-                let _ = Tmux::kill_session(&repo.tmux_session);
-            }
-        }
-        // Also kill the parent-dir session (used for repo-inspector in multi-repo tasks)
-        if task.meta.is_multi_repo() {
-            let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
-            let _ = Tmux::kill_session(&parent_session);
-        }
-        self.log_output("  Killed tmux session(s)".to_string());
-
-        // Delegate business logic to use_cases
-        use_cases::fully_delete_task(&self.config, task)?;
-        self.log_output("  Deleted task".to_string());
-
-        if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
-            self.selected_index = self.tasks.len() - 1;
-        }
-
-        self.set_status(format!("Deleted: {}", task_id));
         self.view = View::TaskList;
         Ok(())
     }
@@ -2872,14 +2888,8 @@ impl App {
             KeyCode::Char('s') => {
                 self.stop_task()?;
             }
-            KeyCode::Char('A') => {
-                self.archive_task(false)?;
-            }
             KeyCode::Char('d') => {
-                if !self.tasks.is_empty() {
-                    self.archive_mode_index = 0;
-                    self.view = View::DeleteConfirm;
-                }
+                self.start_focused_archive_confirm();
             }
             KeyCode::Char('f') => {
                 if !self.tasks.is_empty() {
@@ -2939,22 +2949,8 @@ impl App {
                 self.toggle_hold()?;
             }
             KeyCode::Char('c') => {
-                if let Some(ref project_name) = self.current_project.clone() {
-                    if project_name != "(unassigned)" {
-                        if self.popup.is_some() {
-                            return Ok(false);
-                        }
-                        match use_cases::open_pm_popup(&self.config, project_name) {
-                            Ok(child) => {
-                                tracing::info!(project = %project_name, "opened PM popup");
-                                self.popup = Some(ActivePopup { child });
-                            }
-                            Err(e) => {
-                                tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
-                                self.set_status(format!("Failed to open PM chat: {e}"));
-                            }
-                        }
-                    }
+                if self.current_project.is_some() {
+                    self.open_project_pm_chat();
                 } else {
                     let is_owned = self
                         .selected_task()
@@ -2979,15 +2975,7 @@ impl App {
                 self.open_archive(ArchiveKind::Tasks);
             }
             KeyCode::Char('e') => {
-                if let Some(ref project_name) = self.current_project.clone() {
-                    if project_name != "(unassigned)" && self.respawn_in_progress.is_none() {
-                        self.respawn_confirm_target = Some(project_name.clone());
-                        self.respawn_confirm_index = 0;
-                        self.respawn_confirm_is_chief_of_staff = false;
-                        self.respawn_confirm_return_view = View::TaskList;
-                        self.view = View::RespawnConfirm;
-                    }
-                }
+                self.start_project_respawn_confirm();
             }
             _ => {}
         }
@@ -3016,11 +3004,17 @@ impl App {
             KeyCode::Char('n') => {
                 self.start_assistant_wizard();
             }
-            KeyCode::Char('A') | KeyCode::Char('d') => {
-                self.archive_selected_assistant();
+            KeyCode::Char('d') => {
+                self.start_focused_archive_confirm();
             }
             KeyCode::Char('z') => {
                 self.open_archive(ArchiveKind::Assistants);
+            }
+            KeyCode::Char('c') => {
+                self.open_project_pm_chat();
+            }
+            KeyCode::Char('e') => {
+                self.start_project_respawn_confirm();
             }
             KeyCode::Char('s')
             | KeyCode::Char('f')
@@ -3029,9 +3023,7 @@ impl App {
             | KeyCode::Char('a')
             | KeyCode::Char('o')
             | KeyCode::Char('r')
-            | KeyCode::Char('h')
-            | KeyCode::Char('c')
-            | KeyCode::Char('e') => {
+            | KeyCode::Char('h') => {
                 self.set_status("Switch to Tasks for task actions".to_string());
             }
             _ => {}
@@ -4411,17 +4403,7 @@ impl App {
     fn handle_delete_confirm_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.archive_mode_index = (self.archive_mode_index + 1) % 3;
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.archive_mode_index = (self.archive_mode_index + 2) % 3;
-                }
-                KeyCode::Enter => match self.archive_mode_index {
-                    0 => self.archive_task(false)?,
-                    1 => self.archive_task(true)?,
-                    _ => self.fully_delete_task()?,
-                },
+                KeyCode::Enter => self.archive_focused_project_row()?,
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.view = View::TaskList;
                 }
