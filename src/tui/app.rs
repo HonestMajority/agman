@@ -85,6 +85,12 @@ pub enum ProjectPaneFocus {
     Assistants,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveKind {
+    Tasks,
+    Assistants,
+}
+
 /// A live tmux popup spawned by agman. The `Child` is polled each tick of
 /// the main loop via `try_wait` so the loop never blocks on the popup.
 struct ActivePopup {
@@ -685,7 +691,9 @@ pub struct App {
     pub telegram_token_editor: TextArea<'static>,
     pub telegram_chat_id_editor: TextArea<'static>,
     // Archive view
+    pub archive_kind: ArchiveKind,
     pub archive_tasks: Vec<(Task, String)>,
+    pub archive_assistants: Vec<(Assistant, String)>,
     pub archive_search: TextArea<'static>,
     pub archive_selected: usize,
     pub archive_list_state: ListState,
@@ -698,6 +706,7 @@ pub struct App {
     pub unassigned_task_count: usize,
     pub unassigned_unseen_stopped_count: usize,
     pub project_task_counts: std::collections::HashMap<String, (usize, usize, usize)>, // (total, active, unseen_stopped)
+    pub project_assistant_counts: std::collections::HashMap<String, usize>,
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
     pub assistant_wizard: Option<AssistantWizard>,
@@ -899,7 +908,9 @@ impl App {
             archive_retention_days,
             telegram_token_editor,
             telegram_chat_id_editor,
+            archive_kind: ArchiveKind::Tasks,
             archive_tasks: Vec::new(),
+            archive_assistants: Vec::new(),
             archive_search: Self::create_plain_editor(),
             archive_selected: 0,
             archive_list_state: ListState::default(),
@@ -911,6 +922,7 @@ impl App {
             unassigned_task_count: 0,
             unassigned_unseen_stopped_count: 0,
             project_task_counts: std::collections::HashMap::new(),
+            project_assistant_counts: std::collections::HashMap::new(),
             project_wizard: None,
             assistant_wizard: None,
             project_picker: None,
@@ -1067,6 +1079,7 @@ impl App {
         // Count tasks per project and unassigned
         let all_tasks = Task::list_all(&self.config);
         self.project_task_counts.clear();
+        self.project_assistant_counts.clear();
         self.unassigned_task_count = 0;
         self.unassigned_unseen_stopped_count = 0;
         for task in &all_tasks {
@@ -1087,6 +1100,24 @@ impl App {
                 if !task.meta.seen && task.meta.status == TaskStatus::Stopped {
                     self.unassigned_unseen_stopped_count += 1;
                 }
+            }
+        }
+        match use_cases::list_assistants(&self.config, None, None) {
+            Ok(assistants) => {
+                for assistant in assistants {
+                    if assistant.meta.project == "chief-of-staff"
+                        || assistant.meta.status == AssistantStatus::Archived
+                    {
+                        continue;
+                    }
+                    *self
+                        .project_assistant_counts
+                        .entry(assistant.meta.project)
+                        .or_insert(0) += 1;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to count project assistants");
             }
         }
         // Clamp selection
@@ -1288,6 +1319,15 @@ impl App {
         }
     }
 
+    fn assistant_kind_label(kind: &AssistantKind) -> &'static str {
+        match kind {
+            AssistantKind::Researcher { .. } => "researcher",
+            AssistantKind::Operator { .. } => "operator",
+            AssistantKind::Reviewer { .. } => "reviewer",
+            AssistantKind::Tester { .. } => "tester",
+        }
+    }
+
     fn open_selected_assistant(&mut self) {
         if self.popup.is_some() {
             return;
@@ -1371,6 +1411,37 @@ impl App {
                 self.set_status(format!("Failed to archive: {e}"));
             }
         }
+    }
+
+    fn open_archive(&mut self, kind: ArchiveKind) {
+        self.archive_kind = kind;
+        match kind {
+            ArchiveKind::Tasks => {
+                self.archive_tasks = if let Some(project) = self.current_project.as_deref() {
+                    use_cases::list_archived_tasks(&self.config, project)
+                } else {
+                    Vec::new()
+                };
+                self.archive_assistants.clear();
+            }
+            ArchiveKind::Assistants => {
+                self.archive_assistants = if let Some(project) = self.current_project.as_deref() {
+                    if project == "(unassigned)" {
+                        Vec::new()
+                    } else {
+                        use_cases::list_archived_assistants(&self.config, project)
+                    }
+                } else {
+                    Vec::new()
+                };
+                self.archive_tasks.clear();
+            }
+        }
+        self.archive_search = Self::create_plain_editor();
+        self.archive_selected = 0;
+        self.archive_preview = None;
+        self.archive_scroll = 0;
+        self.view = View::Archive;
     }
 
     fn return_from_assistant_wizard(&mut self) {
@@ -2905,16 +2976,7 @@ impl App {
                 }
             }
             KeyCode::Char('z') => {
-                self.archive_tasks = if let Some(project) = self.current_project.as_deref() {
-                    use_cases::list_archived_tasks(&self.config, project)
-                } else {
-                    Vec::new()
-                };
-                self.archive_search = Self::create_plain_editor();
-                self.archive_selected = 0;
-                self.archive_preview = None;
-                self.archive_scroll = 0;
-                self.view = View::Archive;
+                self.open_archive(ArchiveKind::Tasks);
             }
             KeyCode::Char('e') => {
                 if let Some(ref project_name) = self.current_project.clone() {
@@ -2958,7 +3020,7 @@ impl App {
                 self.archive_selected_assistant();
             }
             KeyCode::Char('z') => {
-                self.set_status("Assistant archive is not available yet".to_string());
+                self.open_archive(ArchiveKind::Assistants);
             }
             KeyCode::Char('s')
             | KeyCode::Char('f')
@@ -3148,25 +3210,52 @@ impl App {
         }
     }
 
-    /// Return indices into `self.archive_tasks` that match the current search query.
+    /// Return indices into the active archive list that match the current search query.
     pub fn archive_filtered_indices(&self) -> Vec<usize> {
         let query: String = self.archive_search.lines().join("").to_lowercase();
         let terms: Vec<&str> = query.split_whitespace().collect();
-        if terms.is_empty() {
-            return (0..self.archive_tasks.len()).collect();
-        }
-        self.archive_tasks
-            .iter()
-            .enumerate()
-            .filter(|(_, (task, content))| {
-                let id_lower = task.meta.task_id().to_lowercase();
-                let content_lower = content.to_lowercase();
-                terms
+        match self.archive_kind {
+            ArchiveKind::Tasks => {
+                if terms.is_empty() {
+                    return (0..self.archive_tasks.len()).collect();
+                }
+                self.archive_tasks
                     .iter()
-                    .all(|term| id_lower.contains(term) || content_lower.contains(term))
-            })
-            .map(|(i, _)| i)
-            .collect()
+                    .enumerate()
+                    .filter(|(_, (task, content))| {
+                        let id_lower = task.meta.task_id().to_lowercase();
+                        let content_lower = content.to_lowercase();
+                        terms
+                            .iter()
+                            .all(|term| id_lower.contains(term) || content_lower.contains(term))
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+            ArchiveKind::Assistants => {
+                if terms.is_empty() {
+                    return (0..self.archive_assistants.len()).collect();
+                }
+                self.archive_assistants
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (assistant, content))| {
+                        let name_lower = assistant.meta.name.to_lowercase();
+                        let project_lower = assistant.meta.project.to_lowercase();
+                        let kind_lower =
+                            Self::assistant_kind_label(&assistant.meta.kind).to_lowercase();
+                        let content_lower = content.to_lowercase();
+                        terms.iter().all(|term| {
+                            name_lower.contains(term)
+                                || project_lower.contains(term)
+                                || kind_lower.contains(term)
+                                || content_lower.contains(term)
+                        })
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            }
+        }
     }
 
     /// Return indices into `self.rebase_branches` that match the current search query.
@@ -3811,8 +3900,13 @@ impl App {
                 }
                 KeyCode::Enter => {
                     let filtered = self.archive_filtered_indices();
-                    if let Some(&task_idx) = filtered.get(self.archive_selected) {
-                        let content = self.archive_tasks[task_idx].1.clone();
+                    if let Some(&archive_idx) = filtered.get(self.archive_selected) {
+                        let content = match self.archive_kind {
+                            ArchiveKind::Tasks => self.archive_tasks[archive_idx].1.clone(),
+                            ArchiveKind::Assistants => {
+                                self.archive_assistants[archive_idx].1.clone()
+                            }
+                        };
                         self.archive_preview = Some(content);
                         self.archive_scroll = 0;
                     }
@@ -3872,69 +3966,121 @@ impl App {
                 self.archive_scroll = self.archive_scroll.saturating_sub(15);
             }
             KeyCode::Char('s') => {
-                // Toggle saved
-                let filtered = self.archive_filtered_indices();
-                if let Some(&task_idx) = filtered.get(self.archive_selected) {
-                    let task = &mut self.archive_tasks[task_idx].0;
-                    match use_cases::toggle_archive_saved(&self.config, task) {
-                        Ok(()) => {
-                            let label = if task.meta.saved { "Saved" } else { "Unsaved" };
-                            let task_id = task.meta.task_id();
-                            self.set_status(format!("{}: {}", label, task_id));
+                if self.archive_kind == ArchiveKind::Tasks {
+                    // Toggle saved
+                    let filtered = self.archive_filtered_indices();
+                    if let Some(&task_idx) = filtered.get(self.archive_selected) {
+                        let task = &mut self.archive_tasks[task_idx].0;
+                        match use_cases::toggle_archive_saved(&self.config, task) {
+                            Ok(()) => {
+                                let label = if task.meta.saved { "Saved" } else { "Unsaved" };
+                                let task_id = task.meta.task_id();
+                                self.set_status(format!("{}: {}", label, task_id));
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "failed to toggle archive saved");
+                                self.set_status(format!("Failed to toggle saved: {e}"));
+                            }
                         }
-                        Err(e) => {
-                            tracing::error!(error = %e, "failed to toggle archive saved");
-                            self.set_status(format!("Failed to toggle saved: {e}"));
-                        }
-                    }
+                    };
                 }
             }
             KeyCode::Char('d') => {
-                // Permanently delete
+                match self.archive_kind {
+                    ArchiveKind::Tasks => {
+                        // Permanently delete
+                        let filtered = self.archive_filtered_indices();
+                        if let Some(&task_idx) = filtered.get(self.archive_selected) {
+                            let (task, _) = self.archive_tasks.remove(task_idx);
+                            let task_id = task.meta.task_id();
+                            if let Err(e) =
+                                use_cases::permanently_delete_archived_task(&self.config, task)
+                            {
+                                tracing::error!(task_id = %task_id, error = %e, "failed to permanently delete archived task");
+                                self.set_status(format!("Delete failed: {e}"));
+                            } else {
+                                self.set_status(format!("Deleted: {}", task_id));
+                            }
+                        }
+                    }
+                    ArchiveKind::Assistants => {
+                        let filtered = self.archive_filtered_indices();
+                        if let Some(&assistant_idx) = filtered.get(self.archive_selected) {
+                            let (assistant, _) = self.archive_assistants.remove(assistant_idx);
+                            let project = assistant.meta.project.clone();
+                            let name = assistant.meta.name.clone();
+                            if let Err(e) = use_cases::permanently_delete_archived_assistant(
+                                &self.config,
+                                assistant,
+                            ) {
+                                tracing::error!(project = %project, name = %name, error = %e, "failed to permanently delete archived assistant");
+                                self.set_status(format!("Delete failed: {e}"));
+                            } else {
+                                self.set_status(format!("Deleted: {project}--{name}"));
+                            }
+                        }
+                    }
+                }
+                self.archive_preview = None;
+                // Clamp selection
                 let filtered = self.archive_filtered_indices();
-                if let Some(&task_idx) = filtered.get(self.archive_selected) {
-                    let (task, _) = self.archive_tasks.remove(task_idx);
-                    let task_id = task.meta.task_id();
-                    if let Err(e) = use_cases::permanently_delete_archived_task(&self.config, task)
-                    {
-                        tracing::error!(task_id = %task_id, error = %e, "failed to permanently delete archived task");
-                        self.set_status(format!("Delete failed: {e}"));
-                    } else {
-                        self.set_status(format!("Deleted: {}", task_id));
-                    }
-                    self.archive_preview = None;
-                    // Clamp selection
-                    let filtered = self.archive_filtered_indices();
-                    if self.archive_selected >= filtered.len() && !filtered.is_empty() {
-                        self.archive_selected = filtered.len() - 1;
-                    }
+                if self.archive_selected >= filtered.len() && !filtered.is_empty() {
+                    self.archive_selected = filtered.len() - 1;
                 }
             }
             KeyCode::Char('n') => {
-                // New task from archived task
-                let filtered = self.archive_filtered_indices();
-                if let Some(&task_idx) = filtered.get(self.archive_selected) {
-                    let (task, _content) = &self.archive_tasks[task_idx];
-                    let repo_name = task.meta.name.clone();
-                    let task_id = task.meta.task_id();
-                    let branch_name = task.meta.branch_name.clone();
-                    let repo_path = self
-                        .config
-                        .repo_path_for(task.meta.parent_dir.as_deref(), &repo_name);
+                match self.archive_kind {
+                    ArchiveKind::Tasks => {
+                        // New task from archived task
+                        let filtered = self.archive_filtered_indices();
+                        if let Some(&task_idx) = filtered.get(self.archive_selected) {
+                            let (task, _content) = &self.archive_tasks[task_idx];
+                            let repo_name = task.meta.name.clone();
+                            let task_id = task.meta.task_id();
+                            let branch_name = task.meta.branch_name.clone();
+                            let repo_path = self
+                                .config
+                                .repo_path_for(task.meta.parent_dir.as_deref(), &repo_name);
 
-                    if !repo_path.exists() {
-                        self.set_status(format!("Repo path not found: {}", repo_path.display()));
-                    } else {
-                        tracing::info!(task_id = %task_id, repo = %repo_name, "starting new task from archived task");
-                        self.archive_preview = None;
-                        self.create_wizard_from_picker(repo_name, repo_path, false)?;
+                            if !repo_path.exists() {
+                                self.set_status(format!(
+                                    "Repo path not found: {}",
+                                    repo_path.display()
+                                ));
+                            } else {
+                                tracing::info!(task_id = %task_id, repo = %repo_name, "starting new task from archived task");
+                                self.archive_preview = None;
+                                self.create_wizard_from_picker(repo_name, repo_path, false)?;
 
-                        let prefill = format!(
-                            "Reference: task \"{}\" (branch: {}). Examine ~/.agman/tasks/{}/TASK.md for context, and the git branch/PR if needed.\n\n\n",
-                            task_id, branch_name, task_id,
-                        );
-                        if let Some(wizard) = self.wizard.as_mut() {
-                            wizard.description_editor.textarea.insert_str(&prefill);
+                                let prefill = format!(
+                                    "Reference: task \"{}\" (branch: {}). Examine ~/.agman/tasks/{}/TASK.md for context, and the git branch/PR if needed.\n\n\n",
+                                    task_id, branch_name, task_id,
+                                );
+                                if let Some(wizard) = self.wizard.as_mut() {
+                                    wizard.description_editor.textarea.insert_str(&prefill);
+                                }
+                            }
+                        }
+                    }
+                    ArchiveKind::Assistants => {
+                        let filtered = self.archive_filtered_indices();
+                        if let Some(&assistant_idx) = filtered.get(self.archive_selected) {
+                            let assistant = &self.archive_assistants[assistant_idx].0;
+                            let project = assistant.meta.project.clone();
+                            let name = assistant.meta.name.clone();
+                            match use_cases::resume_assistant(&self.config, &project, &name) {
+                                Ok(()) => {
+                                    self.set_status(format!("Restored assistant '{name}'"));
+                                    self.archive_preview = None;
+                                    self.project_pane_focus = ProjectPaneFocus::Assistants;
+                                    self.view = View::TaskList;
+                                    self.refresh_assistants();
+                                }
+                                Err(e) => {
+                                    tracing::error!(project = %project, name = %name, error = %e, "failed to restore archived assistant");
+                                    self.set_status(format!("Restore failed: {e}"));
+                                }
+                            }
                         }
                     }
                 }

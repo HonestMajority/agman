@@ -16,8 +16,8 @@ use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::app::{
-    App, BranchSource, DirKind, DirPickerOrigin, NotesFocus, PreviewPane, ProjectPaneFocus,
-    RestartWizardStep, View, WizardStep,
+    App, ArchiveKind, BranchSource, DirKind, DirPickerOrigin, NotesFocus, PreviewPane,
+    ProjectPaneFocus, RestartWizardStep, View, WizardStep,
 };
 use super::vim::VimMode;
 
@@ -236,6 +236,7 @@ fn render_project_row<'a>(
     desc_width: usize,
 ) -> ListItem<'a> {
     const TASKS_WIDTH: usize = 6;
+    const ASSTS_WIDTH: usize = 5;
     const ACTIVE_WIDTH: usize = 7;
     const COL_GAP: &str = "    ";
 
@@ -244,6 +245,11 @@ fn render_project_row<'a>(
         .get(&project.meta.name)
         .copied()
         .unwrap_or((0, 0, 0));
+    let assistant_count = app
+        .project_assistant_counts
+        .get(&project.meta.name)
+        .copied()
+        .unwrap_or(0);
 
     let is_selected = i == app.selected_project_index;
     let style = if is_selected {
@@ -311,6 +317,11 @@ fn render_project_row<'a>(
         Span::raw(COL_GAP),
         Span::styled(
             format!("{:>width$}", total, width = TASKS_WIDTH),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:>width$}", assistant_count, width = ASSTS_WIDTH),
             Style::default().fg(Color::DarkGray),
         ),
         Span::raw(COL_GAP),
@@ -396,6 +407,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
 
     // Column constants
     const TASKS_WIDTH: usize = 6;
+    const ASSTS_WIDTH: usize = 5;
     const ACTIVE_WIDTH: usize = 7;
     const COL_GAP: &str = "    ";
     const MIN_PROJECT_WIDTH: usize = 10;
@@ -414,8 +426,8 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     let project_width = max_name_len.clamp(MIN_PROJECT_WIDTH, MAX_PROJECT_WIDTH);
 
     // Calculate description width
-    // Layout: 4 (leading) + project_width + 4 (gap) + TASKS + 4 (gap) + ACTIVE + 4 (gap)
-    let fixed_width = 4 + project_width + 4 + TASKS_WIDTH + 4 + ACTIVE_WIDTH + 4;
+    // Layout: 4 (leading) + project_width + 4 (gap) + TASKS + 4 (gap) + ASSTS + 4 (gap) + ACTIVE + 4 (gap)
+    let fixed_width = 4 + project_width + 4 + TASKS_WIDTH + 4 + ASSTS_WIDTH + 4 + ACTIVE_WIDTH + 4;
     let desc_width = (inner.width as usize).saturating_sub(fixed_width);
 
     // Render header row
@@ -431,6 +443,11 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(COL_GAP),
         Span::styled(
             format!("{:>width$}", "TASKS", width = TASKS_WIDTH),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:>width$}", "ASSTS", width = ASSTS_WIDTH),
             header_style,
         ),
         Span::raw(COL_GAP),
@@ -525,6 +542,16 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             Span::raw(COL_GAP),
             Span::styled(
                 format!("{:>width$}", app.unassigned_task_count, width = TASKS_WIDTH),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:>width$}", "", width = ASSTS_WIDTH),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
+                format!("{:>width$}", "", width = ACTIVE_WIDTH),
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
@@ -2563,6 +2590,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("A/d", Style::default().fg(Color::LightRed)),
                     Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("z", Style::default().fg(Color::LightYellow)),
+                    Span::styled(" archived  ", Style::default().fg(Color::DarkGray)),
                 ]);
                 if app.current_project.is_some() {
                     spans.extend([
@@ -2998,33 +3027,45 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         }
         View::Archive => {
             if app.archive_preview.is_some() {
-                vec![
+                let mut spans = vec![
                     Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                     Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("s", Style::default().fg(Color::LightGreen)),
-                    Span::styled(
-                        {
-                            let filtered = app.archive_filtered_indices();
-                            if filtered
-                                .get(app.archive_selected)
-                                .and_then(|&i| app.archive_tasks.get(i))
-                                .map(|(t, _)| t.meta.saved)
-                                .unwrap_or(false)
+                ];
+                if app.archive_kind == ArchiveKind::Tasks {
+                    spans.extend([
+                        Span::styled("s", Style::default().fg(Color::LightGreen)),
+                        Span::styled(
                             {
-                                " unsave  "
-                            } else {
-                                " save  "
-                            }
-                        },
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled("n", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" new-from  ", Style::default().fg(Color::DarkGray)),
+                                let filtered = app.archive_filtered_indices();
+                                if filtered
+                                    .get(app.archive_selected)
+                                    .and_then(|&i| app.archive_tasks.get(i))
+                                    .map(|(t, _)| t.meta.saved)
+                                    .unwrap_or(false)
+                                {
+                                    " unsave  "
+                                } else {
+                                    " save  "
+                                }
+                            },
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled("n", Style::default().fg(Color::LightCyan)),
+                        Span::styled(" new-from  ", Style::default().fg(Color::DarkGray)),
+                    ]);
+                } else {
+                    spans.extend([
+                        Span::styled("n", Style::default().fg(Color::LightCyan)),
+                        Span::styled(" restore  ", Style::default().fg(Color::DarkGray)),
+                    ]);
+                }
+                spans.extend([
                     Span::styled("d", Style::default().fg(Color::LightRed)),
                     Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("Esc", Style::default().fg(Color::LightCyan)),
                     Span::styled(" close", Style::default().fg(Color::DarkGray)),
-                ]
+                ]);
+                spans
             } else {
                 vec![
                     Span::styled("\u{2191}\u{2193}", Style::default().fg(Color::LightCyan)),
@@ -4473,8 +4514,12 @@ fn draw_archive(f: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     // Search input
+    let search_title = match app.archive_kind {
+        ArchiveKind::Tasks => " Task Archive Search ",
+        ArchiveKind::Assistants => " Assistant Archive Search ",
+    };
     let search_block = Block::default()
-        .title(" Archive Search ")
+        .title(search_title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::LightCyan));
     let search_inner = search_block.inner(chunks[0]);
@@ -4489,50 +4534,89 @@ fn draw_archive(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = filtered
         .iter()
         .map(|&idx| {
-            let (task, _) = &app.archive_tasks[idx];
-            let task_name = task.meta.task_id();
-            let time_ago = task
-                .meta
-                .archived_at
-                .as_ref()
-                .map(format_time_ago)
-                .unwrap_or_default();
+            match app.archive_kind {
+                ArchiveKind::Tasks => {
+                    let (task, _) = &app.archive_tasks[idx];
+                    let task_name = task.meta.task_id();
+                    let time_ago = task
+                        .meta
+                        .archived_at
+                        .as_ref()
+                        .map(format_time_ago)
+                        .unwrap_or_default();
 
-            let mut spans: Vec<Span> = Vec::new();
+                    let mut spans: Vec<Span> = Vec::new();
 
-            // Task name with match highlighting (Unicode-safe)
-            for (seg, is_match) in highlight_segments(&task_name, &terms) {
-                let style = if is_match {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                spans.push(Span::styled(seg.to_string(), style));
+                    // Task name with match highlighting (Unicode-safe)
+                    for (seg, is_match) in highlight_segments(&task_name, &terms) {
+                        let style = if is_match {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        };
+                        spans.push(Span::styled(seg.to_string(), style));
+                    }
+
+                    // Time ago
+                    spans.push(Span::styled(
+                        format!("  {}", time_ago),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+
+                    // Saved badge
+                    if task.meta.saved {
+                        spans.push(Span::styled(
+                            "  [SAVED]",
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
+
+                    ListItem::new(Line::from(spans))
+                }
+                ArchiveKind::Assistants => {
+                    let (assistant, _) = &app.archive_assistants[idx];
+                    let assistant_name = assistant.meta.name.clone();
+                    let kind = assistant_kind_label(&assistant.meta.kind);
+                    let time_ago = format_time_ago(&assistant.meta.updated_at);
+
+                    let mut spans: Vec<Span> = Vec::new();
+                    for (seg, is_match) in highlight_segments(&assistant_name, &terms) {
+                        let style = if is_match {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        };
+                        spans.push(Span::styled(seg.to_string(), style));
+                    }
+                    spans.push(Span::styled(
+                        format!("  {kind}"),
+                        Style::default().fg(Color::LightMagenta),
+                    ));
+                    spans.push(Span::styled(
+                        format!("  {}", assistant.meta.project),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    spans.push(Span::styled(
+                        format!("  {}", time_ago),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+
+                    ListItem::new(Line::from(spans))
+                }
             }
-
-            // Time ago
-            spans.push(Span::styled(
-                format!("  {}", time_ago),
-                Style::default().fg(Color::DarkGray),
-            ));
-
-            // Saved badge
-            if task.meta.saved {
-                spans.push(Span::styled(
-                    "  [SAVED]",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-
-            ListItem::new(Line::from(spans))
         })
         .collect();
 
-    let title = format!(" Archive ({}) ", filtered.len());
+    let title = match app.archive_kind {
+        ArchiveKind::Tasks => format!(" Task Archive ({}) ", filtered.len()),
+        ArchiveKind::Assistants => format!(" Assistant Archive ({}) ", filtered.len()),
+    };
     let list = List::new(items)
         .block(
             Block::default()
@@ -4563,22 +4647,36 @@ fn draw_archive_preview(f: &mut Frame, app: &mut App) {
     };
 
     let filtered = app.archive_filtered_indices();
-    let task_name = filtered
-        .get(app.archive_selected)
-        .and_then(|&i| app.archive_tasks.get(i))
-        .map(|(t, _)| t.meta.task_id())
-        .unwrap_or_default();
-
-    let saved = filtered
-        .get(app.archive_selected)
-        .and_then(|&i| app.archive_tasks.get(i))
-        .map(|(t, _)| t.meta.saved)
-        .unwrap_or(false);
-
-    let title = if saved {
-        format!(" {} [SAVED] ", task_name)
-    } else {
-        format!(" {} ", task_name)
+    let title = match app.archive_kind {
+        ArchiveKind::Tasks => {
+            let task_name = filtered
+                .get(app.archive_selected)
+                .and_then(|&i| app.archive_tasks.get(i))
+                .map(|(t, _)| t.meta.task_id())
+                .unwrap_or_default();
+            let saved = filtered
+                .get(app.archive_selected)
+                .and_then(|&i| app.archive_tasks.get(i))
+                .map(|(t, _)| t.meta.saved)
+                .unwrap_or(false);
+            if saved {
+                format!(" {} [SAVED] ", task_name)
+            } else {
+                format!(" {} ", task_name)
+            }
+        }
+        ArchiveKind::Assistants => filtered
+            .get(app.archive_selected)
+            .and_then(|&i| app.archive_assistants.get(i))
+            .map(|(assistant, _)| {
+                format!(
+                    " {} {}--{} ",
+                    assistant_kind_label(&assistant.meta.kind),
+                    assistant.meta.project,
+                    assistant.meta.name
+                )
+            })
+            .unwrap_or_else(|| " Assistant Archive ".to_string()),
     };
 
     let area = centered_rect(80, 80, f.area());
