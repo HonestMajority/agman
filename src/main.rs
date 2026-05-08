@@ -824,14 +824,6 @@ fn cmd_status(config: &Config) -> Result<()> {
         }
     }
 
-    if !status.chief_of_staff_assistants.is_empty() {
-        println!();
-        println!(
-            "Chief of Staff assistants: {}",
-            format_assistants_line(&status.chief_of_staff_assistants)
-        );
-    }
-
     Ok(())
 }
 

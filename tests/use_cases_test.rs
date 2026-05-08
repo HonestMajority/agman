@@ -3724,6 +3724,27 @@ fn use_case_send_message_to_researcher() {
 }
 
 #[test]
+fn use_case_send_message_rejects_chief_of_staff_assistant_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    helpers::create_test_researcher(&config, "chief-of-staff", "legacy");
+
+    let result = use_cases::send_message(
+        &config,
+        "researcher:chief-of-staff--legacy",
+        "chief-of-staff",
+        "hello",
+    );
+
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("chief-of-staff assistants are no longer supported"));
+}
+
+#[test]
 fn send_message_with_reviewer_prefix_routes_to_assistant_inbox() {
     use agman::assistant::{Assistant, AssistantKind, AssistantWorktree};
 
@@ -4608,28 +4629,16 @@ fn append_message_concurrent_seqs() {
 
 #[test]
 fn relative_agent_list_from_chief_of_staff() {
-    use agman::assistant::{Assistant, AssistantStatus};
-
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
     create_test_project(&config, "alpha");
     create_test_project(&config, "beta");
-    helpers::create_test_researcher(&config, "chief-of-staff", "live");
-    let mut archived = helpers::create_test_researcher(&config, "chief-of-staff", "old");
-    archived.meta.status = AssistantStatus::Archived;
-    archived.save_meta().unwrap();
-
-    // Sanity-check the helper left the archived researcher archived.
-    let archived_reload = Assistant::load(config.assistant_dir("chief-of-staff", "old")).unwrap();
-    assert_eq!(archived_reload.meta.status, AssistantStatus::Archived);
 
     let agents = use_cases::relative_agent_list(&config, "chief-of-staff");
     let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
     assert!(ids.contains(&"alpha"));
     assert!(ids.contains(&"beta"));
-    assert!(!ids.contains(&"researcher:chief-of-staff--live"));
-    assert!(!ids.iter().any(|id| id.contains("old")));
     assert_eq!(agents.len(), 2);
 }
 
@@ -4678,18 +4687,6 @@ fn relative_agent_list_from_operator() {
     let agents = use_cases::relative_agent_list(&config, "operator:alpha--live");
     let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
     assert_eq!(ids, vec!["alpha", "chief-of-staff"]);
-}
-
-#[test]
-fn relative_agent_list_from_legacy_chief_of_staff_researcher_goes_to_chief_of_staff() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-
-    helpers::create_test_researcher(&config, "chief-of-staff", "live");
-
-    let agents = use_cases::relative_agent_list(&config, "researcher:chief-of-staff--live");
-    let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
-    assert_eq!(ids, vec!["chief-of-staff"]);
 }
 
 #[test]
@@ -4745,12 +4742,6 @@ fn researcher_prompt_includes_correct_from() {
         proj_prompt.contains(r#"--from "researcher:proj--bar""#),
         "expected project researcher prompt to include --from \"researcher:proj--bar\", got:\n{proj_prompt}"
     );
-
-    let cos_prompt = use_cases::build_researcher_prompt(true, "chief-of-staff", "baz");
-    assert!(
-        cos_prompt.contains(r#"--from "researcher:chief-of-staff--baz""#),
-        "expected chief-of-staff researcher prompt to include --from \"researcher:chief-of-staff--baz\", got:\n{cos_prompt}"
-    );
 }
 
 #[test]
@@ -4759,12 +4750,6 @@ fn operator_prompt_includes_correct_from() {
     assert!(
         proj_prompt.contains(r#"--from "operator:proj--bar""#),
         "expected project operator prompt to include --from \"operator:proj--bar\", got:\n{proj_prompt}"
-    );
-
-    let cos_prompt = use_cases::build_operator_prompt(true, "chief-of-staff", "baz");
-    assert!(
-        cos_prompt.contains(r#"--from "operator:chief-of-staff--baz""#),
-        "expected chief-of-staff operator prompt to include --from \"operator:chief-of-staff--baz\", got:\n{cos_prompt}"
     );
 }
 

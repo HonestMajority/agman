@@ -2099,7 +2099,6 @@ pub struct AggregatedStatus {
     pub projects: Vec<ProjectGroup>,
     pub unassigned: Vec<TaskSummary>,
     pub archived_unassigned: usize,
-    pub chief_of_staff_assistants: Vec<AssistantSummary>,
 }
 
 fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
@@ -2206,13 +2205,10 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
 
     let archived_unassigned = archived.iter().filter(|t| t.meta.project.is_none()).count();
 
-    let chief_of_staff_assistants = load_assistant_summaries(config, "chief-of-staff");
-
     Ok(AggregatedStatus {
         projects: project_groups,
         unassigned,
         archived_unassigned,
-        chief_of_staff_assistants,
     })
 }
 
@@ -2379,6 +2375,9 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
                     "invalid {kind} id '{rest}': expected '{kind}:<project>--<name>'",
                     kind = prefix.as_str()
                 );
+            }
+            if project == "chief-of-staff" {
+                anyhow::bail!("chief-of-staff assistants are no longer supported");
             }
             let dir = config.assistant_dir(project, name);
             if !dir.exists() {
@@ -4476,12 +4475,7 @@ pub fn build_researcher_prompt(
     project_name: &str,
     researcher_name: &str,
 ) -> String {
-    let template = if project_name == "chief-of-staff" {
-        DEFAULT_CHIEF_OF_STAFF_RESEARCHER_PROMPT_TEMPLATE
-    } else {
-        DEFAULT_RESEARCHER_PROMPT_TEMPLATE
-    };
-    let base = template
+    let base = DEFAULT_RESEARCHER_PROMPT_TEMPLATE
         .replace("{{PROJECT_NAME}}", project_name)
         .replace("{{RESEARCHER_NAME}}", researcher_name);
     if !telegram_enabled {
@@ -4527,12 +4521,7 @@ pub fn build_operator_prompt(
     project_name: &str,
     operator_name: &str,
 ) -> String {
-    let template = if project_name == "chief-of-staff" {
-        DEFAULT_CHIEF_OF_STAFF_OPERATOR_PROMPT_TEMPLATE
-    } else {
-        DEFAULT_OPERATOR_PROMPT_TEMPLATE
-    };
-    let base = template
+    let base = DEFAULT_OPERATOR_PROMPT_TEMPLATE
         .replace("{{PROJECT_NAME}}", project_name)
         .replace("{{OPERATOR_NAME}}", operator_name);
     if !telegram_enabled {
@@ -4583,11 +4572,6 @@ pub fn build_reviewer_prompt(
     reviewer_name: &str,
     worktrees: &[AssistantWorktree],
 ) -> String {
-    let template = if project_name == "chief-of-staff" {
-        DEFAULT_CHIEF_OF_STAFF_REVIEWER_PROMPT_TEMPLATE
-    } else {
-        DEFAULT_REVIEWER_PROMPT_TEMPLATE
-    };
     let worktree_block = if worktrees.is_empty() {
         "(no worktrees configured)".to_string()
     } else {
@@ -4597,7 +4581,7 @@ pub fn build_reviewer_prompt(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let base = template
+    let base = DEFAULT_REVIEWER_PROMPT_TEMPLATE
         .replace("{{PROJECT_NAME}}", project_name)
         .replace("{{REVIEWER_NAME}}", reviewer_name)
         .replace("{{WORKTREES}}", &worktree_block);
@@ -4647,11 +4631,6 @@ pub fn build_tester_prompt(
     caps: TesterCapabilities,
     harness_kind: HarnessKind,
 ) -> String {
-    let template = if project_name == "chief-of-staff" {
-        DEFAULT_CHIEF_OF_STAFF_TESTER_PROMPT_TEMPLATE
-    } else {
-        DEFAULT_TESTER_PROMPT_TEMPLATE
-    };
     let browser_block = if caps.browser
         && matches!(harness_kind, HarnessKind::Claude | HarnessKind::Codex)
     {
@@ -4659,7 +4638,7 @@ pub fn build_tester_prompt(
     } else {
         ""
     };
-    let base = template
+    let base = DEFAULT_TESTER_PROMPT_TEMPLATE
         .replace("{{PROJECT_NAME}}", project_name)
         .replace("{{TESTER_NAME}}", tester_name)
         .replace("{{WORKTREES}}", &format_worktree_block(worktrees))
@@ -4746,38 +4725,6 @@ AGMAN_MSG
 Keep findings concise and specific — file paths, line numbers, and the actual issue. The PM will follow up with more questions if they need to dig deeper.
 "#;
 
-const DEFAULT_CHIEF_OF_STAFF_REVIEWER_PROMPT_TEMPLATE: &str = r#"You are a code reviewer assistant for the Chief of Staff, named "{{REVIEWER_NAME}}".
-
-Your job is to read code from the worktrees listed below — including uncommitted, staged, and unstaged changes — and deliver opinions back to the Chief of Staff. You are stateless between questions but the session is long-lived: the CoS may follow up with more questions on the same review.
-
-## Worktrees
-
-{{WORKTREES}}
-
-The local filesystem is authoritative. Treat each worktree as the source of truth for what the branch currently looks like.
-
-## Hard rules
-
-- Do **not** fetch from origin. Never run `git fetch`, `git pull`, or any other network-touching git command.
-- Do **not** write to disk. No new files, no edits, no commits, no notes-to-self.
-- Do **not** post to GitHub. No `gh pr review`, no comments, no labels, no merges.
-- Do **not** open a PR or interact with one. PR-URL → branch translation is the CoS's job; you only see the worktrees above.
-- Do **not** write a `REVIEW.md` or any artifact file.
-
-## Communication
-
-Messages from the Chief of Staff appear tagged `[Message from chief-of-staff]:`. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
-
-Reply via:
-```
-cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "reviewer:chief-of-staff--{{REVIEWER_NAME}}"
-<your findings>
-AGMAN_MSG
-```
-
-Keep findings concise and specific — file paths, line numbers, and the actual issue. The Chief of Staff will follow up with more questions if they need to dig deeper.
-"#;
-
 const DEFAULT_TESTER_PROMPT_TEMPLATE: &str = r#"You are a tester assistant for project "{{PROJECT_NAME}}", named "{{TESTER_NAME}}".
 
 Your job is to verify behavior — run tests, exercise endpoints, interact with the app, and report what you find. You are stateless between questions but the session is long-lived: the PM may follow up with more questions on the same test pass.
@@ -4811,39 +4758,6 @@ AGMAN_MSG
 Keep findings concise and specific — commands run, behavior observed, failures, logs, screenshots, and any uncertainty. The PM will follow up with more questions if they need to dig deeper.
 "#;
 
-const DEFAULT_CHIEF_OF_STAFF_TESTER_PROMPT_TEMPLATE: &str = r#"You are a tester assistant for the Chief of Staff, named "{{TESTER_NAME}}".
-
-Your job is to verify behavior — run tests, exercise endpoints, interact with the app, and report what you find. You are stateless between questions but the session is long-lived: the CoS may follow up with more questions on the same test pass.
-
-## Worktrees
-
-{{WORKTREES}}
-
-The local filesystem is authoritative. Treat each worktree as the source of truth for what the branch currently looks like.
-
-{{BROWSER_BLOCK}}
-## Hard rules
-
-- You may write to the worktree (logs, screenshots, coverage reports, scratch scripts). You may run dev servers, seed local databases, and execute test runners.
-- Do **not** commit, tag, or push. No `git commit`, no `git tag`, no `git push`.
-- Do **not** post to GitHub. No `gh pr review`, no `gh pr comment`, no comments, no labels, no merges.
-- Do **not** open a PR or interact with one. PR-URL → branch translation is the CoS's job; you only see the worktrees above.
-- Do **not** start detached processes. No `nohup`, `disown`, `setsid`, or similar backgrounding that would survive tmux cleanup.
-
-## Communication
-
-Messages from the Chief of Staff appear tagged `[Message from chief-of-staff]:`. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
-
-Reply via:
-```
-cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "tester:chief-of-staff--{{TESTER_NAME}}"
-<what you tested and what you found>
-AGMAN_MSG
-```
-
-Keep findings concise and specific — commands run, behavior observed, failures, logs, screenshots, and any uncertainty. The Chief of Staff will follow up with more questions if they need to dig deeper.
-"#;
-
 const DEFAULT_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for project "{{PROJECT_NAME}}", named "{{RESEARCHER_NAME}}".
 
 Your role is to explore, analyze, and answer questions. You are NOT here to make code changes — only to investigate and report findings.
@@ -4859,20 +4773,6 @@ AGMAN_MSG
 
 Keep reports concise and actionable. When you've completed your research, summarize key findings in a single message.
 
-"#;
-
-const DEFAULT_CHIEF_OF_STAFF_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for the Chief of Staff, named "{{RESEARCHER_NAME}}".
-
-Your role is to explore, analyze, and answer questions. You are NOT here to make code changes — only to investigate and report findings.
-
-Messages from the Chief of Staff appear tagged [Message from chief-of-staff]:. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
-
-ALL findings and responses must go through send-message:
-cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "researcher:chief-of-staff--{{RESEARCHER_NAME}}"
-<your findings>
-AGMAN_MSG
-
-Keep reports concise and actionable. When you've completed your research, summarize key findings in a single message.
 "#;
 
 const DEFAULT_OPERATOR_PROMPT_TEMPLATE: &str = r#"You are an operator assistant for project "{{PROJECT_NAME}}", named "{{OPERATOR_NAME}}".
@@ -4895,33 +4795,6 @@ Messages from the PM appear in your tmux session tagged `[Message from {{PROJECT
 Reply via:
 ```
 cat <<'AGMAN_MSG' | agman send-message {{PROJECT_NAME}} --from "operator:{{PROJECT_NAME}}--{{OPERATOR_NAME}}"
-<what you did and the result>
-AGMAN_MSG
-```
-
-Keep reports concise and specific — what you changed, where, and any uncertainty. When you've completed the requested action, report back in a single message.
-"#;
-
-const DEFAULT_CHIEF_OF_STAFF_OPERATOR_PROMPT_TEMPLATE: &str = r#"You are an operator assistant for the Chief of Staff, named "{{OPERATOR_NAME}}".
-
-You are an action-taking assistant. Your job is to do the thing your PM asks — edit a Google doc, ack an incident in PagerDuty, post a Slack message, update a Notion page. Use whatever tools are available to you. Report back when done.
-
-External state changes are expected. Hit third-party APIs, drive MCP-backed integrations, mutate documents, post messages — that's the point.
-
-## Hard rules
-
-- Do **not** commit, tag, or push. No `git commit`, no `git tag`, no `git push`.
-- Do **not** post to GitHub PRs or issues. No `gh pr review`, no `gh pr comment`, no comments, no labels, no merges.
-- Do **not** start detached processes. No `nohup`, `disown`, `setsid`, or similar backgrounding that would survive tmux cleanup.
-- Do not do engineering implementation work here. Code work goes through Tasks; Operator is for non-engineering side-tasks.
-
-## Communication
-
-Messages from the Chief of Staff appear tagged [Message from chief-of-staff]:. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
-
-Reply via:
-```
-cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "operator:chief-of-staff--{{OPERATOR_NAME}}"
 <what you did and the result>
 AGMAN_MSG
 ```

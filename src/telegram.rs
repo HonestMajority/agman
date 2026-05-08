@@ -490,6 +490,7 @@ fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter)
     };
     let matches: Vec<&Assistant> = assistants
         .iter()
+        .filter(|a| a.meta.project != "chief-of-staff")
         .filter(|a| a.meta.name == name && a.meta.status == AssistantStatus::Running)
         .filter(|a| {
             matches!(
