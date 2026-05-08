@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
-use agman::assistant::Assistant;
+use agman::assistant::{Assistant, AssistantStatus};
 use agman::command::StoredCommand;
 use agman::config::Config;
 use agman::dismissed_notifications::DismissedNotifications;
@@ -78,6 +78,12 @@ pub enum View {
     AssistantList,
     AssistantWizard,
     RespawnConfirm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectPaneFocus {
+    Tasks,
+    Assistants,
 }
 
 /// A live tmux popup spawned by agman. The `Child` is polled each tick of
@@ -595,6 +601,7 @@ pub struct App {
     pub config: Config,
     pub tasks: Vec<Task>,
     pub selected_index: usize,
+    pub project_pane_focus: ProjectPaneFocus,
     pub view: View,
     pub preview_content: String,
     pub logs_editor: VimTextArea<'static>,
@@ -825,6 +832,7 @@ impl App {
             config,
             tasks,
             selected_index: 0,
+            project_pane_focus: ProjectPaneFocus::Tasks,
             view: View::ProjectList,
             preview_content: String::new(),
             logs_editor,
@@ -1091,13 +1099,25 @@ impl App {
 
     /// Refresh the assistant list, filtered by `current_project` if set.
     pub fn refresh_assistants(&mut self) {
+        if self.current_project.as_deref() == Some("(unassigned)") {
+            self.assistants.clear();
+            self.assistant_list_index = 0;
+            return;
+        }
+
         self.assistants =
             use_cases::list_assistants(&self.config, self.current_project.as_deref(), None)
                 .unwrap_or_else(|e| {
                     tracing::warn!(error = %e, "failed to list assistants");
                     Vec::new()
                 });
-        if self.assistant_list_index >= self.assistants.len() && !self.assistants.is_empty() {
+        self.assistants
+            .retain(|assistant| assistant.meta.status != AssistantStatus::Archived);
+        self.assistants
+            .sort_by(|a, b| b.meta.created_at.cmp(&a.meta.created_at));
+        if self.assistants.is_empty() {
+            self.assistant_list_index = 0;
+        } else if self.assistant_list_index >= self.assistants.len() {
             self.assistant_list_index = self.assistants.len() - 1;
         }
     }
@@ -2446,7 +2466,10 @@ impl App {
                     if let Some(name) = project_name {
                         self.current_project = Some(name);
                         self.selected_index = 0;
+                        self.assistant_list_index = 0;
+                        self.project_pane_focus = ProjectPaneFocus::Tasks;
                         self.refresh_tasks_for_project();
+                        self.refresh_assistants();
                         self.view = View::TaskList;
                     }
                 }

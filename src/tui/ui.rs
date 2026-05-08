@@ -16,8 +16,8 @@ use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::app::{
-    App, BranchSource, DirKind, DirPickerOrigin, NotesFocus, PreviewPane, RestartWizardStep, View,
-    WizardStep,
+    App, BranchSource, DirKind, DirPickerOrigin, NotesFocus, PreviewPane, ProjectPaneFocus,
+    RestartWizardStep, View, WizardStep,
 };
 use super::vim::VimMode;
 
@@ -132,10 +132,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     match app.view {
         View::ProjectList => draw_project_list(f, app, chunks[0]),
-        View::TaskList => draw_task_list(f, app, chunks[0]),
+        View::TaskList => draw_project_detail(f, app, chunks[0]),
         View::Preview => draw_preview(f, app, chunks[0]),
         View::DeleteConfirm => {
-            draw_task_list(f, app, chunks[0]);
+            draw_project_detail(f, app, chunks[0]);
             draw_delete_confirm(f, app, app.archive_retention_days);
         }
         View::Feedback => {
@@ -143,7 +143,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_feedback(f, app);
         }
         View::NewTaskWizard => {
-            draw_task_list(f, app, chunks[0]);
+            draw_project_detail(f, app, chunks[0]);
             draw_wizard(f, app);
         }
         View::CommandList => {
@@ -167,7 +167,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_restart_wizard(f, app);
         }
         View::DirectoryPicker => {
-            draw_task_list(f, app, chunks[0]);
+            draw_project_detail(f, app, chunks[0]);
             draw_directory_picker(f, app);
         }
         View::SessionPicker => {
@@ -198,7 +198,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             }) {
                 draw_project_list(f, app, chunks[0]);
             } else {
-                draw_task_list(f, app, chunks[0]);
+                draw_project_detail(f, app, chunks[0]);
             }
             draw_project_picker(f, app);
         }
@@ -208,14 +208,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         View::AssistantList => draw_assistant_list(f, app, chunks[0]),
         View::AssistantWizard => {
-            draw_assistant_list(f, app, chunks[0]);
+            draw_project_detail(f, app, chunks[0]);
             draw_assistant_wizard(f, app);
         }
         View::RespawnConfirm => {
             // Draw the underlying view behind the modal
             match app.respawn_confirm_return_view {
                 View::ProjectList => draw_project_list(f, app, chunks[0]),
-                _ => draw_task_list(f, app, chunks[0]),
+                _ => draw_project_detail(f, app, chunks[0]),
             }
             draw_respawn_confirm(f, app);
         }
@@ -1062,7 +1062,27 @@ fn draw_project_picker(f: &mut Frame, app: &mut App) {
     f.render_widget(list, inner);
 }
 
-fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
+fn draw_project_detail(f: &mut Frame, app: &App, area: Rect) {
+    let panes = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    draw_tasks_pane(
+        f,
+        app,
+        panes[0],
+        app.project_pane_focus == ProjectPaneFocus::Tasks,
+    );
+    draw_project_assistants_pane(
+        f,
+        app,
+        panes[1],
+        app.project_pane_focus == ProjectPaneFocus::Assistants,
+    );
+}
+
+fn draw_tasks_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     // Count tasks by status
     let running_count = app
         .tasks
@@ -1087,14 +1107,21 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
     } else {
         " agman ".to_string()
     };
+    let border_style = if focused {
+        Style::default().fg(Color::LightCyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let title_style = if focused {
+        Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
     let block = Block::default()
         .title(Line::from(vec![
-            Span::styled(
-                title_label,
-                Style::default()
-                    .fg(Color::LightCyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(title_label, title_style),
             Span::styled(
                 format!("({} tasks) ", app.tasks.len()),
                 Style::default().fg(Color::DarkGray),
@@ -1102,7 +1129,7 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         ]))
         .title(clock_title(app))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightCyan));
+        .border_style(border_style);
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1232,6 +1259,14 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         ),
     ]);
     f.render_widget(Paragraph::new(header), chunks[0]);
+
+    if app.tasks.is_empty() {
+        let text = Paragraph::new("No tasks")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(text, chunks[1]);
+        return;
+    }
 
     // Build task list (sorted by status: running, input_needed, stopped; then by updated_at)
     let mut items: Vec<ListItem> = Vec::new();
@@ -1489,6 +1524,239 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
 
     let list = List::new(items);
     f.render_widget(list, chunks[1]);
+}
+
+fn draw_project_assistants_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
+    let border_style = if focused {
+        Style::default().fg(Color::LightCyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let title_style = if focused {
+        Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let title_label = if let Some(ref project) = app.current_project {
+        format!(" Assistants — {} ", project)
+    } else {
+        " Assistants ".to_string()
+    };
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(title_label, title_style),
+            Span::styled(
+                format!("({} assistants) ", app.assistants.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_style(border_style);
+
+    if app.assistants.is_empty() {
+        let text = Paragraph::new("No assistants")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        f.render_widget(text, area);
+        return;
+    }
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
+    const MIN_NAME_WIDTH: usize = 4;
+    const MAX_NAME_WIDTH: usize = 28;
+    const TYPE_WIDTH: usize = 10;
+    const STATUS_WIDTH: usize = 10;
+    const CREATED_WIDTH: usize = 10;
+    const COL_GAP: &str = "   ";
+
+    let max_name_len = app
+        .assistants
+        .iter()
+        .map(|a| a.meta.name.len())
+        .max()
+        .unwrap_or(MIN_NAME_WIDTH);
+    let fixed_width = 4 + (COL_GAP.len() * 3) + TYPE_WIDTH + STATUS_WIDTH + CREATED_WIDTH;
+    let available_name_width = (inner.width as usize)
+        .saturating_sub(fixed_width)
+        .clamp(MIN_NAME_WIDTH, MAX_NAME_WIDTH);
+    let name_width = max_name_len.clamp(MIN_NAME_WIDTH, available_name_width);
+
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let header = Line::from(vec![
+        Span::raw("    "),
+        Span::styled(
+            format!("{:<width$}", "NAME", width = name_width),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "TYPE", width = TYPE_WIDTH),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "STATUS", width = STATUS_WIDTH),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "CREATED", width = CREATED_WIDTH),
+            header_style,
+        ),
+    ]);
+    f.render_widget(Paragraph::new(header), chunks[0]);
+
+    let items: Vec<ListItem> = app
+        .assistants
+        .iter()
+        .enumerate()
+        .map(|(i, assistant)| {
+            let is_selected = i == app.assistant_list_index;
+            let (status, status_icon, status_color) = assistant_runtime_status(app, assistant);
+            let row_style = if is_selected {
+                Style::default().bg(Color::Rgb(40, 40, 50))
+            } else {
+                Style::default()
+            };
+            let text_style = if is_selected {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+
+            let line = Line::from(vec![
+                Span::raw(" "),
+                Span::styled(status_icon, Style::default().fg(status_color)),
+                Span::raw("  "),
+                Span::styled(
+                    format!(
+                        "{:<width$}",
+                        truncate_to_width(&assistant.meta.name, name_width),
+                        width = name_width
+                    ),
+                    text_style,
+                ),
+                Span::raw(COL_GAP),
+                Span::styled(
+                    format!(
+                        "{:<width$}",
+                        assistant_kind_label(&assistant.meta.kind),
+                        width = TYPE_WIDTH
+                    ),
+                    Style::default().fg(Color::LightMagenta),
+                ),
+                Span::raw(COL_GAP),
+                Span::styled(
+                    format!("{:<width$}", status, width = STATUS_WIDTH),
+                    Style::default().fg(status_color),
+                ),
+                Span::raw(COL_GAP),
+                Span::styled(
+                    format!(
+                        "{:<width$}",
+                        time_since_datetime(&assistant.meta.created_at),
+                        width = CREATED_WIDTH
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+
+            ListItem::new(line).style(row_style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    f.render_widget(list, chunks[1]);
+}
+
+fn assistant_kind_label(kind: &AssistantKind) -> &'static str {
+    match kind {
+        AssistantKind::Researcher { .. } => "researcher",
+        AssistantKind::Operator { .. } => "operator",
+        AssistantKind::Reviewer { .. } => "reviewer",
+        AssistantKind::Tester { .. } => "tester",
+    }
+}
+
+fn assistant_session_name(assistant: &agman::assistant::Assistant) -> String {
+    use agman::config::Config;
+
+    match &assistant.meta.kind {
+        AssistantKind::Researcher { .. } => {
+            Config::researcher_tmux_session(&assistant.meta.project, &assistant.meta.name)
+        }
+        AssistantKind::Operator { .. } => {
+            Config::operator_tmux_session(&assistant.meta.project, &assistant.meta.name)
+        }
+        AssistantKind::Reviewer { .. } => {
+            Config::reviewer_tmux_session(&assistant.meta.project, &assistant.meta.name)
+        }
+        AssistantKind::Tester { .. } => {
+            Config::tester_tmux_session(&assistant.meta.project, &assistant.meta.name)
+        }
+    }
+}
+
+fn assistant_runtime_status(
+    app: &App,
+    assistant: &agman::assistant::Assistant,
+) -> (&'static str, &'static str, Color) {
+    use agman::tmux::Tmux;
+
+    let stall_key = format!(
+        "{}:{}--{}",
+        assistant_kind_label(&assistant.meta.kind),
+        assistant.meta.project,
+        assistant.meta.name
+    );
+    if app.stalled_targets().contains(&stall_key.as_str()) {
+        return ("blocked", "!", Color::LightRed);
+    }
+
+    if Tmux::session_exists(&assistant_session_name(assistant)) {
+        ("running", "●", Color::LightGreen)
+    } else {
+        ("idle", "○", Color::DarkGray)
+    }
+}
+
+fn time_since_datetime(timestamp: &chrono::DateTime<Utc>) -> String {
+    let duration = Utc::now().signed_duration_since(*timestamp);
+
+    if duration.num_days() > 0 {
+        format!("{}d ago", duration.num_days())
+    } else if duration.num_hours() > 0 {
+        format!("{}h ago", duration.num_hours())
+    } else if duration.num_minutes() > 0 {
+        format!("{}m ago", duration.num_minutes())
+    } else {
+        "just now".to_string()
+    }
+}
+
+fn truncate_to_width(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if value.len() > width {
+        format!("{}…", &value[..width.saturating_sub(1)])
+    } else {
+        value.to_string()
+    }
 }
 
 fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
