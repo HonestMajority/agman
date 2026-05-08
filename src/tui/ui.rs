@@ -344,6 +344,19 @@ fn render_project_row<'a>(
 }
 
 fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+    let header = Paragraph::new(Line::from(Span::styled(
+        "Projects",
+        Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    f.render_widget(header, chunks[0]);
+
+    let area = chunks[1];
     let block = Block::default()
         .title(Line::from(vec![
             Span::styled(
@@ -1091,19 +1104,31 @@ fn draw_project_picker(f: &mut Frame, app: &mut App) {
 fn draw_project_detail(f: &mut Frame, app: &App, area: Rect) {
     let panes = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
         .split(area);
+
+    let header = Paragraph::new(Line::from(Span::styled(
+        app.current_project.as_deref().unwrap_or("Project"),
+        Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    f.render_widget(header, panes[0]);
 
     draw_project_assistants_pane(
         f,
         app,
-        panes[0],
+        panes[1],
         app.project_pane_focus == ProjectPaneFocus::Assistants,
     );
     draw_tasks_pane(
         f,
         app,
-        panes[1],
+        panes[2],
         app.project_pane_focus == ProjectPaneFocus::Tasks,
     );
 }
@@ -1128,11 +1153,6 @@ fn draw_tasks_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     let stopped_count = app.tasks.len() - running_count - input_needed_count - on_hold_count;
 
     // Create the outer block first
-    let title_label = if let Some(ref project) = app.current_project {
-        format!(" Tasks — {} ", project)
-    } else {
-        " agman ".to_string()
-    };
     let border_style = if focused {
         Style::default().fg(Color::LightCyan)
     } else {
@@ -1147,7 +1167,7 @@ fn draw_tasks_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     };
     let block = Block::default()
         .title(Line::from(vec![
-            Span::styled(title_label, title_style),
+            Span::styled(" Tasks ", title_style),
             Span::styled(
                 format!("({} tasks) ", app.tasks.len()),
                 Style::default().fg(Color::DarkGray),
@@ -1566,14 +1586,9 @@ fn draw_project_assistants_pane(f: &mut Frame, app: &App, area: Rect, focused: b
     } else {
         Style::default().fg(Color::Gray)
     };
-    let title_label = if let Some(ref project) = app.current_project {
-        format!(" Assistants — {} ", project)
-    } else {
-        " Assistants ".to_string()
-    };
     let block = Block::default()
         .title(Line::from(vec![
-            Span::styled(title_label, title_style),
+            Span::styled(" Assistants ", title_style),
             Span::styled(
                 format!("({} assistants) ", app.assistants.len()),
                 Style::default().fg(Color::DarkGray),
