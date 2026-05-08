@@ -4324,14 +4324,32 @@ fn purge_chief_of_staff_assistants_removes_legacy_dirs_only() {
     let config = test_config(&tmp);
 
     create_test_project(&config, "alpha");
-    helpers::create_test_researcher(&config, "chief-of-staff", "legacy");
-    helpers::create_test_researcher(&config, "alpha", "kept");
+    for (project, name) in [
+        ("ceo", "old-global"),
+        ("chief-of-staff", "legacy"),
+        ("alpha", "kept"),
+    ] {
+        agman::assistant::Assistant::create(
+            &config,
+            project,
+            name,
+            "test description",
+            agman::assistant::AssistantKind::Researcher {
+                repo: None,
+                branch: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+    }
 
+    assert!(config.assistant_dir("ceo", "old-global").exists());
     assert!(config.assistant_dir("chief-of-staff", "legacy").exists());
     assert!(config.assistant_dir("alpha", "kept").exists());
 
     use_cases::purge_chief_of_staff_assistants(&config);
 
+    assert!(!config.assistant_dir("ceo", "old-global").exists());
     assert!(!config.assistant_dir("chief-of-staff", "legacy").exists());
     assert!(config.assistant_dir("alpha", "kept").exists());
 }

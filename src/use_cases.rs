@@ -3867,11 +3867,14 @@ pub fn purge_chief_of_staff_assistants(config: &Config) {
         if !path.is_dir() {
             continue;
         }
-        let Some(name) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_prefix("chief-of-staff--"))
-        else {
+        let Some(dir_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let (project, name) = if let Some(name) = dir_name.strip_prefix("chief-of-staff--") {
+            ("chief-of-staff", name)
+        } else if let Some(name) = dir_name.strip_prefix("ceo--") {
+            ("ceo", name)
+        } else {
             continue;
         };
 
@@ -3879,16 +3882,16 @@ pub fn purge_chief_of_staff_assistants(config: &Config) {
             Ok(assistant) => {
                 let session = assistant_tmux_session(&assistant.meta);
                 if let Err(e) = Tmux::kill_session(&session) {
-                    tracing::warn!(session = %session, error = %e, "failed to kill chief-of-staff assistant session");
+                    tracing::warn!(session = %session, error = %e, "failed to kill global assistant session");
                 }
             }
             Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to load chief-of-staff assistant before purge");
+                tracing::warn!(path = %path.display(), error = %e, "failed to load global assistant before purge");
                 for session in [
-                    Config::researcher_tmux_session("chief-of-staff", name),
-                    Config::operator_tmux_session("chief-of-staff", name),
-                    Config::reviewer_tmux_session("chief-of-staff", name),
-                    Config::tester_tmux_session("chief-of-staff", name),
+                    Config::researcher_tmux_session(project, name),
+                    Config::operator_tmux_session(project, name),
+                    Config::reviewer_tmux_session(project, name),
+                    Config::tester_tmux_session(project, name),
                 ] {
                     let _ = Tmux::kill_session(&session);
                 }
@@ -3897,10 +3900,10 @@ pub fn purge_chief_of_staff_assistants(config: &Config) {
 
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {
-                tracing::info!(name = %name, path = %path.display(), "removed chief-of-staff assistant");
+                tracing::info!(project = %project, name = %name, path = %path.display(), "removed global assistant");
             }
             Err(e) => {
-                tracing::warn!(name = %name, path = %path.display(), error = %e, "failed to remove chief-of-staff assistant");
+                tracing::warn!(project = %project, name = %name, path = %path.display(), error = %e, "failed to remove global assistant");
             }
         }
     }
