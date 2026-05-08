@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
 };
 
-use agman::assistant::{AssistantKind, AssistantStatus};
+use agman::assistant::AssistantKind;
 use agman::command::StoredCommand;
 use agman::task::{QueueItem, TaskStatus};
 use agman::use_cases::{self, TelegramHealth};
@@ -206,7 +206,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_project_list(f, app, chunks[0]);
             draw_project_delete_confirm(f, app);
         }
-        View::AssistantList => draw_assistant_list(f, app, chunks[0]),
         View::AssistantWizard => {
             draw_project_detail(f, app, chunks[0]);
             draw_assistant_wizard(f, app);
@@ -2499,8 +2498,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("c", Style::default().fg(Color::LightYellow)),
                 Span::styled(" CoS chat  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("w", Style::default().fg(Color::LightYellow)),
-                Span::styled(" assistants  ", Style::default().fg(Color::DarkGray)),
             ];
             // Show migrate hint when (unassigned) is selected
             let is_unassigned =
@@ -2553,110 +2550,128 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         }
         View::TaskList => {
             let mut spans = vec![
+                Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                Span::styled(" pane  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
             ];
-            // Show PM chat hint when in a project scope
-            if app
-                .current_project
-                .as_deref()
-                .is_some_and(|p| p != "(unassigned)")
-            {
+            if app.project_pane_focus == ProjectPaneFocus::Assistants {
                 spans.extend([
-                    Span::styled("c", Style::default().fg(Color::LightYellow)),
-                    Span::styled(" PM chat  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("enter", Style::default().fg(Color::LightGreen)),
+                    Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("A/d", Style::default().fg(Color::LightRed)),
+                    Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                 ]);
-            }
-            if let Some(task) = app.selected_task() {
-                // State-conditional hints
-                if task.meta.status == TaskStatus::InputNeeded {
-                    spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
-                    spans.push(Span::styled(
-                        " answer  ",
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                if app.current_project.is_some() {
+                    spans.extend([
+                        Span::styled("q", Style::default().fg(Color::LightCyan)),
+                        Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                    ]);
                 }
-                if task.meta.linked_pr.is_some() {
-                    spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
-                    spans.push(Span::styled(
-                        " open pr  ",
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-                if task.meta.status == TaskStatus::Stopped {
-                    spans.push(Span::styled(
-                        "h",
-                        Style::default().fg(Color::Rgb(180, 140, 60)),
-                    ));
-                    spans.push(Span::styled(
-                        " hold  ",
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                } else if task.meta.status == TaskStatus::OnHold {
-                    spans.push(Span::styled(
-                        "h",
-                        Style::default().fg(Color::Rgb(180, 140, 60)),
-                    ));
-                    spans.push(Span::styled(
-                        " unhold  ",
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-                if task.meta.review_addressed
-                    && task.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned)
+                spans
+            } else {
+                // Show PM chat hint when in a project scope
+                if app
+                    .current_project
+                    .as_deref()
+                    .is_some_and(|p| p != "(unassigned)")
                 {
-                    spans.push(Span::styled("c", Style::default().fg(Color::LightGreen)));
-                    spans.push(Span::styled(
-                        " clear  ",
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                    spans.extend([
+                        Span::styled("c", Style::default().fg(Color::LightYellow)),
+                        Span::styled(" PM chat  ", Style::default().fg(Color::DarkGray)),
+                    ]);
                 }
-                if task.meta.status == TaskStatus::Running {
-                    spans.push(Span::styled("s", Style::default().fg(Color::LightRed)));
-                    spans.push(Span::styled(
-                        " stop  ",
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                if let Some(task) = app.selected_task() {
+                    // State-conditional hints
+                    if task.meta.status == TaskStatus::InputNeeded {
+                        spans.push(Span::styled("a", Style::default().fg(Color::LightYellow)));
+                        spans.push(Span::styled(
+                            " answer  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    if task.meta.linked_pr.is_some() {
+                        spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
+                        spans.push(Span::styled(
+                            " open pr  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    if task.meta.status == TaskStatus::Stopped {
+                        spans.push(Span::styled(
+                            "h",
+                            Style::default().fg(Color::Rgb(180, 140, 60)),
+                        ));
+                        spans.push(Span::styled(
+                            " hold  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    } else if task.meta.status == TaskStatus::OnHold {
+                        spans.push(Span::styled(
+                            "h",
+                            Style::default().fg(Color::Rgb(180, 140, 60)),
+                        ));
+                        spans.push(Span::styled(
+                            " unhold  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    if task.meta.review_addressed
+                        && task.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned)
+                    {
+                        spans.push(Span::styled("c", Style::default().fg(Color::LightGreen)));
+                        spans.push(Span::styled(
+                            " clear  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    if task.meta.status == TaskStatus::Running {
+                        spans.push(Span::styled("s", Style::default().fg(Color::LightRed)));
+                        spans.push(Span::styled(
+                            " stop  ",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    // Task-selected hints (always shown when a task is selected)
+                    spans.extend([
+                        Span::styled("r", Style::default().fg(Color::LightMagenta)),
+                        Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("t", Style::default().fg(Color::LightMagenta)),
+                        Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("f", Style::default().fg(Color::LightMagenta)),
+                        Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("x", Style::default().fg(Color::LightMagenta)),
+                        Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("A", Style::default().fg(Color::LightRed)),
+                        Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("d", Style::default().fg(Color::LightRed)),
+                        Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
+                    ]);
                 }
-                // Task-selected hints (always shown when a task is selected)
+                if app
+                    .current_project
+                    .as_deref()
+                    .is_some_and(|p| p != "(unassigned)")
+                {
+                    spans.extend([
+                        Span::styled("e", Style::default().fg(Color::LightMagenta)),
+                        Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
+                    ]);
+                }
                 spans.extend([
-                    Span::styled("r", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("t", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" task  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("f", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("x", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("d", Style::default().fg(Color::LightRed)),
-                    Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("z", Style::default().fg(Color::LightYellow)),
+                    Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                 ]);
+                if app.current_project.is_some() {
+                    spans.extend([
+                        Span::styled("q", Style::default().fg(Color::LightCyan)),
+                        Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                    ]);
+                }
+                spans
             }
-            if app
-                .current_project
-                .as_deref()
-                .is_some_and(|p| p != "(unassigned)")
-            {
-                spans.extend([
-                    Span::styled("e", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
-                ]);
-            }
-            spans.extend([
-                Span::styled("z", Style::default().fg(Color::LightYellow)),
-                Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("w", Style::default().fg(Color::LightYellow)),
-                Span::styled(" assistants  ", Style::default().fg(Color::DarkGray)),
-            ]);
-            if app.current_project.is_some() {
-                spans.extend([
-                    Span::styled("q", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
-                ]);
-            }
-            spans
         }
         View::Preview => {
             if app.notes_editing {
@@ -3050,32 +3065,14 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             ]
         }
         View::RespawnConfirm => vec![],
-        View::AssistantList | View::AssistantWizard => {
-            let enter_label = if app
-                .assistants
-                .get(app.assistant_list_index)
-                .is_some_and(|r| r.meta.status == AssistantStatus::Archived)
-            {
-                " resume  "
-            } else {
-                " attach  "
-            };
-            let mut spans = vec![
-                Span::styled("n", Style::default().fg(Color::LightGreen)),
-                Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("enter", Style::default().fg(Color::LightGreen)),
-                Span::styled(enter_label, Style::default().fg(Color::DarkGray)),
-                Span::styled("d", Style::default().fg(Color::LightRed)),
-                Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
-            ];
-            spans.extend([
-                Span::styled("q", Style::default().fg(Color::LightCyan)),
-                Span::styled(" back", Style::default().fg(Color::DarkGray)),
-            ]);
-            spans
-        }
+        View::AssistantWizard => vec![
+            Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+            Span::styled(" next  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
+            Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::LightCyan)),
+            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        ],
     };
 
     let mut line_spans = help_text;
@@ -3095,10 +3092,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         line_spans.push(Span::styled(msg, Style::default().fg(Color::LightYellow)));
     }
 
-    if matches!(
-        app.view,
-        View::ProjectList | View::TaskList | View::AssistantList
-    ) {
+    if matches!(app.view, View::ProjectList | View::TaskList) {
         let tg = telegram_health_spans(app);
         if !tg.is_empty() {
             line_spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
@@ -5060,336 +5054,4 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
             .block(block);
         f.render_widget(text, area);
     }
-}
-
-fn draw_assistant_list(f: &mut Frame, app: &App, area: Rect) {
-    use agman::config::Config;
-    use agman::tmux::Tmux;
-
-    type AssistantStatusGroup<'a> = (
-        &'static str,
-        &'static str,
-        Color,
-        Vec<(usize, &'a agman::assistant::Assistant)>,
-    );
-
-    let title_text = if app.current_project.as_deref() == Some("chief-of-staff") {
-        " CoS Assistants ".to_string()
-    } else if let Some(ref project) = app.current_project {
-        format!(" Assistants — {} ", project)
-    } else {
-        " Assistants ".to_string()
-    };
-    let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(
-                title_text,
-                Style::default()
-                    .fg(Color::LightCyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("({}) ", app.assistants.len()),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-
-    if app.assistants.is_empty() {
-        let empty_msg = if app.current_project.as_deref() == Some("chief-of-staff") {
-            "No CoS assistants. Press 'n' to create one."
-        } else {
-            "No assistants. Press 'n' to create one."
-        };
-        let text = Paragraph::new(empty_msg)
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        f.render_widget(text, area);
-        return;
-    }
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    // Split inner area into header and list
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(inner);
-
-    // Dynamic column widths
-    const MIN_NAME_WIDTH: usize = 4;
-    const MAX_NAME_WIDTH: usize = 20;
-    const MIN_PROJECT_WIDTH: usize = 7;
-    const MAX_PROJECT_WIDTH: usize = 20;
-    const STATUS_WIDTH: usize = 10;
-    const COL_GAP: &str = "   ";
-
-    let name_width = app
-        .assistants
-        .iter()
-        .map(|r| r.meta.name.len())
-        .max()
-        .unwrap_or(MIN_NAME_WIDTH)
-        .clamp(MIN_NAME_WIDTH, MAX_NAME_WIDTH);
-
-    let project_width = app
-        .assistants
-        .iter()
-        .map(|r| r.meta.project.len())
-        .max()
-        .unwrap_or(MIN_PROJECT_WIDTH)
-        .clamp(MIN_PROJECT_WIDTH, MAX_PROJECT_WIDTH);
-
-    // leading_padding(4: " " + icon + "  ") + 3 col_gaps(9) + name + project + status
-    let fixed_width = 4 + 9 + name_width + project_width + STATUS_WIDTH;
-    let desc_width = (inner.width as usize).saturating_sub(fixed_width);
-
-    // Render header row
-    let header_style = Style::default()
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD);
-    let header = Line::from(vec![
-        Span::raw("    "),
-        Span::styled(
-            format!("{:<width$}", "NAME", width = name_width),
-            header_style,
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:<width$}", "PROJECT", width = project_width),
-            header_style,
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:<width$}", "STATUS", width = STATUS_WIDTH),
-            header_style,
-        ),
-        Span::raw(COL_GAP),
-        Span::styled("DESCRIPTION", header_style),
-    ]);
-    f.render_widget(Paragraph::new(header), chunks[0]);
-
-    // Top-level grouping is by kind; within each
-    // kind we still surface status — running / stopped / archived — so the
-    // user can scan the same way as the legacy view.
-    let mut researchers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
-    let mut operators: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
-    let mut reviewers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
-    let mut testers: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
-    for (i, a) in app.assistants.iter().enumerate() {
-        match a.meta.kind {
-            AssistantKind::Researcher { .. } => researchers.push((i, a)),
-            AssistantKind::Operator { .. } => operators.push((i, a)),
-            AssistantKind::Reviewer { .. } => reviewers.push((i, a)),
-            AssistantKind::Tester { .. } => testers.push((i, a)),
-        }
-    }
-
-    let mut items: Vec<ListItem> = Vec::new();
-    let mut groups_shown: usize = 0;
-
-    let kinds: [(&str, &[(usize, &agman::assistant::Assistant)]); 4] = [
-        ("Researchers", &researchers),
-        ("Operators", &operators),
-        ("Reviewers", &reviewers),
-        ("Testers", &testers),
-    ];
-
-    for (kind_label, kind_members) in kinds {
-        if kind_members.is_empty() {
-            continue;
-        }
-
-        if groups_shown > 0 {
-            items.push(ListItem::new(Line::from("")));
-        }
-
-        // Top-level kind header — wider rule, brighter colour to distinguish
-        // it from the inner status sub-headers.
-        let kind_text = format!("─── {} ({}) ", kind_label, kind_members.len());
-        let fill = (inner.width as usize).saturating_sub(kind_text.len());
-        let kind_header = Line::from(vec![
-            Span::styled(
-                kind_text,
-                Style::default()
-                    .fg(Color::LightMagenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "─".repeat(fill),
-                Style::default().fg(Color::Rgb(60, 60, 60)),
-            ),
-        ]);
-        items.push(ListItem::new(kind_header));
-        groups_shown += 1;
-
-        // Within each kind, partition by effective status so running ones
-        // stay at the top.
-        let mut running: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
-        let mut stopped: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
-        let mut archived: Vec<(usize, &agman::assistant::Assistant)> = Vec::new();
-        for (i, a) in kind_members {
-            if a.meta.status == AssistantStatus::Archived {
-                archived.push((*i, a));
-            } else {
-                let session_name = match a.meta.kind {
-                    AssistantKind::Researcher { .. } => {
-                        Config::researcher_tmux_session(&a.meta.project, &a.meta.name)
-                    }
-                    AssistantKind::Operator { .. } => {
-                        Config::operator_tmux_session(&a.meta.project, &a.meta.name)
-                    }
-                    AssistantKind::Reviewer { .. } => {
-                        Config::reviewer_tmux_session(&a.meta.project, &a.meta.name)
-                    }
-                    AssistantKind::Tester { .. } => {
-                        Config::tester_tmux_session(&a.meta.project, &a.meta.name)
-                    }
-                };
-                if Tmux::session_exists(&session_name) {
-                    running.push((*i, a));
-                } else {
-                    stopped.push((*i, a));
-                }
-            }
-        }
-
-        // Owned tuples — keeping the per-status vec by value avoids tying
-        // `items`' lifetime to short-lived stack borrows.
-        let status_groups: [AssistantStatusGroup<'_>; 3] = [
-            ("Running", "●", Color::LightGreen, running),
-            ("Stopped", "○", Color::Yellow, stopped),
-            ("Archived", "○", Color::DarkGray, archived),
-        ];
-
-        let mut sub_groups_shown: usize = 0;
-        for (sub_name, sub_icon, sub_color, sub_members) in &status_groups {
-            if sub_members.is_empty() {
-                continue;
-            }
-
-            // Blank separator between status sub-groups.
-            if sub_groups_shown > 0 {
-                items.push(ListItem::new(Line::from("")));
-            }
-
-            let label = format!("  ── {} ({}) ", sub_name, sub_members.len());
-            let fill = (inner.width as usize).saturating_sub(label.len());
-            let header_line = Line::from(vec![
-                Span::styled(
-                    label,
-                    Style::default().fg(*sub_color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "─".repeat(fill),
-                    Style::default().fg(Color::Rgb(60, 60, 60)),
-                ),
-            ]);
-            items.push(ListItem::new(header_line));
-            sub_groups_shown += 1;
-
-            for (orig_idx, r) in sub_members {
-                let is_selected = *orig_idx == app.assistant_list_index;
-
-                let status_str = sub_name.to_lowercase();
-                let status_color = *sub_color;
-
-                let display_name = if r.meta.name.len() > name_width {
-                    format!("{}…", &r.meta.name[..name_width.saturating_sub(1)])
-                } else {
-                    r.meta.name.clone()
-                };
-
-                let display_project = if r.meta.project.len() > project_width {
-                    format!("{}…", &r.meta.project[..project_width.saturating_sub(1)])
-                } else {
-                    r.meta.project.clone()
-                };
-
-                let desc_source = match &r.meta.kind {
-                    AssistantKind::Tester { capabilities, .. } => {
-                        let browser = if capabilities.browser { "on" } else { "off" };
-                        format!("{}  Browser: {browser}", r.meta.description)
-                    }
-                    _ => r.meta.description.clone(),
-                };
-                let desc = if desc_width == 0 {
-                    String::new()
-                } else if desc_source.len() > desc_width {
-                    format!("{}…", &desc_source[..desc_width.saturating_sub(1)])
-                } else {
-                    desc_source
-                };
-
-                let text_style = if is_selected {
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Gray)
-                };
-
-                // Stall key uses the kind-specific prefix the inbox poller
-                // emits, so the indicator stays in sync with the warning the
-                // poller raises.
-                let stall_prefix = match r.meta.kind {
-                    AssistantKind::Researcher { .. } => "researcher",
-                    AssistantKind::Operator { .. } => "operator",
-                    AssistantKind::Reviewer { .. } => "reviewer",
-                    AssistantKind::Tester { .. } => "tester",
-                };
-                let stall_key = format!("{}:{}--{}", stall_prefix, r.meta.project, r.meta.name);
-                let is_stalled = app.stalled_targets().contains(&stall_key.as_str());
-
-                let mut spans = vec![
-                    Span::raw(" "),
-                    Span::styled(*sub_icon, Style::default().fg(status_color)),
-                    Span::raw("  "),
-                    Span::styled(
-                        format!("{:<width$}", display_name, width = name_width),
-                        text_style,
-                    ),
-                    Span::raw(COL_GAP),
-                    Span::styled(
-                        format!("{:<width$}", display_project, width = project_width),
-                        if is_selected {
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(Color::Cyan)
-                        },
-                    ),
-                    Span::raw(COL_GAP),
-                    Span::styled(
-                        format!("{:<width$}", status_str, width = STATUS_WIDTH),
-                        Style::default().fg(status_color),
-                    ),
-                    Span::raw(COL_GAP),
-                    Span::styled(desc, Style::default().fg(Color::DarkGray)),
-                ];
-                if is_stalled {
-                    spans.push(Span::styled(
-                        "  ⚠ stalled",
-                        Style::default().fg(Color::Yellow),
-                    ));
-                }
-                let line = Line::from(spans);
-
-                let row_style = if is_selected {
-                    Style::default().bg(Color::Rgb(40, 40, 50))
-                } else {
-                    Style::default()
-                };
-
-                items.push(ListItem::new(line).style(row_style));
-            }
-        }
-    }
-
-    let list = List::new(items);
-    f.render_widget(list, chunks[1]);
 }

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc as tokio_mpsc;
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
-use agman::assistant::{Assistant, AssistantStatus};
+use agman::assistant::{Assistant, AssistantKind, AssistantStatus};
 use agman::command::StoredCommand;
 use agman::config::Config;
 use agman::dismissed_notifications::DismissedNotifications;
@@ -75,7 +75,6 @@ pub enum View {
     ProjectWizard,
     ProjectPicker,
     ProjectDeleteConfirm,
-    AssistantList,
     AssistantWizard,
     RespawnConfirm,
 }
@@ -1256,6 +1255,131 @@ impl App {
         }
     }
 
+    fn next_assistant(&mut self) {
+        if !self.assistants.is_empty() && self.assistant_list_index < self.assistants.len() - 1 {
+            self.assistant_list_index += 1;
+        }
+    }
+
+    fn previous_assistant(&mut self) {
+        if self.assistant_list_index > 0 {
+            self.assistant_list_index -= 1;
+        }
+    }
+
+    fn selected_assistant(&self) -> Option<&Assistant> {
+        self.assistants.get(self.assistant_list_index)
+    }
+
+    fn assistant_session_name(assistant: &Assistant) -> String {
+        match &assistant.meta.kind {
+            AssistantKind::Researcher { .. } => {
+                Config::researcher_tmux_session(&assistant.meta.project, &assistant.meta.name)
+            }
+            AssistantKind::Operator { .. } => {
+                Config::operator_tmux_session(&assistant.meta.project, &assistant.meta.name)
+            }
+            AssistantKind::Reviewer { .. } => {
+                Config::reviewer_tmux_session(&assistant.meta.project, &assistant.meta.name)
+            }
+            AssistantKind::Tester { .. } => {
+                Config::tester_tmux_session(&assistant.meta.project, &assistant.meta.name)
+            }
+        }
+    }
+
+    fn open_selected_assistant(&mut self) {
+        if self.popup.is_some() {
+            return;
+        }
+
+        let Some(assistant) = self.selected_assistant() else {
+            return;
+        };
+        let project = assistant.meta.project.clone();
+        let name = assistant.meta.name.clone();
+        let session_name = Self::assistant_session_name(assistant);
+
+        if !Tmux::session_exists(&session_name) {
+            match use_cases::resume_assistant(&self.config, &project, &name) {
+                Ok(()) => {
+                    tracing::info!(session = &session_name, "resumed assistant session");
+                    self.refresh_assistants();
+                }
+                Err(e) => {
+                    self.set_status(format!("Failed to resume: {e}"));
+                    return;
+                }
+            }
+        }
+
+        match Tmux::popup_attach(&session_name) {
+            Ok(child) => {
+                tracing::info!(session = &session_name, "attached to assistant session");
+                self.popup = Some(ActivePopup { child });
+            }
+            Err(e) => {
+                self.set_status(format!("Failed to attach: {e}"));
+            }
+        }
+    }
+
+    fn start_assistant_wizard(&mut self) {
+        let Some(project) = self.current_project.clone() else {
+            self.set_status("No project available".to_string());
+            return;
+        };
+        if project == "(unassigned)" {
+            self.set_status("No assistants for unassigned tasks".to_string());
+            return;
+        }
+
+        tracing::info!(project = %project, "opening assistant wizard");
+        let mut name_editor = TextArea::default();
+        name_editor.set_cursor_line_style(ratatui::style::Style::default());
+        self.assistant_wizard = Some(AssistantWizard {
+            kind: AssistantWizardKind::Researcher,
+            step: AssistantWizardStep::Kind,
+            name_editor,
+            description_editor: VimTextArea::new(),
+            worktree_rows: vec![ReviewerWorktreeRow::new()],
+            selected_row: 0,
+            browser_capability: false,
+            error_message: None,
+            project,
+        });
+        self.view = View::AssistantWizard;
+    }
+
+    fn archive_selected_assistant(&mut self) {
+        let Some(assistant) = self.selected_assistant() else {
+            return;
+        };
+        let project = assistant.meta.project.clone();
+        let name = assistant.meta.name.clone();
+
+        match use_cases::archive_assistant(&self.config, &project, &name) {
+            Ok(()) => {
+                self.set_status(format!("Archived assistant '{name}'"));
+                self.refresh_assistants();
+                if self.assistant_list_index >= self.assistants.len() && !self.assistants.is_empty()
+                {
+                    self.assistant_list_index = self.assistants.len() - 1;
+                }
+            }
+            Err(e) => {
+                self.set_status(format!("Failed to archive: {e}"));
+            }
+        }
+    }
+
+    fn return_from_assistant_wizard(&mut self) {
+        self.assistant_wizard = None;
+        self.project_pane_focus = ProjectPaneFocus::Assistants;
+        self.refresh_assistants();
+        self.view = View::TaskList;
+    }
+
     fn load_preview(&mut self) {
         let (preview_content, notes_content, task_file_content) =
             if let Some(task) = self.selected_task() {
@@ -2416,7 +2540,6 @@ impl App {
             View::ProjectWizard => self.handle_project_wizard_event(event),
             View::ProjectPicker => self.handle_project_picker_event(event),
             View::ProjectDeleteConfirm => self.handle_project_delete_confirm_event(event),
-            View::AssistantList => self.handle_assistant_list_event(event),
             View::AssistantWizard => self.handle_assistant_wizard_event(event),
             View::RespawnConfirm => self.handle_respawn_confirm_event(event),
         }
@@ -2587,12 +2710,6 @@ impl App {
                         self.view = View::RespawnConfirm;
                     }
                 }
-                KeyCode::Char('w') => {
-                    self.current_project = Some("chief-of-staff".to_string());
-                    self.assistant_list_index = 0;
-                    self.refresh_assistants();
-                    self.view = View::AssistantList;
-                }
                 KeyCode::Char(',') => {
                     self.settings_selected = 0;
                     self.view = View::Settings;
@@ -2647,304 +2764,216 @@ impl App {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.should_quit = true;
                 }
-                KeyCode::Char('k') => {
-                    self.previous_task();
-                }
-                KeyCode::Char('j') => {
-                    self.next_task();
-                }
-                KeyCode::Enter => {
-                    self.load_preview();
-                    self.preview_pane = PreviewPane::Logs;
-                    self.view = View::Preview;
-                }
-                KeyCode::Char('s') => {
-                    self.stop_task()?;
-                }
-                KeyCode::Char('d') => {
-                    if !self.tasks.is_empty() {
-                        self.archive_mode_index = 0;
-                        self.view = View::DeleteConfirm;
-                    }
-                }
-
-                KeyCode::Char('f') => {
-                    if !self.tasks.is_empty() {
-                        self.load_preview();
-                        self.start_feedback();
-                    }
-                }
-                KeyCode::Char('G') => {
-                    // Jump to last task
-                    if !self.tasks.is_empty() {
-                        self.selected_index = self.tasks.len() - 1;
-                    }
-                }
-                KeyCode::Char('g') => {
-                    // Jump to first task (gg in vim, but single g here)
-                    self.selected_index = 0;
-                }
-                KeyCode::Char('n') => {
-                    // Start new task wizard
-                    self.start_wizard()?;
-                }
-                KeyCode::Char('x') => {
-                    // Open command list (go to preview first, like f and t)
-                    if !self.tasks.is_empty() {
-                        self.load_preview();
-                        self.open_command_list();
-                    }
-                }
-                KeyCode::Char('t') => {
-                    // Open task editor modal
-                    if !self.tasks.is_empty() {
-                        self.load_preview();
-                        self.open_task_editor();
-                    }
-                }
-                KeyCode::Char('a') => {
-                    // Answer questions (only for InputNeeded tasks)
-                    if let Some(task) = self.selected_task() {
-                        if task.meta.status == TaskStatus::InputNeeded {
-                            self.load_preview();
-                            self.open_task_editor();
-                        }
-                    }
-                }
-                KeyCode::Char('o') => {
-                    // Open linked PR in browser
-                    let pr_info = self.selected_task().and_then(|t| {
-                        t.meta
-                            .linked_pr
-                            .as_ref()
-                            .map(|pr| (pr.number, pr.url.clone()))
-                    });
-                    if let Some((number, url)) = pr_info {
-                        open_url(&url);
-                        self.set_status(format!("Opening PR #{}...", number));
-                    } else {
-                        self.set_status("No linked PR".to_string());
-                    }
-                }
-                KeyCode::Char('r') => {
-                    // Rerun task wizard
-                    self.start_restart_wizard()?;
-                }
-                KeyCode::Char('h') => {
-                    self.toggle_hold()?;
-                }
-                KeyCode::Char('c') => {
-                    if let Some(ref project_name) = self.current_project.clone() {
-                        if project_name != "(unassigned)" {
-                            // Open PM chat as a tmux popup (non-blocking)
-                            if self.popup.is_some() {
-                                return Ok(false);
-                            }
-                            match use_cases::open_pm_popup(&self.config, project_name) {
-                                Ok(child) => {
-                                    tracing::info!(project = %project_name, "opened PM popup");
-                                    self.popup = Some(ActivePopup { child });
-                                }
-                                Err(e) => {
-                                    tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
-                                    self.set_status(format!("Failed to open PM chat: {e}"));
-                                }
-                            }
-                        }
-                    } else {
-                        // Original behavior: toggle review_addressed
-                        let is_owned = self
-                            .selected_task()
-                            .and_then(|t| t.meta.linked_pr.as_ref().map(|pr| pr.owned))
-                            .unwrap_or(false);
-                        if is_owned {
-                            if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                                let new_val = !task.meta.review_addressed;
-                                let _ = use_cases::set_review_addressed(task, new_val);
-                                if new_val {
-                                    self.set_status("Marked review addressed".to_string());
-                                } else {
-                                    self.set_status("Cleared review indicator".to_string());
-                                }
-                            }
-                        } else {
-                            self.set_status("Review tracking only for owned PRs".to_string());
-                        }
-                    }
-                }
-                KeyCode::Char('z') => {
-                    self.archive_tasks = if let Some(project) = self.current_project.as_deref() {
-                        use_cases::list_archived_tasks(&self.config, project)
-                    } else {
-                        Vec::new()
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.project_pane_focus = match self.project_pane_focus {
+                        ProjectPaneFocus::Tasks => ProjectPaneFocus::Assistants,
+                        ProjectPaneFocus::Assistants => ProjectPaneFocus::Tasks,
                     };
-                    self.archive_search = Self::create_plain_editor();
-                    self.archive_selected = 0;
-                    self.archive_preview = None;
-                    self.archive_scroll = 0;
-                    self.view = View::Archive;
                 }
-                KeyCode::Char('e') => {
-                    // Show respawn confirmation for PM
-                    if let Some(ref project_name) = self.current_project.clone() {
-                        if project_name != "(unassigned)" && self.respawn_in_progress.is_none() {
-                            self.respawn_confirm_target = Some(project_name.clone());
-                            self.respawn_confirm_index = 0;
-                            self.respawn_confirm_is_chief_of_staff = false;
-                            self.respawn_confirm_return_view = View::TaskList;
-                            self.view = View::RespawnConfirm;
-                        }
+                _ => match self.project_pane_focus {
+                    ProjectPaneFocus::Tasks => {
+                        self.handle_project_tasks_key(key)?;
                     }
-                }
-                KeyCode::Char('w') => {
-                    let project_name = if self.selected_project_index < self.projects.len() {
-                        Some(self.projects[self.selected_project_index].meta.name.clone())
-                    } else {
-                        None // "(unassigned)" pseudo-project — no assistants to show
-                    };
-                    if let Some(name) = project_name {
-                        self.current_project = Some(name);
-                        self.assistant_list_index = 0;
-                        self.refresh_assistants();
-                        self.view = View::AssistantList;
-                    } else {
-                        self.set_status("No assistants for unassigned tasks".to_string());
+                    ProjectPaneFocus::Assistants => {
+                        self.handle_project_assistants_key(key);
                     }
-                }
-                _ => {}
+                },
             }
         }
         Ok(false)
     }
 
-    fn handle_assistant_list_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    self.current_project = None;
-                    self.refresh_projects();
-                    self.view = View::ProjectList;
+    fn handle_project_tasks_key(&mut self, key: event::KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.previous_task();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.next_task();
+            }
+            KeyCode::Enter => {
+                if !self.tasks.is_empty() {
+                    self.load_preview();
+                    self.preview_pane = PreviewPane::Logs;
+                    self.view = View::Preview;
                 }
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.should_quit = true;
+            }
+            KeyCode::Char('s') => {
+                self.stop_task()?;
+            }
+            KeyCode::Char('A') => {
+                self.archive_task(false)?;
+            }
+            KeyCode::Char('d') => {
+                if !self.tasks.is_empty() {
+                    self.archive_mode_index = 0;
+                    self.view = View::DeleteConfirm;
                 }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if !self.assistants.is_empty()
-                        && self.assistant_list_index < self.assistants.len() - 1
-                    {
-                        self.assistant_list_index += 1;
+            }
+            KeyCode::Char('f') => {
+                if !self.tasks.is_empty() {
+                    self.load_preview();
+                    self.start_feedback();
+                }
+            }
+            KeyCode::Char('G') => {
+                if !self.tasks.is_empty() {
+                    self.selected_index = self.tasks.len() - 1;
+                }
+            }
+            KeyCode::Char('g') => {
+                self.selected_index = 0;
+            }
+            KeyCode::Char('n') => {
+                self.start_wizard()?;
+            }
+            KeyCode::Char('x') => {
+                if !self.tasks.is_empty() {
+                    self.load_preview();
+                    self.open_command_list();
+                }
+            }
+            KeyCode::Char('t') => {
+                if !self.tasks.is_empty() {
+                    self.load_preview();
+                    self.open_task_editor();
+                }
+            }
+            KeyCode::Char('a') => {
+                if let Some(task) = self.selected_task() {
+                    if task.meta.status == TaskStatus::InputNeeded {
+                        self.load_preview();
+                        self.open_task_editor();
                     }
                 }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    if self.assistant_list_index > 0 {
-                        self.assistant_list_index -= 1;
-                    }
+            }
+            KeyCode::Char('o') => {
+                let pr_info = self.selected_task().and_then(|t| {
+                    t.meta
+                        .linked_pr
+                        .as_ref()
+                        .map(|pr| (pr.number, pr.url.clone()))
+                });
+                if let Some((number, url)) = pr_info {
+                    open_url(&url);
+                    self.set_status(format!("Opening PR #{}...", number));
+                } else {
+                    self.set_status("No linked PR".to_string());
                 }
-                KeyCode::Enter => {
-                    // Attach to assistant tmux session, resuming archived ones
-                    if self.popup.is_some() {
-                        return Ok(false);
-                    }
-                    if let Some(assistant) = self.assistants.get(self.assistant_list_index) {
-                        let project = assistant.meta.project.clone();
-                        let name = assistant.meta.name.clone();
-                        let session_name = match assistant.meta.kind {
-                            agman::assistant::AssistantKind::Researcher { .. } => {
-                                Config::researcher_tmux_session(&project, &name)
-                            }
-                            agman::assistant::AssistantKind::Operator { .. } => {
-                                Config::operator_tmux_session(&project, &name)
-                            }
-                            agman::assistant::AssistantKind::Reviewer { .. } => {
-                                Config::reviewer_tmux_session(&project, &name)
-                            }
-                            agman::assistant::AssistantKind::Tester { .. } => {
-                                Config::tester_tmux_session(&project, &name)
-                            }
-                        };
-
-                        if !Tmux::session_exists(&session_name) {
-                            // Session not running — resume it (works for both archived and crashed running sessions)
-                            match use_cases::resume_assistant(&self.config, &project, &name) {
-                                Ok(()) => {
-                                    tracing::info!(
-                                        session = &session_name,
-                                        "resumed assistant session"
-                                    );
-                                    self.refresh_assistants();
-                                }
-                                Err(e) => {
-                                    self.set_status(format!("Failed to resume: {e}"));
-                                    return Ok(false);
-                                }
-                            }
+            }
+            KeyCode::Char('r') => {
+                self.start_restart_wizard()?;
+            }
+            KeyCode::Char('h') => {
+                self.toggle_hold()?;
+            }
+            KeyCode::Char('c') => {
+                if let Some(ref project_name) = self.current_project.clone() {
+                    if project_name != "(unassigned)" {
+                        if self.popup.is_some() {
+                            return Ok(false);
                         }
-
-                        match Tmux::popup_attach(&session_name) {
+                        match use_cases::open_pm_popup(&self.config, project_name) {
                             Ok(child) => {
-                                tracing::info!(
-                                    session = &session_name,
-                                    "attached to assistant session"
-                                );
+                                tracing::info!(project = %project_name, "opened PM popup");
                                 self.popup = Some(ActivePopup { child });
                             }
                             Err(e) => {
-                                self.set_status(format!("Failed to attach: {e}"));
+                                tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
+                                self.set_status(format!("Failed to open PM chat: {e}"));
                             }
                         }
                     }
-                }
-                KeyCode::Char('n') => {
-                    // Create new assistant
-                    let project = if let Some(ref p) = self.current_project {
-                        p.clone()
-                    } else if let Some(first) = self.projects.first() {
-                        first.meta.name.clone()
+                } else {
+                    let is_owned = self
+                        .selected_task()
+                        .and_then(|t| t.meta.linked_pr.as_ref().map(|pr| pr.owned))
+                        .unwrap_or(false);
+                    if is_owned {
+                        if let Some(task) = self.tasks.get_mut(self.selected_index) {
+                            let new_val = !task.meta.review_addressed;
+                            let _ = use_cases::set_review_addressed(task, new_val);
+                            if new_val {
+                                self.set_status("Marked review addressed".to_string());
+                            } else {
+                                self.set_status("Cleared review indicator".to_string());
+                            }
+                        }
                     } else {
-                        self.set_status("No project available".to_string());
-                        return Ok(false);
-                    };
-                    tracing::info!(project = %project, "opening assistant wizard");
-                    let mut name_editor = TextArea::default();
-                    name_editor.set_cursor_line_style(ratatui::style::Style::default());
-                    self.assistant_wizard = Some(AssistantWizard {
-                        kind: AssistantWizardKind::Researcher,
-                        step: AssistantWizardStep::Kind,
-                        name_editor,
-                        description_editor: VimTextArea::new(),
-                        worktree_rows: vec![ReviewerWorktreeRow::new()],
-                        selected_row: 0,
-                        browser_capability: false,
-                        error_message: None,
-                        project,
-                    });
-                    self.view = View::AssistantWizard;
-                }
-                KeyCode::Char('d') => {
-                    // Archive selected assistant
-                    if let Some(assistant) = self.assistants.get(self.assistant_list_index) {
-                        let project = assistant.meta.project.clone();
-                        let name = assistant.meta.name.clone();
-                        match use_cases::archive_assistant(&self.config, &project, &name) {
-                            Ok(()) => {
-                                self.set_status(format!("Archived assistant '{name}'"));
-                                self.refresh_assistants();
-                                if self.assistant_list_index >= self.assistants.len()
-                                    && !self.assistants.is_empty()
-                                {
-                                    self.assistant_list_index = self.assistants.len() - 1;
-                                }
-                            }
-                            Err(e) => {
-                                self.set_status(format!("Failed to archive: {e}"));
-                            }
-                        }
+                        self.set_status("Review tracking only for owned PRs".to_string());
                     }
                 }
-                _ => {}
             }
+            KeyCode::Char('z') => {
+                self.archive_tasks = if let Some(project) = self.current_project.as_deref() {
+                    use_cases::list_archived_tasks(&self.config, project)
+                } else {
+                    Vec::new()
+                };
+                self.archive_search = Self::create_plain_editor();
+                self.archive_selected = 0;
+                self.archive_preview = None;
+                self.archive_scroll = 0;
+                self.view = View::Archive;
+            }
+            KeyCode::Char('e') => {
+                if let Some(ref project_name) = self.current_project.clone() {
+                    if project_name != "(unassigned)" && self.respawn_in_progress.is_none() {
+                        self.respawn_confirm_target = Some(project_name.clone());
+                        self.respawn_confirm_index = 0;
+                        self.respawn_confirm_is_chief_of_staff = false;
+                        self.respawn_confirm_return_view = View::TaskList;
+                        self.view = View::RespawnConfirm;
+                    }
+                }
+            }
+            _ => {}
         }
         Ok(false)
+    }
+
+    fn handle_project_assistants_key(&mut self, key: event::KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.next_assistant();
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.previous_assistant();
+            }
+            KeyCode::Char('g') => {
+                self.assistant_list_index = 0;
+            }
+            KeyCode::Char('G') => {
+                if !self.assistants.is_empty() {
+                    self.assistant_list_index = self.assistants.len() - 1;
+                }
+            }
+            KeyCode::Enter => {
+                self.open_selected_assistant();
+            }
+            KeyCode::Char('n') => {
+                self.start_assistant_wizard();
+            }
+            KeyCode::Char('A') | KeyCode::Char('d') => {
+                self.archive_selected_assistant();
+            }
+            KeyCode::Char('z') => {
+                self.set_status("Assistant archive is not available yet".to_string());
+            }
+            KeyCode::Char('s')
+            | KeyCode::Char('f')
+            | KeyCode::Char('x')
+            | KeyCode::Char('t')
+            | KeyCode::Char('a')
+            | KeyCode::Char('o')
+            | KeyCode::Char('r')
+            | KeyCode::Char('h')
+            | KeyCode::Char('c')
+            | KeyCode::Char('e') => {
+                self.set_status("Switch to Tasks for task actions".to_string());
+            }
+            _ => {}
+        }
     }
 
     fn handle_settings_event(&mut self, event: Event) -> Result<bool> {
@@ -3271,8 +3300,7 @@ impl App {
             match wizard.step {
                 AssistantWizardStep::Kind => match key.code {
                     KeyCode::Esc => {
-                        self.assistant_wizard = None;
-                        self.view = View::AssistantList;
+                        self.return_from_assistant_wizard();
                     }
                     KeyCode::Char('j')
                     | KeyCode::Down
@@ -3306,8 +3334,7 @@ impl App {
                 AssistantWizardStep::Name => {
                     if key.code == KeyCode::Esc {
                         // First content step — Esc cancels the wizard.
-                        self.assistant_wizard = None;
-                        self.view = View::AssistantList;
+                        self.return_from_assistant_wizard();
                         return Ok(false);
                     }
                     if key.code == KeyCode::Enter {
@@ -3526,9 +3553,7 @@ impl App {
                             );
                         }
                         self.set_status(format!("Created {kind_name}: {name}"));
-                        self.assistant_wizard = None;
-                        self.view = View::AssistantList;
-                        self.refresh_assistants();
+                        self.return_from_assistant_wizard();
                     }
                     Err(e) => {
                         tracing::warn!(project = %project, name = %name, kind = kind_name, error = %e, "failed to create assistant");
@@ -3585,9 +3610,7 @@ impl App {
                             );
                         }
                         self.set_status(format!("Created reviewer: {name}"));
-                        self.assistant_wizard = None;
-                        self.view = View::AssistantList;
-                        self.refresh_assistants();
+                        self.return_from_assistant_wizard();
                     }
                     Err(e) => {
                         tracing::warn!(project = %project, name = %name, error = %e, "failed to create reviewer");
@@ -3657,9 +3680,7 @@ impl App {
                             );
                         }
                         self.set_status(format!("Created tester: {name}"));
-                        self.assistant_wizard = None;
-                        self.view = View::AssistantList;
-                        self.refresh_assistants();
+                        self.return_from_assistant_wizard();
                     }
                     Err(e) => {
                         tracing::warn!(project = %project, name = %name, error = %e, "failed to create tester");
@@ -6648,10 +6669,9 @@ pub fn run_tui(config: Config) -> Result<()> {
             if last_refresh.elapsed() >= refresh_interval {
                 if app.view == View::ProjectList {
                     app.refresh_projects();
-                } else if app.view == View::AssistantList {
-                    app.refresh_assistants();
                 } else if app.view == View::TaskList {
                     app.refresh_tasks_for_project();
+                    app.refresh_assistants();
                     // Check for stranded queue items on stopped tasks
                     app.process_stranded_queue();
                 }
