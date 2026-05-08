@@ -70,6 +70,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     tracing::debug!(command = ?cli.command, "dispatching command");
+    use_cases::purge_chief_of_staff_assistants(&config);
 
     match cli.command {
         Some(Commands::RunCommand {
@@ -164,7 +165,7 @@ fn main() -> Result<()> {
             branch_pair,
             browser,
         }) => {
-            let project = project.as_deref().unwrap_or("chief-of-staff");
+            let project = project.as_str();
             match kind {
                 AssistantKindArg::Researcher => {
                     if browser {
@@ -230,18 +231,12 @@ fn main() -> Result<()> {
             }
         }
 
-        Some(Commands::ListAssistants { project, cos, kind }) => {
-            let filter = if cos {
-                Some("chief-of-staff")
-            } else {
-                project.as_deref()
-            };
-            cmd_list_assistants(&config, filter, kind)
+        Some(Commands::ListAssistants { project, kind }) => {
+            cmd_list_assistants(&config, Some(project.as_str()), kind)
         }
 
         Some(Commands::ArchiveAssistant { name, project }) => {
-            let project = project.as_deref().unwrap_or("chief-of-staff");
-            cmd_archive_assistant(&config, project, &name)
+            cmd_archive_assistant(&config, &project, &name)
         }
 
         Some(Commands::CreateResearcher {
@@ -251,10 +246,7 @@ fn main() -> Result<()> {
             branch,
             task,
             description,
-        }) => {
-            let project = project.as_deref().unwrap_or("chief-of-staff");
-            cmd_create_researcher(&config, project, &name, repo, branch, task, description)
-        }
+        }) => cmd_create_researcher(&config, &project, &name, repo, branch, task, description),
 
         Some(Commands::CreateOperator {
             name,
@@ -263,20 +255,14 @@ fn main() -> Result<()> {
             branch,
             task,
             description,
-        }) => {
-            let project = project.as_deref().unwrap_or("chief-of-staff");
-            cmd_create_operator(&config, project, &name, repo, branch, task, description)
-        }
+        }) => cmd_create_operator(&config, &project, &name, repo, branch, task, description),
 
         Some(Commands::CreateReviewer {
             name,
             project,
             branch_pair,
             description,
-        }) => {
-            let project = project.as_deref().unwrap_or("chief-of-staff");
-            cmd_create_reviewer(&config, project, &name, branch_pair, description)
-        }
+        }) => cmd_create_reviewer(&config, &project, &name, branch_pair, description),
 
         Some(Commands::CreateTester {
             name,
@@ -284,23 +270,16 @@ fn main() -> Result<()> {
             branch_pair,
             browser,
             description,
-        }) => {
-            let project = project.as_deref().unwrap_or("chief-of-staff");
-            cmd_create_tester(&config, project, &name, branch_pair, browser, description)
-        }
+        }) => cmd_create_tester(&config, &project, &name, branch_pair, browser, description),
 
-        Some(Commands::ListResearchers { project, cos }) => {
-            let filter = if cos {
-                Some("chief-of-staff")
-            } else {
-                project.as_deref()
-            };
-            cmd_list_assistants(&config, filter, Some(AssistantKindArg::Researcher))
-        }
+        Some(Commands::ListResearchers { project }) => cmd_list_assistants(
+            &config,
+            Some(project.as_str()),
+            Some(AssistantKindArg::Researcher),
+        ),
 
         Some(Commands::ArchiveResearcher { name, project }) => {
-            let project = project.as_deref().unwrap_or("chief-of-staff");
-            cmd_archive_assistant(&config, project, &name)
+            cmd_archive_assistant(&config, &project, &name)
         }
 
         Some(Commands::RespawnAgent {
@@ -843,14 +822,6 @@ fn cmd_status(config: &Config) -> Result<()> {
         for t in &status.unassigned {
             format_task_line(t);
         }
-    }
-
-    if !status.chief_of_staff_assistants.is_empty() {
-        println!();
-        println!(
-            "Chief of Staff assistants: {}",
-            format_assistants_line(&status.chief_of_staff_assistants)
-        );
     }
 
     Ok(())

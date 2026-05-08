@@ -385,12 +385,19 @@ pub fn purge_old_archives(config: &Config) -> Result<usize> {
     Ok(purged)
 }
 
-/// List archived tasks with their TASK.md content loaded.
+/// List archived tasks for a project with their TASK.md content loaded.
 ///
 /// Returns (task, task_md_content) pairs for use in the archive view.
-pub fn list_archived_tasks(config: &Config) -> Vec<(Task, String)> {
+pub fn list_archived_tasks(config: &Config, project: &str) -> Vec<(Task, String)> {
     Task::list_archived(config)
         .into_iter()
+        .filter(|task| {
+            if project == "(unassigned)" {
+                task.meta.project.is_none()
+            } else {
+                task.meta.project.as_deref() == Some(project)
+            }
+        })
         .map(|task| {
             let content = task.read_task().unwrap_or_default();
             (task, content)
@@ -2092,7 +2099,6 @@ pub struct AggregatedStatus {
     pub projects: Vec<ProjectGroup>,
     pub unassigned: Vec<TaskSummary>,
     pub archived_unassigned: usize,
-    pub chief_of_staff_assistants: Vec<AssistantSummary>,
 }
 
 fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
@@ -2199,13 +2205,10 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
 
     let archived_unassigned = archived.iter().filter(|t| t.meta.project.is_none()).count();
 
-    let chief_of_staff_assistants = load_assistant_summaries(config, "chief-of-staff");
-
     Ok(AggregatedStatus {
         projects: project_groups,
         unassigned,
         archived_unassigned,
-        chief_of_staff_assistants,
     })
 }
 
@@ -2373,6 +2376,9 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
                     kind = prefix.as_str()
                 );
             }
+            if project == "chief-of-staff" {
+                anyhow::bail!("chief-of-staff assistants are no longer supported");
+            }
             let dir = config.assistant_dir(project, name);
             if !dir.exists() {
                 anyhow::bail!(
@@ -2487,15 +2493,12 @@ fn assistant_send_id(a: &Assistant) -> String {
 
 /// Agents reachable from `current` via a Telegram `/ls` switch list.
 ///
-/// - From `"chief-of-staff"`: all PMs (sorted by name) plus all CoS-level
-///   assistants in `project == "chief-of-staff"`
-///   with `status == Running`.
+/// - From `"chief-of-staff"`: all PMs (sorted by name).
 /// - From `"<project>"`: that project's assistants (`Running` only) plus
 ///   `"chief-of-staff"`.
 /// - From an assistant id (`"researcher:<proj>--<name>"`, `"operator:<proj>--<name>"`,
 ///   `"reviewer:<proj>--<name>"`, or `"tester:<proj>--<name>"`): its
-///   parent (`"chief-of-staff"` if `proj == "chief-of-staff"`, otherwise the
-///   project) plus `"chief-of-staff"` — de-duplicated by id.
+///   project plus `"chief-of-staff"` — de-duplicated by id.
 pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
     let mut ids: Vec<String> = Vec::new();
 
@@ -2504,13 +2507,6 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
             if let Ok(projects) = Project::list_all(config) {
                 for p in projects {
                     ids.push(p.meta.name);
-                }
-            }
-            if let Ok(assistants) = Assistant::list_for_project(config, "chief-of-staff") {
-                for a in assistants {
-                    if a.meta.status == AssistantStatus::Running {
-                        ids.push(assistant_send_id(&a));
-                    }
                 }
             }
         }
@@ -2522,12 +2518,9 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
                 let pos = rest.find("--");
                 if let Some(pos) = pos {
                     let project = &rest[..pos];
-                    let parent_id = if project == "chief-of-staff" {
-                        "chief-of-staff".to_string()
-                    } else {
-                        project.to_string()
-                    };
-                    ids.push(parent_id);
+                    if project != "chief-of-staff" {
+                        ids.push(project.to_string());
+                    }
                     ids.push("chief-of-staff".to_string());
                 }
             } else {
@@ -3453,11 +3446,13 @@ fn create_assistant(
     description: &str,
     kind: AssistantKind,
 ) -> Result<Assistant> {
-    if project != "chief-of-staff" {
-        let project_dir = config.project_dir(project);
-        if !project_dir.exists() {
-            anyhow::bail!("project '{}' does not exist", project);
-        }
+    if project == "chief-of-staff" {
+        anyhow::bail!("chief-of-staff assistants are no longer supported; pass a real project");
+    }
+
+    let project_dir = config.project_dir(project);
+    if !project_dir.exists() {
+        anyhow::bail!("project '{}' does not exist", project);
     }
 
     tracing::info!(
@@ -3728,24 +3723,42 @@ pub fn list_researchers(config: &Config, project: Option<&str>) -> Result<Vec<As
     list_assistants(config, project, Some(AssistantKindLabel::Researcher))
 }
 
-/// Archive an assistant. Researchers: kill tmux + flip status. Reviewers and
-/// testers add per-worktree cleanup of any entries we created (`git
-/// worktree remove --force` and `git branch -D` per `agman_created=true`
-/// entry). Worktrees that pre-existed when the reviewer was created are left
-/// alone — see plan for details.
-pub fn archive_assistant(config: &Config, project: &str, name: &str) -> Result<()> {
-    let dir = config.assistant_dir(project, name);
-    let mut assistant = Assistant::load(dir)?;
+fn assistant_kind_name(kind: &AssistantKind) -> &'static str {
+    match kind {
+        AssistantKind::Researcher { .. } => "researcher",
+        AssistantKind::Operator { .. } => "operator",
+        AssistantKind::Reviewer { .. } => "reviewer",
+        AssistantKind::Tester { .. } => "tester",
+    }
+}
 
-    let session_name = assistant_tmux_session(&assistant.meta);
-    if Tmux::session_exists(&session_name) {
-        tracing::info!(session = &session_name, "killing assistant tmux session");
-        Tmux::kill_session(&session_name)?;
+fn archived_assistant_content(assistant: &Assistant) -> String {
+    let mut out = format!(
+        "Name: {}\nType: {}\nProject: {}\nStatus: {:?}\nCreated: {}\nUpdated: {}\n\nDescription:\n{}\n",
+        assistant.meta.name,
+        assistant_kind_name(&assistant.meta.kind),
+        assistant.meta.project,
+        assistant.meta.status,
+        assistant.meta.created_at,
+        assistant.meta.updated_at,
+        assistant.meta.description
+    );
+
+    let inbox_path = assistant.dir.join("inbox.jsonl");
+    if let Ok(messages) = inbox::read_messages(&inbox_path) {
+        if !messages.is_empty() {
+            out.push_str("\nInbox:\n");
+            let start = messages.len().saturating_sub(20);
+            for msg in &messages[start..] {
+                out.push_str(&format!("[{}] {}: {}\n", msg.seq, msg.from, msg.message));
+            }
+        }
     }
 
-    assistant.meta.status = AssistantStatus::Archived;
-    assistant.save_meta()?;
+    out
+}
 
+fn cleanup_assistant_worktrees(config: &Config, assistant: &Assistant) {
     match &assistant.meta.kind {
         AssistantKind::Reviewer { worktrees } | AssistantKind::Tester { worktrees, .. } => {
             for entry in worktrees {
@@ -3763,9 +3776,137 @@ pub fn archive_assistant(config: &Config, project: &str, name: &str) -> Result<(
         }
         AssistantKind::Researcher { .. } | AssistantKind::Operator { .. } => {}
     }
+}
+
+/// Archive an assistant by stopping its tmux session and hiding it from active
+/// assistant lists. Worktrees and branches are preserved so archive restore can
+/// resume the assistant in place.
+pub fn archive_assistant(config: &Config, project: &str, name: &str) -> Result<()> {
+    let dir = config.assistant_dir(project, name);
+    let mut assistant = Assistant::load(dir)?;
+
+    let session_name = assistant_tmux_session(&assistant.meta);
+    if Tmux::session_exists(&session_name) {
+        tracing::info!(session = &session_name, "killing assistant tmux session");
+        Tmux::kill_session(&session_name)?;
+    }
+
+    assistant.meta.status = AssistantStatus::Archived;
+    assistant.save_meta()?;
 
     tracing::info!(project = project, name = name, "assistant archived");
     Ok(())
+}
+
+/// Permanently delete an archived assistant. Worktree/branch cleanup is
+/// best-effort; the assistant directory removal is the durable delete step.
+pub fn permanently_delete_archived_assistant(config: &Config, assistant: Assistant) -> Result<()> {
+    if assistant.meta.status != AssistantStatus::Archived {
+        bail!(
+            "assistant '{}--{}' is not archived",
+            assistant.meta.project,
+            assistant.meta.name
+        );
+    }
+
+    let session_name = assistant_tmux_session(&assistant.meta);
+    if let Err(e) = Tmux::kill_session(&session_name) {
+        tracing::warn!(session = %session_name, error = %e, "failed to kill assistant tmux session during permanent delete");
+    }
+
+    cleanup_assistant_worktrees(config, &assistant);
+
+    tracing::info!(
+        project = %assistant.meta.project,
+        name = %assistant.meta.name,
+        "permanently deleting archived assistant"
+    );
+    if assistant.dir.exists() {
+        std::fs::remove_dir_all(&assistant.dir)
+            .with_context(|| format!("failed to remove {}", assistant.dir.display()))?;
+    }
+    Ok(())
+}
+
+/// List archived assistants for one project, sorted by most recently updated.
+pub fn list_archived_assistants(config: &Config, project: &str) -> Vec<(Assistant, String)> {
+    let mut assistants = match Assistant::list_for_project(config, project) {
+        Ok(assistants) => assistants,
+        Err(e) => {
+            tracing::warn!(project = project, error = %e, "failed to list archived assistants");
+            return Vec::new();
+        }
+    };
+    assistants.retain(|assistant| assistant.meta.status == AssistantStatus::Archived);
+    assistants.sort_by(|a, b| b.meta.updated_at.cmp(&a.meta.updated_at));
+    assistants
+        .into_iter()
+        .map(|assistant| {
+            let content = archived_assistant_content(&assistant);
+            (assistant, content)
+        })
+        .collect()
+}
+
+pub fn purge_chief_of_staff_assistants(config: &Config) {
+    let assistants_dir = config.assistants_dir();
+    if !assistants_dir.exists() {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(&assistants_dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to scan assistants for chief-of-staff purge");
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(dir_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let (project, name) = if let Some(name) = dir_name.strip_prefix("chief-of-staff--") {
+            ("chief-of-staff", name)
+        } else if let Some(name) = dir_name.strip_prefix("ceo--") {
+            ("ceo", name)
+        } else {
+            continue;
+        };
+
+        match Assistant::load(path.clone()) {
+            Ok(assistant) => {
+                let session = assistant_tmux_session(&assistant.meta);
+                if let Err(e) = Tmux::kill_session(&session) {
+                    tracing::warn!(session = %session, error = %e, "failed to kill global assistant session");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "failed to load global assistant before purge");
+                for session in [
+                    Config::researcher_tmux_session(project, name),
+                    Config::operator_tmux_session(project, name),
+                    Config::reviewer_tmux_session(project, name),
+                    Config::tester_tmux_session(project, name),
+                ] {
+                    let _ = Tmux::kill_session(&session);
+                }
+            }
+        }
+
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                tracing::info!(project = %project, name = %name, path = %path.display(), "removed global assistant");
+            }
+            Err(e) => {
+                tracing::warn!(project = %project, name = %name, path = %path.display(), error = %e, "failed to remove global assistant");
+            }
+        }
+    }
 }
 
 /// Backwards-compatible researcher archive — delegates to `archive_assistant`.
@@ -3886,7 +4027,7 @@ pub fn collect_inbox_poll_targets(
     match Assistant::list_all(config) {
         Ok(assistants) => {
             for a in assistants {
-                if a.meta.status != AssistantStatus::Running {
+                if a.meta.project == "chief-of-staff" || a.meta.status != AssistantStatus::Running {
                     continue;
                 }
                 let session_name = assistant_tmux_session(&a.meta);
@@ -4337,12 +4478,7 @@ pub fn build_researcher_prompt(
     project_name: &str,
     researcher_name: &str,
 ) -> String {
-    let template = if project_name == "chief-of-staff" {
-        DEFAULT_CHIEF_OF_STAFF_RESEARCHER_PROMPT_TEMPLATE
-    } else {
-        DEFAULT_RESEARCHER_PROMPT_TEMPLATE
-    };
-    let base = template
+    let base = DEFAULT_RESEARCHER_PROMPT_TEMPLATE
         .replace("{{PROJECT_NAME}}", project_name)
         .replace("{{RESEARCHER_NAME}}", researcher_name);
     if !telegram_enabled {
@@ -4388,12 +4524,7 @@ pub fn build_operator_prompt(
     project_name: &str,
     operator_name: &str,
 ) -> String {
-    let template = if project_name == "chief-of-staff" {
-        DEFAULT_CHIEF_OF_STAFF_OPERATOR_PROMPT_TEMPLATE
-    } else {
-        DEFAULT_OPERATOR_PROMPT_TEMPLATE
-    };
-    let base = template
+    let base = DEFAULT_OPERATOR_PROMPT_TEMPLATE
         .replace("{{PROJECT_NAME}}", project_name)
         .replace("{{OPERATOR_NAME}}", operator_name);
     if !telegram_enabled {
@@ -4444,11 +4575,6 @@ pub fn build_reviewer_prompt(
     reviewer_name: &str,
     worktrees: &[AssistantWorktree],
 ) -> String {
-    let template = if project_name == "chief-of-staff" {
-        DEFAULT_CHIEF_OF_STAFF_REVIEWER_PROMPT_TEMPLATE
-    } else {
-        DEFAULT_REVIEWER_PROMPT_TEMPLATE
-    };
     let worktree_block = if worktrees.is_empty() {
         "(no worktrees configured)".to_string()
     } else {
@@ -4458,7 +4584,7 @@ pub fn build_reviewer_prompt(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let base = template
+    let base = DEFAULT_REVIEWER_PROMPT_TEMPLATE
         .replace("{{PROJECT_NAME}}", project_name)
         .replace("{{REVIEWER_NAME}}", reviewer_name)
         .replace("{{WORKTREES}}", &worktree_block);
@@ -4508,11 +4634,6 @@ pub fn build_tester_prompt(
     caps: TesterCapabilities,
     harness_kind: HarnessKind,
 ) -> String {
-    let template = if project_name == "chief-of-staff" {
-        DEFAULT_CHIEF_OF_STAFF_TESTER_PROMPT_TEMPLATE
-    } else {
-        DEFAULT_TESTER_PROMPT_TEMPLATE
-    };
     let browser_block = if caps.browser
         && matches!(harness_kind, HarnessKind::Claude | HarnessKind::Codex)
     {
@@ -4520,7 +4641,7 @@ pub fn build_tester_prompt(
     } else {
         ""
     };
-    let base = template
+    let base = DEFAULT_TESTER_PROMPT_TEMPLATE
         .replace("{{PROJECT_NAME}}", project_name)
         .replace("{{TESTER_NAME}}", tester_name)
         .replace("{{WORKTREES}}", &format_worktree_block(worktrees))
@@ -4607,38 +4728,6 @@ AGMAN_MSG
 Keep findings concise and specific — file paths, line numbers, and the actual issue. The PM will follow up with more questions if they need to dig deeper.
 "#;
 
-const DEFAULT_CHIEF_OF_STAFF_REVIEWER_PROMPT_TEMPLATE: &str = r#"You are a code reviewer assistant for the Chief of Staff, named "{{REVIEWER_NAME}}".
-
-Your job is to read code from the worktrees listed below — including uncommitted, staged, and unstaged changes — and deliver opinions back to the Chief of Staff. You are stateless between questions but the session is long-lived: the CoS may follow up with more questions on the same review.
-
-## Worktrees
-
-{{WORKTREES}}
-
-The local filesystem is authoritative. Treat each worktree as the source of truth for what the branch currently looks like.
-
-## Hard rules
-
-- Do **not** fetch from origin. Never run `git fetch`, `git pull`, or any other network-touching git command.
-- Do **not** write to disk. No new files, no edits, no commits, no notes-to-self.
-- Do **not** post to GitHub. No `gh pr review`, no comments, no labels, no merges.
-- Do **not** open a PR or interact with one. PR-URL → branch translation is the CoS's job; you only see the worktrees above.
-- Do **not** write a `REVIEW.md` or any artifact file.
-
-## Communication
-
-Messages from the Chief of Staff appear tagged `[Message from chief-of-staff]:`. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
-
-Reply via:
-```
-cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "reviewer:chief-of-staff--{{REVIEWER_NAME}}"
-<your findings>
-AGMAN_MSG
-```
-
-Keep findings concise and specific — file paths, line numbers, and the actual issue. The Chief of Staff will follow up with more questions if they need to dig deeper.
-"#;
-
 const DEFAULT_TESTER_PROMPT_TEMPLATE: &str = r#"You are a tester assistant for project "{{PROJECT_NAME}}", named "{{TESTER_NAME}}".
 
 Your job is to verify behavior — run tests, exercise endpoints, interact with the app, and report what you find. You are stateless between questions but the session is long-lived: the PM may follow up with more questions on the same test pass.
@@ -4672,39 +4761,6 @@ AGMAN_MSG
 Keep findings concise and specific — commands run, behavior observed, failures, logs, screenshots, and any uncertainty. The PM will follow up with more questions if they need to dig deeper.
 "#;
 
-const DEFAULT_CHIEF_OF_STAFF_TESTER_PROMPT_TEMPLATE: &str = r#"You are a tester assistant for the Chief of Staff, named "{{TESTER_NAME}}".
-
-Your job is to verify behavior — run tests, exercise endpoints, interact with the app, and report what you find. You are stateless between questions but the session is long-lived: the CoS may follow up with more questions on the same test pass.
-
-## Worktrees
-
-{{WORKTREES}}
-
-The local filesystem is authoritative. Treat each worktree as the source of truth for what the branch currently looks like.
-
-{{BROWSER_BLOCK}}
-## Hard rules
-
-- You may write to the worktree (logs, screenshots, coverage reports, scratch scripts). You may run dev servers, seed local databases, and execute test runners.
-- Do **not** commit, tag, or push. No `git commit`, no `git tag`, no `git push`.
-- Do **not** post to GitHub. No `gh pr review`, no `gh pr comment`, no comments, no labels, no merges.
-- Do **not** open a PR or interact with one. PR-URL → branch translation is the CoS's job; you only see the worktrees above.
-- Do **not** start detached processes. No `nohup`, `disown`, `setsid`, or similar backgrounding that would survive tmux cleanup.
-
-## Communication
-
-Messages from the Chief of Staff appear tagged `[Message from chief-of-staff]:`. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
-
-Reply via:
-```
-cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "tester:chief-of-staff--{{TESTER_NAME}}"
-<what you tested and what you found>
-AGMAN_MSG
-```
-
-Keep findings concise and specific — commands run, behavior observed, failures, logs, screenshots, and any uncertainty. The Chief of Staff will follow up with more questions if they need to dig deeper.
-"#;
-
 const DEFAULT_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for project "{{PROJECT_NAME}}", named "{{RESEARCHER_NAME}}".
 
 Your role is to explore, analyze, and answer questions. You are NOT here to make code changes — only to investigate and report findings.
@@ -4720,20 +4776,6 @@ AGMAN_MSG
 
 Keep reports concise and actionable. When you've completed your research, summarize key findings in a single message.
 
-"#;
-
-const DEFAULT_CHIEF_OF_STAFF_RESEARCHER_PROMPT_TEMPLATE: &str = r#"You are a researcher for the Chief of Staff, named "{{RESEARCHER_NAME}}".
-
-Your role is to explore, analyze, and answer questions. You are NOT here to make code changes — only to investigate and report findings.
-
-Messages from the Chief of Staff appear tagged [Message from chief-of-staff]:. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
-
-ALL findings and responses must go through send-message:
-cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "researcher:chief-of-staff--{{RESEARCHER_NAME}}"
-<your findings>
-AGMAN_MSG
-
-Keep reports concise and actionable. When you've completed your research, summarize key findings in a single message.
 "#;
 
 const DEFAULT_OPERATOR_PROMPT_TEMPLATE: &str = r#"You are an operator assistant for project "{{PROJECT_NAME}}", named "{{OPERATOR_NAME}}".
@@ -4756,33 +4798,6 @@ Messages from the PM appear in your tmux session tagged `[Message from {{PROJECT
 Reply via:
 ```
 cat <<'AGMAN_MSG' | agman send-message {{PROJECT_NAME}} --from "operator:{{PROJECT_NAME}}--{{OPERATOR_NAME}}"
-<what you did and the result>
-AGMAN_MSG
-```
-
-Keep reports concise and specific — what you changed, where, and any uncertainty. When you've completed the requested action, report back in a single message.
-"#;
-
-const DEFAULT_CHIEF_OF_STAFF_OPERATOR_PROMPT_TEMPLATE: &str = r#"You are an operator assistant for the Chief of Staff, named "{{OPERATOR_NAME}}".
-
-You are an action-taking assistant. Your job is to do the thing your PM asks — edit a Google doc, ack an incident in PagerDuty, post a Slack message, update a Notion page. Use whatever tools are available to you. Report back when done.
-
-External state changes are expected. Hit third-party APIs, drive MCP-backed integrations, mutate documents, post messages — that's the point.
-
-## Hard rules
-
-- Do **not** commit, tag, or push. No `git commit`, no `git tag`, no `git push`.
-- Do **not** post to GitHub PRs or issues. No `gh pr review`, no `gh pr comment`, no comments, no labels, no merges.
-- Do **not** start detached processes. No `nohup`, `disown`, `setsid`, or similar backgrounding that would survive tmux cleanup.
-- Do not do engineering implementation work here. Code work goes through Tasks; Operator is for non-engineering side-tasks.
-
-## Communication
-
-Messages from the Chief of Staff appear tagged [Message from chief-of-staff]:. The Chief of Staff cannot see your tmux session — you MUST reply using agman send-message.
-
-Reply via:
-```
-cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from "operator:chief-of-staff--{{OPERATOR_NAME}}"
 <what you did and the result>
 AGMAN_MSG
 ```

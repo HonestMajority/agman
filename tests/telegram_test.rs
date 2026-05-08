@@ -47,7 +47,7 @@ fn format_sender_tag_cases() {
     assert_eq!(format_sender_tag("chief-of-staff"), "CoS");
     assert_eq!(format_sender_tag("pm-foo"), "PM:pm-foo");
     assert_eq!(format_sender_tag("researcher:proj--bar"), "R:bar");
-    assert_eq!(format_sender_tag("researcher:chief-of-staff--baz"), "R:baz");
+    assert_eq!(format_sender_tag("researcher:other-proj--baz"), "R:baz");
 }
 
 #[test]
@@ -59,8 +59,8 @@ fn parent_of_cases() {
     );
     assert_eq!(parent_of("researcher:proj--bar"), Some("proj".to_string()));
     assert_eq!(
-        parent_of("researcher:chief-of-staff--baz"),
-        Some("chief-of-staff".to_string())
+        parent_of("researcher:other-proj--baz"),
+        Some("other-proj".to_string())
     );
 }
 
@@ -136,6 +136,14 @@ fn resolve_tag_researcher_unique_match() {
         resolve_tag_to_agent(&config, "R:scout"),
         Some("researcher:alpha--scout".to_string())
     );
+}
+
+#[test]
+fn resolve_tag_ignores_chief_of_staff_researcher() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _ = create_test_researcher(&config, "chief-of-staff", "scout");
+    assert_eq!(resolve_tag_to_agent(&config, "R:scout"), None);
 }
 
 #[test]

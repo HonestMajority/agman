@@ -2340,20 +2340,36 @@ fn list_archived_tasks() {
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    // Create an active task
-    let _active = create_test_task(&config, "repo", "active");
+    let mut active = create_test_task(&config, "repo", "active");
+    active.meta.project = Some("alpha".to_string());
+    active.save_meta().unwrap();
 
-    // Create an archived task
     let mut archived = create_test_task(&config, "repo", "archived");
+    archived.meta.project = Some("alpha".to_string());
     archived.meta.archived_at = Some(chrono::Utc::now());
     archived.save_meta().unwrap();
-    // Write TASK.md for the archived task
     archived.write_task("# Goal\nArchived task goal\n").unwrap();
 
-    let results = use_cases::list_archived_tasks(&config);
+    let mut other_project = create_test_task(&config, "repo", "other-project");
+    other_project.meta.project = Some("beta".to_string());
+    other_project.meta.archived_at = Some(chrono::Utc::now());
+    other_project.save_meta().unwrap();
+
+    let mut unassigned = create_test_task(&config, "repo", "unassigned-archived");
+    unassigned.meta.archived_at = Some(chrono::Utc::now());
+    unassigned.save_meta().unwrap();
+
+    let results = use_cases::list_archived_tasks(&config, "alpha");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0.meta.task_id(), "repo--archived");
     assert!(results[0].1.contains("Archived task goal"));
+
+    let unassigned_results = use_cases::list_archived_tasks(&config, "(unassigned)");
+    assert_eq!(unassigned_results.len(), 1);
+    assert_eq!(
+        unassigned_results[0].0.meta.task_id(),
+        "repo--unassigned-archived"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3307,6 +3323,100 @@ fn archive_assistant_operator_no_op() {
     assert!(agman::git::Git::local_branch_exists(&repo_path, "keep-me"));
 }
 
+#[test]
+fn list_archived_assistants_filters_project_and_builds_preview_content() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    let _alpha = create_test_project(&config, "alpha");
+    let _beta = create_test_project(&config, "beta");
+
+    let mut older = helpers::create_test_researcher(&config, "alpha", "older");
+    older.meta.status = agman::assistant::AssistantStatus::Archived;
+    older.meta.updated_at = chrono::Utc::now() - chrono::Duration::minutes(10);
+    std::fs::write(
+        older.dir.join("meta.json"),
+        serde_json::to_string_pretty(&older.meta).unwrap(),
+    )
+    .unwrap();
+
+    let mut newer = helpers::create_test_researcher(&config, "alpha", "newer");
+    newer.meta.status = agman::assistant::AssistantStatus::Archived;
+    newer.meta.updated_at = chrono::Utc::now();
+    std::fs::write(
+        newer.dir.join("meta.json"),
+        serde_json::to_string_pretty(&newer.meta).unwrap(),
+    )
+    .unwrap();
+    agman::inbox::append_message(
+        &config.assistant_inbox("alpha", "newer"),
+        "pm",
+        "latest context",
+    )
+    .unwrap();
+
+    let mut other_project = helpers::create_test_researcher(&config, "beta", "hidden");
+    other_project.meta.status = agman::assistant::AssistantStatus::Archived;
+    std::fs::write(
+        other_project.dir.join("meta.json"),
+        serde_json::to_string_pretty(&other_project.meta).unwrap(),
+    )
+    .unwrap();
+    let _active = helpers::create_test_researcher(&config, "alpha", "active");
+
+    let archived = use_cases::list_archived_assistants(&config, "alpha");
+    assert_eq!(archived.len(), 2);
+    assert_eq!(archived[0].0.meta.name, "newer");
+    assert_eq!(archived[1].0.meta.name, "older");
+    assert!(archived[0].1.contains("Type: researcher"));
+    assert!(archived[0].1.contains("latest context"));
+    assert!(!archived.iter().any(|(a, _)| a.meta.project == "beta"));
+    assert!(!archived.iter().any(|(a, _)| a.meta.name == "active"));
+}
+
+#[test]
+fn resume_archived_assistant_round_trip_sets_running() {
+    if std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|output| !output.status.success())
+        .unwrap_or(true)
+    {
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    use_cases::save_harness(&config, agman::harness::HarnessKind::Goose).unwrap();
+    let _project = create_test_project(&config, "alpha");
+    let name = format!("restore-{}", std::process::id());
+
+    let mut assistant = helpers::create_test_researcher(&config, "alpha", &name);
+    assistant.meta.status = agman::assistant::AssistantStatus::Archived;
+    assistant.save_meta().unwrap();
+
+    let session_name = agman::config::Config::researcher_tmux_session("alpha", &name);
+    let created = std::process::Command::new("tmux")
+        .args(["new-session", "-d", "-s", &session_name, "sleep 60"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if !created {
+        return;
+    }
+
+    let result = use_cases::resume_assistant(&config, "alpha", &name);
+    let _ = agman::tmux::Tmux::kill_session(&session_name);
+    result.unwrap();
+
+    let reloaded = agman::assistant::Assistant::load(config.assistant_dir("alpha", &name)).unwrap();
+    assert_eq!(
+        reloaded.meta.status,
+        agman::assistant::AssistantStatus::Running
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Reviewer assistant
 // ---------------------------------------------------------------------------
@@ -3483,7 +3593,7 @@ fn create_assistant_reviewer_local_branch_no_worktree_bails() {
 }
 
 #[test]
-fn archive_assistant_reviewer_cleans_only_agman_created_entries() {
+fn archive_and_permanently_delete_reviewer_preserves_restore_then_cleans_owned_worktrees() {
     use agman::assistant::AssistantKind;
 
     let tmp = tempfile::tempdir().unwrap();
@@ -3533,16 +3643,15 @@ fn archive_assistant_reviewer_cleans_only_agman_created_entries() {
 
     use_cases::archive_assistant(&config, "reviews", "rv4").unwrap();
 
-    // The agman-created worktree + branch should be gone.
+    // Archive is reversible: all worktrees and branches are still present.
     assert!(
-        !agman_created_path.exists(),
-        "agman_created worktree should be removed"
+        agman_created_path.exists(),
+        "agman_created worktree should survive archive"
     );
     assert!(
-        !agman::git::Git::local_branch_exists(&repo_path, "owned-by-agman"),
-        "agman_created branch should be deleted"
+        agman::git::Git::local_branch_exists(&repo_path, "owned-by-agman"),
+        "agman_created branch should survive archive"
     );
-    // The pre-existing worktree + branch should be left alone.
     assert!(
         preexisting.exists(),
         "pre-existing worktree must survive archive"
@@ -3559,6 +3668,26 @@ fn archive_assistant_reviewer_cleans_only_agman_created_entries() {
         reloaded.meta.status,
         agman::assistant::AssistantStatus::Archived
     );
+
+    use_cases::permanently_delete_archived_assistant(&config, reloaded).unwrap();
+
+    assert!(
+        !agman_created_path.exists(),
+        "agman_created worktree should be removed on permanent delete"
+    );
+    assert!(
+        !agman::git::Git::local_branch_exists(&repo_path, "owned-by-agman"),
+        "agman_created branch should be deleted on permanent delete"
+    );
+    assert!(
+        preexisting.exists(),
+        "pre-existing worktree must survive permanent delete"
+    );
+    assert!(
+        agman::git::Git::local_branch_exists(&repo_path, "keep-me"),
+        "pre-existing branch must survive permanent delete"
+    );
+    assert!(!config.assistant_dir("reviews", "rv4").exists());
 }
 
 #[test]
@@ -3592,6 +3721,27 @@ fn use_case_send_message_to_researcher() {
     let contents = std::fs::read_to_string(&inbox_path).unwrap();
     assert!(contents.contains("Please check the error logs"));
     assert!(contents.contains("myproj"));
+}
+
+#[test]
+fn use_case_send_message_rejects_chief_of_staff_assistant_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+    helpers::create_test_researcher(&config, "chief-of-staff", "legacy");
+
+    let result = use_cases::send_message(
+        &config,
+        "researcher:chief-of-staff--legacy",
+        "chief-of-staff",
+        "hello",
+    );
+
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("chief-of-staff assistants are no longer supported"));
 }
 
 #[test]
@@ -3784,7 +3934,7 @@ fn create_assistant_tester_local_branch_no_worktree_bails() {
 }
 
 #[test]
-fn archive_assistant_tester_cleans_only_agman_created_entries() {
+fn archive_and_permanently_delete_tester_preserves_restore_then_cleans_owned_worktrees() {
     use agman::assistant::{AssistantKind, AssistantWorktree, TesterCapabilities};
 
     let tmp = tempfile::tempdir().unwrap();
@@ -3821,8 +3971,8 @@ fn archive_assistant_tester_cleans_only_agman_created_entries() {
 
     use_cases::archive_assistant(&config, "reviews", "t4").unwrap();
 
-    assert!(!agman_created_path.exists());
-    assert!(!agman::git::Git::local_branch_exists(
+    assert!(agman_created_path.exists());
+    assert!(agman::git::Git::local_branch_exists(
         &repo_path,
         "owned-by-agman"
     ));
@@ -3835,6 +3985,17 @@ fn archive_assistant_tester_cleans_only_agman_created_entries() {
         reloaded.meta.status,
         agman::assistant::AssistantStatus::Archived
     );
+
+    use_cases::permanently_delete_archived_assistant(&config, reloaded).unwrap();
+
+    assert!(!agman_created_path.exists());
+    assert!(!agman::git::Git::local_branch_exists(
+        &repo_path,
+        "owned-by-agman"
+    ));
+    assert!(preexisting.exists());
+    assert!(agman::git::Git::local_branch_exists(&repo_path, "keep-me"));
+    assert!(!config.assistant_dir("reviews", "t4").exists());
 }
 
 #[test]
@@ -4104,17 +4265,16 @@ trust_level = "trusted"
 }
 
 // ---------------------------------------------------------------------------
-// Chief of Staff-level researchers
+// Chief of Staff-level assistants are no longer supported
 // ---------------------------------------------------------------------------
 
 #[test]
-fn use_case_create_chief_of_staff_researcher() {
+fn use_case_create_chief_of_staff_researcher_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
-    // No project directory created — CoS researchers don't need one
 
-    let researcher = use_cases::create_researcher(
+    let err = use_cases::create_researcher(
         &config,
         "chief-of-staff",
         "my-researcher",
@@ -4123,33 +4283,23 @@ fn use_case_create_chief_of_staff_researcher() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert!(researcher.dir.join("meta.json").exists());
-    assert_eq!(researcher.meta.name, "my-researcher");
-    assert_eq!(researcher.meta.project, "chief-of-staff");
-    assert_eq!(researcher.meta.description, "research question");
-    assert_eq!(
-        researcher.meta.status,
-        agman::assistant::AssistantStatus::Running
-    );
-
-    // Verify that the research description was written to the inbox
-    let inbox_path = config.assistant_inbox("chief-of-staff", "my-researcher");
-    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].from, "user");
-    assert_eq!(messages[0].message, "research question");
+    assert!(err
+        .to_string()
+        .contains("chief-of-staff assistants are no longer supported"));
+    assert!(!config
+        .assistant_dir("chief-of-staff", "my-researcher")
+        .exists());
 }
 
 #[test]
-fn use_case_create_chief_of_staff_operator() {
+fn use_case_create_chief_of_staff_operator_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
-    // No project directory created — CoS operators don't need one
 
-    let operator = use_cases::create_operator(
+    let err = use_cases::create_operator(
         &config,
         "chief-of-staff",
         "my-operator",
@@ -4158,22 +4308,50 @@ fn use_case_create_chief_of_staff_operator() {
         None,
         None,
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert!(operator.dir.join("meta.json").exists());
-    assert_eq!(operator.meta.name, "my-operator");
-    assert_eq!(operator.meta.project, "chief-of-staff");
-    assert_eq!(operator.meta.description, "update shared doc");
-    assert_eq!(
-        operator.meta.status,
-        agman::assistant::AssistantStatus::Running
-    );
+    assert!(err
+        .to_string()
+        .contains("chief-of-staff assistants are no longer supported"));
+    assert!(!config
+        .assistant_dir("chief-of-staff", "my-operator")
+        .exists());
+}
 
-    let inbox_path = config.assistant_inbox("chief-of-staff", "my-operator");
-    let messages = agman::inbox::read_messages(&inbox_path).unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].from, "user");
-    assert_eq!(messages[0].message, "update shared doc");
+#[test]
+fn purge_chief_of_staff_assistants_removes_legacy_dirs_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    create_test_project(&config, "alpha");
+    for (project, name) in [
+        ("ceo", "old-global"),
+        ("chief-of-staff", "legacy"),
+        ("alpha", "kept"),
+    ] {
+        agman::assistant::Assistant::create(
+            &config,
+            project,
+            name,
+            "test description",
+            agman::assistant::AssistantKind::Researcher {
+                repo: None,
+                branch: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+    }
+
+    assert!(config.assistant_dir("ceo", "old-global").exists());
+    assert!(config.assistant_dir("chief-of-staff", "legacy").exists());
+    assert!(config.assistant_dir("alpha", "kept").exists());
+
+    use_cases::purge_chief_of_staff_assistants(&config);
+
+    assert!(!config.assistant_dir("ceo", "old-global").exists());
+    assert!(!config.assistant_dir("chief-of-staff", "legacy").exists());
+    assert!(config.assistant_dir("alpha", "kept").exists());
 }
 
 // ---------------------------------------------------------------------------
@@ -4469,29 +4647,17 @@ fn append_message_concurrent_seqs() {
 
 #[test]
 fn relative_agent_list_from_chief_of_staff() {
-    use agman::assistant::{Assistant, AssistantStatus};
-
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
     create_test_project(&config, "alpha");
     create_test_project(&config, "beta");
-    helpers::create_test_researcher(&config, "chief-of-staff", "live");
-    let mut archived = helpers::create_test_researcher(&config, "chief-of-staff", "old");
-    archived.meta.status = AssistantStatus::Archived;
-    archived.save_meta().unwrap();
-
-    // Sanity-check the helper left the archived researcher archived.
-    let archived_reload = Assistant::load(config.assistant_dir("chief-of-staff", "old")).unwrap();
-    assert_eq!(archived_reload.meta.status, AssistantStatus::Archived);
 
     let agents = use_cases::relative_agent_list(&config, "chief-of-staff");
     let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
     assert!(ids.contains(&"alpha"));
     assert!(ids.contains(&"beta"));
-    assert!(ids.contains(&"researcher:chief-of-staff--live"));
-    assert!(!ids.iter().any(|id| id.contains("old")));
-    assert_eq!(agents.len(), 3);
+    assert_eq!(agents.len(), 2);
 }
 
 #[test]
@@ -4539,18 +4705,6 @@ fn relative_agent_list_from_operator() {
     let agents = use_cases::relative_agent_list(&config, "operator:alpha--live");
     let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
     assert_eq!(ids, vec!["alpha", "chief-of-staff"]);
-}
-
-#[test]
-fn relative_agent_list_from_chief_of_staff_researcher_no_duplicate() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-
-    helpers::create_test_researcher(&config, "chief-of-staff", "live");
-
-    let agents = use_cases::relative_agent_list(&config, "researcher:chief-of-staff--live");
-    let cos_count = agents.iter().filter(|a| a.id == "chief-of-staff").count();
-    assert_eq!(cos_count, 1, "chief-of-staff must appear exactly once");
 }
 
 #[test]
@@ -4606,12 +4760,6 @@ fn researcher_prompt_includes_correct_from() {
         proj_prompt.contains(r#"--from "researcher:proj--bar""#),
         "expected project researcher prompt to include --from \"researcher:proj--bar\", got:\n{proj_prompt}"
     );
-
-    let cos_prompt = use_cases::build_researcher_prompt(true, "chief-of-staff", "baz");
-    assert!(
-        cos_prompt.contains(r#"--from "researcher:chief-of-staff--baz""#),
-        "expected chief-of-staff researcher prompt to include --from \"researcher:chief-of-staff--baz\", got:\n{cos_prompt}"
-    );
 }
 
 #[test]
@@ -4620,12 +4768,6 @@ fn operator_prompt_includes_correct_from() {
     assert!(
         proj_prompt.contains(r#"--from "operator:proj--bar""#),
         "expected project operator prompt to include --from \"operator:proj--bar\", got:\n{proj_prompt}"
-    );
-
-    let cos_prompt = use_cases::build_operator_prompt(true, "chief-of-staff", "baz");
-    assert!(
-        cos_prompt.contains(r#"--from "operator:chief-of-staff--baz""#),
-        "expected chief-of-staff operator prompt to include --from \"operator:chief-of-staff--baz\", got:\n{cos_prompt}"
     );
 }
 

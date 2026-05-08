@@ -108,17 +108,19 @@ fn migration_renames_researchers_to_assistants_and_stamps_kind() {
     assert!(new_entry.exists());
 }
 
-/// Legacy `ceo--<name>` directory inside the new assistants dir should still
-/// be renamed to `chief-of-staff--<name>` (very old installs may have skipped
-/// the CoS rename release).
+/// Legacy global assistant dirs are removed instead of being migrated forward.
 #[test]
-fn migration_renames_legacy_ceo_assistant_dirs() {
+fn migration_removes_legacy_global_assistant_dirs() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
     let assistants_dir = config.assistants_dir();
     let legacy = assistants_dir.join("ceo--scout");
     fs::create_dir_all(&legacy).unwrap();
+    let cos = assistants_dir.join("chief-of-staff--legacy");
+    fs::create_dir_all(&cos).unwrap();
+    let kept = assistants_dir.join("alpha--kept");
+    fs::create_dir_all(&kept).unwrap();
     let meta = serde_json::json!({
         "name": "scout",
         "project": "ceo",
@@ -136,21 +138,13 @@ fn migration_renames_legacy_ceo_assistant_dirs() {
 
     config.ensure_dirs().unwrap();
 
-    let new_dir = assistants_dir.join("chief-of-staff--scout");
-    assert!(new_dir.exists(), "renamed assistant dir should exist");
     assert!(!legacy.exists(), "legacy ceo-- dir should be gone");
-
-    let migrated_meta: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(new_dir.join("meta.json")).unwrap()).unwrap();
-    assert_eq!(
-        migrated_meta.get("project").and_then(|v| v.as_str()),
-        Some("chief-of-staff"),
-    );
+    assert!(!cos.exists(), "chief-of-staff assistant dir should be gone");
+    assert!(kept.exists(), "project-scoped assistant dir should remain");
 }
 
 /// `~/.agman/telegram/current-agent` containing `"ceo"` should be rewritten to
-/// `"chief-of-staff"`. A `researcher:ceo--<name>` reference should likewise be
-/// rewritten.
+/// `"chief-of-staff"`. Global assistant references should be reset there too.
 #[test]
 fn migration_rewrites_telegram_current_agent() {
     let tmp = tempfile::tempdir().unwrap();
@@ -172,7 +166,16 @@ fn migration_rewrites_telegram_current_agent() {
     config.ensure_dirs().unwrap();
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
-        "researcher:chief-of-staff--scout"
+        "chief-of-staff",
+        "global assistant current-agent should reset to CoS"
+    );
+
+    fs::write(&path, "operator:chief-of-staff--ops").unwrap();
+    config.ensure_dirs().unwrap();
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "chief-of-staff",
+        "chief-of-staff assistant current-agent should reset to CoS"
     );
 
     // Unrelated value left alone.
