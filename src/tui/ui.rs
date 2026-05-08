@@ -136,7 +136,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::Preview => draw_preview(f, app, chunks[0]),
         View::DeleteConfirm => {
             draw_project_detail(f, app, chunks[0]);
-            draw_delete_confirm(f, app, app.archive_retention_days);
+            draw_delete_confirm(f, app);
         }
         View::Feedback => {
             draw_preview(f, app, chunks[0]);
@@ -2100,103 +2100,60 @@ fn draw_feedback(f: &mut Frame, app: &mut App) {
     f.render_widget(&app.feedback_editor.textarea, chunks[1]);
 }
 
-fn draw_delete_confirm(f: &mut Frame, app: &App, retention_days: u64) {
-    let area = centered_rect(55, 55, f.area());
+fn draw_delete_confirm(f: &mut Frame, app: &App) {
+    let area = centered_rect(52, 28, f.area());
 
     f.render_widget(Clear, area);
 
-    let task_id = app
-        .selected_task()
-        .map(|t| t.meta.task_id())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let sel = app.archive_mode_index;
-
-    let archive_style = if sel == 0 {
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(30, 40, 60))
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
+    let (question, subject) = match app.project_pane_focus {
+        ProjectPaneFocus::Tasks => (
+            "Archive this task?",
+            app.selected_task()
+                .map(|t| t.meta.task_id())
+                .unwrap_or_else(|| "unknown".to_string()),
+        ),
+        ProjectPaneFocus::Assistants => (
+            "Archive this assistant?",
+            app.assistants
+                .get(app.assistant_list_index)
+                .map(|assistant| format!("{}--{}", assistant.meta.project, assistant.meta.name))
+                .unwrap_or_else(|| "unknown".to_string()),
+        ),
     };
-    let save_style = if sel == 1 {
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(20, 50, 40))
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-    let delete_style = if sel == 2 {
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::Rgb(60, 20, 20))
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-
-    let archive_prefix = if sel == 0 { "▸ " } else { "  " };
-    let save_prefix = if sel == 1 { "▸ " } else { "  " };
-    let delete_prefix = if sel == 2 { "▸ " } else { "  " };
 
     let text = vec![
         Line::from(""),
         Line::from(Span::styled(
-            format!("  Archive task '{}'?", task_id),
+            format!("  {question}"),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            format!("{}Archive", archive_prefix),
-            archive_style,
-        )),
-        Line::from(Span::styled(
-            "    Kill tmux, remove worktree + branch,",
-            Style::default().fg(Color::LightBlue),
-        )),
-        Line::from(Span::styled(
-            format!(
-                "    keep task files. Auto-purged after {} days.",
-                retention_days
-            ),
-            Style::default().fg(Color::LightBlue),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("{}Archive & Save", save_prefix),
-            save_style,
-        )),
-        Line::from(Span::styled(
-            "    Same as Archive, but will NOT be auto-purged.",
-            Style::default().fg(Color::LightCyan),
-        )),
-        Line::from(Span::styled(
-            "    Use for tasks you want to keep permanently.",
+            format!("  {subject}"),
             Style::default().fg(Color::LightCyan),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            format!("{}Delete", delete_prefix),
-            delete_style,
+            "  This moves the item to the archive. Permanent delete remains",
+            Style::default().fg(Color::LightBlue),
         )),
         Line::from(Span::styled(
-            "    Kill tmux, remove worktree, delete branches",
-            Style::default().fg(Color::LightRed),
+            "  available from the archive view.",
+            Style::default().fg(Color::LightBlue),
         )),
+        Line::from(""),
         Line::from(Span::styled(
-            "    and task files. Irreversible.",
-            Style::default().fg(Color::LightRed),
+            "  [Enter] archive   [Esc] cancel",
+            Style::default().fg(Color::DarkGray),
         )),
     ];
 
     let popup = Paragraph::new(text).block(
         Block::default()
             .title(Span::styled(
-                " Remove Task ",
+                " Archive ",
                 Style::default()
                     .fg(Color::LightBlue)
                     .add_modifier(Modifier::BOLD),
@@ -2585,14 +2542,34 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
             ];
             if app.project_pane_focus == ProjectPaneFocus::Assistants {
+                if app
+                    .current_project
+                    .as_deref()
+                    .is_some_and(|p| p != "(unassigned)")
+                {
+                    spans.extend([
+                        Span::styled("c", Style::default().fg(Color::LightYellow)),
+                        Span::styled(" PM chat  ", Style::default().fg(Color::DarkGray)),
+                    ]);
+                }
                 spans.extend([
                     Span::styled("enter", Style::default().fg(Color::LightGreen)),
                     Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("A/d", Style::default().fg(Color::LightRed)),
+                    Span::styled("d", Style::default().fg(Color::LightRed)),
                     Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("z", Style::default().fg(Color::LightYellow)),
                     Span::styled(" archived  ", Style::default().fg(Color::DarkGray)),
                 ]);
+                if app
+                    .current_project
+                    .as_deref()
+                    .is_some_and(|p| p != "(unassigned)")
+                {
+                    spans.extend([
+                        Span::styled("e", Style::default().fg(Color::LightMagenta)),
+                        Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
+                    ]);
+                }
                 if app.current_project.is_some() {
                     spans.extend([
                         Span::styled("q", Style::default().fg(Color::LightCyan)),
@@ -2647,7 +2624,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                             Style::default().fg(Color::DarkGray),
                         ));
                     }
-                    if task.meta.review_addressed
+                    if app.current_project.is_none()
+                        && task.meta.review_addressed
                         && task.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned)
                     {
                         spans.push(Span::styled("c", Style::default().fg(Color::LightGreen)));
@@ -2673,10 +2651,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                         Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
                         Span::styled("x", Style::default().fg(Color::LightMagenta)),
                         Span::styled(" cmd  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("A", Style::default().fg(Color::LightRed)),
-                        Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                         Span::styled("d", Style::default().fg(Color::LightRed)),
-                        Span::styled(" del  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                     ]);
                 }
                 if app
@@ -2691,7 +2667,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 }
                 spans.extend([
                     Span::styled("z", Style::default().fg(Color::LightYellow)),
-                    Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(" archived  ", Style::default().fg(Color::DarkGray)),
                 ]);
                 if app.current_project.is_some() {
                     spans.extend([
@@ -2790,10 +2766,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         }
         View::DeleteConfirm => {
             vec![
-                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc/q", Style::default().fg(Color::LightRed)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]
