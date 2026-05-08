@@ -1094,17 +1094,17 @@ fn draw_project_detail(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    draw_tasks_pane(
-        f,
-        app,
-        panes[0],
-        app.project_pane_focus == ProjectPaneFocus::Tasks,
-    );
     draw_project_assistants_pane(
         f,
         app,
-        panes[1],
+        panes[0],
         app.project_pane_focus == ProjectPaneFocus::Assistants,
+    );
+    draw_tasks_pane(
+        f,
+        app,
+        panes[1],
+        app.project_pane_focus == ProjectPaneFocus::Tasks,
     );
 }
 
@@ -1441,8 +1441,9 @@ fn draw_tasks_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         };
 
         // Dim stopped tasks, brighten unread stopped, highlight active
+        let is_selected = focused && task_index == app.selected_index;
         let text_color = if is_active {
-            if task_index == app.selected_index {
+            if is_selected {
                 Color::White
             } else {
                 Color::Gray
@@ -1484,7 +1485,7 @@ fn draw_tasks_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             Span::raw("   "),
             Span::styled(
                 format!("{:<width$}", display_repo, width = repo_width),
-                if task_index == app.selected_index {
+                if is_selected {
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD)
@@ -1495,7 +1496,7 @@ fn draw_tasks_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             Span::raw(COL_GAP),
             Span::styled(
                 format!("{:<width$}", display_branch, width = branch_width),
-                if task_index == app.selected_index {
+                if is_selected {
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD)
@@ -1539,7 +1540,7 @@ fn draw_tasks_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             ),
         ]);
 
-        let style = if task_index == app.selected_index {
+        let style = if is_selected {
             Style::default().bg(Color::Rgb(40, 40, 50))
         } else {
             Style::default()
@@ -1599,7 +1600,7 @@ fn draw_project_assistants_pane(f: &mut Frame, app: &App, area: Rect, focused: b
         .split(inner);
 
     const MIN_NAME_WIDTH: usize = 4;
-    const MAX_NAME_WIDTH: usize = 28;
+    const MAX_NAME_WIDTH: usize = 56;
     const TYPE_WIDTH: usize = 10;
     const STATUS_WIDTH: usize = 10;
     const CREATED_WIDTH: usize = 10;
@@ -1649,7 +1650,7 @@ fn draw_project_assistants_pane(f: &mut Frame, app: &App, area: Rect, focused: b
         .iter()
         .enumerate()
         .map(|(i, assistant)| {
-            let is_selected = i == app.assistant_list_index;
+            let is_selected = focused && i == app.assistant_list_index;
             let (status, status_icon, status_color) = assistant_runtime_status(app, assistant);
             let row_style = if is_selected {
                 Style::default().bg(Color::Rgb(40, 40, 50))
