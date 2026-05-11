@@ -236,8 +236,9 @@ fn render_project_row<'a>(
     desc_width: usize,
 ) -> ListItem<'a> {
     const TASKS_WIDTH: usize = 6;
-    const ASSTS_WIDTH: usize = 5;
     const ACTIVE_WIDTH: usize = 7;
+    const ASSTS_WIDTH: usize = 5;
+    const WORKING_WIDTH: usize = 7;
     const COL_GAP: &str = "    ";
 
     let (total, active, unseen_stopped) = app
@@ -247,6 +248,11 @@ fn render_project_row<'a>(
         .unwrap_or((0, 0, 0));
     let assistant_count = app
         .project_assistant_counts
+        .get(&project.meta.name)
+        .copied()
+        .unwrap_or(0);
+    let active_assistant_count = app
+        .project_active_assistant_counts
         .get(&project.meta.name)
         .copied()
         .unwrap_or(0);
@@ -273,6 +279,11 @@ fn render_project_row<'a>(
     };
 
     let active_style = if active > 0 {
+        Style::default().fg(Color::LightGreen)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let active_assistant_style = if active_assistant_count > 0 {
         Style::default().fg(Color::LightGreen)
     } else {
         Style::default().fg(Color::DarkGray)
@@ -321,13 +332,18 @@ fn render_project_row<'a>(
         ),
         Span::raw(COL_GAP),
         Span::styled(
+            format!("{:>width$}", active, width = ACTIVE_WIDTH),
+            active_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
             format!("{:>width$}", assistant_count, width = ASSTS_WIDTH),
             Style::default().fg(Color::DarkGray),
         ),
         Span::raw(COL_GAP),
         Span::styled(
-            format!("{:>width$}", active, width = ACTIVE_WIDTH),
-            active_style,
+            format!("{:>width$}", active_assistant_count, width = WORKING_WIDTH),
+            active_assistant_style,
         ),
         Span::raw(COL_GAP),
         desc_span,
@@ -420,8 +436,9 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
 
     // Column constants
     const TASKS_WIDTH: usize = 6;
-    const ASSTS_WIDTH: usize = 5;
     const ACTIVE_WIDTH: usize = 7;
+    const ASSTS_WIDTH: usize = 5;
+    const WORKING_WIDTH: usize = 7;
     const COL_GAP: &str = "    ";
     const MIN_PROJECT_WIDTH: usize = 10;
     const MAX_PROJECT_WIDTH: usize = 25;
@@ -439,8 +456,18 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     let project_width = max_name_len.clamp(MIN_PROJECT_WIDTH, MAX_PROJECT_WIDTH);
 
     // Calculate description width
-    // Layout: 4 (leading) + project_width + 4 (gap) + TASKS + 4 (gap) + ASSTS + 4 (gap) + ACTIVE + 4 (gap)
-    let fixed_width = 4 + project_width + 4 + TASKS_WIDTH + 4 + ASSTS_WIDTH + 4 + ACTIVE_WIDTH + 4;
+    // Layout: 4 (leading) + project_width + 4 (gap) + TASKS + ACTIVE + ASSTS + WORKING + gaps
+    let fixed_width = 4
+        + project_width
+        + 4
+        + TASKS_WIDTH
+        + 4
+        + ACTIVE_WIDTH
+        + 4
+        + ASSTS_WIDTH
+        + 4
+        + WORKING_WIDTH
+        + 4;
     let desc_width = (inner.width as usize).saturating_sub(fixed_width);
 
     // Render header row
@@ -460,12 +487,17 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw(COL_GAP),
         Span::styled(
+            format!("{:>width$}", "ACTIVE", width = ACTIVE_WIDTH),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
             format!("{:>width$}", "ASSTS", width = ASSTS_WIDTH),
             header_style,
         ),
         Span::raw(COL_GAP),
         Span::styled(
-            format!("{:>width$}", "ACTIVE", width = ACTIVE_WIDTH),
+            format!("{:>width$}", "WORKING", width = WORKING_WIDTH),
             header_style,
         ),
         Span::raw(COL_GAP),
@@ -559,12 +591,17 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw(COL_GAP),
             Span::styled(
+                format!("{:>width$}", "", width = ACTIVE_WIDTH),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(COL_GAP),
+            Span::styled(
                 format!("{:>width$}", "", width = ASSTS_WIDTH),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::raw(COL_GAP),
             Span::styled(
-                format!("{:>width$}", "", width = ACTIVE_WIDTH),
+                format!("{:>width$}", "", width = WORKING_WIDTH),
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
@@ -1756,12 +1793,12 @@ fn assistant_session_name(assistant: &agman::assistant::Assistant) -> String {
 const ASSISTANT_WORKING_GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkingIdle {
+pub(super) enum WorkingIdle {
     Working,
     Idle,
 }
 
-fn classify_assistant_status(
+pub(super) fn classify_assistant_status(
     now: Instant,
     sample: Option<&AssistantActivitySample>,
 ) -> WorkingIdle {
