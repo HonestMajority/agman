@@ -756,6 +756,7 @@ pub struct App {
     pub selected_project_index: usize,
     pub current_project: Option<String>,
     pub unassigned_task_count: usize,
+    pub unassigned_active_task_count: usize,
     pub unassigned_unseen_stopped_count: usize,
     pub project_task_counts: std::collections::HashMap<String, (usize, usize, usize)>, // (total, active, unseen_stopped)
     pub project_assistant_counts: std::collections::HashMap<String, usize>,
@@ -974,6 +975,7 @@ impl App {
             selected_project_index: 0,
             current_project: None,
             unassigned_task_count: 0,
+            unassigned_active_task_count: 0,
             unassigned_unseen_stopped_count: 0,
             project_task_counts: std::collections::HashMap::new(),
             project_assistant_counts: std::collections::HashMap::new(),
@@ -1139,6 +1141,7 @@ impl App {
         self.project_assistant_counts.clear();
         self.project_active_assistant_counts.clear();
         self.unassigned_task_count = 0;
+        self.unassigned_active_task_count = 0;
         self.unassigned_unseen_stopped_count = 0;
         for task in &all_tasks {
             if let Some(ref proj) = task.meta.project {
@@ -1155,6 +1158,9 @@ impl App {
                 }
             } else {
                 self.unassigned_task_count += 1;
+                if task.meta.status == TaskStatus::Running {
+                    self.unassigned_active_task_count += 1;
+                }
                 if !task.meta.seen && task.meta.status == TaskStatus::Stopped {
                     self.unassigned_unseen_stopped_count += 1;
                 }
