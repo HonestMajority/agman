@@ -759,6 +759,7 @@ pub struct App {
     pub unassigned_unseen_stopped_count: usize,
     pub project_task_counts: std::collections::HashMap<String, (usize, usize, usize)>, // (total, active, unseen_stopped)
     pub project_assistant_counts: std::collections::HashMap<String, usize>,
+    pub project_active_assistant_counts: std::collections::HashMap<String, usize>,
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
     pub assistant_wizard: Option<AssistantWizard>,
@@ -976,6 +977,7 @@ impl App {
             unassigned_unseen_stopped_count: 0,
             project_task_counts: std::collections::HashMap::new(),
             project_assistant_counts: std::collections::HashMap::new(),
+            project_active_assistant_counts: std::collections::HashMap::new(),
             project_wizard: None,
             assistant_wizard: None,
             project_picker: None,
@@ -1135,6 +1137,7 @@ impl App {
         let all_tasks = Task::list_all(&self.config);
         self.project_task_counts.clear();
         self.project_assistant_counts.clear();
+        self.project_active_assistant_counts.clear();
         self.unassigned_task_count = 0;
         self.unassigned_unseen_stopped_count = 0;
         for task in &all_tasks {
@@ -1159,16 +1162,35 @@ impl App {
         }
         match use_cases::list_assistants(&self.config, None, None) {
             Ok(assistants) => {
+                let mut project_assistants = Vec::new();
+                let mut active_sessions = HashSet::new();
                 for assistant in assistants {
                     if assistant.meta.project == "chief-of-staff"
                         || assistant.meta.status == AssistantStatus::Archived
                     {
                         continue;
                     }
+                    active_sessions.insert(Self::assistant_session_name(&assistant));
                     *self
                         .project_assistant_counts
-                        .entry(assistant.meta.project)
+                        .entry(assistant.meta.project.clone())
                         .or_insert(0) += 1;
+                    project_assistants.push(assistant);
+                }
+                self.refresh_assistant_activity_for_sessions(active_sessions);
+                let now = Instant::now();
+                for assistant in project_assistants {
+                    let session_name = Self::assistant_session_name(&assistant);
+                    if ui::classify_assistant_status(
+                        now,
+                        self.assistant_activity_sample(&session_name),
+                    ) == ui::WorkingIdle::Working
+                    {
+                        *self
+                            .project_active_assistant_counts
+                            .entry(assistant.meta.project)
+                            .or_insert(0) += 1;
+                    }
                 }
             }
             Err(e) => {
@@ -1215,7 +1237,10 @@ impl App {
             .iter()
             .map(Self::assistant_session_name)
             .collect();
+        self.refresh_assistant_activity_for_sessions(active_sessions);
+    }
 
+    fn refresh_assistant_activity_for_sessions(&mut self, active_sessions: HashSet<String>) {
         if active_sessions.is_empty() {
             self.assistant_activity.clear();
             return;
