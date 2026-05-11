@@ -3,9 +3,24 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+const SHELL_COMMANDS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "csh", "tcsh"];
+
 pub struct Tmux;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TmuxWindowActivity {
+    pub session_name: String,
+    pub window_activity: Option<i64>,
+    pub pane_current_command: String,
+    pub pane_dead: bool,
+}
+
 impl Tmux {
+    pub fn is_shell_command(cmd: &str) -> bool {
+        let cmd = cmd.trim();
+        cmd.is_empty() || SHELL_COMMANDS.contains(&cmd)
+    }
+
     pub fn session_exists(session_name: &str) -> bool {
         Command::new("tmux")
             .args(["has-session", "-t", session_name])
@@ -468,6 +483,54 @@ impl Tmux {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    /// Query activity for every tmux window in one call.
+    pub fn list_window_activity() -> Result<Vec<TmuxWindowActivity>> {
+        let output = Command::new("tmux")
+            .args([
+                "list-windows",
+                "-a",
+                "-F",
+                "#{session_name}\t#{window_activity}\t#{pane_current_command}\t#{pane_dead}",
+            ])
+            .output()
+            .context("failed to query tmux window activity")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to query tmux window activity: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut windows = Vec::new();
+        for line in stdout.lines() {
+            let mut parts = line.splitn(4, '\t');
+            let session_name = parts.next().unwrap_or_default().to_string();
+            if session_name.is_empty() {
+                continue;
+            }
+            let window_activity = parts.next().and_then(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    trimmed.parse::<i64>().ok()
+                }
+            });
+            let pane_current_command = parts.next().unwrap_or_default().trim().to_string();
+            let pane_dead = matches!(parts.next().unwrap_or_default().trim(), "1" | "true");
+            windows.push(TmuxWindowActivity {
+                session_name,
+                window_activity,
+                pane_current_command,
+                pane_dead,
+            });
+        }
+
+        Ok(windows)
+    }
+
     /// Send just an Enter key press to a session (for retry when text was pasted
     /// but Enter didn't register).
     pub fn send_enter(session_name: &str) -> Result<()> {
@@ -526,8 +589,7 @@ impl Tmux {
         }
 
         let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "csh", "tcsh"];
-        let is_shell = cmd.is_empty() || SHELLS.contains(&cmd.as_str());
+        let is_shell = Self::is_shell_command(&cmd);
         tracing::debug!(session = session_name, target = %target, cmd = %cmd, is_shell, "session readiness check");
         Ok((!is_shell, cmd))
     }
