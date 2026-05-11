@@ -21,6 +21,10 @@ use super::app::{
 };
 use super::vim::VimMode;
 
+const PROJECT_TASK_COUNT_WIDTH: usize = 8;
+const PROJECT_ASSISTANT_COUNT_WIDTH: usize = 10;
+const PROJECT_COL_GAP: &str = "    ";
+
 fn vim_mode_color(mode: VimMode) -> Color {
     match mode {
         VimMode::Normal => Color::LightCyan,
@@ -28,6 +32,53 @@ fn vim_mode_color(mode: VimMode) -> Color {
         VimMode::Visual => Color::LightYellow,
         VimMode::Operator(_) => Color::LightMagenta,
     }
+}
+
+fn dim_count_style() -> Style {
+    Style::default().fg(Color::DarkGray)
+}
+
+fn active_count_style(active: usize) -> Style {
+    if active > 0 {
+        Style::default().fg(Color::LightGreen)
+    } else {
+        dim_count_style()
+    }
+}
+
+fn push_project_count_cell<'a>(
+    spans: &mut Vec<Span<'a>>,
+    active: usize,
+    total: usize,
+    width: usize,
+) {
+    let active_text = active.to_string();
+    let total_text = format!("/{total}");
+    let cell_len = active_text.len() + total_text.len();
+
+    if width > cell_len {
+        spans.push(Span::raw(" ".repeat(width - cell_len)));
+    }
+    spans.push(Span::styled(active_text, active_count_style(active)));
+    spans.push(Span::styled(total_text, dim_count_style()));
+}
+
+fn push_project_blank_cell<'a>(spans: &mut Vec<Span<'a>>, width: usize) {
+    spans.push(Span::styled(" ".repeat(width), dim_count_style()));
+}
+
+fn truncate_with_ellipsis(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+
+    if value.chars().count() <= width {
+        return value.to_string();
+    }
+
+    let mut truncated: String = value.chars().take(width.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
 }
 
 fn clock_title(app: &App) -> Line<'static> {
@@ -235,12 +286,6 @@ fn render_project_row<'a>(
     project_width: usize,
     desc_width: usize,
 ) -> ListItem<'a> {
-    const TASKS_WIDTH: usize = 6;
-    const ACTIVE_WIDTH: usize = 7;
-    const ASSTS_WIDTH: usize = 5;
-    const WORKING_WIDTH: usize = 7;
-    const COL_GAP: &str = "    ";
-
     let (total, active, unseen_stopped) = app
         .project_task_counts
         .get(&project.meta.name)
@@ -264,8 +309,8 @@ fn render_project_row<'a>(
         Style::default()
     };
 
-    let name_display = if project.meta.name.len() > project_width {
-        format!("{}…", &project.meta.name[..project_width - 1])
+    let name_display = if project.meta.name.chars().count() > project_width {
+        truncate_with_ellipsis(&project.meta.name, project_width)
     } else {
         format!("{:<width$}", &project.meta.name, width = project_width)
     };
@@ -278,17 +323,6 @@ fn render_project_row<'a>(
             .add_modifier(Modifier::BOLD)
     };
 
-    let active_style = if active > 0 {
-        Style::default().fg(Color::LightGreen)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let active_assistant_style = if active_assistant_count > 0 {
-        Style::default().fg(Color::LightGreen)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
     let desc_span = if desc_width == 0 {
         Span::raw("")
     } else if project.meta.description.is_empty() {
@@ -298,12 +332,9 @@ fn render_project_row<'a>(
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::ITALIC),
         )
-    } else if project.meta.description.len() > desc_width {
+    } else if project.meta.description.chars().count() > desc_width {
         Span::styled(
-            format!(
-                "{}…",
-                &project.meta.description[..desc_width.saturating_sub(1)]
-            ),
+            truncate_with_ellipsis(&project.meta.description, desc_width),
             Style::default().fg(Color::DarkGray),
         )
     } else {
@@ -325,29 +356,18 @@ fn render_project_row<'a>(
             Style::default().fg(Color::LightCyan),
         ),
         Span::styled(name_display, name_style),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:>width$}", total, width = TASKS_WIDTH),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:>width$}", active, width = ACTIVE_WIDTH),
-            active_style,
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:>width$}", assistant_count, width = ASSTS_WIDTH),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:>width$}", active_assistant_count, width = WORKING_WIDTH),
-            active_assistant_style,
-        ),
-        Span::raw(COL_GAP),
-        desc_span,
+        Span::raw(PROJECT_COL_GAP),
     ];
+    push_project_count_cell(&mut spans, active, total, PROJECT_TASK_COUNT_WIDTH);
+    spans.push(Span::raw(PROJECT_COL_GAP));
+    push_project_count_cell(
+        &mut spans,
+        active_assistant_count,
+        assistant_count,
+        PROJECT_ASSISTANT_COUNT_WIDTH,
+    );
+    spans.push(Span::raw(PROJECT_COL_GAP));
+    spans.push(desc_span);
     if is_stalled {
         spans.push(Span::styled(
             "  ⚠ stalled",
@@ -434,12 +454,6 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         (chunks[0], chunks[1])
     };
 
-    // Column constants
-    const TASKS_WIDTH: usize = 6;
-    const ACTIVE_WIDTH: usize = 7;
-    const ASSTS_WIDTH: usize = 5;
-    const WORKING_WIDTH: usize = 7;
-    const COL_GAP: &str = "    ";
     const MIN_PROJECT_WIDTH: usize = 10;
     const MAX_PROJECT_WIDTH: usize = 25;
 
@@ -456,18 +470,14 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     let project_width = max_name_len.clamp(MIN_PROJECT_WIDTH, MAX_PROJECT_WIDTH);
 
     // Calculate description width
-    // Layout: 4 (leading) + project_width + 4 (gap) + TASKS + ACTIVE + ASSTS + WORKING + gaps
+    // Layout: 4 (leading) + project_width + gaps + TASKS + ASSISTANTS
     let fixed_width = 4
         + project_width
-        + 4
-        + TASKS_WIDTH
-        + 4
-        + ACTIVE_WIDTH
-        + 4
-        + ASSTS_WIDTH
-        + 4
-        + WORKING_WIDTH
-        + 4;
+        + PROJECT_COL_GAP.len()
+        + PROJECT_TASK_COUNT_WIDTH
+        + PROJECT_COL_GAP.len()
+        + PROJECT_ASSISTANT_COUNT_WIDTH
+        + PROJECT_COL_GAP.len();
     let desc_width = (inner.width as usize).saturating_sub(fixed_width);
 
     // Render header row
@@ -480,27 +490,21 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             format!("{:<width$}", "PROJECT", width = project_width),
             header_style,
         ),
-        Span::raw(COL_GAP),
+        Span::raw(PROJECT_COL_GAP),
         Span::styled(
-            format!("{:>width$}", "TASKS", width = TASKS_WIDTH),
+            format!("{:>width$}", "TASKS", width = PROJECT_TASK_COUNT_WIDTH),
             header_style,
         ),
-        Span::raw(COL_GAP),
+        Span::raw(PROJECT_COL_GAP),
         Span::styled(
-            format!("{:>width$}", "ACTIVE", width = ACTIVE_WIDTH),
+            format!(
+                "{:>width$}",
+                "ASSISTANTS",
+                width = PROJECT_ASSISTANT_COUNT_WIDTH
+            ),
             header_style,
         ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:>width$}", "ASSTS", width = ASSTS_WIDTH),
-            header_style,
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:>width$}", "WORKING", width = WORKING_WIDTH),
-            header_style,
-        ),
-        Span::raw(COL_GAP),
+        Span::raw(PROJECT_COL_GAP),
         Span::styled("DESCRIPTION", header_style),
     ]);
     f.render_widget(Paragraph::new(header), header_chunk);
@@ -570,7 +574,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
 
         let name_display = format!("{:<width$}", "(unassigned)", width = project_width);
 
-        let line = Line::from(vec![
+        let mut line = vec![
             Span::styled(
                 if app.unassigned_unseen_stopped_count > 0 {
                     "● "
@@ -584,28 +588,17 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::LightCyan),
             ),
             Span::styled(name_display, Style::default().fg(Color::DarkGray)),
-            Span::raw(COL_GAP),
-            Span::styled(
-                format!("{:>width$}", app.unassigned_task_count, width = TASKS_WIDTH),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw(COL_GAP),
-            Span::styled(
-                format!("{:>width$}", "", width = ACTIVE_WIDTH),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw(COL_GAP),
-            Span::styled(
-                format!("{:>width$}", "", width = ASSTS_WIDTH),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw(COL_GAP),
-            Span::styled(
-                format!("{:>width$}", "", width = WORKING_WIDTH),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]);
-        items.push(ListItem::new(vec![line, Line::from("")]).style(style));
+            Span::raw(PROJECT_COL_GAP),
+        ];
+        push_project_count_cell(
+            &mut line,
+            app.unassigned_active_task_count,
+            app.unassigned_task_count,
+            PROJECT_TASK_COUNT_WIDTH,
+        );
+        line.push(Span::raw(PROJECT_COL_GAP));
+        push_project_blank_cell(&mut line, PROJECT_ASSISTANT_COUNT_WIDTH);
+        items.push(ListItem::new(vec![Line::from(line), Line::from("")]).style(style));
     }
 
     let list = List::new(items);
@@ -5191,6 +5184,45 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
             .style(Style::default().fg(Color::DarkGray))
             .block(block);
         f.render_widget(text, area);
+    }
+}
+
+#[cfg(test)]
+mod project_count_cell_tests {
+    use super::*;
+
+    fn span_text(spans: &[Span<'_>]) -> Vec<String> {
+        spans.iter().map(|span| span.content.to_string()).collect()
+    }
+
+    #[test]
+    fn count_cell_right_aligns_and_colors_active_count() {
+        let mut spans = Vec::new();
+
+        push_project_count_cell(&mut spans, 3, 12, 8);
+
+        assert_eq!(span_text(&spans), vec!["    ", "3", "/12"]);
+        assert_eq!(spans[1].style, Style::default().fg(Color::LightGreen));
+        assert_eq!(spans[2].style, dim_count_style());
+    }
+
+    #[test]
+    fn count_cell_dims_zero_active_count() {
+        let mut spans = Vec::new();
+
+        push_project_count_cell(&mut spans, 0, 8, 8);
+
+        assert_eq!(span_text(&spans), vec!["     ", "0", "/8"]);
+        assert_eq!(spans[1].style, dim_count_style());
+        assert_eq!(spans[2].style, dim_count_style());
+    }
+
+    #[test]
+    fn truncation_keeps_utf8_boundaries() {
+        assert_eq!(
+            truncate_with_ellipsis("drua workstream — local repo", 18),
+            "drua workstream —…"
+        );
     }
 }
 
