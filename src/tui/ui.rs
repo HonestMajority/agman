@@ -13,11 +13,11 @@ use agman::task::{QueueItem, TaskStatus};
 use agman::use_cases::{self, TelegramHealth};
 
 use std::sync::atomic::Ordering;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::app::{
-    App, ArchiveKind, BranchSource, DirKind, DirPickerOrigin, NotesFocus, PreviewPane,
-    ProjectPaneFocus, RestartWizardStep, View, WizardStep,
+    App, ArchiveKind, AssistantActivitySample, BranchSource, DirKind, DirPickerOrigin, NotesFocus,
+    PreviewPane, ProjectPaneFocus, RestartWizardStep, View, WizardStep,
 };
 use super::vim::VimMode;
 
@@ -1753,26 +1753,39 @@ fn assistant_session_name(assistant: &agman::assistant::Assistant) -> String {
     }
 }
 
+const ASSISTANT_WORKING_GRACE: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkingIdle {
+    Working,
+    Idle,
+}
+
+fn classify_assistant_status(
+    now: Instant,
+    sample: Option<&AssistantActivitySample>,
+) -> WorkingIdle {
+    let Some(sample) = sample else {
+        return WorkingIdle::Idle;
+    };
+    if !sample.query_ok || sample.pane_dead || sample.foreground_command_is_shell() {
+        return WorkingIdle::Idle;
+    }
+    if sample.activity_age(now) <= ASSISTANT_WORKING_GRACE {
+        WorkingIdle::Working
+    } else {
+        WorkingIdle::Idle
+    }
+}
+
 fn assistant_runtime_status(
     app: &App,
     assistant: &agman::assistant::Assistant,
 ) -> (&'static str, &'static str, Color) {
-    use agman::tmux::Tmux;
-
-    let stall_key = format!(
-        "{}:{}--{}",
-        assistant_kind_label(&assistant.meta.kind),
-        assistant.meta.project,
-        assistant.meta.name
-    );
-    if app.stalled_targets().contains(&stall_key.as_str()) {
-        return ("blocked", "!", Color::LightRed);
-    }
-
-    if Tmux::session_exists(&assistant_session_name(assistant)) {
-        ("running", "●", Color::LightGreen)
-    } else {
-        ("idle", "○", Color::DarkGray)
+    let session_name = assistant_session_name(assistant);
+    match classify_assistant_status(Instant::now(), app.assistant_activity_sample(&session_name)) {
+        WorkingIdle::Working => ("working", "●", Color::LightGreen),
+        WorkingIdle::Idle => ("idle", "○", Color::DarkGray),
     }
 }
 
@@ -5141,5 +5154,60 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
             .style(Style::default().fg(Color::DarkGray))
             .block(block);
         f.render_widget(text, area);
+    }
+}
+
+#[cfg(test)]
+mod assistant_status_tests {
+    use super::*;
+
+    fn sample(now: Instant, age: Duration, command: &str) -> AssistantActivitySample {
+        AssistantActivitySample {
+            last_tmux_activity_epoch: Some(1),
+            last_observed_work_at: now.checked_sub(age),
+            foreground_command: command.to_string(),
+            pane_dead: false,
+            query_ok: true,
+        }
+    }
+
+    #[test]
+    fn recent_non_shell_activity_is_working() {
+        let now = Instant::now();
+        let sample = sample(now, Duration::from_secs(2), "codex-aarch64-a");
+
+        assert_eq!(
+            classify_assistant_status(now, Some(&sample)),
+            WorkingIdle::Working
+        );
+    }
+
+    #[test]
+    fn old_activity_is_idle() {
+        let now = Instant::now();
+        let sample = sample(now, Duration::from_secs(11), "codex-aarch64-a");
+
+        assert_eq!(
+            classify_assistant_status(now, Some(&sample)),
+            WorkingIdle::Idle
+        );
+    }
+
+    #[test]
+    fn shell_or_failed_query_is_idle() {
+        let now = Instant::now();
+        let shell = sample(now, Duration::from_secs(1), "zsh");
+        let mut failed = sample(now, Duration::from_secs(1), "codex-aarch64-a");
+        failed.query_ok = false;
+
+        assert_eq!(
+            classify_assistant_status(now, Some(&shell)),
+            WorkingIdle::Idle
+        );
+        assert_eq!(
+            classify_assistant_status(now, Some(&failed)),
+            WorkingIdle::Idle
+        );
+        assert_eq!(classify_assistant_status(now, None), WorkingIdle::Idle);
     }
 }

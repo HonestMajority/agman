@@ -5,13 +5,14 @@ use ratatui::crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
+use std::collections::{HashMap, HashSet};
 use std::io;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc as tokio_mpsc;
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
@@ -26,7 +27,7 @@ use agman::project::Project;
 use agman::repo_stats::RepoStats;
 use agman::supervisor;
 use agman::task::{Task, TaskStatus};
-use agman::tmux::Tmux;
+use agman::tmux::{Tmux, TmuxWindowActivity};
 use agman::use_cases;
 
 use super::ui;
@@ -444,6 +445,52 @@ struct InboxPollOutput {
     first_ready_at: std::collections::HashMap<String, Instant>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AssistantActivitySample {
+    pub last_tmux_activity_epoch: Option<i64>,
+    pub last_observed_work_at: Option<Instant>,
+    pub foreground_command: String,
+    pub pane_dead: bool,
+    pub query_ok: bool,
+}
+
+impl AssistantActivitySample {
+    fn from_tmux_window(
+        activity: &TmuxWindowActivity,
+        observed_at: Instant,
+        now_epoch_secs: Option<i64>,
+    ) -> Self {
+        let last_observed_work_at = match (activity.window_activity, now_epoch_secs) {
+            (Some(activity_epoch), Some(now_epoch)) => {
+                let age_secs = now_epoch.saturating_sub(activity_epoch).max(0) as u64;
+                observed_at.checked_sub(Duration::from_secs(age_secs))
+            }
+            _ => None,
+        };
+
+        Self {
+            last_tmux_activity_epoch: activity.window_activity,
+            last_observed_work_at,
+            foreground_command: activity.pane_current_command.clone(),
+            pane_dead: activity.pane_dead,
+            query_ok: true,
+        }
+    }
+
+    pub fn foreground_command_is_shell(&self) -> bool {
+        Tmux::is_shell_command(&self.foreground_command)
+    }
+
+    pub fn activity_age(&self, now: Instant) -> Duration {
+        if self.last_tmux_activity_epoch.is_none() {
+            return Duration::MAX;
+        }
+        self.last_observed_work_at
+            .map(|at| now.saturating_duration_since(at))
+            .unwrap_or(Duration::MAX)
+    }
+}
+
 /// One supervisor tick result for a single Running task.
 ///
 /// Collected in the background by `start_supervisor_poll` and drained in the
@@ -502,6 +549,13 @@ fn query_pr_state(worktree_path: &std::path::Path, pr_number: u64) -> Option<(bo
         .unwrap_or(0);
 
     Some((is_merged, review_count))
+}
+
+fn unix_epoch_secs() -> Option<i64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
 }
 
 /// Run PR queries for all eligible tasks. This is the blocking work that
@@ -715,6 +769,8 @@ pub struct App {
     // Assistants (researchers + reviewers)
     pub assistants: Vec<Assistant>,
     pub assistant_list_index: usize,
+    pub assistant_activity: HashMap<String, AssistantActivitySample>,
+    assistant_activity_query_failed_logged: bool,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
@@ -926,6 +982,8 @@ impl App {
             project_to_delete: None,
             assistants: Vec::new(),
             assistant_list_index: 0,
+            assistant_activity: HashMap::new(),
+            assistant_activity_query_failed_logged: false,
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -1129,6 +1187,7 @@ impl App {
         if self.current_project.as_deref() == Some("(unassigned)") {
             self.assistants.clear();
             self.assistant_list_index = 0;
+            self.assistant_activity.clear();
             return;
         }
 
@@ -1147,6 +1206,78 @@ impl App {
         } else if self.assistant_list_index >= self.assistants.len() {
             self.assistant_list_index = self.assistants.len() - 1;
         }
+        self.refresh_assistant_activity();
+    }
+
+    fn refresh_assistant_activity(&mut self) {
+        let active_sessions: HashSet<String> = self
+            .assistants
+            .iter()
+            .map(Self::assistant_session_name)
+            .collect();
+
+        if active_sessions.is_empty() {
+            self.assistant_activity.clear();
+            return;
+        }
+
+        let windows = match Tmux::list_window_activity() {
+            Ok(windows) => windows,
+            Err(e) => {
+                if !self.assistant_activity_query_failed_logged {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to query tmux activity; assistant statuses will be idle"
+                    );
+                    self.assistant_activity_query_failed_logged = true;
+                }
+                self.assistant_activity.clear();
+                return;
+            }
+        };
+        self.assistant_activity_query_failed_logged = false;
+
+        let mut by_session: HashMap<String, TmuxWindowActivity> = HashMap::new();
+        for activity in windows {
+            if !active_sessions.contains(&activity.session_name) {
+                continue;
+            }
+            let replace = by_session
+                .get(&activity.session_name)
+                .map(|current| activity.window_activity > current.window_activity)
+                .unwrap_or(true);
+            if replace {
+                by_session.insert(activity.session_name.clone(), activity);
+            }
+        }
+
+        self.assistant_activity.retain(|session, _| {
+            active_sessions.contains(session) && by_session.contains_key(session)
+        });
+
+        let observed_at = Instant::now();
+        let now_epoch_secs = unix_epoch_secs();
+        for session in active_sessions {
+            if let Some(activity) = by_session.get(&session) {
+                self.assistant_activity.insert(
+                    session,
+                    AssistantActivitySample::from_tmux_window(
+                        activity,
+                        observed_at,
+                        now_epoch_secs,
+                    ),
+                );
+            } else {
+                self.assistant_activity.remove(&session);
+            }
+        }
+    }
+
+    pub fn assistant_activity_sample(
+        &self,
+        session_name: &str,
+    ) -> Option<&AssistantActivitySample> {
+        self.assistant_activity.get(session_name)
     }
 
     /// Total entries in the project list (projects + unassigned pseudo-entry).
@@ -6734,7 +6865,7 @@ pub fn run_tui(config: Config) -> Result<()> {
         // Main loop
         let mut attach_session: Option<String> = None;
         let mut last_refresh = Instant::now();
-        let refresh_interval = Duration::from_secs(3);
+        let refresh_interval = Duration::from_secs(1);
 
         loop {
             // Poll any active tmux popup so inbox and PR polling keep ticking
@@ -6793,7 +6924,7 @@ pub fn run_tui(config: Config) -> Result<()> {
                 break;
             }
 
-            // Periodic refresh (every 3 seconds)
+            // Periodic refresh (drives visible project data and assistant activity)
             if last_refresh.elapsed() >= refresh_interval {
                 if app.view == View::ProjectList {
                     app.refresh_projects();
