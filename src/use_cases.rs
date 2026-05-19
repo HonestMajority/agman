@@ -15,7 +15,7 @@ use crate::harness::{
 use crate::inbox;
 use crate::project::Project;
 use crate::repo_stats::RepoStats;
-use crate::task::Task;
+use crate::task::{LinkedPr, Task};
 use crate::tmux::Tmux;
 
 /// Required external tools that must be on $PATH (harness binary excluded —
@@ -472,6 +472,172 @@ pub fn set_linked_pr(
         .ok_or_else(|| anyhow::anyhow!("Not a GitHub remote: {}", remote_url))?;
     let url = format!("https://github.com/{}/{}/pull/{}", owner, repo, pr_number);
     task.set_linked_pr(pr_number, url, owned, author)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrReference {
+    Number(u64),
+    Url { number: u64, url: String },
+}
+
+pub fn parse_pr_reference(value: &str) -> Result<PrReference> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("PR reference cannot be empty");
+    }
+
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        let number = trimmed
+            .parse::<u64>()
+            .with_context(|| format!("invalid PR number: {trimmed}"))?;
+        if number == 0 {
+            bail!("PR number must be greater than zero");
+        }
+        return Ok(PrReference::Number(number));
+    }
+
+    let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
+    let url = without_query.trim_end_matches('/');
+    let prefix = "https://github.com/";
+    let rest = url
+        .strip_prefix(prefix)
+        .ok_or_else(|| anyhow::anyhow!("PR URL must start with {prefix}"))?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() != 4 || parts[2] != "pull" {
+        bail!("PR URL must look like https://github.com/<owner>/<repo>/pull/<number>");
+    }
+    if parts[0].is_empty() || parts[1].is_empty() {
+        bail!("PR URL must include a GitHub owner and repo");
+    }
+    let number = parts[3]
+        .parse::<u64>()
+        .with_context(|| format!("invalid PR number in URL: {}", parts[3]))?;
+    if number == 0 {
+        bail!("PR number must be greater than zero");
+    }
+
+    Ok(PrReference::Url {
+        number,
+        url: format!("{prefix}{}/{}/pull/{}", parts[0], parts[1], number),
+    })
+}
+
+pub fn link_task_pr(
+    config: &Config,
+    task_id: &str,
+    pr_reference: &str,
+    owned: bool,
+    author: Option<String>,
+    force: bool,
+) -> Result<LinkedPr> {
+    let mut task = Task::load_by_id(config, task_id)?;
+    let reference = parse_pr_reference(pr_reference)?;
+    link_task_pr_reference(&mut task, reference, owned, author, force)
+}
+
+pub fn link_task_pr_from_sidecar(
+    config: &Config,
+    task_id: &str,
+    owned: bool,
+    author: Option<String>,
+    force: bool,
+) -> Result<LinkedPr> {
+    let mut task = Task::load_by_id(config, task_id)?;
+    let reference = parse_pr_reference(&read_pr_reference_sidecar(&task)?)?;
+    link_task_pr_reference(&mut task, reference, owned, author, force)
+}
+
+fn link_task_pr_reference(
+    task: &mut Task,
+    reference: PrReference,
+    owned: bool,
+    author: Option<String>,
+    force: bool,
+) -> Result<LinkedPr> {
+    let (number, url) = match reference {
+        PrReference::Number(number) => {
+            let repo = task.meta.repos.first().ok_or_else(|| {
+                anyhow::anyhow!("task '{}' has no repo worktree", task.meta.task_id())
+            })?;
+            let remote_url = Git::get_remote_url(&repo.worktree_path).with_context(|| {
+                format!(
+                    "cannot build URL for PR #{number}; task repo '{}' has no usable origin remote",
+                    repo.repo_name
+                )
+            })?;
+            let (owner, repo) = git::parse_github_owner_repo(&remote_url)
+                .ok_or_else(|| anyhow::anyhow!("Not a GitHub remote: {}", remote_url))?;
+            (
+                number,
+                format!("https://github.com/{owner}/{repo}/pull/{number}"),
+            )
+        }
+        PrReference::Url { number, url } => (number, url),
+    };
+
+    if let Some(existing) = &task.meta.linked_pr {
+        let same_pr = existing.url == url;
+        if !same_pr && !force {
+            bail!(
+                "task '{}' is already linked to PR #{} ({}); pass --force to overwrite",
+                task.meta.task_id(),
+                existing.number,
+                existing.url
+            );
+        }
+    }
+
+    task.set_linked_pr(number, url, owned, author)?;
+    Ok(task
+        .meta
+        .linked_pr
+        .clone()
+        .expect("linked_pr should be set after save"))
+}
+
+fn read_pr_reference_sidecar(task: &Task) -> Result<String> {
+    let mut candidates = vec![task.dir.join(".pr-link")];
+    if let Some(repo) = task.meta.repos.first() {
+        candidates.push(repo.worktree_path.join(".pr-link"));
+    }
+
+    for path in candidates {
+        if !path.exists() {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let mut first_valid = None;
+        for line in content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            match parse_pr_reference(line) {
+                Ok(PrReference::Url { .. }) => return Ok(line.to_string()),
+                Ok(PrReference::Number(_)) if first_valid.is_none() => {
+                    first_valid = Some(line.to_string());
+                }
+                Ok(PrReference::Number(_)) | Err(_) => {}
+            }
+        }
+        if let Some(line) = first_valid {
+            return Ok(line);
+        }
+        bail!(
+            "{} does not contain a valid PR number or URL",
+            path.display()
+        );
+    }
+
+    bail!(
+        "no .pr-link sidecar found for task '{}' (checked task dir and primary worktree)",
+        task.meta.task_id()
+    )
 }
 
 /// Migrate old-format `meta.json` files in-place to the new multi-repo format.
@@ -4134,6 +4300,9 @@ pub fn get_task_info_text(config: &Config, task_id: &str) -> Result<String> {
     if let Some(ref project) = task.meta.project {
         out.push_str(&format!("Project: {}\n", project));
     }
+    if let Some(ref pr) = task.meta.linked_pr {
+        out.push_str(&format!("PR: #{} {}\n", pr.number, pr.url));
+    }
     out.push_str(&format!("Created: {}\n", task.meta.created_at));
     out.push_str(&format!("Updated: {}\n", task.meta.updated_at));
 
@@ -4626,6 +4795,15 @@ AGMAN_MSG
 ```
 
 Keep updates concise and concrete: what changed, what you verified, what remains, and any blocker that needs a PM decision.
+
+## Pull Requests
+
+After creating or finding a PR for this task, run:
+```
+agman link-pr {{TASK_ID}} <PR URL or number>
+```
+
+Include the PR URL in your completion report. Inbox messages alone do not link PRs into the agman TUI; `agman link-pr` updates the task metadata the TUI reads.
 "#;
 
 const DEFAULT_REVIEWER_PROMPT_TEMPLATE: &str = r#"You are a code reviewer agent for project "{{PROJECT_NAME}}", named "{{REVIEWER_NAME}}".
@@ -4753,6 +4931,7 @@ const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for
 - agman list-pm-tasks {{PROJECT_NAME}}
 - agman task-info <task-id>
 - agman task-log <task-id> --tail 100
+- agman link-pr <task-id> <PR URL or number>
 
 ### Agent Management
 - agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project {{PROJECT_NAME}} --description "<description>"
@@ -4772,6 +4951,7 @@ AGMAN_MSG
 
 - When given work, suggest a task plan to the requester and wait for confirmation before creating tasks.
 - Direct implementation, rebase, push, PR, CI, and review-addressing work by messaging the task's attached Engineer through the inbox.
+- When an Engineer reports a PR that is not visible in the TUI, ask them to run `agman link-pr <task-id> <PR URL or number>`; PR URLs in inbox messages alone do not update task metadata.
 - When the CEO asks a question, answer it — do not treat it as an implicit instruction to take action.
 - If a task fails, analyze the logs and either retry or escalate.
 - Never run long commands yourself — always spawn a task for implementation work.
