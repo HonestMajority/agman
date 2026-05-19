@@ -1126,12 +1126,20 @@ fn draw_project_detail(f: &mut Frame, app: &App, area: Rect) {
 
     let agent_widths = project_agent_column_widths(app, inner);
     let task_widths = project_task_column_widths(app, inner);
+    let attached_agent_widths = project_attached_agent_column_widths(app, inner);
     let items: Vec<ListItem> = app
         .project_detail_rows()
         .iter()
         .enumerate()
         .map(|(row_index, row)| {
-            project_detail_list_item(app, *row, row_index, agent_widths, task_widths)
+            project_detail_list_item(
+                app,
+                *row,
+                row_index,
+                agent_widths,
+                task_widths,
+                attached_agent_widths,
+            )
         })
         .collect();
 
@@ -1151,6 +1159,15 @@ struct TaskColumnWidths {
     repo: usize,
     branch: usize,
     pr: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AttachedAgentColumnWidths {
+    prefix: usize,
+    type_width: usize,
+    name: usize,
+    status: usize,
+    created: usize,
 }
 
 fn project_agent_column_widths(app: &App, area: Rect) -> AgentColumnWidths {
@@ -1218,12 +1235,44 @@ fn project_task_column_widths(app: &App, area: Rect) -> TaskColumnWidths {
     }
 }
 
+fn project_attached_agent_column_widths(app: &App, area: Rect) -> AttachedAgentColumnWidths {
+    const PREFIX_WIDTH: usize = 9;
+    const TYPE_WIDTH: usize = 10;
+    const MIN_NAME_WIDTH: usize = 12;
+    const MAX_NAME_WIDTH: usize = 36;
+    const STATUS_WIDTH: usize = 10;
+    const CREATED_WIDTH: usize = 10;
+    const COL_GAP: &str = "  ";
+
+    let max_name_len = app
+        .attached_task_agents
+        .values()
+        .flatten()
+        .map(|agent| agent.meta.name.len())
+        .max()
+        .unwrap_or(MIN_NAME_WIDTH);
+    let fixed_width =
+        PREFIX_WIDTH + TYPE_WIDTH + STATUS_WIDTH + CREATED_WIDTH + (COL_GAP.len() * 4);
+    let available_name_width = (area.width as usize)
+        .saturating_sub(fixed_width)
+        .clamp(MIN_NAME_WIDTH, MAX_NAME_WIDTH);
+
+    AttachedAgentColumnWidths {
+        prefix: PREFIX_WIDTH,
+        type_width: TYPE_WIDTH,
+        name: max_name_len.clamp(MIN_NAME_WIDTH, available_name_width),
+        status: STATUS_WIDTH,
+        created: CREATED_WIDTH,
+    }
+}
+
 fn project_detail_list_item(
     app: &App,
     row: ProjectDetailRow<'_>,
     row_index: usize,
     agent_widths: AgentColumnWidths,
     task_widths: TaskColumnWidths,
+    attached_agent_widths: AttachedAgentColumnWidths,
 ) -> ListItem<'static> {
     match row {
         ProjectDetailRow::AgentsHeader => ListItem::new(project_agents_header(agent_widths)),
@@ -1234,6 +1283,7 @@ fn project_detail_list_item(
         ProjectDetailRow::UnattachedAgent { agent, .. } => {
             project_agent_row(app, agent, row_index == app.selected_index, agent_widths)
         }
+        ProjectDetailRow::SectionSpacer => ListItem::new(""),
         ProjectDetailRow::TasksHeader => ListItem::new(project_tasks_header(task_widths)),
         ProjectDetailRow::EmptyTasks => ListItem::new(Line::from(Span::styled(
             "  No tasks",
@@ -1242,8 +1292,16 @@ fn project_detail_list_item(
         ProjectDetailRow::Task(ProjectTaskRow::Task { task, .. }) => {
             project_task_row(task, row_index == app.selected_index, task_widths)
         }
+        ProjectDetailRow::AttachedAgentsHeader => {
+            ListItem::new(project_attached_agents_header(attached_agent_widths))
+        }
         ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent { agent, .. }) => {
-            project_attached_agent_row(app, agent, row_index == app.selected_index, task_widths)
+            project_attached_agent_row(
+                app,
+                agent,
+                row_index == app.selected_index,
+                attached_agent_widths,
+            )
         }
         ProjectDetailRow::Task(ProjectTaskRow::Agent { .. })
         | ProjectDetailRow::AttachedAgent(ProjectTaskRow::Task { .. }) => ListItem::new(""),
@@ -1307,6 +1365,37 @@ fn project_tasks_header(widths: TaskColumnWidths) -> Line<'static> {
         Span::styled(format!("{:<width$}", "PR", width = widths.pr), header_style),
         Span::raw(COL_GAP),
         Span::styled("UPDATED", header_style),
+    ])
+}
+
+fn project_attached_agents_header(widths: AttachedAgentColumnWidths) -> Line<'static> {
+    const COL_GAP: &str = "  ";
+    let header_style = Style::default().fg(Color::DarkGray);
+    Line::from(vec![
+        Span::styled(
+            format!("{:<width$}", "AGENTS", width = widths.prefix),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "TYPE", width = widths.type_width),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "NAME", width = widths.name),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "STATUS", width = widths.status),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "CREATED", width = widths.created),
+            header_style,
+        ),
     ])
 }
 
@@ -1375,9 +1464,23 @@ fn project_attached_agent_row(
     app: &App,
     agent: &agman::agent_model::AgentRecord,
     is_selected: bool,
-    widths: TaskColumnWidths,
+    widths: AttachedAgentColumnWidths,
 ) -> ListItem<'static> {
-    const COL_GAP: &str = "    ";
+    let row_style = if is_selected {
+        Style::default().bg(Color::Rgb(40, 40, 50))
+    } else {
+        Style::default()
+    };
+    ListItem::new(project_attached_agent_line(app, agent, is_selected, widths)).style(row_style)
+}
+
+fn project_attached_agent_line(
+    app: &App,
+    agent: &agman::agent_model::AgentRecord,
+    is_selected: bool,
+    widths: AttachedAgentColumnWidths,
+) -> Line<'static> {
+    const COL_GAP: &str = "  ";
     let (status, status_icon, status_color) = agent_runtime_status(app, agent);
     let text_style = if is_selected {
         Style::default()
@@ -1386,37 +1489,46 @@ fn project_attached_agent_row(
     } else {
         Style::default().fg(Color::Gray)
     };
-    let row_style = if is_selected {
-        Style::default().bg(Color::Rgb(40, 40, 50))
-    } else {
-        Style::default()
-    };
-    let label = format!("{} {}", agent_kind_label(&agent.meta.kind), agent.meta.name);
-    let display_label = truncate_to_width(&label, widths.repo + widths.branch + 4);
-    let line = Line::from(vec![
-        Span::raw("       "),
-        Span::styled(status_icon, Style::default().fg(status_color)),
-        Span::raw(" "),
+    let display_name = truncate_to_width(&agent.meta.name, widths.name);
+    Line::from(vec![
+        Span::raw("  └ "),
         Span::styled(
             format!(
                 "{:<width$}",
-                display_label,
-                width = widths.repo + widths.branch + 4
+                status_icon,
+                width = widths.prefix.saturating_sub(4)
             ),
-            text_style,
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:<width$}", status, width = widths.pr),
             Style::default().fg(status_color),
         ),
         Span::raw(COL_GAP),
         Span::styled(
-            time_since_datetime(&agent.meta.created_at),
+            format!(
+                "{:<width$}",
+                agent_kind_label(&agent.meta.kind),
+                width = widths.type_width
+            ),
+            Style::default().fg(Color::LightMagenta),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", display_name, width = widths.name),
+            text_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", status, width = widths.status),
+            Style::default().fg(status_color),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!(
+                "{:<width$}",
+                time_since_datetime(&agent.meta.created_at),
+                width = widths.created
+            ),
             Style::default().fg(Color::DarkGray),
         ),
-    ]);
-    ListItem::new(line).style(row_style)
+    ])
 }
 
 fn project_task_row(
@@ -4093,6 +4205,111 @@ mod project_count_cell_tests {
             truncate_with_ellipsis("drua workstream — local repo", 18),
             "drua workstream —…"
         );
+    }
+
+    #[test]
+    fn attached_agent_header_uses_child_columns() {
+        let widths = AttachedAgentColumnWidths {
+            prefix: 9,
+            type_width: 10,
+            name: 24,
+            status: 10,
+            created: 10,
+        };
+
+        assert_eq!(
+            span_text(&project_attached_agents_header(widths).spans),
+            vec![
+                "AGENTS   ",
+                "  ",
+                "TYPE      ",
+                "  ",
+                "NAME                    ",
+                "  ",
+                "STATUS    ",
+                "  ",
+                "CREATED   "
+            ]
+        );
+    }
+
+    #[test]
+    fn attached_agent_row_keeps_status_and_created_aligned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config =
+            agman::config::Config::new(tmp.path().join(".agman"), tmp.path().join("repos"));
+        let app = App::new(config).unwrap();
+        let agent = attached_agent("agman-improvements--very-long-agent-name");
+        let widths = AttachedAgentColumnWidths {
+            prefix: 9,
+            type_width: 10,
+            name: 18,
+            status: 10,
+            created: 10,
+        };
+
+        assert_eq!(
+            span_text(&project_attached_agent_line(&app, &agent, false, widths).spans),
+            vec![
+                "  └ ",
+                "○    ",
+                "  ",
+                "reviewer  ",
+                "  ",
+                "agman-improvement…",
+                "  ",
+                "idle      ",
+                "  ",
+                "just now  "
+            ]
+        );
+    }
+
+    #[test]
+    fn attached_agent_widths_preserve_tail_columns_on_narrow_area() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config =
+            agman::config::Config::new(tmp.path().join(".agman"), tmp.path().join("repos"));
+        let mut app = App::new(config).unwrap();
+        app.attached_task_agents.insert(
+            "task-1".to_string(),
+            vec![attached_agent("agman-improvements--very-long-agent-name")],
+        );
+
+        let widths = project_attached_agent_column_widths(
+            &app,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 48,
+                height: 1,
+            },
+        );
+
+        assert_eq!(widths.name, 12);
+        assert_eq!(widths.status, 10);
+        assert_eq!(widths.created, 10);
+    }
+
+    fn attached_agent(name: &str) -> agman::agent_model::AgentRecord {
+        agman::agent_model::AgentRecord {
+            meta: agman::agent_model::AgentMeta {
+                name: name.to_string(),
+                project: "agman-improvements".to_string(),
+                description: "reviewer".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                status: agman::agent_model::AgentStatus::Running,
+                kind: AgentKind::Reviewer {
+                    worktrees: Vec::new(),
+                },
+                attachment: agman::agent_model::AgentAttachment::Task {
+                    task_id: "task-1".to_string(),
+                    role_label: Some("Reviewer".to_string()),
+                },
+            },
+            dir: std::path::PathBuf::from("/tmp/agman-improvements/reviewer"),
+        }
     }
 }
 
