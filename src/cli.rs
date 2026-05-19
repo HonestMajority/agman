@@ -149,6 +149,34 @@ EXAMPLES:
         task_id: String,
     },
 
+    /// Link a GitHub PR to a task so the TUI can display and open it
+    #[command(after_help = "\
+EXAMPLES:
+  agman link-pr backend--fix-login https://github.com/acme/backend/pull/42
+  agman link-pr backend--fix-login 42 --author alice
+  agman link-pr backend--fix-login --from-sidecar")]
+    LinkPr {
+        /// Task identifier (repo--branch format, or just branch if unambiguous)
+        task_id: String,
+        /// PR number or URL. A number is resolved through the task repo's origin remote.
+        pr: Option<String>,
+        /// Mark this PR as owned by the task engineer (default)
+        #[arg(long, default_value_t = true, conflicts_with = "not_owned")]
+        owned: bool,
+        /// Mark this PR as external/not owned by the task engineer
+        #[arg(long, default_value_t = false)]
+        not_owned: bool,
+        /// GitHub author/login for the PR
+        #[arg(long)]
+        author: Option<String>,
+        /// Overwrite a different existing linked PR
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        /// Read the PR reference from a legacy .pr-link sidecar
+        #[arg(long, default_value_t = false)]
+        from_sidecar: bool,
+    },
+
     /// Read the agent log for a task
     TaskLog {
         /// Task identifier (repo--branch format)

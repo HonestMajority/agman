@@ -200,6 +200,8 @@ fn prompts_describe_inbox_based_task_agent_model() {
     assert!(pm.contains("agman attach-agent --project project --name <name> --task <task-id>"));
     assert!(pm.contains("agman move-agent --project project --name <name> --task <task-id>"));
     assert!(pm.contains("agman detach-agent --project project --name <name>"));
+    assert!(pm.contains("agman link-pr <task-id> <PR URL or number>"));
+    assert!(pm.contains("PR URLs in inbox messages alone do not update task metadata"));
     assert!(!pm.contains("agman create-agent project <name>"));
     assert!(pm.contains("send-message"));
 
@@ -210,7 +212,150 @@ fn prompts_describe_inbox_based_task_agent_model() {
     assert!(engineer.contains("create or update pull requests"));
     assert!(engineer.contains("monitor CI"));
     assert!(engineer.contains("agman send-message project"));
+    assert!(engineer.contains("agman link-pr repo--branch <PR URL or number>"));
+    assert!(engineer.contains("Inbox messages alone do not link PRs into the agman TUI"));
     assert!(engineer.contains("send-message"));
+}
+
+#[test]
+fn parse_pr_reference_accepts_numbers_and_github_urls() {
+    assert_eq!(
+        use_cases::parse_pr_reference("42").unwrap(),
+        use_cases::PrReference::Number(42)
+    );
+    assert_eq!(
+        use_cases::parse_pr_reference("https://github.com/acme/repo/pull/42/").unwrap(),
+        use_cases::PrReference::Url {
+            number: 42,
+            url: "https://github.com/acme/repo/pull/42".to_string()
+        }
+    );
+
+    assert!(use_cases::parse_pr_reference("0").is_err());
+    assert!(use_cases::parse_pr_reference("https://example.com/acme/repo/pull/42").is_err());
+    assert!(use_cases::parse_pr_reference("https://github.com/acme/repo/issues/42").is_err());
+}
+
+#[test]
+fn link_task_pr_url_writes_linked_pr_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _task = create_test_task(&config, "repo", "branch");
+
+    let linked = use_cases::link_task_pr(
+        &config,
+        "repo--branch",
+        "https://github.com/acme/repo/pull/42",
+        true,
+        Some("alice".to_string()),
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(linked.number, 42);
+    assert_eq!(linked.url, "https://github.com/acme/repo/pull/42");
+    assert!(linked.owned);
+    assert_eq!(linked.author.as_deref(), Some("alice"));
+
+    let task = agman::task::Task::load_by_id(&config, "repo--branch").unwrap();
+    assert_eq!(task.meta.linked_pr.unwrap().number, 42);
+}
+
+#[test]
+fn link_task_pr_number_builds_url_from_task_remote() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let repo = init_test_repo(&tmp, "repo");
+    std::process::Command::new("git")
+        .args(["remote", "add", "origin", "git@github.com:acme/repo.git"])
+        .current_dir(&repo)
+        .status()
+        .unwrap();
+    let _task = use_cases::create_task(
+        &config,
+        "repo",
+        "feature",
+        "Build the widget",
+        "engineer",
+        WorktreeSource::NewBranch { base_branch: None },
+        None,
+        None,
+    )
+    .unwrap();
+
+    let linked =
+        use_cases::link_task_pr(&config, "repo--feature", "7", false, None, false).unwrap();
+
+    assert_eq!(linked.number, 7);
+    assert_eq!(linked.url, "https://github.com/acme/repo/pull/7");
+    assert!(!linked.owned);
+}
+
+#[test]
+fn link_task_pr_rejects_different_pr_without_force() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _task = create_test_task(&config, "repo", "branch");
+
+    use_cases::link_task_pr(
+        &config,
+        "repo--branch",
+        "https://github.com/acme/repo/pull/42",
+        true,
+        None,
+        false,
+    )
+    .unwrap();
+    use_cases::link_task_pr(
+        &config,
+        "repo--branch",
+        "https://github.com/acme/repo/pull/42",
+        false,
+        Some("alice".to_string()),
+        false,
+    )
+    .unwrap();
+
+    let err = use_cases::link_task_pr(
+        &config,
+        "repo--branch",
+        "https://github.com/acme/repo/pull/43",
+        true,
+        None,
+        false,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("already linked"));
+
+    let linked = use_cases::link_task_pr(
+        &config,
+        "repo--branch",
+        "https://github.com/acme/repo/pull/43",
+        true,
+        None,
+        true,
+    )
+    .unwrap();
+    assert_eq!(linked.number, 43);
+}
+
+#[test]
+fn link_task_pr_from_sidecar_reads_legacy_pr_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "branch");
+    std::fs::write(
+        task.dir.join(".pr-link"),
+        "42\nhttps://github.com/acme/repo/pull/42\n",
+    )
+    .unwrap();
+
+    let linked =
+        use_cases::link_task_pr_from_sidecar(&config, "repo--branch", true, None, false).unwrap();
+
+    assert_eq!(linked.number, 42);
+    assert_eq!(linked.url, "https://github.com/acme/repo/pull/42");
 }
 
 #[test]

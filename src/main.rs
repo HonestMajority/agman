@@ -133,6 +133,24 @@ fn main() -> Result<()> {
 
         Some(Commands::TaskInfo { task_id }) => cmd_task_info(&config, &task_id),
 
+        Some(Commands::LinkPr {
+            task_id,
+            pr,
+            owned,
+            not_owned,
+            author,
+            force,
+            from_sidecar,
+        }) => cmd_link_pr(
+            &config,
+            &task_id,
+            pr.as_deref(),
+            owned && !not_owned,
+            author,
+            force,
+            from_sidecar,
+        ),
+
         Some(Commands::TaskLog { task_id, tail }) => cmd_task_log(&config, &task_id, tail),
 
         Some(Commands::CreateAgent {
@@ -562,6 +580,34 @@ fn cmd_list_pm_tasks(config: &Config, project: &str) -> Result<()> {
 fn cmd_task_info(config: &Config, task_id: &str) -> Result<()> {
     let text = use_cases::get_task_info_text(config, task_id)?;
     println!("{}", text);
+    Ok(())
+}
+
+fn cmd_link_pr(
+    config: &Config,
+    task_id: &str,
+    pr: Option<&str>,
+    owned: bool,
+    author: Option<String>,
+    force: bool,
+    from_sidecar: bool,
+) -> Result<()> {
+    let linked = if from_sidecar {
+        if pr.is_some() {
+            anyhow::bail!("pass either a PR reference or --from-sidecar, not both");
+        }
+        use_cases::link_task_pr_from_sidecar(config, task_id, owned, author, force)?
+    } else {
+        let pr = pr.ok_or_else(|| {
+            anyhow::anyhow!("missing PR reference; pass a PR number, PR URL, or --from-sidecar")
+        })?;
+        use_cases::link_task_pr(config, task_id, pr, owned, author, force)?
+    };
+
+    println!(
+        "Task '{}' linked to PR #{}: {}",
+        task_id, linked.number, linked.url
+    );
     Ok(())
 }
 
