@@ -96,6 +96,18 @@ pub enum ProjectTaskRow<'a> {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProjectTaskRowKey {
+    Task {
+        task_id: String,
+    },
+    Agent {
+        task_id: String,
+        project: String,
+        name: String,
+    },
+}
+
 /// A live tmux popup spawned by agman. The `Child` is polled each tick of
 /// the main loop via `try_wait` so the loop never blocks on the popup.
 struct ActivePopup {
@@ -698,6 +710,15 @@ pub struct App {
 
 impl App {
     pub fn new(config: Config) -> Result<Self> {
+        Self::new_with_options(config, true)
+    }
+
+    #[cfg(test)]
+    fn new_for_test(config: Config) -> Result<Self> {
+        Self::new_with_options(config, false)
+    }
+
+    fn new_with_options(config: Config, autostart_sessions: bool) -> Result<Self> {
         use_cases::migrate_old_tasks(&config);
         match use_cases::purge_old_archives(&config) {
             Ok(count) if count > 0 => {
@@ -726,16 +747,19 @@ impl App {
             dismissed_notifs.save(&config.dismissed_notifications_path());
         }
 
-        // Auto-start the Chief of Staff agent session in the background
-        if let Err(e) = use_cases::start_chief_of_staff_session(&config, false) {
-            tracing::error!(error = %e, "failed to auto-start Chief of Staff session on launch");
-        }
+        if autostart_sessions {
+            // Auto-start the Chief of Staff agent session in the background
+            if let Err(e) = use_cases::start_chief_of_staff_session(&config, false) {
+                tracing::error!(error = %e, "failed to auto-start Chief of Staff session on launch");
+            }
 
-        // Auto-start PM sessions for all projects
-        if let Ok(projects) = use_cases::list_projects(&config) {
-            for project in &projects {
-                if let Err(e) = use_cases::start_pm_session(&config, &project.meta.name, false) {
-                    tracing::error!(project = %project.meta.name, error = %e, "failed to auto-start PM session on launch");
+            // Auto-start PM sessions for all projects
+            if let Ok(projects) = use_cases::list_projects(&config) {
+                for project in &projects {
+                    if let Err(e) = use_cases::start_pm_session(&config, &project.meta.name, false)
+                    {
+                        tracing::error!(project = %project.meta.name, error = %e, "failed to auto-start PM session on launch");
+                    }
                 }
             }
         }
@@ -860,10 +884,14 @@ impl App {
             last_telegram_watchdog: Instant::now(),
             last_telegram_respawn_at: None,
             #[cfg(target_os = "macos")]
-            caffeinate_process: std::process::Command::new("caffeinate")
-                .arg("-s")
-                .spawn()
-                .ok(),
+            caffeinate_process: if autostart_sessions {
+                std::process::Command::new("caffeinate")
+                    .arg("-s")
+                    .spawn()
+                    .ok()
+            } else {
+                None
+            },
             popup: None,
         })
     }
@@ -956,16 +984,11 @@ impl App {
     }
 
     pub fn refresh_tasks(&mut self) {
-        let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
+        let prev_row_key = self.selected_project_task_row_key();
         self.tasks = Task::list_all(&self.config);
         self.refresh_attached_task_agents();
-        if let Some(ref id) = prev_task_id {
-            if let Some(idx) = self.project_task_rows().iter().position(
-                |row| matches!(row, ProjectTaskRow::Task { task, .. } if task.meta.task_id() == *id),
-            ) {
-                self.selected_index = idx;
-                return;
-            }
+        if self.restore_project_task_selection(prev_row_key.as_ref()) {
+            return;
         }
         self.clamp_project_task_selection();
     }
@@ -1150,7 +1173,7 @@ impl App {
 
     /// Refresh tasks filtered by current_project.
     fn refresh_tasks_for_project(&mut self) {
-        let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
+        let prev_row_key = self.selected_project_task_row_key();
         let all = Task::list_all(&self.config);
         self.tasks = match &self.current_project {
             Some(name) if name == "(unassigned)" => all
@@ -1164,14 +1187,8 @@ impl App {
             None => all,
         };
         self.refresh_attached_task_agents();
-        // Restore selection
-        if let Some(ref id) = prev_task_id {
-            if let Some(idx) = self.project_task_rows().iter().position(
-                |row| matches!(row, ProjectTaskRow::Task { task, .. } if task.meta.task_id() == *id),
-            ) {
-                self.selected_index = idx;
-                return;
-            }
+        if self.restore_project_task_selection(prev_row_key.as_ref()) {
+            return;
         }
         self.clamp_project_task_selection();
     }
@@ -1225,6 +1242,52 @@ impl App {
 
     fn selected_project_task_row(&self) -> Option<ProjectTaskRow<'_>> {
         self.project_task_rows().get(self.selected_index).copied()
+    }
+
+    fn selected_project_task_row_key(&self) -> Option<ProjectTaskRowKey> {
+        let row = self.selected_project_task_row()?;
+        self.project_task_row_key(row)
+    }
+
+    fn project_task_row_key(&self, row: ProjectTaskRow<'_>) -> Option<ProjectTaskRowKey> {
+        match row {
+            ProjectTaskRow::Task { task, .. } => Some(ProjectTaskRowKey::Task {
+                task_id: task.meta.task_id(),
+            }),
+            ProjectTaskRow::Agent { task_index, agent } => {
+                let task_id = self.tasks.get(task_index)?.meta.task_id();
+                Some(ProjectTaskRowKey::Agent {
+                    task_id,
+                    project: agent.meta.project.clone(),
+                    name: agent.meta.name.clone(),
+                })
+            }
+        }
+    }
+
+    fn restore_project_task_selection(&mut self, key: Option<&ProjectTaskRowKey>) -> bool {
+        let Some(key) = key else {
+            return false;
+        };
+        if let Some(idx) = self.find_project_task_row_key(key) {
+            self.selected_index = idx;
+            return true;
+        }
+        if let ProjectTaskRowKey::Agent { task_id, .. } = key {
+            if let Some(idx) = self.find_project_task_row_key(&ProjectTaskRowKey::Task {
+                task_id: task_id.clone(),
+            }) {
+                self.selected_index = idx;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn find_project_task_row_key(&self, key: &ProjectTaskRowKey) -> Option<usize> {
+        self.project_task_rows()
+            .iter()
+            .position(|row| self.project_task_row_key(*row).as_ref() == Some(key))
     }
 
     fn selected_attached_agent(&self) -> Option<&AgentRecord> {
@@ -5346,4 +5409,199 @@ pub fn run_tui(config: Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agman::agent_model::AgentAttachment;
+    use agman::task::TaskMeta;
+
+    #[test]
+    fn refresh_tasks_for_project_preserves_attached_agent_row_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let unique = unique_name();
+        let project = format!("repo-{unique}");
+        let branch = format!("branch-{unique}");
+        let task = create_test_task(&config, &project, &branch);
+        let task_id = task.meta.task_id();
+        let researcher = AgentRecord::create(
+            &config,
+            &project,
+            "research-agent-window-names",
+            "test researcher",
+            AgentKind::Researcher {
+                repo: None,
+                branch: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+        use_cases::attach_agent_to_task(&config, &project, &researcher.meta.name, &task_id, None)
+            .unwrap();
+
+        let mut app = App::new_for_test(config).unwrap();
+        app.current_project = Some(project.clone());
+        app.refresh_tasks_for_project();
+        app.selected_index = app
+            .project_task_rows()
+            .iter()
+            .position(|row| {
+                matches!(
+                    row,
+                    ProjectTaskRow::Agent { agent, .. }
+                        if agent.meta.name == "research-agent-window-names"
+                )
+            })
+            .expect("attached researcher row exists");
+
+        app.refresh_tasks_for_project();
+
+        assert!(matches!(
+            app.selected_project_task_row(),
+            Some(ProjectTaskRow::Agent { agent, .. })
+                if agent.meta.name == "research-agent-window-names"
+        ));
+    }
+
+    #[test]
+    fn refresh_tasks_for_project_falls_back_to_parent_task_when_agent_row_disappears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let unique = unique_name();
+        let project = format!("repo-{unique}");
+        let branch = format!("branch-{unique}");
+        let task = create_test_task(&config, &project, &branch);
+        let task_id = task.meta.task_id();
+        let researcher = AgentRecord::create(
+            &config,
+            &project,
+            "research-agent-window-names",
+            "test researcher",
+            AgentKind::Researcher {
+                repo: None,
+                branch: None,
+                task_id: None,
+            },
+        )
+        .unwrap();
+        use_cases::attach_agent_to_task(&config, &project, &researcher.meta.name, &task_id, None)
+            .unwrap();
+
+        let mut app = App::new_for_test(config.clone()).unwrap();
+        app.current_project = Some(project.clone());
+        app.refresh_tasks_for_project();
+        app.selected_index = app
+            .project_task_rows()
+            .iter()
+            .position(|row| {
+                matches!(
+                    row,
+                    ProjectTaskRow::Agent { agent, .. }
+                        if agent.meta.name == "research-agent-window-names"
+                )
+            })
+            .expect("attached researcher row exists");
+
+        use_cases::detach_agent_from_task(&config, &project, &researcher.meta.name).unwrap();
+        app.refresh_tasks_for_project();
+
+        assert!(matches!(
+            app.selected_project_task_row(),
+            Some(ProjectTaskRow::Task { task, .. }) if task.meta.task_id() == task_id
+        ));
+    }
+
+    #[test]
+    fn refresh_tasks_preserves_attached_agent_row_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let unique = unique_name();
+        let project = format!("repo-{unique}");
+        let branch = format!("branch-{unique}");
+        let task = create_test_task(&config, &project, &branch);
+        let task_id = task.meta.task_id();
+        let reviewer = AgentRecord::create(
+            &config,
+            &project,
+            "reviewer-pr5590-ltv",
+            "test reviewer",
+            AgentKind::Reviewer {
+                worktrees: Vec::new(),
+            },
+        )
+        .unwrap();
+        use_cases::attach_agent_to_task(&config, &project, &reviewer.meta.name, &task_id, None)
+            .unwrap();
+
+        let mut app = App::new_for_test(config).unwrap();
+        app.refresh_tasks();
+        app.selected_index = app
+            .project_task_rows()
+            .iter()
+            .position(|row| {
+                matches!(
+                    row,
+                    ProjectTaskRow::Agent { agent, .. } if agent.meta.name == "reviewer-pr5590-ltv"
+                )
+            })
+            .expect("attached reviewer row exists");
+
+        app.refresh_tasks();
+
+        assert!(matches!(
+            app.selected_project_task_row(),
+            Some(ProjectTaskRow::Agent { agent, .. }) if agent.meta.name == "reviewer-pr5590-ltv"
+        ));
+    }
+
+    fn test_config(root: &Path) -> Config {
+        Config::new(root.join(".agman"), root.join("repos"))
+    }
+
+    fn create_test_task(config: &Config, repo_name: &str, branch_name: &str) -> Task {
+        config.ensure_dirs().unwrap();
+
+        let worktree_path = config.worktree_path(repo_name, branch_name);
+        std::fs::create_dir_all(&worktree_path).unwrap();
+
+        let dir = config.task_dir(repo_name, branch_name);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let meta = TaskMeta::new(
+            repo_name.to_string(),
+            branch_name.to_string(),
+            worktree_path,
+            "new".to_string(),
+        );
+        let mut task = Task { meta, dir };
+        task.meta.project = Some(repo_name.to_string());
+        task.save_meta().unwrap();
+
+        let task_id = task.meta.task_id();
+        let engineer_name = format!("engineer-{}", task_id.replace("--", "-"));
+        AgentRecord::create_with_attachment(
+            config,
+            repo_name,
+            &engineer_name,
+            &format!("Engineer attached to task {task_id}"),
+            AgentKind::Engineer,
+            AgentAttachment::Task {
+                task_id,
+                role_label: Some("Engineer".to_string()),
+            },
+        )
+        .unwrap();
+
+        task
+    }
+
+    fn unique_name() -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!("{}-{nanos}", std::process::id())
+    }
 }

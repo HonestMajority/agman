@@ -246,7 +246,20 @@ impl Tmux {
         agent_name: &str,
         canonical_session: &str,
     ) -> String {
-        build_linked_agent_window_name(kind, agent_name, canonical_session)
+        let suffix = linked_agent_window_hash_suffix(canonical_session, 4);
+        build_linked_agent_window_name(kind, agent_name, &suffix)
+    }
+
+    pub(crate) fn linked_agent_window_name_with_suffix(
+        kind: &str,
+        agent_name: &str,
+        suffix: &str,
+    ) -> String {
+        build_linked_agent_window_name(kind, agent_name, suffix)
+    }
+
+    pub(crate) fn linked_agent_window_hash_suffix(canonical_session: &str, len: usize) -> String {
+        linked_agent_window_hash_suffix(canonical_session, len)
     }
 
     pub fn link_agent_window(
@@ -260,7 +273,9 @@ impl Tmux {
         if !Self::session_exists(canonical_session) {
             anyhow::bail!("agent tmux session '{canonical_session}' does not exist");
         }
-        if Self::window_exists(task_session, window_name)? {
+        if Self::window_exists(task_session, window_name)?
+            && Self::same_window_id(canonical_session, &format!("{task_session}:{window_name}"))?
+        {
             return Ok(());
         }
 
@@ -273,6 +288,14 @@ impl Tmux {
             anyhow::bail!(
                 "failed to rename canonical agent tmux window: {}",
                 String::from_utf8_lossy(&rename_output.stderr)
+            );
+        }
+        if Self::window_exists(task_session, window_name)? {
+            if Self::same_window_id(canonical_session, &format!("{task_session}:{window_name}"))? {
+                return Ok(());
+            }
+            anyhow::bail!(
+                "task tmux session '{task_session}' already has a different window named '{window_name}'"
             );
         }
 
@@ -291,8 +314,17 @@ impl Tmux {
         Ok(())
     }
 
-    pub fn unlink_agent_window(task_session: &str, window_name: &str) -> Result<()> {
+    pub fn unlink_agent_window(
+        task_session: &str,
+        canonical_session: &str,
+        window_name: &str,
+    ) -> Result<()> {
         if !Self::session_exists(task_session) || !Self::window_exists(task_session, window_name)? {
+            return Ok(());
+        }
+        if Self::session_exists(canonical_session)
+            && !Self::same_window_id(canonical_session, &format!("{task_session}:{window_name}"))?
+        {
             return Ok(());
         }
 
@@ -309,6 +341,32 @@ impl Tmux {
             );
         }
         Ok(())
+    }
+
+    fn same_window_id(left_target: &str, right_target: &str) -> Result<bool> {
+        let Some(left_id) = Self::window_id(left_target)? else {
+            return Ok(false);
+        };
+        let Some(right_id) = Self::window_id(right_target)? else {
+            return Ok(false);
+        };
+        Ok(left_id == right_id)
+    }
+
+    fn window_id(target: &str) -> Result<Option<String>> {
+        let output = Command::new("tmux")
+            .args(["display-message", "-p", "-t", target, "#{window_id}"])
+            .output()
+            .context("failed to query tmux window id")?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if id.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(id))
+        }
     }
 
     fn window_exists(session_name: &str, window_name: &str) -> Result<bool> {
@@ -718,13 +776,13 @@ impl Tmux {
 pub fn link_window_args(
     task_session: &str,
     canonical_session: &str,
-    _window_name: &str,
+    window_name: &str,
 ) -> Vec<String> {
     vec![
         "link-window".to_string(),
         "-d".to_string(),
         "-s".to_string(),
-        canonical_session.to_string(),
+        format!("{canonical_session}:{window_name}"),
         "-t".to_string(),
         format!("{task_session}:"),
     ]
@@ -747,16 +805,13 @@ pub fn unlink_window_args(task_session: &str, window_name: &str) -> Vec<String> 
     ]
 }
 
-fn build_linked_agent_window_name(kind: &str, agent_name: &str, canonical_session: &str) -> String {
-    let suffix = format!("{:08x}", stable_hash32(canonical_session));
-    let prefix = sanitize_tmux_window_component(kind);
-    let mut name = sanitize_tmux_window_component(agent_name);
-    let max_name = 80usize.saturating_sub(prefix.len() + suffix.len() + 2);
-    if name.len() > max_name {
-        name.truncate(max_name);
-        name = name.trim_end_matches('-').to_string();
-    }
-    format!("{prefix}-{name}-{suffix}")
+fn build_linked_agent_window_name(kind: &str, agent_name: &str, suffix: &str) -> String {
+    const MAX_WINDOW_NAME_LEN: usize = 24;
+
+    let prefix = title_case_kind(kind);
+    let max_slug_len = MAX_WINDOW_NAME_LEN.saturating_sub(prefix.len() + suffix.len() + 2);
+    let slug = compact_agent_slug(kind, agent_name, max_slug_len);
+    format!("{prefix}-{slug}-{suffix}")
 }
 
 fn stable_hash32(raw: &str) -> u32 {
@@ -768,31 +823,102 @@ fn stable_hash32(raw: &str) -> u32 {
     hash
 }
 
-fn sanitize_tmux_window_component(raw: &str) -> String {
-    let mut out = String::new();
-    let mut last_dash = false;
-    for ch in raw.chars() {
-        let mapped = if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-            ch.to_ascii_lowercase()
-        } else {
-            '-'
+fn linked_agent_window_hash_suffix(raw: &str, len: usize) -> String {
+    let mut hash = stable_hash32(raw) as u64;
+    let base = 36_u64.pow(len as u32);
+    hash %= base;
+
+    let mut chars = vec!['0'; len];
+    for idx in (0..len).rev() {
+        let digit = (hash % 36) as u8;
+        chars[idx] = match digit {
+            0..=9 => (b'0' + digit) as char,
+            _ => (b'a' + digit - 10) as char,
         };
-        if mapped == '-' {
-            if !last_dash {
-                out.push(mapped);
+        hash /= 36;
+    }
+    chars.into_iter().collect()
+}
+
+fn title_case_kind(raw: &str) -> String {
+    match sanitize_tmux_window_tokens(raw).first().map(String::as_str) {
+        Some("engineer") => "Engineer".to_string(),
+        Some("researcher") => "Researcher".to_string(),
+        Some("reviewer") => "Reviewer".to_string(),
+        Some("tester") => "Tester".to_string(),
+        Some("operator") => "Operator".to_string(),
+        Some(other) => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => {
+                    format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
+                }
+                None => "Agent".to_string(),
             }
-            last_dash = true;
-        } else {
-            out.push(mapped);
-            last_dash = false;
+        }
+        None => "Agent".to_string(),
+    }
+}
+
+fn compact_agent_slug(kind: &str, agent_name: &str, max_len: usize) -> String {
+    if max_len == 0 {
+        return String::new();
+    }
+
+    let kind_token = sanitize_tmux_window_tokens(kind)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let mut tokens = sanitize_tmux_window_tokens(agent_name);
+    if tokens
+        .first()
+        .is_some_and(|token| !kind_token.is_empty() && token == &kind_token)
+    {
+        tokens.remove(0);
+    }
+    if tokens.is_empty() {
+        tokens.push("agent".to_string());
+    }
+
+    let full = tokens.join("-");
+    if full.len() <= max_len {
+        return full;
+    }
+
+    if tokens.len() > 1 {
+        let first = truncate_ascii_token(&tokens[0], max_len);
+        if first.len() + 2 <= max_len {
+            let rest_len = max_len - first.len() - 1;
+            let second = truncate_ascii_token(&tokens[1], rest_len);
+            if !second.is_empty() {
+                return format!("{first}-{second}");
+            }
         }
     }
-    let trimmed = out.trim_matches('-');
-    if trimmed.is_empty() {
-        "agent".to_string()
-    } else {
-        trimmed.to_string()
+
+    truncate_ascii_token(&full, max_len)
+        .trim_matches('-')
+        .to_string()
+}
+
+fn truncate_ascii_token(raw: &str, max_len: usize) -> String {
+    raw.chars().take(max_len).collect()
+}
+
+fn sanitize_tmux_window_tokens(raw: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            current.push(ch.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
     }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 #[cfg(test)]
@@ -807,7 +933,7 @@ mod tests {
                 "link-window",
                 "-d",
                 "-s",
-                "agent-session",
+                "agent-session:engineer-main-12345678",
                 "-t",
                 "task-session:",
             ]
@@ -840,11 +966,68 @@ mod tests {
         let one = Tmux::linked_agent_window_name("Engineer", "Fix/PR:Review", "agent-session-a");
         let two = Tmux::linked_agent_window_name("Engineer", "Fix/PR:Review", "agent-session-b");
 
-        assert!(one.starts_with("engineer-fix-pr-review-"));
-        assert!(one.len() <= 80);
+        assert!(one.starts_with("Engineer-fix-pr-"));
+        assert!(one.len() <= 24);
         assert_ne!(one, two);
         assert!(one
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'));
+    }
+
+    #[test]
+    fn linked_agent_window_names_strip_redundant_kind_and_stay_short() {
+        let name = Tmux::linked_agent_window_name(
+            "engineer",
+            "engineer-agman-remove-redundant-poison-error-closure",
+            "agman-engineer-agman-improvements-engineer-agman-remove-redundant-poison-error-closure",
+        );
+
+        assert!(name.starts_with("Engineer-agman-"));
+        assert!(!name.starts_with("Engineer-engineer-"));
+        assert!(name.len() <= 24, "{name}");
+    }
+
+    #[test]
+    fn linked_agent_window_names_title_case_known_kinds() {
+        assert!(
+            Tmux::linked_agent_window_name("researcher", "agent-window-names", "s1")
+                .starts_with("Researcher-")
+        );
+        assert!(
+            Tmux::linked_agent_window_name("reviewer", "pr5590-ltv", "s2").starts_with("Reviewer-")
+        );
+        assert!(Tmux::linked_agent_window_name("tester", "smoke", "s3").starts_with("Tester-"));
+        assert!(Tmux::linked_agent_window_name("operator", "deploy", "s4").starts_with("Operator-"));
+    }
+
+    #[test]
+    fn linked_agent_window_suffix_is_deterministic() {
+        let one = Tmux::linked_agent_window_name("Engineer", "agent-window-names", "canonical-a");
+        let two = Tmux::linked_agent_window_name("Engineer", "agent-window-names", "canonical-a");
+        assert_eq!(one, two);
+
+        let suffix = one.rsplit('-').next().unwrap();
+        assert_eq!(suffix.len(), 4);
+        assert!(suffix.chars().all(|ch| ch.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn linked_agent_window_names_keep_same_slug_sessions_distinct() {
+        let one = Tmux::linked_agent_window_name("Reviewer", "pr5590-ltv", "canonical-a");
+        let two = Tmux::linked_agent_window_name("Reviewer", "pr5590-ltv", "canonical-b");
+
+        assert_ne!(one, two);
+        assert_eq!(
+            one.rsplit_once('-').unwrap().0,
+            two.rsplit_once('-').unwrap().0
+        );
+    }
+
+    #[test]
+    fn linked_agent_window_names_handle_empty_sanitized_names() {
+        let name = Tmux::linked_agent_window_name("Engineer", "!!!", "canonical");
+
+        assert!(name.starts_with("Engineer-agent-"));
+        assert!(name.len() <= 24);
     }
 }

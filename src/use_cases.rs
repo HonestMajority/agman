@@ -2992,16 +2992,123 @@ pub(crate) fn agent_tmux_session_for_record(agent: &AgentRecord) -> String {
     agent_tmux_session(&agent.meta)
 }
 
-pub(crate) fn agent_link_window_name(agent: &AgentRecord) -> String {
-    let kind = match agent.meta.kind {
+fn agent_window_kind(kind: &AgentKind) -> &'static str {
+    match kind {
         AgentKind::Engineer => "engineer",
         AgentKind::Researcher { .. } => "researcher",
         AgentKind::Operator { .. } => "operator",
         AgentKind::Reviewer { .. } => "reviewer",
         AgentKind::Tester { .. } => "tester",
-    };
+    }
+}
+
+fn agent_link_window_name_for_task(
+    config: &Config,
+    agent: &AgentRecord,
+    task_id: &str,
+) -> Result<String> {
+    let agents = attached_agents_for_task_including(config, task_id, agent)?;
+    Ok(unique_agent_link_window_name(agent, &agents))
+}
+
+fn unique_agent_link_window_name(agent: &AgentRecord, agents: &[AgentRecord]) -> String {
+    for suffix_len in 4..=6 {
+        let target = agent_link_window_name_with_suffix_len(agent, suffix_len);
+        if agents
+            .iter()
+            .filter(|candidate| {
+                agent_link_window_name_with_suffix_len(candidate, suffix_len) == target
+            })
+            .count()
+            == 1
+        {
+            return target;
+        }
+    }
+
+    let target = agent_link_window_name_with_suffix_len(agent, 6);
+    let mut colliders: Vec<_> = agents
+        .iter()
+        .filter(|candidate| agent_link_window_name_with_suffix_len(candidate, 6) == target)
+        .collect();
+    colliders.sort_by_key(|candidate| agent_tmux_session(&candidate.meta));
+    let ordinal = colliders
+        .iter()
+        .position(|candidate| same_agent_record(candidate, agent))
+        .unwrap_or(0);
+    let suffix = format!(
+        "{}{}",
+        Tmux::linked_agent_window_hash_suffix(&agent_tmux_session(&agent.meta), 6),
+        base36_ordinal(ordinal)
+    );
+    agent_link_window_name_with_suffix(agent, &suffix)
+}
+
+fn attached_agents_for_task_including(
+    config: &Config,
+    task_id: &str,
+    agent: &AgentRecord,
+) -> Result<Vec<AgentRecord>> {
+    let mut agents = attached_agents_for_task(config, task_id)?;
+    if !agents
+        .iter()
+        .any(|candidate| same_agent_record(candidate, agent))
+    {
+        agents.push(agent.clone());
+    }
+    Ok(agents)
+}
+
+fn agent_link_window_name_candidates(
+    config: &Config,
+    agent: &AgentRecord,
+    task_id: &str,
+) -> Result<Vec<String>> {
+    let agents = attached_agents_for_task_including(config, task_id, agent)?;
+    let mut names = Vec::new();
+    let task_unique = unique_agent_link_window_name(agent, &agents);
+    names.push(task_unique);
+    for suffix_len in 4..=6 {
+        let name = agent_link_window_name_with_suffix_len(agent, suffix_len);
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+fn agent_link_window_name_with_suffix_len(agent: &AgentRecord, suffix_len: usize) -> String {
     let session = agent_tmux_session(&agent.meta);
-    Tmux::linked_agent_window_name(kind, &agent.meta.name, &session)
+    let suffix = Tmux::linked_agent_window_hash_suffix(&session, suffix_len);
+    agent_link_window_name_with_suffix(agent, &suffix)
+}
+
+fn agent_link_window_name_with_suffix(agent: &AgentRecord, suffix: &str) -> String {
+    Tmux::linked_agent_window_name_with_suffix(
+        agent_window_kind(&agent.meta.kind),
+        &agent.meta.name,
+        suffix,
+    )
+}
+
+fn same_agent_record(left: &AgentRecord, right: &AgentRecord) -> bool {
+    left.meta.project == right.meta.project && left.meta.name == right.meta.name
+}
+
+fn base36_ordinal(mut ordinal: usize) -> String {
+    let mut chars = Vec::new();
+    loop {
+        let digit = (ordinal % 36) as u8;
+        chars.push(match digit {
+            0..=9 => (b'0' + digit) as char,
+            _ => (b'a' + digit - 10) as char,
+        });
+        ordinal /= 36;
+        if ordinal == 0 {
+            break;
+        }
+    }
+    chars.iter().rev().collect()
 }
 
 fn task_tmux_session(task: &Task) -> Result<String> {
@@ -3031,7 +3138,7 @@ pub(crate) fn link_agent_into_task_session(
     if !Tmux::session_exists(&task_session) || !Tmux::session_exists(&canonical_session) {
         return Ok(());
     }
-    let window_name = agent_link_window_name(agent);
+    let window_name = agent_link_window_name_for_task(config, agent, task_id)?;
     Tmux::link_agent_window(&task_session, &canonical_session, &window_name)
 }
 
@@ -3045,8 +3152,11 @@ pub(crate) fn unlink_agent_from_task_session(
     if !Tmux::session_exists(&task_session) {
         return Ok(());
     }
-    let window_name = agent_link_window_name(agent);
-    Tmux::unlink_agent_window(&task_session, &window_name)
+    let canonical_session = agent_tmux_session(&agent.meta);
+    for window_name in agent_link_window_name_candidates(config, agent, task_id)? {
+        Tmux::unlink_agent_window(&task_session, &canonical_session, &window_name)?;
+    }
+    Ok(())
 }
 
 /// Send-message id for an agent (e.g. `"researcher:<proj>--<name>"`),
