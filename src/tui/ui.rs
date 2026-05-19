@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::app::{
     AgentActivitySample, App, ArchiveKind, BranchSource, DirKind, DirPickerOrigin, NotesFocus,
-    PreviewPane, ProjectPaneFocus, ProjectTaskRow, View, WizardStep,
+    PreviewPane, ProjectDetailRow, ProjectTaskRow, View, WizardStep,
 };
 use super::vim::VimMode;
 
@@ -1091,358 +1091,69 @@ fn draw_project_picker(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_project_detail(f: &mut Frame, app: &App, area: Rect) {
-    let panes = Layout::default()
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(area);
 
+    let project_name = app.current_project.as_deref().unwrap_or("Project");
     let header = Paragraph::new(Line::from(Span::styled(
-        app.current_project.as_deref().unwrap_or("Project"),
+        project_name,
         Style::default()
             .fg(Color::LightCyan)
             .add_modifier(Modifier::BOLD),
     )));
-    f.render_widget(header, panes[0]);
+    f.render_widget(header, chunks[0]);
 
-    draw_project_agents_pane(
-        f,
-        app,
-        panes[1],
-        app.project_pane_focus == ProjectPaneFocus::Agents,
-    );
-    draw_tasks_pane(
-        f,
-        app,
-        panes[2],
-        app.project_pane_focus == ProjectPaneFocus::Tasks,
-    );
-}
-
-fn draw_tasks_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
-    // Create the outer block first
-    let border_style = if focused {
-        Style::default().fg(Color::LightCyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let title_style = if focused {
-        Style::default()
-            .fg(Color::LightCyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
     let block = Block::default()
         .title(Line::from(vec![
-            Span::styled(" Tasks ", title_style),
             Span::styled(
-                format!("({} tasks) ", app.tasks.len()),
+                " Project ",
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({} agents, {} tasks) ", app.agents.len(), app.tasks.len()),
                 Style::default().fg(Color::DarkGray),
             ),
         ]))
         .title(clock_title(app))
         .borders(Borders::ALL)
-        .border_style(border_style);
+        .border_style(Style::default().fg(Color::LightCyan));
+    let inner = block.inner(chunks[1]);
+    f.render_widget(block, chunks[1]);
 
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    // Split inner area into header and list
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(inner);
-
-    // Calculate dynamic column widths
-    const MIN_REPO_WIDTH: usize = 4; // "REPO" header length
-    const MAX_REPO_WIDTH: usize = 20;
-    const MIN_BRANCH_WIDTH: usize = 6; // "BRANCH" header length
-
-    const PR_WIDTH: usize = 25; // fits "#99999 (long_author_name)" plus padding
-    const UPDATED_WIDTH: usize = 10;
-    const COL_GAP: &str = "    "; // 4 spaces between columns
-
-    // Scan tasks for longest repo name (multi-repo tasks get [M] prefix)
-    let max_repo_len = app
-        .tasks
+    let agent_widths = project_agent_column_widths(app, inner);
+    let task_widths = project_task_column_widths(app, inner);
+    let items: Vec<ListItem> = app
+        .project_detail_rows()
         .iter()
-        .map(|t| {
-            if t.meta.is_multi_repo() {
-                t.meta.name.len() + 4 // "[M] " prefix
-            } else {
-                t.meta.name.len()
-            }
+        .enumerate()
+        .map(|(row_index, row)| {
+            project_detail_list_item(app, *row, row_index, agent_widths, task_widths)
         })
-        .max()
-        .unwrap_or(MIN_REPO_WIDTH);
+        .collect();
 
-    let repo_width = max_repo_len.clamp(MIN_REPO_WIDTH, MAX_REPO_WIDTH);
-
-    // Scan tasks for longest branch name.
-    let max_branch_len = app
-        .tasks
-        .iter()
-        .map(|t| t.meta.branch_name.len())
-        .max()
-        .unwrap_or(MIN_BRANCH_WIDTH);
-
-    let branch_width = max_branch_len.max(MIN_BRANCH_WIDTH);
-
-    // Compute fixed width from actual components:
-    // padding(5) + col_gaps(3*4=12) + repo + pr + updated
-    let fixed_cols_width = (5 + 12 + repo_width + PR_WIDTH + UPDATED_WIDTH) as u16;
-
-    let available_width = inner.width.saturating_sub(fixed_cols_width) as usize;
-
-    // Cap branch width to available space
-    let branch_width = branch_width.min(available_width.max(MIN_BRANCH_WIDTH));
-
-    // Render header - columns: space(5) + repo + gap + branch + gap + PR + gap + updated
-    let header = Line::from(vec![
-        Span::raw("     "),
-        Span::styled(
-            format!("{:<width$}", "REPO", width = repo_width),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:<width$}", "BRANCH", width = branch_width),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            format!("{:<width$}", "PR", width = PR_WIDTH),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(COL_GAP),
-        Span::styled(
-            "UPDATED",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    f.render_widget(Paragraph::new(header), chunks[0]);
-
-    if app.tasks.is_empty() {
-        let text = Paragraph::new("No tasks")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::DarkGray));
-        f.render_widget(text, chunks[1]);
-        return;
-    }
-
-    // Build task list with attached agents as child rows.
-    let mut items: Vec<ListItem> = Vec::new();
-
-    for (row_index, row) in app.project_task_rows().iter().enumerate() {
-        let ProjectTaskRow::Task {
-            task_index: _,
-            task,
-        } = row
-        else {
-            if let ProjectTaskRow::Agent { agent, .. } = row {
-                let is_selected = focused && row_index == app.selected_index;
-                let (status, status_icon, status_color) = agent_runtime_status(app, agent);
-                let text_style = if is_selected {
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Gray)
-                };
-                let row_style = if is_selected {
-                    Style::default().bg(Color::Rgb(40, 40, 50))
-                } else {
-                    Style::default()
-                };
-                let label = format!("{} {}", agent_kind_label(&agent.meta.kind), agent.meta.name);
-                let display_label = truncate_to_width(&label, repo_width + branch_width + 4);
-                let line = Line::from(vec![
-                    Span::raw("       "),
-                    Span::styled(status_icon, Style::default().fg(status_color)),
-                    Span::raw(" "),
-                    Span::styled(
-                        format!(
-                            "{:<width$}",
-                            display_label,
-                            width = repo_width + branch_width + 4
-                        ),
-                        text_style,
-                    ),
-                    Span::raw(COL_GAP),
-                    Span::styled(
-                        format!("{:<width$}", status, width = PR_WIDTH),
-                        Style::default().fg(status_color),
-                    ),
-                    Span::raw(COL_GAP),
-                    Span::styled(
-                        time_since_datetime(&agent.meta.created_at),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]);
-                items.push(ListItem::new(line).style(row_style));
-            }
-            continue;
-        };
-        // Build display repo name (truncate if needed, prefix multi-repo tasks)
-        let repo_label = if task.meta.is_multi_repo() {
-            format!("[M] {}", task.meta.name)
-        } else {
-            task.meta.name.clone()
-        };
-        let display_repo = if repo_label.len() > repo_width {
-            format!("{}…", &repo_label[..repo_width.saturating_sub(1)])
-        } else {
-            repo_label
-        };
-
-        let full_branch = task.meta.branch_name.clone();
-
-        // Truncate branch if needed, with ellipsis
-        let display_branch = if full_branch.len() > branch_width {
-            format!("{}…", &full_branch[..branch_width.saturating_sub(1)])
-        } else {
-            full_branch.clone()
-        };
-
-        let is_selected = focused && row_index == app.selected_index;
-        let text_color = if is_selected {
-            Color::White
-        } else {
-            Color::Rgb(140, 140, 140)
-        };
-
-        // Build PR display string and truncate if needed
-        let pr_display = task
-            .meta
-            .linked_pr
-            .as_ref()
-            .map(|pr| {
-                if !pr.owned {
-                    format!(
-                        "#{:>5} ({})",
-                        pr.number,
-                        pr.author.as_deref().unwrap_or("ext")
-                    )
-                } else {
-                    format!("#{:>5} mine", pr.number)
-                }
-            })
-            .unwrap_or_default();
-        let pr_display = if pr_display.len() > PR_WIDTH {
-            format!("{}…", &pr_display[..PR_WIDTH.saturating_sub(1)])
-        } else {
-            pr_display
-        };
-
-        let line = Line::from(vec![
-            Span::raw("     "),
-            Span::styled(
-                format!("{:<width$}", display_repo, width = repo_width),
-                if is_selected {
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(text_color)
-                },
-            ),
-            Span::raw(COL_GAP),
-            Span::styled(
-                format!("{:<width$}", display_branch, width = branch_width),
-                if is_selected {
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(text_color)
-                },
-            ),
-            Span::raw(COL_GAP),
-            Span::styled(
-                format!("{:<width$}", pr_display, width = PR_WIDTH),
-                if let Some(pr) = &task.meta.linked_pr {
-                    if !pr.owned {
-                        Style::default().fg(Color::Gray)
-                    } else {
-                        Style::default().fg(Color::LightMagenta)
-                    }
-                } else {
-                    Style::default()
-                },
-            ),
-            Span::raw(COL_GAP),
-            Span::styled(
-                task.time_since_update(),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]);
-
-        let style = if is_selected {
-            Style::default().bg(Color::Rgb(40, 40, 50))
-        } else {
-            Style::default()
-        };
-
-        items.push(ListItem::new(line).style(style));
-    }
-
-    let list = List::new(items);
-    f.render_widget(list, chunks[1]);
+    f.render_widget(List::new(items), inner);
 }
 
-fn draw_project_agents_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
-    let border_style = if focused {
-        Style::default().fg(Color::LightCyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let title_style = if focused {
-        Style::default()
-            .fg(Color::LightCyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-    let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" Agents ", title_style),
-            Span::styled(
-                format!("({} agents) ", app.agents.len()),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]))
-        .borders(Borders::ALL)
-        .border_style(border_style);
+#[derive(Debug, Clone, Copy)]
+struct AgentColumnWidths {
+    name: usize,
+    type_width: usize,
+    status: usize,
+    created: usize,
+}
 
-    if app.agents.is_empty() {
-        let text = Paragraph::new("No agents")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        f.render_widget(text, area);
-        return;
-    }
+#[derive(Debug, Clone, Copy)]
+struct TaskColumnWidths {
+    repo: usize,
+    branch: usize,
+    pr: usize,
+}
 
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(inner);
-
+fn project_agent_column_widths(app: &App, area: Rect) -> AgentColumnWidths {
     const MIN_NAME_WIDTH: usize = 4;
     const MAX_NAME_WIDTH: usize = 56;
     const TYPE_WIDTH: usize = 10;
@@ -1457,101 +1168,341 @@ fn draw_project_agents_pane(f: &mut Frame, app: &App, area: Rect, focused: bool)
         .max()
         .unwrap_or(MIN_NAME_WIDTH);
     let fixed_width = 4 + (COL_GAP.len() * 3) + TYPE_WIDTH + STATUS_WIDTH + CREATED_WIDTH;
-    let available_name_width = (inner.width as usize)
+    let available_name_width = (area.width as usize)
         .saturating_sub(fixed_width)
         .clamp(MIN_NAME_WIDTH, MAX_NAME_WIDTH);
-    let name_width = max_name_len.clamp(MIN_NAME_WIDTH, available_name_width);
 
+    AgentColumnWidths {
+        name: max_name_len.clamp(MIN_NAME_WIDTH, available_name_width),
+        type_width: TYPE_WIDTH,
+        status: STATUS_WIDTH,
+        created: CREATED_WIDTH,
+    }
+}
+
+fn project_task_column_widths(app: &App, area: Rect) -> TaskColumnWidths {
+    const MIN_REPO_WIDTH: usize = 4;
+    const MAX_REPO_WIDTH: usize = 20;
+    const MIN_BRANCH_WIDTH: usize = 6;
+    const PR_WIDTH: usize = 25;
+    const UPDATED_WIDTH: usize = 10;
+
+    let max_repo_len = app
+        .tasks
+        .iter()
+        .map(|t| {
+            if t.meta.is_multi_repo() {
+                t.meta.name.len() + 4
+            } else {
+                t.meta.name.len()
+            }
+        })
+        .max()
+        .unwrap_or(MIN_REPO_WIDTH);
+    let repo_width = max_repo_len.clamp(MIN_REPO_WIDTH, MAX_REPO_WIDTH);
+
+    let max_branch_len = app
+        .tasks
+        .iter()
+        .map(|t| t.meta.branch_name.len())
+        .max()
+        .unwrap_or(MIN_BRANCH_WIDTH);
+    let branch_width = max_branch_len.max(MIN_BRANCH_WIDTH);
+    let fixed_cols_width = (5 + 12 + repo_width + PR_WIDTH + UPDATED_WIDTH) as u16;
+    let available_width = area.width.saturating_sub(fixed_cols_width) as usize;
+
+    TaskColumnWidths {
+        repo: repo_width,
+        branch: branch_width.min(available_width.max(MIN_BRANCH_WIDTH)),
+        pr: PR_WIDTH,
+    }
+}
+
+fn project_detail_list_item(
+    app: &App,
+    row: ProjectDetailRow<'_>,
+    row_index: usize,
+    agent_widths: AgentColumnWidths,
+    task_widths: TaskColumnWidths,
+) -> ListItem<'static> {
+    match row {
+        ProjectDetailRow::AgentsHeader => ListItem::new(project_agents_header(agent_widths)),
+        ProjectDetailRow::EmptyAgents => ListItem::new(Line::from(Span::styled(
+            "  No unattached agents",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        ProjectDetailRow::UnattachedAgent { agent, .. } => {
+            project_agent_row(app, agent, row_index == app.selected_index, agent_widths)
+        }
+        ProjectDetailRow::TasksHeader => ListItem::new(project_tasks_header(task_widths)),
+        ProjectDetailRow::EmptyTasks => ListItem::new(Line::from(Span::styled(
+            "  No tasks",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        ProjectDetailRow::Task(ProjectTaskRow::Task { task, .. }) => {
+            project_task_row(task, row_index == app.selected_index, task_widths)
+        }
+        ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent { agent, .. }) => {
+            project_attached_agent_row(app, agent, row_index == app.selected_index, task_widths)
+        }
+        ProjectDetailRow::Task(ProjectTaskRow::Agent { .. })
+        | ProjectDetailRow::AttachedAgent(ProjectTaskRow::Task { .. }) => ListItem::new(""),
+    }
+}
+
+fn project_section_style() -> Style {
+    Style::default()
+        .fg(Color::LightCyan)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn project_agents_header(widths: AgentColumnWidths) -> Line<'static> {
+    const COL_GAP: &str = "   ";
     let header_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
-    let header = Line::from(vec![
-        Span::raw("    "),
+    Line::from(vec![
+        Span::styled("Agents", project_section_style()),
+        Span::raw("  "),
         Span::styled(
-            format!("{:<width$}", "NAME", width = name_width),
+            format!("{:<width$}", "NAME", width = widths.name),
             header_style,
         ),
         Span::raw(COL_GAP),
         Span::styled(
-            format!("{:<width$}", "TYPE", width = TYPE_WIDTH),
+            format!("{:<width$}", "TYPE", width = widths.type_width),
             header_style,
         ),
         Span::raw(COL_GAP),
         Span::styled(
-            format!("{:<width$}", "STATUS", width = STATUS_WIDTH),
+            format!("{:<width$}", "STATUS", width = widths.status),
             header_style,
         ),
         Span::raw(COL_GAP),
         Span::styled(
-            format!("{:<width$}", "CREATED", width = CREATED_WIDTH),
+            format!("{:<width$}", "CREATED", width = widths.created),
             header_style,
+        ),
+    ])
+}
+
+fn project_tasks_header(widths: TaskColumnWidths) -> Line<'static> {
+    const COL_GAP: &str = "    ";
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    Line::from(vec![
+        Span::styled("Tasks", project_section_style()),
+        Span::raw("   "),
+        Span::styled(
+            format!("{:<width$}", "REPO", width = widths.repo),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", "BRANCH", width = widths.branch),
+            header_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(format!("{:<width$}", "PR", width = widths.pr), header_style),
+        Span::raw(COL_GAP),
+        Span::styled("UPDATED", header_style),
+    ])
+}
+
+fn project_agent_row(
+    app: &App,
+    agent: &agman::agent_model::AgentRecord,
+    is_selected: bool,
+    widths: AgentColumnWidths,
+) -> ListItem<'static> {
+    const COL_GAP: &str = "   ";
+    let (status, status_icon, status_color) = agent_runtime_status(app, agent);
+    let row_style = if is_selected {
+        Style::default().bg(Color::Rgb(40, 40, 50))
+    } else {
+        Style::default()
+    };
+    let text_style = if is_selected {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    let line = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(status_icon, Style::default().fg(status_color)),
+        Span::raw("  "),
+        Span::styled(
+            format!(
+                "{:<width$}",
+                truncate_to_width(&agent.meta.name, widths.name),
+                width = widths.name
+            ),
+            text_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!(
+                "{:<width$}",
+                agent_kind_label(&agent.meta.kind),
+                width = widths.type_width
+            ),
+            Style::default().fg(Color::LightMagenta),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", status, width = widths.status),
+            Style::default().fg(status_color),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!(
+                "{:<width$}",
+                time_since_datetime(&agent.meta.created_at),
+                width = widths.created
+            ),
+            Style::default().fg(Color::DarkGray),
         ),
     ]);
-    f.render_widget(Paragraph::new(header), chunks[0]);
 
-    let items: Vec<ListItem> = app
-        .agents
-        .iter()
-        .enumerate()
-        .map(|(i, agent)| {
-            let is_selected = focused && i == app.agent_list_index;
-            let (status, status_icon, status_color) = agent_runtime_status(app, agent);
-            let row_style = if is_selected {
-                Style::default().bg(Color::Rgb(40, 40, 50))
+    ListItem::new(line).style(row_style)
+}
+
+fn project_attached_agent_row(
+    app: &App,
+    agent: &agman::agent_model::AgentRecord,
+    is_selected: bool,
+    widths: TaskColumnWidths,
+) -> ListItem<'static> {
+    const COL_GAP: &str = "    ";
+    let (status, status_icon, status_color) = agent_runtime_status(app, agent);
+    let text_style = if is_selected {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let row_style = if is_selected {
+        Style::default().bg(Color::Rgb(40, 40, 50))
+    } else {
+        Style::default()
+    };
+    let label = format!("{} {}", agent_kind_label(&agent.meta.kind), agent.meta.name);
+    let display_label = truncate_to_width(&label, widths.repo + widths.branch + 4);
+    let line = Line::from(vec![
+        Span::raw("       "),
+        Span::styled(status_icon, Style::default().fg(status_color)),
+        Span::raw(" "),
+        Span::styled(
+            format!(
+                "{:<width$}",
+                display_label,
+                width = widths.repo + widths.branch + 4
+            ),
+            text_style,
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", status, width = widths.pr),
+            Style::default().fg(status_color),
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            time_since_datetime(&agent.meta.created_at),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+    ListItem::new(line).style(row_style)
+}
+
+fn project_task_row(
+    task: &agman::task::Task,
+    is_selected: bool,
+    widths: TaskColumnWidths,
+) -> ListItem<'static> {
+    const COL_GAP: &str = "    ";
+    let repo_label = if task.meta.is_multi_repo() {
+        format!("[M] {}", task.meta.name)
+    } else {
+        task.meta.name.clone()
+    };
+    let display_repo = truncate_to_width(&repo_label, widths.repo);
+    let display_branch = truncate_to_width(&task.meta.branch_name, widths.branch);
+    let text_color = if is_selected {
+        Color::White
+    } else {
+        Color::Rgb(140, 140, 140)
+    };
+    let pr_display = task
+        .meta
+        .linked_pr
+        .as_ref()
+        .map(|pr| {
+            if !pr.owned {
+                format!(
+                    "#{:>5} ({})",
+                    pr.number,
+                    pr.author.as_deref().unwrap_or("ext")
+                )
             } else {
-                Style::default()
-            };
-            let text_style = if is_selected {
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-
-            let line = Line::from(vec![
-                Span::raw(" "),
-                Span::styled(status_icon, Style::default().fg(status_color)),
-                Span::raw("  "),
-                Span::styled(
-                    format!(
-                        "{:<width$}",
-                        truncate_to_width(&agent.meta.name, name_width),
-                        width = name_width
-                    ),
-                    text_style,
-                ),
-                Span::raw(COL_GAP),
-                Span::styled(
-                    format!(
-                        "{:<width$}",
-                        agent_kind_label(&agent.meta.kind),
-                        width = TYPE_WIDTH
-                    ),
-                    Style::default().fg(Color::LightMagenta),
-                ),
-                Span::raw(COL_GAP),
-                Span::styled(
-                    format!("{:<width$}", status, width = STATUS_WIDTH),
-                    Style::default().fg(status_color),
-                ),
-                Span::raw(COL_GAP),
-                Span::styled(
-                    format!(
-                        "{:<width$}",
-                        time_since_datetime(&agent.meta.created_at),
-                        width = CREATED_WIDTH
-                    ),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
-
-            ListItem::new(line).style(row_style)
+                format!("#{:>5} mine", pr.number)
+            }
         })
-        .collect();
+        .unwrap_or_default();
+    let pr_display = truncate_to_width(&pr_display, widths.pr);
 
-    let list = List::new(items);
-    f.render_widget(list, chunks[1]);
+    let selected_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let line = Line::from(vec![
+        Span::raw("     "),
+        Span::styled(
+            format!("{:<width$}", display_repo, width = widths.repo),
+            if is_selected {
+                selected_style
+            } else {
+                Style::default().fg(text_color)
+            },
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", display_branch, width = widths.branch),
+            if is_selected {
+                selected_style
+            } else {
+                Style::default().fg(text_color)
+            },
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            format!("{:<width$}", pr_display, width = widths.pr),
+            if let Some(pr) = &task.meta.linked_pr {
+                if !pr.owned {
+                    Style::default().fg(Color::Gray)
+                } else {
+                    Style::default().fg(Color::LightMagenta)
+                }
+            } else {
+                Style::default()
+            },
+        ),
+        Span::raw(COL_GAP),
+        Span::styled(
+            task.time_since_update(),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+
+    let style = if is_selected {
+        Style::default().bg(Color::Rgb(40, 40, 50))
+    } else {
+        Style::default()
+    };
+    ListItem::new(line).style(style)
 }
 
 fn agent_kind_label(kind: &AgentKind) -> &'static str {
@@ -1760,20 +1711,19 @@ fn draw_delete_confirm(f: &mut Frame, app: &App) {
 
     f.render_widget(Clear, area);
 
-    let (question, subject) = match app.project_pane_focus {
-        ProjectPaneFocus::Tasks => (
+    let (question, subject) = match app.selected_project_detail_row() {
+        Some(ProjectDetailRow::Task(_)) => (
             "Archive this task?",
             app.selected_task()
                 .map(|t| t.meta.task_id())
                 .unwrap_or_else(|| "unknown".to_string()),
         ),
-        ProjectPaneFocus::Agents => (
+        Some(ProjectDetailRow::UnattachedAgent { agent, .. })
+        | Some(ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent { agent, .. })) => (
             "Archive this agent?",
-            app.agents
-                .get(app.agent_list_index)
-                .map(|agent| format!("{}--{}", agent.meta.project, agent.meta.name))
-                .unwrap_or_else(|| "unknown".to_string()),
+            format!("{}--{}", agent.meta.project, agent.meta.name),
         ),
+        _ => ("Archive this item?", "unknown".to_string()),
     };
 
     let text = vec![
@@ -2067,99 +2017,72 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         }
         View::TaskList => {
             let mut spans = vec![
-                Span::styled("Tab", Style::default().fg(Color::LightCyan)),
-                Span::styled(" pane  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("j/k", Style::default().fg(Color::LightCyan)),
                 Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Tab", Style::default().fg(Color::LightCyan)),
+                Span::styled(" section  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("n", Style::default().fg(Color::LightGreen)),
-                Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" new task  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("a", Style::default().fg(Color::LightGreen)),
+                Span::styled(" new agent  ", Style::default().fg(Color::DarkGray)),
             ];
-            if app.project_pane_focus == ProjectPaneFocus::Agents {
-                if app
-                    .current_project
-                    .as_deref()
-                    .is_some_and(|p| p != "(unassigned)")
-                {
-                    spans.extend([
-                        Span::styled("c", Style::default().fg(Color::LightYellow)),
-                        Span::styled(" PM chat  ", Style::default().fg(Color::DarkGray)),
-                    ]);
-                }
+            if app
+                .current_project
+                .as_deref()
+                .is_some_and(|p| p != "(unassigned)")
+            {
                 spans.extend([
-                    Span::styled("enter", Style::default().fg(Color::LightGreen)),
-                    Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("d", Style::default().fg(Color::LightRed)),
-                    Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("z", Style::default().fg(Color::LightYellow)),
-                    Span::styled(" archived  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("c", Style::default().fg(Color::LightYellow)),
+                    Span::styled(" PM chat  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("e", Style::default().fg(Color::LightMagenta)),
+                    Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
                 ]);
-                if app
-                    .current_project
-                    .as_deref()
-                    .is_some_and(|p| p != "(unassigned)")
-                {
-                    spans.extend([
-                        Span::styled("e", Style::default().fg(Color::LightMagenta)),
-                        Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
-                    ]);
-                }
-                if app.current_project.is_some() {
-                    spans.extend([
-                        Span::styled("q", Style::default().fg(Color::LightCyan)),
-                        Span::styled(" back", Style::default().fg(Color::DarkGray)),
-                    ]);
-                }
-                spans
-            } else {
-                // Show PM chat hint when in a project scope
-                if app
-                    .current_project
-                    .as_deref()
-                    .is_some_and(|p| p != "(unassigned)")
-                {
-                    spans.extend([
-                        Span::styled("c", Style::default().fg(Color::LightYellow)),
-                        Span::styled(" PM chat  ", Style::default().fg(Color::DarkGray)),
-                    ]);
-                }
-                if let Some(task) = app.selected_task() {
-                    if task.meta.linked_pr.is_some() {
+            }
+
+            match app.selected_project_detail_row() {
+                Some(ProjectDetailRow::Task(_)) => {
+                    if app
+                        .selected_task()
+                        .is_some_and(|task| task.meta.linked_pr.is_some())
+                    {
                         spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
                         spans.push(Span::styled(
                             " open pr  ",
                             Style::default().fg(Color::DarkGray),
                         ));
                     }
-                    // Task-selected hints (always shown when a task is selected)
                     spans.extend([
+                        Span::styled("enter", Style::default().fg(Color::LightGreen)),
+                        Span::styled(" preview  ", Style::default().fg(Color::DarkGray)),
                         Span::styled("r", Style::default().fg(Color::LightMagenta)),
                         Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
                         Span::styled("d", Style::default().fg(Color::LightRed)),
                         Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                     ]);
                 }
-                if app
-                    .current_project
-                    .as_deref()
-                    .is_some_and(|p| p != "(unassigned)")
-                {
+                Some(ProjectDetailRow::UnattachedAgent { .. })
+                | Some(ProjectDetailRow::AttachedAgent(_)) => {
                     spans.extend([
-                        Span::styled("e", Style::default().fg(Color::LightMagenta)),
-                        Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("enter", Style::default().fg(Color::LightGreen)),
+                        Span::styled(" chat  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("d", Style::default().fg(Color::LightRed)),
+                        Span::styled(" archive  ", Style::default().fg(Color::DarkGray)),
                     ]);
                 }
-                spans.extend([
-                    Span::styled("z", Style::default().fg(Color::LightYellow)),
-                    Span::styled(" archived  ", Style::default().fg(Color::DarkGray)),
-                ]);
-                if app.current_project.is_some() {
-                    spans.extend([
-                        Span::styled("q", Style::default().fg(Color::LightCyan)),
-                        Span::styled(" back", Style::default().fg(Color::DarkGray)),
-                    ]);
-                }
-                spans
+                _ => {}
             }
+
+            spans.extend([
+                Span::styled("z", Style::default().fg(Color::LightYellow)),
+                Span::styled(" archived  ", Style::default().fg(Color::DarkGray)),
+            ]);
+            if app.current_project.is_some() {
+                spans.extend([
+                    Span::styled("q", Style::default().fg(Color::LightCyan)),
+                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                ]);
+            }
+            spans
         }
         View::Preview => {
             if app.notes_editing {
