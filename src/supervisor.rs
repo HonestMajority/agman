@@ -102,7 +102,17 @@ pub fn launch_agent(config: &Config, task: &Task, agent: &AgentRecord) -> Result
     }
 
     crate::use_cases::start_agent_session(config, &agent.meta.project, &agent.meta.name, false)?;
-    let session_name = Config::engineer_tmux_session(&agent.meta.project, &agent.meta.name);
+    let session_name = crate::use_cases::agent_tmux_session_for_record(agent);
+    if let Err(e) =
+        crate::use_cases::link_agent_into_task_session(config, agent, &task.meta.task_id())
+    {
+        tracing::warn!(
+            task_id = %task.meta.task_id(),
+            agent = %agent.meta.name,
+            error = %e,
+            "failed to link agent window into task tmux session"
+        );
+    }
     Ok(session_name)
 }
 

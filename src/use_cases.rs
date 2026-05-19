@@ -2978,6 +2978,67 @@ fn agent_tmux_session(meta: &crate::agent_model::AgentMeta) -> String {
     }
 }
 
+pub(crate) fn agent_tmux_session_for_record(agent: &AgentRecord) -> String {
+    agent_tmux_session(&agent.meta)
+}
+
+pub(crate) fn agent_link_window_name(agent: &AgentRecord) -> String {
+    let kind = match agent.meta.kind {
+        AgentKind::Engineer => "engineer",
+        AgentKind::Researcher { .. } => "researcher",
+        AgentKind::Operator { .. } => "operator",
+        AgentKind::Reviewer { .. } => "reviewer",
+        AgentKind::Tester { .. } => "tester",
+    };
+    let session = agent_tmux_session(&agent.meta);
+    Tmux::linked_agent_window_name(kind, &agent.meta.name, &session)
+}
+
+fn task_tmux_session(task: &Task) -> Result<String> {
+    if task.meta.is_multi_repo() {
+        Ok(Config::tmux_session_name(
+            &task.meta.name,
+            &task.meta.branch_name,
+        ))
+    } else if task.meta.has_repos() {
+        Ok(task.meta.primary_repo().tmux_session.clone())
+    } else {
+        bail!(
+            "task '{}' has no repos configured - cannot resolve tmux session",
+            task.meta.task_id()
+        )
+    }
+}
+
+pub(crate) fn link_agent_into_task_session(
+    config: &Config,
+    agent: &AgentRecord,
+    task_id: &str,
+) -> Result<()> {
+    let task = Task::load_by_id(config, task_id)?;
+    let task_session = task_tmux_session(&task)?;
+    let canonical_session = agent_tmux_session(&agent.meta);
+    if !Tmux::session_exists(&task_session) || !Tmux::session_exists(&canonical_session) {
+        return Ok(());
+    }
+    let window_name = agent_link_window_name(agent);
+    Tmux::link_agent_window(&task_session, &canonical_session, &window_name)
+}
+
+pub(crate) fn unlink_agent_from_task_session(
+    config: &Config,
+    agent: &AgentRecord,
+    task_id: &str,
+) -> Result<()> {
+    let task = Task::load_by_id(config, task_id)?;
+    let task_session = task_tmux_session(&task)?;
+    if !Tmux::session_exists(&task_session) {
+        return Ok(());
+    }
+    let window_name = agent_link_window_name(agent);
+    Tmux::unlink_agent_window(&task_session, &window_name)
+}
+
 /// Send-message id for an agent (e.g. `"researcher:<proj>--<name>"`),
 /// dispatched on kind.
 fn agent_send_target_id(meta: &crate::agent_model::AgentMeta) -> String {
@@ -3525,6 +3586,7 @@ pub fn attach_agent_to_task(
     Task::load_by_id(config, task_id)?;
     let dir = config.agent_dir(project, name);
     let mut agent = AgentRecord::load(dir)?;
+    let previous_attachment = agent.meta.attachment.clone();
     if agent.is_engineer() {
         bail!("engineer agents are task-owned and cannot be manually attached or moved");
     }
@@ -3535,6 +3597,20 @@ pub fn attach_agent_to_task(
         task_id: task_id.to_string(),
         role_label,
     })?;
+    if let AgentAttachment::Task {
+        task_id: previous_task,
+        ..
+    } = previous_attachment
+    {
+        if previous_task != task_id {
+            if let Err(e) = unlink_agent_from_task_session(config, &agent, &previous_task) {
+                tracing::warn!(agent = %agent.meta.name, task_id = %previous_task, error = %e, "failed to unlink agent from previous task tmux session");
+            }
+        }
+    }
+    if let Err(e) = link_agent_into_task_session(config, &agent, task_id) {
+        tracing::warn!(agent = %agent.meta.name, task_id = %task_id, error = %e, "failed to link agent into task tmux session");
+    }
     Ok(agent)
 }
 
@@ -3553,6 +3629,7 @@ pub fn move_agent_to_task(
 pub fn detach_agent_from_task(config: &Config, project: &str, name: &str) -> Result<AgentRecord> {
     let dir = config.agent_dir(project, name);
     let mut agent = AgentRecord::load(dir)?;
+    let previous_attachment = agent.meta.attachment.clone();
     if agent.is_engineer() {
         bail!("engineer agents must remain attached to their owning task");
     }
@@ -3560,6 +3637,11 @@ pub fn detach_agent_from_task(config: &Config, project: &str, name: &str) -> Res
         bail!("archived agent '{}--{}' cannot be detached", project, name);
     }
     agent.set_attachment(AgentAttachment::Unattached)?;
+    if let AgentAttachment::Task { task_id, .. } = previous_attachment {
+        if let Err(e) = unlink_agent_from_task_session(config, &agent, &task_id) {
+            tracing::warn!(agent = %agent.meta.name, task_id = %task_id, error = %e, "failed to unlink agent from task tmux session");
+        }
+    }
     Ok(agent)
 }
 
@@ -3630,6 +3712,12 @@ fn cleanup_agent_worktrees(config: &Config, agent: &AgentRecord) {
 pub fn archive_agent(config: &Config, project: &str, name: &str) -> Result<()> {
     let dir = config.agent_dir(project, name);
     let mut agent = AgentRecord::load(dir)?;
+
+    if let AgentAttachment::Task { task_id, .. } = &agent.meta.attachment {
+        if let Err(e) = unlink_agent_from_task_session(config, &agent, task_id) {
+            tracing::warn!(agent = %agent.meta.name, task_id = %task_id, error = %e, "failed to unlink agent from task tmux session before archive");
+        }
+    }
 
     let session_name = agent_tmux_session(&agent.meta);
     if Tmux::session_exists(&session_name) {
