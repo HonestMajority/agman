@@ -580,7 +580,7 @@ fn link_task_pr_reference(
     };
 
     if let Some(existing) = &task.meta.linked_pr {
-        let same_pr = existing.number == number || existing.url == url;
+        let same_pr = existing.url == url;
         if !same_pr && !force {
             bail!(
                 "task '{}' is already linked to PR #{} ({}); pass --force to overwrite",

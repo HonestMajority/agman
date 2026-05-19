@@ -341,6 +341,47 @@ fn link_task_pr_rejects_different_pr_without_force() {
 }
 
 #[test]
+fn link_task_pr_rejects_same_number_different_repo_without_force() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _task = create_test_task(&config, "repo", "branch");
+
+    use_cases::link_task_pr(
+        &config,
+        "repo--branch",
+        "https://github.com/acme/repo/pull/42",
+        true,
+        None,
+        false,
+    )
+    .unwrap();
+
+    let err = use_cases::link_task_pr(
+        &config,
+        "repo--branch",
+        "https://github.com/other/repo/pull/42",
+        true,
+        None,
+        false,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("already linked"));
+
+    let linked = use_cases::link_task_pr(
+        &config,
+        "repo--branch",
+        "https://github.com/other/repo/pull/42",
+        true,
+        None,
+        true,
+    )
+    .unwrap();
+    assert_eq!(linked.number, 42);
+    assert_eq!(linked.url, "https://github.com/other/repo/pull/42");
+}
+
+#[test]
 fn link_task_pr_from_sidecar_reads_legacy_pr_link() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
