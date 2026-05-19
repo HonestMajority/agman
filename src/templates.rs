@@ -1,15 +1,15 @@
-//! Project templates — pre-written PM briefs for recurring orchestration patterns.
+//! Project templates — pre-written PM starting messages for recurring coordination patterns.
 //!
 //! Templates are plain Markdown files stored in `~/.agman/project-templates/<name>.md`.
 //! No schema, no frontmatter. The filename (without `.md`) is the template name; the
 //! first non-empty line of the body is the short description shown in
 //! `agman list-templates`.
 //!
-//! The Chief of Staff workflow is:
+//! The Chief of Staff workagent is:
 //!   1. `agman list-templates` to discover available templates
-//!   2. `agman get-template <name> > /tmp/brief.md` to copy the body to a scratch file
+//!   2. `agman get-template <name> > /tmp/goal.txt` to copy the body to a scratch file
 //!   3. Edit the scratch file to fit the instance
-//!   4. `agman create-project <proj> --description "<label>" --initial-message @/tmp/brief.md`
+//!   4. `agman create-project <proj> --description "<label>" --initial-message @/tmp/goal.txt`
 //!
 //! The stored template is never modified; each project gets a customized copy.
 

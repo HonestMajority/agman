@@ -29,12 +29,13 @@ impl Tmux {
             .unwrap_or(false)
     }
 
-    /// Create a new tmux session with multiple windows:
+    /// Create a new task tmux session with multiple worktree windows:
     /// - nvim: starts nvim
     /// - lazygit: starts lazygit
     /// - shell: runs git status
-    /// - agman: shell where the supervisor launches an interactive agent
-    ///   (per the configured harness)
+    ///
+    /// Attached agents are linked in from their canonical sessions separately;
+    /// task sessions no longer own a manual `agman` window.
     pub fn create_session_with_windows(session_name: &str, working_dir: &Path) -> Result<()> {
         if Self::session_exists(session_name) {
             tracing::debug!(
@@ -92,12 +93,6 @@ impl Tmux {
             "git status && git branch --show-current",
         )?;
 
-        // Create agman window (just a shell; the supervisor launches an
-        // interactive agent here when the task starts)
-        let _ = Command::new("tmux")
-            .args(["new-window", "-t", session_name, "-n", "agman", "-c", wd])
-            .output();
-
         // Select nvim window as default
         let _ = Command::new("tmux")
             .args(["select-window", "-t", &format!("{}:nvim", session_name)])
@@ -128,12 +123,10 @@ impl Tmux {
     pub fn attach_session(session_name: &str) -> Result<()> {
         tracing::debug!(session = session_name, "attaching to tmux session");
 
-        // Default to the "agman" window (where the supervisor runs claude),
-        // not whichever window happened to be selected last. Best-effort:
-        // sessions without an agman window (shouldn't happen for tasks) just
-        // attach to their currently-selected window.
+        // Default to the editor window for task sessions. Agent interaction
+        // happens in canonical agent sessions or linked task-session windows.
         let _ = Command::new("tmux")
-            .args(["select-window", "-t", &format!("{}:agman", session_name)])
+            .args(["select-window", "-t", &format!("{}:nvim", session_name)])
             .status();
 
         // Try switch-client first (if already in tmux)
@@ -246,6 +239,92 @@ impl Tmux {
         tracing::info!(session = session_name, dir = %working_dir.display(), "recreating missing tmux session");
         Self::create_session_with_windows(session_name, working_dir)?;
         Ok(())
+    }
+
+    pub fn linked_agent_window_name(
+        kind: &str,
+        agent_name: &str,
+        canonical_session: &str,
+    ) -> String {
+        build_linked_agent_window_name(kind, agent_name, canonical_session)
+    }
+
+    pub fn link_agent_window(
+        task_session: &str,
+        canonical_session: &str,
+        window_name: &str,
+    ) -> Result<()> {
+        if !Self::session_exists(task_session) {
+            anyhow::bail!("task tmux session '{task_session}' does not exist");
+        }
+        if !Self::session_exists(canonical_session) {
+            anyhow::bail!("agent tmux session '{canonical_session}' does not exist");
+        }
+        if Self::window_exists(task_session, window_name)? {
+            return Ok(());
+        }
+
+        let rename_args = rename_window_args(canonical_session, window_name);
+        let rename_output = Command::new("tmux")
+            .args(rename_args.iter().map(String::as_str))
+            .output()
+            .context("failed to rename canonical agent tmux window")?;
+        if !rename_output.status.success() {
+            anyhow::bail!(
+                "failed to rename canonical agent tmux window: {}",
+                String::from_utf8_lossy(&rename_output.stderr)
+            );
+        }
+
+        let args = link_window_args(task_session, canonical_session, window_name);
+        let output = Command::new("tmux")
+            .args(args.iter().map(String::as_str))
+            .output()
+            .context("failed to link agent window into task session")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to link agent window into task session: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
+    }
+
+    pub fn unlink_agent_window(task_session: &str, window_name: &str) -> Result<()> {
+        if !Self::session_exists(task_session) || !Self::window_exists(task_session, window_name)? {
+            return Ok(());
+        }
+
+        let args = unlink_window_args(task_session, window_name);
+        let output = Command::new("tmux")
+            .args(args.iter().map(String::as_str))
+            .output()
+            .context("failed to unlink agent window from task session")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to unlink agent window from task session: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
+    }
+
+    fn window_exists(session_name: &str, window_name: &str) -> Result<bool> {
+        let output = Command::new("tmux")
+            .args(["list-windows", "-t", session_name, "-F", "#{window_name}"])
+            .output()
+            .context("failed to list tmux windows")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to list tmux windows: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line == window_name))
     }
 
     /// Create a simple agent tmux session with a single window running an
@@ -633,5 +712,139 @@ impl Tmux {
             return Ok(None);
         }
         Ok(pid_str.parse::<u32>().ok())
+    }
+}
+
+pub fn link_window_args(
+    task_session: &str,
+    canonical_session: &str,
+    _window_name: &str,
+) -> Vec<String> {
+    vec![
+        "link-window".to_string(),
+        "-d".to_string(),
+        "-s".to_string(),
+        canonical_session.to_string(),
+        "-t".to_string(),
+        format!("{task_session}:"),
+    ]
+}
+
+pub fn rename_window_args(canonical_session: &str, window_name: &str) -> Vec<String> {
+    vec![
+        "rename-window".to_string(),
+        "-t".to_string(),
+        canonical_session.to_string(),
+        window_name.to_string(),
+    ]
+}
+
+pub fn unlink_window_args(task_session: &str, window_name: &str) -> Vec<String> {
+    vec![
+        "unlink-window".to_string(),
+        "-t".to_string(),
+        format!("{task_session}:{window_name}"),
+    ]
+}
+
+fn build_linked_agent_window_name(kind: &str, agent_name: &str, canonical_session: &str) -> String {
+    let suffix = format!("{:08x}", stable_hash32(canonical_session));
+    let prefix = sanitize_tmux_window_component(kind);
+    let mut name = sanitize_tmux_window_component(agent_name);
+    let max_name = 80usize.saturating_sub(prefix.len() + suffix.len() + 2);
+    if name.len() > max_name {
+        name.truncate(max_name);
+        name = name.trim_end_matches('-').to_string();
+    }
+    format!("{prefix}-{name}-{suffix}")
+}
+
+fn stable_hash32(raw: &str) -> u32 {
+    let mut hash = 0x811c9dc5_u32;
+    for byte in raw.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    hash
+}
+
+fn sanitize_tmux_window_component(raw: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in raw.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            ch.to_ascii_lowercase()
+        } else {
+            '-'
+        };
+        if mapped == '-' {
+            if !last_dash {
+                out.push(mapped);
+            }
+            last_dash = true;
+        } else {
+            out.push(mapped);
+            last_dash = false;
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "agent".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{link_window_args, rename_window_args, unlink_window_args, Tmux};
+
+    #[test]
+    fn link_window_command_targets_canonical_agent_window() {
+        assert_eq!(
+            link_window_args("task-session", "agent-session", "engineer-main-12345678"),
+            vec![
+                "link-window",
+                "-d",
+                "-s",
+                "agent-session",
+                "-t",
+                "task-session:",
+            ]
+        );
+    }
+
+    #[test]
+    fn rename_window_command_names_canonical_agent_window() {
+        assert_eq!(
+            rename_window_args("agent-session", "engineer-main-12345678"),
+            vec![
+                "rename-window",
+                "-t",
+                "agent-session",
+                "engineer-main-12345678",
+            ]
+        );
+    }
+
+    #[test]
+    fn unlink_window_command_targets_linked_task_window() {
+        assert_eq!(
+            unlink_window_args("task-session", "reviewer-pr-12345678"),
+            vec!["unlink-window", "-t", "task-session:reviewer-pr-12345678",]
+        );
+    }
+
+    #[test]
+    fn linked_agent_window_names_are_sanitized_and_collision_safe() {
+        let one = Tmux::linked_agent_window_name("Engineer", "Fix/PR:Review", "agent-session-a");
+        let two = Tmux::linked_agent_window_name("Engineer", "Fix/PR:Review", "agent-session-b");
+
+        assert!(one.starts_with("engineer-fix-pr-review-"));
+        assert!(one.len() <= 80);
+        assert_ne!(one, two);
+        assert!(one
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'));
     }
 }

@@ -5,7 +5,7 @@ use agman::telegram::{
     resolve_tag_to_agent, run_iter_catching_panic, OutboxAction, TgError,
 };
 
-use helpers::{create_test_project, create_test_researcher, test_config};
+use helpers::{create_test_project, create_test_researcher, create_test_task, test_config};
 
 #[test]
 fn classify_ok_marks_delivered() {
@@ -46,6 +46,7 @@ fn panic_in_iteration_is_caught_and_classified() {
 fn format_sender_tag_cases() {
     assert_eq!(format_sender_tag("chief-of-staff"), "CoS");
     assert_eq!(format_sender_tag("pm-foo"), "PM:pm-foo");
+    assert_eq!(format_sender_tag("engineer:proj--build"), "E:build");
     assert_eq!(format_sender_tag("researcher:proj--bar"), "R:bar");
     assert_eq!(format_sender_tag("researcher:other-proj--baz"), "R:baz");
 }
@@ -57,6 +58,7 @@ fn parent_of_cases() {
         parent_of("some-project"),
         Some("chief-of-staff".to_string())
     );
+    assert_eq!(parent_of("engineer:proj--build"), Some("proj".to_string()));
     assert_eq!(parent_of("researcher:proj--bar"), Some("proj".to_string()));
     assert_eq!(
         parent_of("researcher:other-proj--baz"),
@@ -68,6 +70,7 @@ fn parent_of_cases() {
 fn parse_sender_tag_cases() {
     assert_eq!(parse_sender_tag("[CoS] hi"), Some("CoS"));
     assert_eq!(parse_sender_tag("[PM:foo] bar"), Some("PM:foo"));
+    assert_eq!(parse_sender_tag("[E:build] x"), Some("E:build"));
     assert_eq!(parse_sender_tag("[R:baz] x"), Some("R:baz"));
     assert_eq!(parse_sender_tag("plain"), None);
     assert_eq!(parse_sender_tag("[unclosed"), None);
@@ -124,6 +127,18 @@ fn resolve_tag_pm_missing_returns_none() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     assert_eq!(resolve_tag_to_agent(&config, "PM:ghost"), None);
+}
+
+#[test]
+fn resolve_tag_engineer_unique_match() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "alpha", "build");
+    let engineer_name = format!("engineer-{}", task.meta.task_id().replace("--", "-"));
+    assert_eq!(
+        resolve_tag_to_agent(&config, &format!("E:{engineer_name}")),
+        Some(format!("engineer:alpha--{engineer_name}"))
+    );
 }
 
 #[test]

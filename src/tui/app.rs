@@ -16,17 +16,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc as tokio_mpsc;
 use tui_textarea::{CursorMove, Input, Key, TextArea};
 
-use agman::assistant::{Assistant, AssistantKind, AssistantStatus};
-use agman::command::StoredCommand;
+use agman::agent_model::{AgentKind, AgentRecord, AgentStatus};
 use agman::config::Config;
 use agman::dismissed_notifications::DismissedNotifications;
-use agman::flow::Flow;
 use agman::git::Git;
 use agman::inbox;
 use agman::project::Project;
 use agman::repo_stats::RepoStats;
 use agman::supervisor;
-use agman::task::{Task, TaskStatus};
+use agman::task::Task;
 use agman::tmux::{Tmux, TmuxWindowActivity};
 use agman::use_cases;
 
@@ -59,13 +57,7 @@ pub enum View {
     TaskList,
     Preview,
     DeleteConfirm,
-    Feedback,
     NewTaskWizard,
-    CommandList,
-    TaskEditor,
-    Queue,
-    RebaseBranchPicker,
-    RestartWizard,
     DirectoryPicker,
     SessionPicker,
     Notifications,
@@ -76,20 +68,32 @@ pub enum View {
     ProjectWizard,
     ProjectPicker,
     ProjectDeleteConfirm,
-    AssistantWizard,
+    AgentWizard,
     RespawnConfirm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectPaneFocus {
     Tasks,
-    Assistants,
+    Agents,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArchiveKind {
     Tasks,
-    Assistants,
+    Agents,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ProjectTaskRow<'a> {
+    Task {
+        task_index: usize,
+        task: &'a Task,
+    },
+    Agent {
+        task_index: usize,
+        agent: &'a AgentRecord,
+    },
 }
 
 /// A live tmux popup spawned by agman. The `Child` is polled each tick of
@@ -314,20 +318,6 @@ impl NewTaskWizard {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestartWizardStep {
-    EditTask,
-    SelectAgent,
-}
-
-pub struct RestartWizard {
-    pub step: RestartWizardStep,
-    pub task_editor: VimTextArea<'static>,
-    pub flow_steps: Vec<String>,
-    pub selected_step_index: usize,
-    pub task_id: String,
-}
-
 /// What triggered the project picker modal.
 #[derive(Debug, Clone)]
 pub enum ProjectPickerAction {
@@ -349,16 +339,16 @@ pub struct ProjectWizard {
     pub error_message: Option<String>,
 }
 
-/// Steps in the create-assistant wizard.
+/// Steps in the create-agent wizard.
 ///
 /// Researchers go directly from `Name` → `Description` (matching the legacy
-/// flow). Worktree-backed assistants insert a `Worktrees` step; testers add
+/// agent). Worktree-backed agents insert a `Worktrees` step; testers add
 /// an optional capabilities step before description.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssistantWizardStep {
+pub enum AgentWizardStep {
     /// Step 0: pick the kind (Researcher | Reviewer | Tester | Operator).
     Kind,
-    /// Step 1: enter the assistant name.
+    /// Step 1: enter the agent name.
     Name,
     /// Step 2 (Reviewer/Tester only): edit the (repo, branch) row list.
     Worktrees,
@@ -369,7 +359,7 @@ pub enum AssistantWizardStep {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssistantWizardKind {
+pub enum AgentWizardKind {
     Researcher,
     Reviewer,
     Tester,
@@ -406,9 +396,9 @@ impl ReviewerWorktreeRow {
     }
 }
 
-pub struct AssistantWizard {
-    pub kind: AssistantWizardKind,
-    pub step: AssistantWizardStep,
+pub struct AgentWizard {
+    pub kind: AgentWizardKind,
+    pub step: AgentWizardStep,
     pub name_editor: TextArea<'static>,
     pub description_editor: VimTextArea<'static>,
     /// Reviewer/Tester-only: editable `(repo, branch)` rows. The `selected_row` is
@@ -426,13 +416,6 @@ pub enum PreviewPane {
     Notes,
 }
 
-struct PrPollResult {
-    task_id: String,
-    pr_number: u64,
-    action: use_cases::PrPollAction,
-    review_count: u64,
-}
-
 struct InboxPollResult {
     target: String, // "chief-of-staff" or project name
     delivered: usize,
@@ -446,7 +429,7 @@ struct InboxPollOutput {
 }
 
 #[derive(Debug, Clone)]
-pub struct AssistantActivitySample {
+pub struct AgentActivitySample {
     pub last_tmux_activity_epoch: Option<i64>,
     pub last_observed_work_at: Option<Instant>,
     pub foreground_command: String,
@@ -454,7 +437,7 @@ pub struct AssistantActivitySample {
     pub query_ok: bool,
 }
 
-impl AssistantActivitySample {
+impl AgentActivitySample {
     fn from_tmux_window(
         activity: &TmuxWindowActivity,
         observed_at: Instant,
@@ -491,94 +474,17 @@ impl AssistantActivitySample {
     }
 }
 
-/// One supervisor tick result for a single Running task.
-///
-/// Collected in the background by `start_supervisor_poll` and drained in the
-/// main loop by `apply_supervisor_poll_results`. `Tick` carries a `PollOutcome`
-/// from a live session; `NeedsLaunch` signals a half-state task (Running with
-/// a stopped last session) that should re-enter `launch_next_step`.
-#[derive(Debug)]
-enum SupervisorPollItem {
-    Tick {
-        task_id: String,
-        session_name: String,
-        outcome: supervisor::PollOutcome,
-    },
-    NeedsLaunch {
-        task_id: String,
-    },
-}
-
-#[derive(Debug)]
-struct SupervisorPollOutput {
-    items: Vec<SupervisorPollItem>,
-}
-
 /// How many consecutive "skipped" poll cycles (readiness gate refused to
 /// deliver while the inbox still had undelivered messages) qualifies a target
 /// as "stalled" and surfaces a UI indicator. At the 2s poll cadence this is
 /// ~10 seconds.
 pub const STALL_THRESHOLD: u32 = 5;
 
-/// Query a PR's state via `gh pr view`. Returns `(is_merged, review_count)`.
-/// Returns `None` on any error so polling gracefully skips failures.
-fn query_pr_state(worktree_path: &std::path::Path, pr_number: u64) -> Option<(bool, u64)> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "state,reviews",
-        ])
-        .current_dir(worktree_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let state = json.get("state")?.as_str()?;
-    let is_merged = state == "MERGED";
-    let review_count = json
-        .get("reviews")
-        .and_then(|r| r.as_array())
-        .map(|a| a.len() as u64)
-        .unwrap_or(0);
-
-    Some((is_merged, review_count))
-}
-
 fn unix_epoch_secs() -> Option<i64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|d| i64::try_from(d.as_secs()).ok())
-}
-
-/// Run PR queries for all eligible tasks. This is the blocking work that
-/// runs on a background thread — calls `gh pr view` for each task.
-fn run_pr_queries(eligible: Vec<(String, u64, PathBuf, Option<u64>)>) -> Vec<PrPollResult> {
-    let mut results = Vec::new();
-    for (task_id, pr_number, worktree_path, last_review_count) in &eligible {
-        if let Some((is_merged, review_count)) = query_pr_state(worktree_path, *pr_number) {
-            let action = use_cases::determine_pr_poll_action(
-                TaskStatus::Stopped,
-                is_merged,
-                review_count,
-                *last_review_count,
-            );
-            results.push(PrPollResult {
-                task_id: task_id.clone(),
-                pr_number: *pr_number,
-                action,
-                review_count,
-            });
-        }
-    }
-    results
 }
 
 // ---------------------------------------------------------------------------
@@ -668,36 +574,13 @@ pub struct App {
     pub notes_editor: VimTextArea<'static>,
     pub notes_editing: bool,
     pub preview_pane: PreviewPane,
-    pub feedback_editor: VimTextArea<'static>,
     pub should_quit: bool,
     pub status_message: Option<(String, Instant)>,
     pub wizard: Option<NewTaskWizard>,
     pub output_log: Vec<String>,
     pub output_scroll: u16,
     pub last_output_time: Option<Instant>,
-    // Task file (TASK.md) viewing/editing (used by modal)
-    pub task_file_content: String,
-    pub task_file_editor: VimTextArea<'static>,
-    // Stored commands
-    pub commands: Vec<StoredCommand>,
-    pub selected_command_index: usize,
-    pub command_list_state: ListState,
-    // Feedback queue view
-    pub selected_queue_index: usize,
-    // Branch picker (rebase, local-merge, etc.)
-    pub rebase_branches: Vec<String>,
-    pub selected_rebase_branch_index: usize,
-    pub rebase_branch_list_state: ListState,
-    pub pending_branch_command: Option<StoredCommand>,
-    pub rebase_branch_search: TextArea<'static>,
-    // Restart task wizard
-    pub restart_wizard: Option<RestartWizard>,
     pub should_restart: bool,
-    // PR polling
-    pub last_pr_poll: Instant,
-    pr_poll_tx: tokio_mpsc::UnboundedSender<Vec<PrPollResult>>,
-    pr_poll_rx: tokio_mpsc::UnboundedReceiver<Vec<PrPollResult>>,
-    pr_poll_active: bool,
     // Tokio runtime for background async work
     rt: tokio::runtime::Runtime,
     // Directory picker for repos_dir
@@ -745,7 +628,7 @@ pub struct App {
     // Archive view
     pub archive_kind: ArchiveKind,
     pub archive_tasks: Vec<(Task, String)>,
-    pub archive_assistants: Vec<(Assistant, String)>,
+    pub archive_agents: Vec<(AgentRecord, String)>,
     pub archive_search: TextArea<'static>,
     pub archive_selected: usize,
     pub archive_list_state: ListState,
@@ -756,33 +639,27 @@ pub struct App {
     pub selected_project_index: usize,
     pub current_project: Option<String>,
     pub unassigned_task_count: usize,
-    pub unassigned_active_task_count: usize,
-    pub unassigned_unseen_stopped_count: usize,
-    pub project_task_counts: std::collections::HashMap<String, (usize, usize, usize)>, // (total, active, unseen_stopped)
-    pub project_assistant_counts: std::collections::HashMap<String, usize>,
-    pub project_active_assistant_counts: std::collections::HashMap<String, usize>,
+    pub project_task_counts: std::collections::HashMap<String, usize>,
+    pub project_agent_counts: std::collections::HashMap<String, usize>,
+    pub project_active_agent_counts: std::collections::HashMap<String, usize>,
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
-    pub assistant_wizard: Option<AssistantWizard>,
+    pub agent_wizard: Option<AgentWizard>,
     // Project picker (for task migration/move)
     pub project_picker: Option<ProjectPicker>,
     // Project deletion
     pub project_to_delete: Option<String>,
-    // Assistants (researchers + reviewers)
-    pub assistants: Vec<Assistant>,
-    pub assistant_list_index: usize,
-    pub assistant_activity: HashMap<String, AssistantActivitySample>,
-    assistant_activity_query_failed_logged: bool,
+    // Unattached project agents plus task-attached child rows.
+    pub agents: Vec<AgentRecord>,
+    pub attached_task_agents: HashMap<String, Vec<AgentRecord>>,
+    pub agent_list_index: usize,
+    pub agent_activity: HashMap<String, AgentActivitySample>,
+    agent_activity_query_failed_logged: bool,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
     inbox_poll_rx: tokio_mpsc::UnboundedReceiver<InboxPollOutput>,
     inbox_poll_active: bool,
-    // Supervisor polling (drives interactive-claude flow progression)
-    pub last_supervisor_poll: Instant,
-    supervisor_poll_tx: tokio_mpsc::UnboundedSender<SupervisorPollOutput>,
-    supervisor_poll_rx: tokio_mpsc::UnboundedReceiver<SupervisorPollOutput>,
-    supervisor_poll_active: bool,
     stuck_skip_counts: std::collections::HashMap<String, u32>,
     /// First time each target was observed in the "ready" state. Used as a
     /// 3-second cold-start buffer: deliveries are gated until this much time
@@ -813,7 +690,7 @@ pub struct App {
     // Sleep inhibition (macOS: caffeinate -s for system sleep assertion only)
     #[cfg(target_os = "macos")]
     caffeinate_process: Option<std::process::Child>,
-    // Active tmux popup (CoS/PM chat, assistant attach). Polled each main-loop
+    // Active tmux popup (CoS/PM chat, agent attach). Polled each main-loop
     // tick so inbox delivery and PR polls keep running while a
     // popup is open.
     popup: Option<ActivePopup>,
@@ -832,18 +709,13 @@ impl App {
             }
         }
         let tasks = Task::list_all(&config);
-        let commands = StoredCommand::list_all(&config.commands_dir).unwrap_or_default();
         let notes_editor = VimTextArea::new();
         let mut logs_editor = VimTextArea::new();
         logs_editor.set_read_only(true);
-        let feedback_editor = VimTextArea::new();
-        let task_file_editor = VimTextArea::new();
-        let (pr_poll_tx, pr_poll_rx) = tokio_mpsc::unbounded_channel();
         let (gh_notif_tx, gh_notif_rx) = tokio_mpsc::unbounded_channel();
         let (show_prs_poll_tx, show_prs_poll_rx) = tokio_mpsc::unbounded_channel();
         let (keybase_tx, keybase_rx) = tokio_mpsc::unbounded_channel();
         let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
-        let (supervisor_poll_tx, supervisor_poll_rx) = tokio_mpsc::unbounded_channel();
         let (respawn_tx, respawn_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
         let mut dismissed_notifs =
@@ -896,7 +768,7 @@ impl App {
             config,
             tasks,
             selected_index: 0,
-            project_pane_focus: ProjectPaneFocus::Assistants,
+            project_pane_focus: ProjectPaneFocus::Agents,
             view: View::ProjectList,
             preview_content: String::new(),
             logs_editor,
@@ -904,30 +776,13 @@ impl App {
             notes_editor,
             notes_editing: false,
             preview_pane: PreviewPane::Logs,
-            feedback_editor,
             should_quit: false,
             status_message: None,
             wizard: None,
             output_log: Vec::new(),
             output_scroll: 0,
             last_output_time: None,
-            task_file_content: String::new(),
-            task_file_editor,
-            commands,
-            selected_command_index: 0,
-            command_list_state: ListState::default(),
-            selected_queue_index: 0,
-            rebase_branches: Vec::new(),
-            selected_rebase_branch_index: 0,
-            rebase_branch_list_state: ListState::default(),
-            pending_branch_command: None,
-            rebase_branch_search: Self::create_plain_editor(),
-            restart_wizard: None,
             should_restart: false,
-            last_pr_poll: Instant::now(),
-            pr_poll_tx,
-            pr_poll_rx,
-            pr_poll_active: false,
             rt,
             dir_picker: None,
             session_picker_sessions: Vec::new(),
@@ -965,7 +820,7 @@ impl App {
             telegram_chat_id_editor,
             archive_kind: ArchiveKind::Tasks,
             archive_tasks: Vec::new(),
-            archive_assistants: Vec::new(),
+            archive_agents: Vec::new(),
             archive_search: Self::create_plain_editor(),
             archive_selected: 0,
             archive_list_state: ListState::default(),
@@ -975,27 +830,22 @@ impl App {
             selected_project_index: 0,
             current_project: None,
             unassigned_task_count: 0,
-            unassigned_active_task_count: 0,
-            unassigned_unseen_stopped_count: 0,
             project_task_counts: std::collections::HashMap::new(),
-            project_assistant_counts: std::collections::HashMap::new(),
-            project_active_assistant_counts: std::collections::HashMap::new(),
+            project_agent_counts: std::collections::HashMap::new(),
+            project_active_agent_counts: std::collections::HashMap::new(),
             project_wizard: None,
-            assistant_wizard: None,
+            agent_wizard: None,
             project_picker: None,
             project_to_delete: None,
-            assistants: Vec::new(),
-            assistant_list_index: 0,
-            assistant_activity: HashMap::new(),
-            assistant_activity_query_failed_logged: false,
+            agents: Vec::new(),
+            attached_task_agents: HashMap::new(),
+            agent_list_index: 0,
+            agent_activity: HashMap::new(),
+            agent_activity_query_failed_logged: false,
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
             inbox_poll_active: false,
-            last_supervisor_poll: Instant::now(),
-            supervisor_poll_tx,
-            supervisor_poll_rx,
-            supervisor_poll_active: false,
             stuck_skip_counts: std::collections::HashMap::new(),
             first_ready_at: std::collections::HashMap::new(),
             stall_warned: std::collections::HashSet::new(),
@@ -1108,22 +958,25 @@ impl App {
     pub fn refresh_tasks(&mut self) {
         let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
         self.tasks = Task::list_all(&self.config);
+        self.refresh_attached_task_agents();
         if let Some(ref id) = prev_task_id {
-            if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == *id) {
+            if let Some(idx) = self.project_task_rows().iter().position(
+                |row| matches!(row, ProjectTaskRow::Task { task, .. } if task.meta.task_id() == *id),
+            ) {
                 self.selected_index = idx;
                 return;
             }
         }
-        if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
-            self.selected_index = self.tasks.len() - 1;
-        }
+        self.clamp_project_task_selection();
     }
 
     /// Refresh the task list and restore selection to the task with the given ID.
     /// If the task is no longer present, selection falls back to a valid index.
     fn refresh_tasks_and_select(&mut self, task_id: &str) {
         self.refresh_tasks_for_project();
-        if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
+        if let Some(idx) = self.project_task_rows().iter().position(
+            |row| matches!(row, ProjectTaskRow::Task { task, .. } if task.meta.task_id() == task_id),
+        ) {
             self.selected_index = idx;
         }
     }
@@ -1138,69 +991,49 @@ impl App {
         // Count tasks per project and unassigned
         let all_tasks = Task::list_all(&self.config);
         self.project_task_counts.clear();
-        self.project_assistant_counts.clear();
-        self.project_active_assistant_counts.clear();
+        self.project_agent_counts.clear();
+        self.project_active_agent_counts.clear();
         self.unassigned_task_count = 0;
-        self.unassigned_active_task_count = 0;
-        self.unassigned_unseen_stopped_count = 0;
         for task in &all_tasks {
             if let Some(ref proj) = task.meta.project {
-                let entry = self
-                    .project_task_counts
-                    .entry(proj.clone())
-                    .or_insert((0, 0, 0));
-                entry.0 += 1;
-                if task.meta.status == TaskStatus::Running {
-                    entry.1 += 1;
-                }
-                if !task.meta.seen && task.meta.status == TaskStatus::Stopped {
-                    entry.2 += 1;
-                }
+                *self.project_task_counts.entry(proj.clone()).or_insert(0) += 1;
             } else {
                 self.unassigned_task_count += 1;
-                if task.meta.status == TaskStatus::Running {
-                    self.unassigned_active_task_count += 1;
-                }
-                if !task.meta.seen && task.meta.status == TaskStatus::Stopped {
-                    self.unassigned_unseen_stopped_count += 1;
-                }
             }
         }
-        match use_cases::list_assistants(&self.config, None, None) {
-            Ok(assistants) => {
-                let mut project_assistants = Vec::new();
+        match use_cases::list_agents(&self.config, None, None) {
+            Ok(agents) => {
+                let mut project_agents = Vec::new();
                 let mut active_sessions = HashSet::new();
-                for assistant in assistants {
-                    if assistant.meta.project == "chief-of-staff"
-                        || assistant.meta.status == AssistantStatus::Archived
+                for agent in agents {
+                    if agent.meta.project == "chief-of-staff"
+                        || agent.meta.status == AgentStatus::Archived
                     {
                         continue;
                     }
-                    active_sessions.insert(Self::assistant_session_name(&assistant));
+                    active_sessions.insert(Self::agent_session_name(&agent));
                     *self
-                        .project_assistant_counts
-                        .entry(assistant.meta.project.clone())
+                        .project_agent_counts
+                        .entry(agent.meta.project.clone())
                         .or_insert(0) += 1;
-                    project_assistants.push(assistant);
+                    project_agents.push(agent);
                 }
-                self.refresh_assistant_activity_for_sessions(active_sessions);
+                self.refresh_agent_activity_for_sessions(active_sessions);
                 let now = Instant::now();
-                for assistant in project_assistants {
-                    let session_name = Self::assistant_session_name(&assistant);
-                    if ui::classify_assistant_status(
-                        now,
-                        self.assistant_activity_sample(&session_name),
-                    ) == ui::WorkingIdle::Working
+                for agent in project_agents {
+                    let session_name = Self::agent_session_name(&agent);
+                    if ui::classify_agent_status(now, self.agent_activity_sample(&session_name))
+                        == ui::WorkingIdle::Working
                     {
                         *self
-                            .project_active_assistant_counts
-                            .entry(assistant.meta.project)
+                            .project_active_agent_counts
+                            .entry(agent.meta.project)
                             .or_insert(0) += 1;
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "failed to count project assistants");
+                tracing::warn!(error = %e, "failed to count project agents");
             }
         }
         // Clamp selection
@@ -1210,63 +1043,69 @@ impl App {
         }
     }
 
-    /// Refresh the assistant list, filtered by `current_project` if set.
-    pub fn refresh_assistants(&mut self) {
+    /// Refresh the agent list, filtered by `current_project` if set.
+    pub fn refresh_agents(&mut self) {
         if self.current_project.as_deref() == Some("(unassigned)") {
-            self.assistants.clear();
-            self.assistant_list_index = 0;
-            self.assistant_activity.clear();
+            self.agents.clear();
+            self.agent_list_index = 0;
+            self.agent_activity.clear();
             return;
         }
 
-        self.assistants =
-            use_cases::list_assistants(&self.config, self.current_project.as_deref(), None)
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "failed to list assistants");
-                    Vec::new()
-                });
-        self.assistants
-            .retain(|assistant| assistant.meta.status != AssistantStatus::Archived);
-        self.assistants
+        self.agents = if let Some(project) = self.current_project.as_deref() {
+            use_cases::unattached_agents_for_project(&self.config, project).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to list agents");
+                Vec::new()
+            })
+        } else {
+            use_cases::list_agents(&self.config, None, None).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to list agents");
+                Vec::new()
+            })
+        };
+        self.agents
+            .retain(|agent| agent.meta.status != AgentStatus::Archived);
+        self.agents
             .sort_by(|a, b| b.meta.created_at.cmp(&a.meta.created_at));
-        if self.assistants.is_empty() {
-            self.assistant_list_index = 0;
-        } else if self.assistant_list_index >= self.assistants.len() {
-            self.assistant_list_index = self.assistants.len() - 1;
+        if self.agents.is_empty() {
+            self.agent_list_index = 0;
+        } else if self.agent_list_index >= self.agents.len() {
+            self.agent_list_index = self.agents.len() - 1;
         }
-        self.refresh_assistant_activity();
+        self.refresh_agent_activity();
     }
 
-    fn refresh_assistant_activity(&mut self) {
+    fn refresh_agent_activity(&mut self) {
         let active_sessions: HashSet<String> = self
-            .assistants
+            .agents
             .iter()
-            .map(Self::assistant_session_name)
+            .chain(self.attached_task_agents.values().flatten())
+            .map(Self::agent_session_name)
             .collect();
-        self.refresh_assistant_activity_for_sessions(active_sessions);
+        self.refresh_agent_activity_for_sessions(active_sessions);
     }
 
-    fn refresh_assistant_activity_for_sessions(&mut self, active_sessions: HashSet<String>) {
+    fn refresh_agent_activity_for_sessions(&mut self, active_sessions: HashSet<String>) {
         if active_sessions.is_empty() {
-            self.assistant_activity.clear();
+            self.agent_activity.clear();
             return;
         }
 
         let windows = match Tmux::list_window_activity() {
             Ok(windows) => windows,
             Err(e) => {
-                if !self.assistant_activity_query_failed_logged {
+                if !self.agent_activity_query_failed_logged {
                     tracing::warn!(
                         error = %e,
-                        "failed to query tmux activity; assistant statuses will be idle"
+                        "failed to query tmux activity; agent statuses will be idle"
                     );
-                    self.assistant_activity_query_failed_logged = true;
+                    self.agent_activity_query_failed_logged = true;
                 }
-                self.assistant_activity.clear();
+                self.agent_activity.clear();
                 return;
             }
         };
-        self.assistant_activity_query_failed_logged = false;
+        self.agent_activity_query_failed_logged = false;
 
         let mut by_session: HashMap<String, TmuxWindowActivity> = HashMap::new();
         for activity in windows {
@@ -1282,7 +1121,7 @@ impl App {
             }
         }
 
-        self.assistant_activity.retain(|session, _| {
+        self.agent_activity.retain(|session, _| {
             active_sessions.contains(session) && by_session.contains_key(session)
         });
 
@@ -1290,25 +1129,18 @@ impl App {
         let now_epoch_secs = unix_epoch_secs();
         for session in active_sessions {
             if let Some(activity) = by_session.get(&session) {
-                self.assistant_activity.insert(
+                self.agent_activity.insert(
                     session,
-                    AssistantActivitySample::from_tmux_window(
-                        activity,
-                        observed_at,
-                        now_epoch_secs,
-                    ),
+                    AgentActivitySample::from_tmux_window(activity, observed_at, now_epoch_secs),
                 );
             } else {
-                self.assistant_activity.remove(&session);
+                self.agent_activity.remove(&session);
             }
         }
     }
 
-    pub fn assistant_activity_sample(
-        &self,
-        session_name: &str,
-    ) -> Option<&AssistantActivitySample> {
-        self.assistant_activity.get(session_name)
+    pub fn agent_activity_sample(&self, session_name: &str) -> Option<&AgentActivitySample> {
+        self.agent_activity.get(session_name)
     }
 
     /// Total entries in the project list (projects + unassigned pseudo-entry).
@@ -1331,20 +1163,89 @@ impl App {
                 .collect(),
             None => all,
         };
+        self.refresh_attached_task_agents();
         // Restore selection
         if let Some(ref id) = prev_task_id {
-            if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == *id) {
+            if let Some(idx) = self.project_task_rows().iter().position(
+                |row| matches!(row, ProjectTaskRow::Task { task, .. } if task.meta.task_id() == *id),
+            ) {
                 self.selected_index = idx;
                 return;
             }
         }
-        if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
-            self.selected_index = self.tasks.len() - 1;
+        self.clamp_project_task_selection();
+    }
+
+    fn refresh_attached_task_agents(&mut self) {
+        self.attached_task_agents.clear();
+        for task in &self.tasks {
+            let task_id = task.meta.task_id();
+            match use_cases::attached_agents_for_task(&self.config, &task_id) {
+                Ok(agents) => {
+                    self.attached_task_agents.insert(task_id, agents);
+                }
+                Err(e) => {
+                    tracing::warn!(task_id = %task_id, error = %e, "failed to list attached task agents");
+                }
+            }
+        }
+    }
+
+    pub fn project_task_rows(&self) -> Vec<ProjectTaskRow<'_>> {
+        let mut rows = Vec::new();
+        for (task_index, task) in self.tasks.iter().enumerate() {
+            rows.push(ProjectTaskRow::Task { task_index, task });
+            if let Some(agents) = self.attached_task_agents.get(&task.meta.task_id()) {
+                rows.extend(
+                    agents
+                        .iter()
+                        .map(|agent| ProjectTaskRow::Agent { task_index, agent }),
+                );
+            }
+        }
+        rows
+    }
+
+    fn project_task_row_count(&self) -> usize {
+        self.tasks.len()
+            + self
+                .attached_task_agents
+                .values()
+                .map(Vec::len)
+                .sum::<usize>()
+    }
+
+    fn selected_task_index(&self) -> Option<usize> {
+        match self.project_task_rows().get(self.selected_index) {
+            Some(ProjectTaskRow::Task { task_index, .. })
+            | Some(ProjectTaskRow::Agent { task_index, .. }) => Some(*task_index),
+            None => None,
+        }
+    }
+
+    fn selected_project_task_row(&self) -> Option<ProjectTaskRow<'_>> {
+        self.project_task_rows().get(self.selected_index).copied()
+    }
+
+    fn selected_attached_agent(&self) -> Option<&AgentRecord> {
+        match self.selected_project_task_row() {
+            Some(ProjectTaskRow::Agent { agent, .. }) => Some(agent),
+            _ => None,
+        }
+    }
+
+    fn clamp_project_task_selection(&mut self) {
+        let row_count = self.project_task_row_count();
+        if row_count == 0 {
+            self.selected_index = 0;
+        } else if self.selected_index >= row_count {
+            self.selected_index = row_count - 1;
         }
     }
 
     pub fn selected_task(&self) -> Option<&Task> {
-        self.tasks.get(self.selected_index)
+        self.selected_task_index()
+            .and_then(|task_index| self.tasks.get(task_index))
     }
 
     pub fn set_status(&mut self, message: String) {
@@ -1370,55 +1271,6 @@ impl App {
         }
     }
 
-    /// Process any stranded queue items for stopped tasks.
-    /// This is a safety net: if items were queued while a task was running and
-    /// the supervisor's relaunch failed to drain them (half-state), the TUI
-    /// picks them up and routes through the supervisor: ensure tmux →
-    /// wake_if_idle drains the queue and launches the next flow step in the
-    /// `agman` window.
-    pub fn process_stranded_queue(&mut self) {
-        let stranded: Vec<String> = self
-            .tasks
-            .iter()
-            .filter(|t| t.meta.status == TaskStatus::Stopped && t.has_queued_items())
-            .map(|t| t.meta.task_id())
-            .collect();
-
-        for task_id in stranded {
-            let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) else {
-                continue;
-            };
-
-            self.log_output(format!(
-                "Waking stopped task {} with queued items...",
-                task_id
-            ));
-
-            if let Some(task) = self.tasks.get_mut(idx) {
-                if let Err(e) = supervisor::ensure_task_tmux(task) {
-                    self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
-                    continue;
-                }
-                match supervisor::wake_if_idle(&self.config, task) {
-                    Ok(Some(_)) => {
-                        self.log_output(format!(
-                            "Queued item drained and launched for {}",
-                            task_id
-                        ));
-                        self.set_status(format!("Waking stranded task {}", task_id));
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        self.log_output(format!("Error waking stranded task {}: {}", task_id, e));
-                    }
-                }
-            }
-
-            // Only process one stranded item per refresh cycle to avoid blocking the TUI
-            break;
-        }
-    }
-
     pub fn clear_old_output(&mut self) {
         if let Some(instant) = &self.last_output_time {
             if instant.elapsed() > Duration::from_secs(7) {
@@ -1430,80 +1282,83 @@ impl App {
     }
 
     fn next_task(&mut self) {
-        if !self.tasks.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.tasks.len();
+        let row_count = self.project_task_row_count();
+        if row_count > 0 {
+            self.selected_index = (self.selected_index + 1) % row_count;
         }
     }
 
     fn previous_task(&mut self) {
-        if !self.tasks.is_empty() {
+        let row_count = self.project_task_row_count();
+        if row_count > 0 {
             self.selected_index = if self.selected_index == 0 {
-                self.tasks.len() - 1
+                row_count - 1
             } else {
                 self.selected_index - 1
             };
         }
     }
 
-    fn next_assistant(&mut self) {
-        if !self.assistants.is_empty() && self.assistant_list_index < self.assistants.len() - 1 {
-            self.assistant_list_index += 1;
+    fn next_agent(&mut self) {
+        if !self.agents.is_empty() && self.agent_list_index < self.agents.len() - 1 {
+            self.agent_list_index += 1;
         }
     }
 
-    fn previous_assistant(&mut self) {
-        if self.assistant_list_index > 0 {
-            self.assistant_list_index -= 1;
+    fn previous_agent(&mut self) {
+        if self.agent_list_index > 0 {
+            self.agent_list_index -= 1;
         }
     }
 
-    fn selected_assistant(&self) -> Option<&Assistant> {
-        self.assistants.get(self.assistant_list_index)
+    fn selected_agent(&self) -> Option<&AgentRecord> {
+        self.agents.get(self.agent_list_index)
     }
 
-    fn assistant_session_name(assistant: &Assistant) -> String {
-        match &assistant.meta.kind {
-            AssistantKind::Researcher { .. } => {
-                Config::researcher_tmux_session(&assistant.meta.project, &assistant.meta.name)
+    fn agent_session_name(agent: &AgentRecord) -> String {
+        match &agent.meta.kind {
+            AgentKind::Engineer => {
+                Config::engineer_tmux_session(&agent.meta.project, &agent.meta.name)
             }
-            AssistantKind::Operator { .. } => {
-                Config::operator_tmux_session(&assistant.meta.project, &assistant.meta.name)
+            AgentKind::Researcher { .. } => {
+                Config::researcher_tmux_session(&agent.meta.project, &agent.meta.name)
             }
-            AssistantKind::Reviewer { .. } => {
-                Config::reviewer_tmux_session(&assistant.meta.project, &assistant.meta.name)
+            AgentKind::Operator { .. } => {
+                Config::operator_tmux_session(&agent.meta.project, &agent.meta.name)
             }
-            AssistantKind::Tester { .. } => {
-                Config::tester_tmux_session(&assistant.meta.project, &assistant.meta.name)
+            AgentKind::Reviewer { .. } => {
+                Config::reviewer_tmux_session(&agent.meta.project, &agent.meta.name)
+            }
+            AgentKind::Tester { .. } => {
+                Config::tester_tmux_session(&agent.meta.project, &agent.meta.name)
             }
         }
     }
 
-    fn assistant_kind_label(kind: &AssistantKind) -> &'static str {
+    fn agent_kind_label(kind: &AgentKind) -> &'static str {
         match kind {
-            AssistantKind::Researcher { .. } => "researcher",
-            AssistantKind::Operator { .. } => "operator",
-            AssistantKind::Reviewer { .. } => "reviewer",
-            AssistantKind::Tester { .. } => "tester",
+            AgentKind::Engineer => "engineer",
+            AgentKind::Researcher { .. } => "researcher",
+            AgentKind::Operator { .. } => "operator",
+            AgentKind::Reviewer { .. } => "reviewer",
+            AgentKind::Tester { .. } => "tester",
         }
     }
 
-    fn open_selected_assistant(&mut self) {
+    fn open_agent(&mut self, agent: &AgentRecord) {
         if self.popup.is_some() {
             return;
         }
 
-        let Some(assistant) = self.selected_assistant() else {
-            return;
-        };
-        let project = assistant.meta.project.clone();
-        let name = assistant.meta.name.clone();
-        let session_name = Self::assistant_session_name(assistant);
+        let project = agent.meta.project.clone();
+        let name = agent.meta.name.clone();
+        let session_name = Self::agent_session_name(agent);
 
         if !Tmux::session_exists(&session_name) {
-            match use_cases::resume_assistant(&self.config, &project, &name) {
+            match use_cases::resume_agent(&self.config, &project, &name) {
                 Ok(()) => {
-                    tracing::info!(session = &session_name, "resumed assistant session");
-                    self.refresh_assistants();
+                    tracing::info!(session = &session_name, "resumed agent session");
+                    self.refresh_agents();
                 }
                 Err(e) => {
                     self.set_status(format!("Failed to resume: {e}"));
@@ -1514,7 +1369,7 @@ impl App {
 
         match Tmux::popup_attach(&session_name) {
             Ok(child) => {
-                tracing::info!(session = &session_name, "attached to assistant session");
+                tracing::info!(session = &session_name, "attached to agent session");
                 self.popup = Some(ActivePopup { child });
             }
             Err(e) => {
@@ -1523,22 +1378,36 @@ impl App {
         }
     }
 
-    fn start_assistant_wizard(&mut self) {
+    fn open_selected_agent(&mut self) {
+        let Some(agent) = self.selected_agent().cloned() else {
+            return;
+        };
+        self.open_agent(&agent);
+    }
+
+    fn open_selected_attached_agent(&mut self) {
+        let Some(agent) = self.selected_attached_agent().cloned() else {
+            return;
+        };
+        self.open_agent(&agent);
+    }
+
+    fn start_agent_wizard(&mut self) {
         let Some(project) = self.current_project.clone() else {
             self.set_status("No project available".to_string());
             return;
         };
         if project == "(unassigned)" {
-            self.set_status("No assistants for unassigned tasks".to_string());
+            self.set_status("No agents for unassigned tasks".to_string());
             return;
         }
 
-        tracing::info!(project = %project, "opening assistant wizard");
+        tracing::info!(project = %project, "opening agent wizard");
         let mut name_editor = TextArea::default();
         name_editor.set_cursor_line_style(ratatui::style::Style::default());
-        self.assistant_wizard = Some(AssistantWizard {
-            kind: AssistantWizardKind::Researcher,
-            step: AssistantWizardStep::Kind,
+        self.agent_wizard = Some(AgentWizard {
+            kind: AgentWizardKind::Researcher,
+            step: AgentWizardStep::Kind,
             name_editor,
             description_editor: VimTextArea::new(),
             worktree_rows: vec![ReviewerWorktreeRow::new()],
@@ -1547,23 +1416,22 @@ impl App {
             error_message: None,
             project,
         });
-        self.view = View::AssistantWizard;
+        self.view = View::AgentWizard;
     }
 
-    fn archive_selected_assistant(&mut self) {
-        let Some(assistant) = self.selected_assistant() else {
+    fn archive_selected_agent(&mut self) {
+        let Some(agent) = self.selected_agent() else {
             return;
         };
-        let project = assistant.meta.project.clone();
-        let name = assistant.meta.name.clone();
+        let project = agent.meta.project.clone();
+        let name = agent.meta.name.clone();
 
-        match use_cases::archive_assistant(&self.config, &project, &name) {
+        match use_cases::archive_agent(&self.config, &project, &name) {
             Ok(()) => {
-                self.set_status(format!("Archived assistant '{name}'"));
-                self.refresh_assistants();
-                if self.assistant_list_index >= self.assistants.len() && !self.assistants.is_empty()
-                {
-                    self.assistant_list_index = self.assistants.len() - 1;
+                self.set_status(format!("Archived agent '{name}'"));
+                self.refresh_agents();
+                if self.agent_list_index >= self.agents.len() && !self.agents.is_empty() {
+                    self.agent_list_index = self.agents.len() - 1;
                 }
             }
             Err(e) => {
@@ -1609,8 +1477,11 @@ impl App {
 
     fn start_focused_archive_confirm(&mut self) {
         let has_selection = match self.project_pane_focus {
-            ProjectPaneFocus::Tasks => !self.tasks.is_empty(),
-            ProjectPaneFocus::Assistants => self.selected_assistant().is_some(),
+            ProjectPaneFocus::Tasks => matches!(
+                self.selected_project_task_row(),
+                Some(ProjectTaskRow::Task { .. })
+            ),
+            ProjectPaneFocus::Agents => self.selected_agent().is_some(),
         };
         if has_selection {
             self.view = View::DeleteConfirm;
@@ -1620,8 +1491,8 @@ impl App {
     fn archive_focused_project_row(&mut self) -> Result<()> {
         match self.project_pane_focus {
             ProjectPaneFocus::Tasks => self.archive_task(false)?,
-            ProjectPaneFocus::Assistants => {
-                self.archive_selected_assistant();
+            ProjectPaneFocus::Agents => {
+                self.archive_selected_agent();
                 self.view = View::TaskList;
             }
         }
@@ -1637,14 +1508,14 @@ impl App {
                 } else {
                     Vec::new()
                 };
-                self.archive_assistants.clear();
+                self.archive_agents.clear();
             }
-            ArchiveKind::Assistants => {
-                self.archive_assistants = if let Some(project) = self.current_project.as_deref() {
+            ArchiveKind::Agents => {
+                self.archive_agents = if let Some(project) = self.current_project.as_deref() {
                     if project == "(unassigned)" {
                         Vec::new()
                     } else {
-                        use_cases::list_archived_assistants(&self.config, project)
+                        use_cases::list_archived_agents(&self.config, project)
                     }
                 } else {
                     Vec::new()
@@ -1659,27 +1530,23 @@ impl App {
         self.view = View::Archive;
     }
 
-    fn return_from_assistant_wizard(&mut self) {
-        self.assistant_wizard = None;
-        self.project_pane_focus = ProjectPaneFocus::Assistants;
-        self.refresh_assistants();
+    fn return_from_agent_wizard(&mut self) {
+        self.agent_wizard = None;
+        self.project_pane_focus = ProjectPaneFocus::Agents;
+        self.refresh_agents();
         self.view = View::TaskList;
     }
 
     fn load_preview(&mut self) {
-        let (preview_content, notes_content, task_file_content) =
-            if let Some(task) = self.selected_task() {
-                let preview = task
-                    .read_agent_log_structured_tail(500)
-                    .unwrap_or_else(|_| "No agent log available".to_string());
-                let notes = task.read_notes().unwrap_or_default();
-                let task_file = task
-                    .read_task()
-                    .unwrap_or_else(|_| "No TASK.md available".to_string());
-                (preview, notes, task_file)
-            } else {
-                return;
-            };
+        let (preview_content, notes_content) = if let Some(task) = self.selected_task() {
+            let preview = task
+                .read_agent_log_structured_tail(500)
+                .unwrap_or_else(|_| "No agent log available".to_string());
+            let notes = task.read_notes().unwrap_or_default();
+            (preview, notes)
+        } else {
+            return;
+        };
 
         self.preview_content = preview_content.clone();
 
@@ -1697,18 +1564,6 @@ impl App {
         self.notes_editor.move_cursor(CursorMove::Bottom);
         self.notes_editor.move_cursor(CursorMove::End);
         self.notes_editing = false;
-
-        // Setup task file content for modal (editor gets set up when modal opens)
-        self.task_file_content = task_file_content;
-
-        // Mark stopped tasks as seen when the user opens preview
-        if let Some(task) = self.tasks.get_mut(self.selected_index) {
-            if task.meta.status == TaskStatus::Stopped && !task.meta.seen {
-                if let Err(e) = use_cases::mark_task_seen(task) {
-                    tracing::warn!(error = %e, "failed to mark task as seen");
-                }
-            }
-        }
     }
 
     fn save_notes(&mut self) -> Result<()> {
@@ -1721,126 +1576,15 @@ impl App {
         Ok(())
     }
 
-    fn save_task_file(&mut self) -> Result<()> {
-        if let Some(task) = self.selected_task() {
-            let content = self.task_file_editor.lines_joined();
-            use_cases::save_task_file(task, &content)?;
-            self.task_file_content = content;
-            self.set_status("TASK.md saved".to_string());
-        }
-        Ok(())
-    }
-
-    fn stop_task(&mut self) -> Result<()> {
-        let task_info = self
-            .selected_task()
-            .map(|t| (t.meta.task_id(), t.meta.status));
-
-        if let Some((task_id, status)) = task_info {
-            if status == TaskStatus::Stopped {
-                self.set_status(format!("Task already stopped: {}", task_id));
-                return Ok(());
-            }
-
-            tracing::info!(task_id = %task_id, "TUI: stop task requested");
-            self.log_output(format!("Stopping task {}...", task_id));
-
-            // Delegate business logic to use_cases. `stop_task` routes through
-            // `supervisor::honor_stop`, which kills the live harness in the
-            // agman pane via `/exit` (with Ctrl+C fallback), finalizes the
-            // session, and restores any pre-command flow snapshot.
-            let config = self.config.clone();
-            if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                if let Err(e) = use_cases::stop_task(&config, task) {
-                    self.log_output(format!("  Error stopping task: {}", e));
-                    self.set_status(format!("Error: {}", e));
-                    return Ok(());
-                }
-            }
-
-            self.set_status(format!("Stopped: {}", task_id));
-        }
-        Ok(())
-    }
-
-    fn toggle_hold(&mut self) -> Result<()> {
-        let task_info = self
-            .selected_task()
-            .map(|t| (t.meta.task_id(), t.meta.status));
-
-        if let Some((task_id, status)) = task_info {
-            match status {
-                TaskStatus::Stopped => {
-                    tracing::info!(task_id = %task_id, "TUI: put on hold requested");
-                    if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                        use_cases::put_on_hold(task)?;
-                    }
-                    self.set_status(format!("On hold: {}", task_id));
-                    self.refresh_tasks_and_select(&task_id);
-                }
-                TaskStatus::OnHold => {
-                    tracing::info!(task_id = %task_id, "TUI: resume from hold requested");
-                    if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                        use_cases::resume_from_hold(task)?;
-                    }
-                    self.set_status(format!("Resumed: {}", task_id));
-                    self.refresh_tasks_and_select(&task_id);
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    fn resume_after_answering(&mut self) -> Result<()> {
-        let task_info = self
-            .selected_task()
-            .map(|t| (t.meta.task_id(), t.meta.status));
-
-        if let Some((task_id, status)) = task_info {
-            if status != TaskStatus::InputNeeded {
-                return Ok(());
-            }
-
-            tracing::info!(task_id = %task_id, "TUI: resume after answering");
-
-            let launch_error: Option<anyhow::Error> =
-                if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                    use_cases::resume_after_answering(task)?;
-                    let _ = use_cases::set_review_addressed(task, false);
-                    supervisor::ensure_task_tmux(task)
-                        .and_then(|_| supervisor::launch_next_step(&self.config, task).map(|_| ()))
-                        .err()
-                } else {
-                    None
-                };
-
-            match launch_error {
-                None => {
-                    self.log_output(format!(
-                        "Resumed flow for {} — processing your answers",
-                        task_id
-                    ));
-                    self.set_status(format!("Resumed: {}", task_id));
-                }
-                Some(e) => {
-                    tracing::error!(task_id = %task_id, error = %e, "failed to resume via supervisor");
-                    self.log_output(format!("Resume failed: {}", e));
-                    self.set_status(format!("Resume failed: {}", e));
-                }
-            }
-            self.refresh_tasks_and_select(&task_id);
-        }
-
-        Ok(())
-    }
-
     fn archive_task(&mut self, saved: bool) -> Result<()> {
         if self.tasks.is_empty() {
             return Ok(());
         }
 
-        let mut task = self.tasks.remove(self.selected_index);
+        let Some(task_index) = self.selected_task_index() else {
+            return Ok(());
+        };
+        let mut task = self.tasks.remove(task_index);
         let task_id = task.meta.task_id();
 
         tracing::info!(task_id = %task_id, saved, "TUI: archive task requested");
@@ -1863,9 +1607,8 @@ impl App {
         use_cases::archive_task(&self.config, &mut task, saved)?;
         self.log_output("  Archived task".to_string());
 
-        if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
-            self.selected_index = self.tasks.len() - 1;
-        }
+        self.refresh_attached_task_agents();
+        self.clamp_project_task_selection();
 
         let label = if saved {
             "Archived & saved"
@@ -1874,82 +1617,6 @@ impl App {
         };
         self.set_status(format!("{}: {}", label, task_id));
         self.view = View::TaskList;
-        Ok(())
-    }
-
-    fn start_feedback(&mut self) {
-        // Clear the feedback editor and start in insert mode
-        self.feedback_editor = VimTextArea::new();
-        self.feedback_editor.set_insert_mode();
-        self.view = View::Feedback;
-    }
-
-    fn submit_feedback(&mut self) -> Result<()> {
-        let feedback = self.feedback_editor.lines_joined();
-        let task_id_for_log = self.selected_task().map(|t| t.meta.task_id());
-        tracing::info!(task_id = ?task_id_for_log, "submitting feedback");
-        if feedback.trim().is_empty() {
-            self.set_status("Feedback cannot be empty".to_string());
-            self.view = View::Preview;
-            return Ok(());
-        }
-
-        // Reload task status from disk before deciding whether to queue or execute,
-        // since the Feedback view doesn't refresh and the task may have stopped while
-        // the user was typing.
-        if let Some(task) = self.tasks.get_mut(self.selected_index) {
-            let _ = task.reload_meta();
-        }
-
-        // Check if task is running - if so, queue the feedback instead
-        let (task_id, is_running) = if let Some(task) = self.selected_task() {
-            (task.meta.task_id(), task.meta.status == TaskStatus::Running)
-        } else {
-            self.set_status("No task selected".to_string());
-            self.view = View::TaskList;
-            return Ok(());
-        };
-
-        if is_running {
-            // Delegate to use_cases: queue the feedback
-            if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                let queue_count = use_cases::queue_feedback(task, &self.config, &feedback)?;
-                self.log_output(format!(
-                    "Queued feedback for {} ({} in queue)",
-                    task_id, queue_count
-                ));
-                self.set_status(format!("Feedback queued ({} in queue)", queue_count));
-            }
-        } else if let Some(task) = self.tasks.get_mut(self.selected_index) {
-            // Clear review_addressed on user interaction
-            let _ = use_cases::set_review_addressed(task, false);
-
-            // Ensure the task's tmux session + agman window exist before the
-            // supervisor tries to send keys into them.
-            if let Err(e) = supervisor::ensure_task_tmux(task) {
-                self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
-                self.set_status(format!("Feedback failed: {}", e));
-                self.feedback_editor = VimTextArea::new();
-                self.view = View::Preview;
-                self.load_preview();
-                return Ok(());
-            }
-
-            // Queue the feedback; wake_if_idle drains it (writes FEEDBACK.md,
-            // switches to `continue` flow, flips to Running) and launches the
-            // first step in the task's agman tmux window.
-            let queue_count = use_cases::queue_feedback(task, &self.config, &feedback)?;
-            self.log_output(format!(
-                "Queued feedback for {} ({} in queue); supervisor waking",
-                task_id, queue_count
-            ));
-            self.set_status(format!("Feedback submitted for {}", task_id));
-            self.refresh_tasks_and_select(&task_id);
-        }
-
-        self.feedback_editor = VimTextArea::new(); // Clear editor
-        self.view = View::Preview;
-        self.load_preview();
         Ok(())
     }
 
@@ -2032,313 +1699,6 @@ impl App {
         });
 
         self.view = View::NewTaskWizard;
-        Ok(())
-    }
-
-    pub fn scan_commands(&mut self) -> Result<()> {
-        self.commands = StoredCommand::list_all(&self.config.commands_dir)?;
-        if self.selected_command_index >= self.commands.len() && !self.commands.is_empty() {
-            self.selected_command_index = self.commands.len() - 1;
-        }
-        Ok(())
-    }
-
-    fn scan_rebase_branches(&self, repo_path: &Path, local_only: bool) -> Result<Vec<String>> {
-        // Get local branches
-        let output = Command::new("git")
-            .current_dir(repo_path)
-            .args(["branch", "--list", "--format=%(refname:short)"])
-            .output()?;
-
-        let mut branches: Vec<String> = if output.status.success() {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(|s| s.to_string())
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        if !local_only {
-            // Also get remote-tracking branches
-            let remote_output = Command::new("git")
-                .current_dir(repo_path)
-                .args(["branch", "-r", "--format=%(refname:short)"])
-                .output()?;
-
-            if remote_output.status.success() {
-                let remote_stdout = String::from_utf8_lossy(&remote_output.stdout);
-                for line in remote_stdout.lines() {
-                    let branch = line.trim();
-                    // Skip HEAD pointers like origin/HEAD
-                    if branch.contains("HEAD") {
-                        continue;
-                    }
-                    branches.push(branch.to_string());
-                }
-            }
-        }
-
-        branches.sort();
-        branches.dedup();
-
-        tracing::debug!(repo = %repo_path.display(), count = branches.len(), local_only, "scanned branches for picker");
-
-        Ok(branches)
-    }
-
-    fn open_branch_picker(&mut self) {
-        let (_repo_name, repo_path) = match self.selected_task() {
-            Some(t) => {
-                if t.meta.is_multi_repo() {
-                    self.set_status("Branch picker not supported for multi-repo tasks".to_string());
-                    return;
-                }
-                if !t.meta.has_repos() {
-                    self.set_status("Task has no repos configured yet".to_string());
-                    return;
-                }
-                let name = t.meta.primary_repo().repo_name.clone();
-                let path = self
-                    .config
-                    .repo_path_for(t.meta.parent_dir.as_deref(), &name);
-                (name, path)
-            }
-            None => {
-                self.set_status("No task selected".to_string());
-                return;
-            }
-        };
-
-        let local_only = self
-            .pending_branch_command
-            .as_ref()
-            .map(|c| c.id == "local-merge")
-            .unwrap_or(false);
-
-        match self.scan_rebase_branches(&repo_path, local_only) {
-            Ok(branches) => {
-                if branches.is_empty() {
-                    self.set_status("No branches found".to_string());
-                    return;
-                }
-
-                // Preselect sensible default branch based on command
-                let cmd_id = self.pending_branch_command.as_ref().map(|c| c.id.as_str());
-                let preselect_index = match cmd_id {
-                    Some("local-merge") => branches
-                        .iter()
-                        .position(|b| b == "main" || b == "master")
-                        .unwrap_or(0),
-                    Some("rebase") => branches
-                        .iter()
-                        .position(|b| b == "origin/main")
-                        .or_else(|| branches.iter().position(|b| b == "origin/master"))
-                        .or_else(|| branches.iter().position(|b| b == "main"))
-                        .or_else(|| branches.iter().position(|b| b == "master"))
-                        .unwrap_or(0),
-                    _ => 0,
-                };
-
-                self.rebase_branches = branches;
-                self.selected_rebase_branch_index = preselect_index;
-                self.rebase_branch_list_state.select(Some(preselect_index));
-                self.rebase_branch_search = Self::create_plain_editor();
-                self.view = View::RebaseBranchPicker;
-            }
-            Err(e) => {
-                self.set_status(format!("Error scanning branches: {}", e));
-            }
-        }
-    }
-
-    fn run_branch_command(&mut self, branch: &str) -> Result<()> {
-        let command = match self.pending_branch_command.take() {
-            Some(c) => c,
-            None => {
-                self.set_status("No pending branch command".to_string());
-                self.view = View::Preview;
-                return Ok(());
-            }
-        };
-
-        let task_id = match self.selected_task() {
-            Some(t) => t.meta.task_id(),
-            None => {
-                self.set_status("No task selected".to_string());
-                self.view = View::Preview;
-                return Ok(());
-            }
-        };
-
-        // If task is running, queue the command instead of running it immediately
-        let is_running = self
-            .selected_task()
-            .map(|t| t.meta.status == TaskStatus::Running)
-            .unwrap_or(false);
-        if is_running {
-            if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                match use_cases::queue_command(task, &self.config, &command.id, Some(branch)) {
-                    Ok(count) => {
-                        self.set_status(format!(
-                            "Command queued: {} → {} ({} in queue)",
-                            command.name, branch, count
-                        ));
-                    }
-                    Err(e) => {
-                        self.set_status(format!("Failed to queue command: {}", e));
-                    }
-                }
-            }
-            self.view = View::Preview;
-            return Ok(());
-        }
-
-        self.log_output(format!(
-            "Running '{}' with branch '{}' for task {}...",
-            command.name, branch, task_id
-        ));
-
-        if let Some(task) = self.tasks.get_mut(self.selected_index) {
-            if let Err(e) = supervisor::ensure_task_tmux(task) {
-                self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
-                self.set_status(format!("Failed to run {}: {}", command.name, e));
-                self.view = View::Preview;
-                self.load_preview();
-                return Ok(());
-            }
-            match use_cases::queue_command(task, &self.config, &command.id, Some(branch)) {
-                Ok(_count) => {
-                    self.set_status(format!("Started: {} onto {}", command.name, branch));
-                }
-                Err(e) => {
-                    self.log_output(format!("Failed: {}", e));
-                    self.set_status(format!("Failed to run {}: {}", command.name, e));
-                }
-            }
-        }
-
-        self.refresh_tasks_and_select(&task_id);
-        self.view = View::Preview;
-        self.load_preview();
-        Ok(())
-    }
-
-    fn open_command_list(&mut self) {
-        if self.tasks.is_empty() {
-            self.set_status("No task selected to run command on".to_string());
-            return;
-        }
-        // Refresh commands list
-        let _ = self.scan_commands();
-        if self.commands.is_empty() {
-            self.set_status("No stored commands available".to_string());
-            return;
-        }
-        self.selected_command_index = 0;
-        self.command_list_state.select(Some(0));
-        self.view = View::CommandList;
-    }
-
-    fn run_selected_command(&mut self) -> Result<()> {
-        let task_id_for_log = self.selected_task().map(|t| t.meta.task_id());
-        let command = match self.commands.get(self.selected_command_index) {
-            Some(c) => {
-                tracing::info!(task_id = ?task_id_for_log, command = %c.name, "running stored command");
-                c.clone()
-            }
-            None => {
-                self.set_status("No command selected".to_string());
-                self.view = View::TaskList;
-                return Ok(());
-            }
-        };
-
-        // If the command requires a branch argument, open the branch picker
-        if command.requires_arg.as_deref() == Some("branch") {
-            self.pending_branch_command = Some(command);
-            self.open_branch_picker();
-            return Ok(());
-        }
-
-        let task_id = match self.selected_task() {
-            Some(t) => t.meta.task_id(),
-            None => {
-                self.set_status("No task selected".to_string());
-                self.view = View::TaskList;
-                return Ok(());
-            }
-        };
-
-        // If task is running, queue the command instead of running it immediately
-        let is_running = self
-            .selected_task()
-            .map(|t| t.meta.status == TaskStatus::Running)
-            .unwrap_or(false);
-        if is_running {
-            if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                match use_cases::queue_command(task, &self.config, &command.id, None) {
-                    Ok(count) => {
-                        self.set_status(format!(
-                            "Command queued: {} ({} in queue)",
-                            command.name, count
-                        ));
-                    }
-                    Err(e) => {
-                        self.set_status(format!("Failed to queue command: {}", e));
-                    }
-                }
-            }
-            self.view = View::Preview;
-            return Ok(());
-        }
-
-        // Guard: refuse create-pr if a PR is already linked
-        if command.id == "create-pr" {
-            if let Some(task) = self.selected_task() {
-                if let Some(ref pr) = task.meta.linked_pr {
-                    self.set_status(format!(
-                        "PR #{} already linked — use monitor-pr instead.",
-                        pr.number
-                    ));
-                    self.view = View::Preview;
-                    return Ok(());
-                }
-            }
-        }
-
-        self.log_output(format!(
-            "Running command '{}' on task {}...",
-            command.name, task_id
-        ));
-
-        if let Some(task) = self.tasks.get_mut(self.selected_index) {
-            if let Err(e) = supervisor::ensure_task_tmux(task) {
-                self.log_output(format!("Failed to prepare tmux for {}: {}", task_id, e));
-                self.set_status(format!("Failed to run {}: {}", command.name, e));
-                self.view = View::Preview;
-                self.load_preview();
-                return Ok(());
-            }
-            match use_cases::queue_command(task, &self.config, &command.id, None) {
-                Ok(_count) => {
-                    if command.id == "address-review" {
-                        let _ = use_cases::set_review_addressed(task, true);
-                    } else {
-                        let _ = use_cases::set_review_addressed(task, false);
-                    }
-                    self.set_status(format!("Started: {}", command.name));
-                }
-                Err(e) => {
-                    self.log_output(format!("Failed: {}", e));
-                    self.set_status(format!("Failed to run {}: {}", command.name, e));
-                }
-            }
-        }
-
-        self.refresh_tasks_and_select(&task_id);
-        self.view = View::Preview;
-        self.load_preview();
         Ok(())
     }
 
@@ -2469,17 +1829,11 @@ impl App {
                 let description = wizard.description_editor.lines_joined();
                 let description = description.trim();
                 let is_multi = wizard.is_multi_repo;
-                if description.is_empty() {
-                    if is_multi {
-                        // Multi-repo tasks require a description (the repo-inspector
-                        // agent needs it to decide which repos are involved)
-                        let wizard = self.wizard.as_mut().unwrap();
-                        wizard.error_message =
-                            Some("Multi-repo tasks require a description".to_string());
-                        return Ok(());
-                    }
-                    // Empty description = setup-only mode
-                    return self.create_setup_only_task_from_wizard();
+                if description.is_empty() && is_multi {
+                    let wizard = self.wizard.as_mut().unwrap();
+                    wizard.error_message =
+                        Some("Multi-repo tasks require a description".to_string());
+                    return Ok(());
                 }
                 // Create the task
                 return self.create_task_from_wizard();
@@ -2582,14 +1936,14 @@ impl App {
             };
 
             let task_id = task.meta.task_id();
-            self.log_output("  Launching flow via supervisor...".to_string());
-            if let Err(e) = supervisor::ensure_task_tmux(&task)
+            self.log_output("  Launching engineer via supervisor...".to_string());
+            if let Err(e) = supervisor::ensure_task_tmux(&self.config, &task)
                 .and_then(|_| supervisor::launch_next_step(&self.config, &mut task).map(|_| ()))
             {
-                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch multi-repo task flow");
+                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch multi-repo task engineer");
                 self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
-                    w.error_message = Some(format!("Failed to launch flow: {}", e));
+                    w.error_message = Some(format!("Failed to launch engineer: {}", e));
                 }
                 return Ok(());
             }
@@ -2635,14 +1989,14 @@ impl App {
             };
 
             let task_id = task.meta.task_id();
-            self.log_output("  Launching flow via supervisor...".to_string());
-            if let Err(e) = supervisor::ensure_task_tmux(&task)
+            self.log_output("  Launching engineer via supervisor...".to_string());
+            if let Err(e) = supervisor::ensure_task_tmux(&self.config, &task)
                 .and_then(|_| supervisor::launch_next_step(&self.config, &mut task).map(|_| ()))
             {
-                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch task flow");
+                tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch task engineer");
                 self.log_output(format!("  Error: {}", e));
                 if let Some(w) = &mut self.wizard {
-                    w.error_message = Some(format!("Failed to launch flow: {}", e));
+                    w.error_message = Some(format!("Failed to launch engineer: {}", e));
                 }
                 return Ok(());
             }
@@ -2661,109 +2015,6 @@ impl App {
         Ok(())
     }
 
-    fn create_setup_only_task_from_wizard(&mut self) -> Result<()> {
-        let wizard = match &self.wizard {
-            Some(w) => w,
-            None => return Ok(()),
-        };
-
-        let repo_name = wizard.selected_repo_name().to_string();
-        let repo_path = wizard.selected_repo_path.clone();
-
-        let (branch_name, worktree_source) = match wizard.branch_source {
-            BranchSource::ExistingWorktree => {
-                let (branch, path) =
-                    wizard.existing_worktrees[wizard.selected_worktree_index].clone();
-                (branch, use_cases::WorktreeSource::ExistingWorktree(path))
-            }
-            BranchSource::NewBranch => {
-                let name = wizard.new_branch_editor.lines().join("").trim().to_string();
-                let base = wizard
-                    .base_branch_editor
-                    .lines()
-                    .join("")
-                    .trim()
-                    .to_string();
-                let base_branch = if base.is_empty() { None } else { Some(base) };
-                (name, use_cases::WorktreeSource::NewBranch { base_branch })
-            }
-            BranchSource::ExistingBranch => {
-                let name = wizard.existing_branches[wizard.selected_branch_index].clone();
-                (name, use_cases::WorktreeSource::ExistingBranch)
-            }
-        };
-
-        // Compute parent_dir when repo is outside repos_dir
-        let parent_dir = repo_path.parent().and_then(|p| {
-            if p != self.config.repos_dir {
-                Some(p.to_path_buf())
-            } else {
-                None
-            }
-        });
-
-        // Determine project assignment from current scope
-        let project = self
-            .current_project
-            .as_ref()
-            .filter(|p| p.as_str() != "(unassigned)")
-            .cloned();
-
-        tracing::info!(repo = %repo_name, branch = %branch_name, "creating setup-only task via wizard");
-        self.log_output(format!(
-            "Creating setup-only task {}--{}...",
-            repo_name, branch_name
-        ));
-
-        // Delegate business logic to use_cases
-        let task = match use_cases::create_setup_only_task(
-            &self.config,
-            &repo_name,
-            &branch_name,
-            worktree_source,
-            parent_dir,
-            project,
-        ) {
-            Ok(t) => t,
-            Err(e) => {
-                self.log_output(format!("  Error: {}", e));
-                if let Some(w) = &mut self.wizard {
-                    w.error_message = Some(format!("Failed to create task: {}", e));
-                }
-                return Ok(());
-            }
-        };
-
-        // Side effects: create tmux session (but do NOT start any flow)
-        let worktree_path = task.meta.primary_repo().worktree_path.clone();
-        self.log_output("  Creating tmux session...".to_string());
-        if let Err(e) = Tmux::create_session_with_windows(
-            &task.meta.primary_repo().tmux_session,
-            &worktree_path,
-        ) {
-            self.log_output(format!("  Error: {}", e));
-            if let Some(w) = &mut self.wizard {
-                w.error_message = Some(format!("Failed to create tmux session: {}", e));
-            }
-            return Ok(());
-        }
-
-        // No flow-run command sent — this is the key difference from create_task_from_wizard
-
-        // Success - close wizard and refresh
-        let task_id = task.meta.task_id();
-        self.wizard = None;
-        self.view = View::TaskList;
-        if self.current_project.is_some() {
-            self.refresh_tasks_for_project();
-        } else {
-            self.refresh_tasks_and_select(&task_id);
-        }
-        self.set_status(format!("Created setup-only task: {}", task_id));
-
-        Ok(())
-    }
-
     pub fn handle_event(&mut self, event: Event) -> Result<bool> {
         self.clear_old_status();
 
@@ -2772,13 +2023,7 @@ impl App {
             View::TaskList => self.handle_task_list_event(event),
             View::Preview => self.handle_preview_event(event),
             View::DeleteConfirm => self.handle_delete_confirm_event(event),
-            View::Feedback => self.handle_feedback_event(event),
             View::NewTaskWizard => self.handle_wizard_event(event),
-            View::CommandList => self.handle_command_list_event(event),
-            View::TaskEditor => self.handle_task_editor_event(event),
-            View::Queue => self.handle_queue_event(event),
-            View::RebaseBranchPicker => self.handle_rebase_branch_picker_event(event),
-            View::RestartWizard => self.handle_restart_wizard_event(event),
             View::DirectoryPicker => self.handle_directory_picker_event(event),
             View::SessionPicker => self.handle_session_picker_event(event),
             View::Notifications => self.handle_notifications_event(event),
@@ -2789,7 +2034,7 @@ impl App {
             View::ProjectWizard => self.handle_project_wizard_event(event),
             View::ProjectPicker => self.handle_project_picker_event(event),
             View::ProjectDeleteConfirm => self.handle_project_delete_confirm_event(event),
-            View::AssistantWizard => self.handle_assistant_wizard_event(event),
+            View::AgentWizard => self.handle_agent_wizard_event(event),
             View::RespawnConfirm => self.handle_respawn_confirm_event(event),
         }
     }
@@ -2838,10 +2083,10 @@ impl App {
                     if let Some(name) = project_name {
                         self.current_project = Some(name);
                         self.selected_index = 0;
-                        self.assistant_list_index = 0;
-                        self.project_pane_focus = ProjectPaneFocus::Assistants;
+                        self.agent_list_index = 0;
+                        self.project_pane_focus = ProjectPaneFocus::Agents;
                         self.refresh_tasks_for_project();
-                        self.refresh_assistants();
+                        self.refresh_agents();
                         self.view = View::TaskList;
                     }
                 }
@@ -3015,16 +2260,16 @@ impl App {
                 }
                 KeyCode::Tab | KeyCode::BackTab => {
                     self.project_pane_focus = match self.project_pane_focus {
-                        ProjectPaneFocus::Tasks => ProjectPaneFocus::Assistants,
-                        ProjectPaneFocus::Assistants => ProjectPaneFocus::Tasks,
+                        ProjectPaneFocus::Tasks => ProjectPaneFocus::Agents,
+                        ProjectPaneFocus::Agents => ProjectPaneFocus::Tasks,
                     };
                 }
                 _ => match self.project_pane_focus {
                     ProjectPaneFocus::Tasks => {
                         self.handle_project_tasks_key(key)?;
                     }
-                    ProjectPaneFocus::Assistants => {
-                        self.handle_project_assistants_key(key);
+                    ProjectPaneFocus::Agents => {
+                        self.handle_project_agents_key(key);
                     }
                 },
             }
@@ -3040,28 +2285,24 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.next_task();
             }
-            KeyCode::Enter => {
-                if !self.tasks.is_empty() {
+            KeyCode::Enter => match self.selected_project_task_row() {
+                Some(ProjectTaskRow::Task { .. }) => {
                     self.load_preview();
                     self.preview_pane = PreviewPane::Logs;
                     self.view = View::Preview;
                 }
-            }
-            KeyCode::Char('s') => {
-                self.stop_task()?;
-            }
+                Some(ProjectTaskRow::Agent { .. }) => {
+                    self.open_selected_attached_agent();
+                }
+                None => {}
+            },
             KeyCode::Char('d') => {
                 self.start_focused_archive_confirm();
             }
-            KeyCode::Char('f') => {
-                if !self.tasks.is_empty() {
-                    self.load_preview();
-                    self.start_feedback();
-                }
-            }
             KeyCode::Char('G') => {
-                if !self.tasks.is_empty() {
-                    self.selected_index = self.tasks.len() - 1;
+                let row_count = self.project_task_row_count();
+                if row_count > 0 {
+                    self.selected_index = row_count - 1;
                 }
             }
             KeyCode::Char('g') => {
@@ -3069,26 +2310,6 @@ impl App {
             }
             KeyCode::Char('n') => {
                 self.start_wizard()?;
-            }
-            KeyCode::Char('x') => {
-                if !self.tasks.is_empty() {
-                    self.load_preview();
-                    self.open_command_list();
-                }
-            }
-            KeyCode::Char('t') => {
-                if !self.tasks.is_empty() {
-                    self.load_preview();
-                    self.open_task_editor();
-                }
-            }
-            KeyCode::Char('a') => {
-                if let Some(task) = self.selected_task() {
-                    if task.meta.status == TaskStatus::InputNeeded {
-                        self.load_preview();
-                        self.open_task_editor();
-                    }
-                }
             }
             KeyCode::Char('o') => {
                 let pr_info = self.selected_task().and_then(|t| {
@@ -3105,33 +2326,10 @@ impl App {
                 }
             }
             KeyCode::Char('r') => {
-                self.start_restart_wizard()?;
-            }
-            KeyCode::Char('h') => {
-                self.toggle_hold()?;
+                self.restart_selected_task()?;
             }
             KeyCode::Char('c') => {
-                if self.current_project.is_some() {
-                    self.open_project_pm_chat();
-                } else {
-                    let is_owned = self
-                        .selected_task()
-                        .and_then(|t| t.meta.linked_pr.as_ref().map(|pr| pr.owned))
-                        .unwrap_or(false);
-                    if is_owned {
-                        if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                            let new_val = !task.meta.review_addressed;
-                            let _ = use_cases::set_review_addressed(task, new_val);
-                            if new_val {
-                                self.set_status("Marked review addressed".to_string());
-                            } else {
-                                self.set_status("Cleared review indicator".to_string());
-                            }
-                        }
-                    } else {
-                        self.set_status("Review tracking only for owned PRs".to_string());
-                    }
-                }
+                self.open_project_pm_chat();
             }
             KeyCode::Char('z') => {
                 self.open_archive(ArchiveKind::Tasks);
@@ -3144,33 +2342,33 @@ impl App {
         Ok(false)
     }
 
-    fn handle_project_assistants_key(&mut self, key: event::KeyEvent) {
+    fn handle_project_agents_key(&mut self, key: event::KeyEvent) {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.next_assistant();
+                self.next_agent();
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.previous_assistant();
+                self.previous_agent();
             }
             KeyCode::Char('g') => {
-                self.assistant_list_index = 0;
+                self.agent_list_index = 0;
             }
             KeyCode::Char('G') => {
-                if !self.assistants.is_empty() {
-                    self.assistant_list_index = self.assistants.len() - 1;
+                if !self.agents.is_empty() {
+                    self.agent_list_index = self.agents.len() - 1;
                 }
             }
             KeyCode::Enter => {
-                self.open_selected_assistant();
+                self.open_selected_agent();
             }
             KeyCode::Char('n') => {
-                self.start_assistant_wizard();
+                self.start_agent_wizard();
             }
             KeyCode::Char('d') => {
                 self.start_focused_archive_confirm();
             }
             KeyCode::Char('z') => {
-                self.open_archive(ArchiveKind::Assistants);
+                self.open_archive(ArchiveKind::Agents);
             }
             KeyCode::Char('c') => {
                 self.open_project_pm_chat();
@@ -3386,18 +2584,17 @@ impl App {
                     .map(|(i, _)| i)
                     .collect()
             }
-            ArchiveKind::Assistants => {
+            ArchiveKind::Agents => {
                 if terms.is_empty() {
-                    return (0..self.archive_assistants.len()).collect();
+                    return (0..self.archive_agents.len()).collect();
                 }
-                self.archive_assistants
+                self.archive_agents
                     .iter()
                     .enumerate()
-                    .filter(|(_, (assistant, content))| {
-                        let name_lower = assistant.meta.name.to_lowercase();
-                        let project_lower = assistant.meta.project.to_lowercase();
-                        let kind_lower =
-                            Self::assistant_kind_label(&assistant.meta.kind).to_lowercase();
+                    .filter(|(_, (agent, content))| {
+                        let name_lower = agent.meta.name.to_lowercase();
+                        let project_lower = agent.meta.project.to_lowercase();
+                        let kind_lower = Self::agent_kind_label(&agent.meta.kind).to_lowercase();
                         let content_lower = content.to_lowercase();
                         terms.iter().all(|term| {
                             name_lower.contains(term)
@@ -3410,31 +2607,6 @@ impl App {
                     .collect()
             }
         }
-    }
-
-    /// Return indices into `self.rebase_branches` that match the current search query.
-    pub fn rebase_branch_filtered_indices(&self) -> Vec<usize> {
-        let query: String = self.rebase_branch_search.lines().join("").to_lowercase();
-        let terms: Vec<&str> = query.split_whitespace().collect();
-        if terms.is_empty() {
-            return (0..self.rebase_branches.len()).collect();
-        }
-        let mut matched: Vec<usize> = self
-            .rebase_branches
-            .iter()
-            .enumerate()
-            .filter(|(_, branch)| {
-                let branch_lower = branch.to_lowercase();
-                terms.iter().all(|term| branch_lower.contains(term))
-            })
-            .map(|(i, _)| i)
-            .collect();
-        matched.sort_by(|&a, &b| {
-            let score_a = branch_search_score(&self.rebase_branches[a], &terms);
-            let score_b = branch_search_score(&self.rebase_branches[b], &terms);
-            score_b.cmp(&score_a)
-        });
-        matched
     }
 
     fn handle_project_wizard_event(&mut self, event: Event) -> Result<bool> {
@@ -3519,7 +2691,7 @@ impl App {
         Ok(false)
     }
 
-    fn handle_assistant_wizard_event(&mut self, event: Event) -> Result<bool> {
+    fn handle_agent_wizard_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                 self.should_quit = true;
@@ -3530,20 +2702,20 @@ impl App {
             // fields and surfaces inline errors so the user never has to
             // play guess-the-step.
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-                self.submit_assistant_wizard();
+                self.submit_agent_wizard();
                 return Ok(false);
             }
 
             let global_harness = self.config.harness_kind();
-            let Some(wizard) = self.assistant_wizard.as_mut() else {
+            let Some(wizard) = self.agent_wizard.as_mut() else {
                 return Ok(false);
             };
             wizard.error_message = None;
 
             match wizard.step {
-                AssistantWizardStep::Kind => match key.code {
+                AgentWizardStep::Kind => match key.code {
                     KeyCode::Esc => {
-                        self.return_from_assistant_wizard();
+                        self.return_from_agent_wizard();
                     }
                     KeyCode::Char('j')
                     | KeyCode::Down
@@ -3551,10 +2723,10 @@ impl App {
                     | KeyCode::Right
                     | KeyCode::Tab => {
                         wizard.kind = match wizard.kind {
-                            AssistantWizardKind::Researcher => AssistantWizardKind::Reviewer,
-                            AssistantWizardKind::Reviewer => AssistantWizardKind::Tester,
-                            AssistantWizardKind::Tester => AssistantWizardKind::Operator,
-                            AssistantWizardKind::Operator => AssistantWizardKind::Researcher,
+                            AgentWizardKind::Researcher => AgentWizardKind::Reviewer,
+                            AgentWizardKind::Reviewer => AgentWizardKind::Tester,
+                            AgentWizardKind::Tester => AgentWizardKind::Operator,
+                            AgentWizardKind::Operator => AgentWizardKind::Researcher,
                         };
                     }
                     KeyCode::Char('k')
@@ -3563,35 +2735,35 @@ impl App {
                     | KeyCode::Left
                     | KeyCode::BackTab => {
                         wizard.kind = match wizard.kind {
-                            AssistantWizardKind::Researcher => AssistantWizardKind::Operator,
-                            AssistantWizardKind::Reviewer => AssistantWizardKind::Researcher,
-                            AssistantWizardKind::Tester => AssistantWizardKind::Reviewer,
-                            AssistantWizardKind::Operator => AssistantWizardKind::Tester,
+                            AgentWizardKind::Researcher => AgentWizardKind::Operator,
+                            AgentWizardKind::Reviewer => AgentWizardKind::Researcher,
+                            AgentWizardKind::Tester => AgentWizardKind::Reviewer,
+                            AgentWizardKind::Operator => AgentWizardKind::Tester,
                         };
                     }
                     KeyCode::Enter => {
-                        wizard.step = AssistantWizardStep::Name;
+                        wizard.step = AgentWizardStep::Name;
                     }
                     _ => {}
                 },
-                AssistantWizardStep::Name => {
+                AgentWizardStep::Name => {
                     if key.code == KeyCode::Esc {
                         // First content step — Esc cancels the wizard.
-                        self.return_from_assistant_wizard();
+                        self.return_from_agent_wizard();
                         return Ok(false);
                     }
                     if key.code == KeyCode::Enter {
                         // Advance: reviewers go to worktrees, researchers
                         // skip straight to description.
                         wizard.step = match wizard.kind {
-                            AssistantWizardKind::Researcher | AssistantWizardKind::Operator => {
-                                AssistantWizardStep::Description
+                            AgentWizardKind::Researcher | AgentWizardKind::Operator => {
+                                AgentWizardStep::Description
                             }
-                            AssistantWizardKind::Reviewer | AssistantWizardKind::Tester => {
-                                AssistantWizardStep::Worktrees
+                            AgentWizardKind::Reviewer | AgentWizardKind::Tester => {
+                                AgentWizardStep::Worktrees
                             }
                         };
-                        if matches!(wizard.step, AssistantWizardStep::Description) {
+                        if matches!(wizard.step, AgentWizardStep::Description) {
                             wizard.description_editor.set_insert_mode();
                         }
                         return Ok(false);
@@ -3599,10 +2771,10 @@ impl App {
                     let input = Input::from(event.clone());
                     wizard.name_editor.input(input);
                 }
-                AssistantWizardStep::Worktrees => {
+                AgentWizardStep::Worktrees => {
                     match key.code {
                         KeyCode::Esc => {
-                            wizard.step = AssistantWizardStep::Name;
+                            wizard.step = AgentWizardStep::Name;
                         }
                         KeyCode::Tab => {
                             // Tab cycles repo → branch → next row's repo.
@@ -3618,14 +2790,12 @@ impl App {
                                 // Last field of last row — testers get an
                                 // optional capabilities step first.
                                 wizard.step = match wizard.kind {
-                                    AssistantWizardKind::Tester => {
-                                        AssistantWizardStep::Capabilities
-                                    }
-                                    AssistantWizardKind::Researcher
-                                    | AssistantWizardKind::Operator
-                                    | AssistantWizardKind::Reviewer => {
+                                    AgentWizardKind::Tester => AgentWizardStep::Capabilities,
+                                    AgentWizardKind::Researcher
+                                    | AgentWizardKind::Operator
+                                    | AgentWizardKind::Reviewer => {
                                         wizard.description_editor.set_insert_mode();
-                                        AssistantWizardStep::Description
+                                        AgentWizardStep::Description
                                     }
                                 };
                             }
@@ -3668,14 +2838,12 @@ impl App {
                                 wizard.selected_row += 1;
                             } else {
                                 wizard.step = match wizard.kind {
-                                    AssistantWizardKind::Tester => {
-                                        AssistantWizardStep::Capabilities
-                                    }
-                                    AssistantWizardKind::Researcher
-                                    | AssistantWizardKind::Operator
-                                    | AssistantWizardKind::Reviewer => {
+                                    AgentWizardKind::Tester => AgentWizardStep::Capabilities,
+                                    AgentWizardKind::Researcher
+                                    | AgentWizardKind::Operator
+                                    | AgentWizardKind::Reviewer => {
                                         wizard.description_editor.set_insert_mode();
-                                        AssistantWizardStep::Description
+                                        AgentWizardStep::Description
                                     }
                                 };
                             }
@@ -3691,12 +2859,12 @@ impl App {
                         }
                     }
                 }
-                AssistantWizardStep::Capabilities => match key.code {
+                AgentWizardStep::Capabilities => match key.code {
                     KeyCode::Esc | KeyCode::BackTab => {
-                        wizard.step = AssistantWizardStep::Worktrees;
+                        wizard.step = AgentWizardStep::Worktrees;
                     }
                     KeyCode::Enter | KeyCode::Tab => {
-                        wizard.step = AssistantWizardStep::Description;
+                        wizard.step = AgentWizardStep::Description;
                         wizard.description_editor.set_insert_mode();
                     }
                     KeyCode::Char(' ')
@@ -3713,7 +2881,7 @@ impl App {
                     }
                     _ => {}
                 },
-                AssistantWizardStep::Description => {
+                AgentWizardStep::Description => {
                     let input = Input::from(event.clone());
                     let was_insert = wizard.description_editor.mode() == VimMode::Insert;
                     wizard.description_editor.input(input.clone());
@@ -3721,11 +2889,11 @@ impl App {
                     // Esc in normal mode steps back to the previous step.
                     if input.key == Key::Esc && !was_insert && is_normal_now {
                         wizard.step = match wizard.kind {
-                            AssistantWizardKind::Researcher | AssistantWizardKind::Operator => {
-                                AssistantWizardStep::Name
+                            AgentWizardKind::Researcher | AgentWizardKind::Operator => {
+                                AgentWizardStep::Name
                             }
-                            AssistantWizardKind::Reviewer => AssistantWizardStep::Worktrees,
-                            AssistantWizardKind::Tester => AssistantWizardStep::Capabilities,
+                            AgentWizardKind::Reviewer => AgentWizardStep::Worktrees,
+                            AgentWizardKind::Tester => AgentWizardStep::Capabilities,
                         };
                     }
                 }
@@ -3734,11 +2902,11 @@ impl App {
         Ok(false)
     }
 
-    /// Validate and submit the assistant wizard. On success the wizard closes
-    /// and the new assistant is started; on failure the error message is
+    /// Validate and submit the agent wizard. On success the wizard closes
+    /// and the new agent is started; on failure the error message is
     /// surfaced inline so the user can correct and resubmit.
-    fn submit_assistant_wizard(&mut self) {
-        let Some(wizard) = self.assistant_wizard.as_ref() else {
+    fn submit_agent_wizard(&mut self) {
+        let Some(wizard) = self.agent_wizard.as_ref() else {
             return;
         };
         let kind = wizard.kind;
@@ -3748,17 +2916,17 @@ impl App {
         let browser_capability = wizard.browser_capability;
 
         if name.is_empty() {
-            if let Some(w) = self.assistant_wizard.as_mut() {
-                w.error_message = Some("Assistant name is required".to_string());
-                w.step = AssistantWizardStep::Name;
+            if let Some(w) = self.agent_wizard.as_mut() {
+                w.error_message = Some("AgentRecord name is required".to_string());
+                w.step = AgentWizardStep::Name;
             }
             return;
         }
 
         match kind {
-            AssistantWizardKind::Researcher | AssistantWizardKind::Operator => {
+            AgentWizardKind::Researcher | AgentWizardKind::Operator => {
                 let (kind_name, create_result) = match kind {
-                    AssistantWizardKind::Researcher => (
+                    AgentWizardKind::Researcher => (
                         "researcher",
                         use_cases::create_researcher(
                             &self.config,
@@ -3770,7 +2938,7 @@ impl App {
                             None,
                         ),
                     ),
-                    AssistantWizardKind::Operator => (
+                    AgentWizardKind::Operator => (
                         "operator",
                         use_cases::create_operator(
                             &self.config,
@@ -3785,28 +2953,28 @@ impl App {
                     _ => unreachable!(),
                 };
                 match create_result {
-                    Ok(_assistant) => {
-                        tracing::info!(project = %project, name = %name, kind = kind_name, "created assistant via wizard");
+                    Ok(_agent) => {
+                        tracing::info!(project = %project, name = %name, kind = kind_name, "created agent via wizard");
                         if let Err(e) =
-                            use_cases::start_assistant_session(&self.config, &project, &name, false)
+                            use_cases::start_agent_session(&self.config, &project, &name, false)
                         {
                             tracing::warn!(
                                 project = %project, name = %name, error = %e,
-                                "failed to start assistant session"
+                                "failed to start agent session"
                             );
                         }
                         self.set_status(format!("Created {kind_name}: {name}"));
-                        self.return_from_assistant_wizard();
+                        self.return_from_agent_wizard();
                     }
                     Err(e) => {
-                        tracing::warn!(project = %project, name = %name, kind = kind_name, error = %e, "failed to create assistant");
-                        if let Some(w) = self.assistant_wizard.as_mut() {
+                        tracing::warn!(project = %project, name = %name, kind = kind_name, error = %e, "failed to create agent");
+                        if let Some(w) = self.agent_wizard.as_mut() {
                             w.error_message = Some(format!("{e}"));
                         }
                     }
                 }
             }
-            AssistantWizardKind::Reviewer => {
+            AgentWizardKind::Reviewer => {
                 // Collect (repo, branch) rows; reject empties so we don't
                 // hand a half-filled row to the use-case.
                 let mut branches: Vec<(String, String)> = Vec::new();
@@ -3817,22 +2985,22 @@ impl App {
                         continue;
                     }
                     if r.is_empty() || b.is_empty() {
-                        if let Some(w) = self.assistant_wizard.as_mut() {
+                        if let Some(w) = self.agent_wizard.as_mut() {
                             w.error_message = Some(
                                 "Each row needs both a repo and a branch (Ctrl+D to remove)"
                                     .to_string(),
                             );
-                            w.step = AssistantWizardStep::Worktrees;
+                            w.step = AgentWizardStep::Worktrees;
                         }
                         return;
                     }
                     branches.push((r, b));
                 }
                 if branches.is_empty() {
-                    if let Some(w) = self.assistant_wizard.as_mut() {
+                    if let Some(w) = self.agent_wizard.as_mut() {
                         w.error_message =
                             Some("Reviewer needs at least one (repo, branch) pair".to_string());
-                        w.step = AssistantWizardStep::Worktrees;
+                        w.step = AgentWizardStep::Worktrees;
                     }
                     return;
                 }
@@ -3842,18 +3010,18 @@ impl App {
                     parent_dir: None,
                 };
                 match use_cases::create_reviewer(&self.config, &project, &name, &desc, spec) {
-                    Ok(_assistant) => {
+                    Ok(_agent) => {
                         tracing::info!(project = %project, name = %name, "created reviewer via wizard");
                         if let Err(e) =
-                            use_cases::start_assistant_session(&self.config, &project, &name, false)
+                            use_cases::start_agent_session(&self.config, &project, &name, false)
                         {
                             tracing::warn!(
                                 project = %project, name = %name, error = %e,
-                                "failed to start assistant session"
+                                "failed to start agent session"
                             );
                         }
                         self.set_status(format!("Created reviewer: {name}"));
-                        self.return_from_assistant_wizard();
+                        self.return_from_agent_wizard();
                     }
                     Err(e) => {
                         tracing::warn!(project = %project, name = %name, error = %e, "failed to create reviewer");
@@ -3861,14 +3029,14 @@ impl App {
                         // user-actionable error for the local-branch case;
                         // surface it verbatim so the user can either fix
                         // the branch state or pick a different one.
-                        if let Some(w) = self.assistant_wizard.as_mut() {
+                        if let Some(w) = self.agent_wizard.as_mut() {
                             w.error_message = Some(format!("{e}"));
-                            w.step = AssistantWizardStep::Worktrees;
+                            w.step = AgentWizardStep::Worktrees;
                         }
                     }
                 }
             }
-            AssistantWizardKind::Tester => {
+            AgentWizardKind::Tester => {
                 let mut branches: Vec<(String, String)> = Vec::new();
                 for row in &wizard.worktree_rows {
                     let r = row.repo();
@@ -3877,22 +3045,22 @@ impl App {
                         continue;
                     }
                     if r.is_empty() || b.is_empty() {
-                        if let Some(w) = self.assistant_wizard.as_mut() {
+                        if let Some(w) = self.agent_wizard.as_mut() {
                             w.error_message = Some(
                                 "Each row needs both a repo and a branch (Ctrl+D to remove)"
                                     .to_string(),
                             );
-                            w.step = AssistantWizardStep::Worktrees;
+                            w.step = AgentWizardStep::Worktrees;
                         }
                         return;
                     }
                     branches.push((r, b));
                 }
                 if branches.is_empty() {
-                    if let Some(w) = self.assistant_wizard.as_mut() {
+                    if let Some(w) = self.agent_wizard.as_mut() {
                         w.error_message =
                             Some("Tester needs at least one (repo, branch) pair".to_string());
-                        w.step = AssistantWizardStep::Worktrees;
+                        w.step = AgentWizardStep::Worktrees;
                     }
                     return;
                 }
@@ -3901,7 +3069,7 @@ impl App {
                     branches,
                     parent_dir: None,
                 };
-                let capabilities = agman::assistant::TesterCapabilities {
+                let capabilities = agman::agent_model::TesterCapabilities {
                     browser: browser_capability,
                 };
                 match use_cases::create_tester(
@@ -3912,24 +3080,24 @@ impl App {
                     spec,
                     capabilities,
                 ) {
-                    Ok(_assistant) => {
+                    Ok(_agent) => {
                         tracing::info!(project = %project, name = %name, "created tester via wizard");
                         if let Err(e) =
-                            use_cases::start_assistant_session(&self.config, &project, &name, false)
+                            use_cases::start_agent_session(&self.config, &project, &name, false)
                         {
                             tracing::warn!(
                                 project = %project, name = %name, error = %e,
-                                "failed to start assistant session"
+                                "failed to start agent session"
                             );
                         }
                         self.set_status(format!("Created tester: {name}"));
-                        self.return_from_assistant_wizard();
+                        self.return_from_agent_wizard();
                     }
                     Err(e) => {
                         tracing::warn!(project = %project, name = %name, error = %e, "failed to create tester");
-                        if let Some(w) = self.assistant_wizard.as_mut() {
+                        if let Some(w) = self.agent_wizard.as_mut() {
                             w.error_message = Some(format!("{e}"));
-                            w.step = AssistantWizardStep::Worktrees;
+                            w.step = AgentWizardStep::Worktrees;
                         }
                     }
                 }
@@ -4057,9 +3225,7 @@ impl App {
                     if let Some(&archive_idx) = filtered.get(self.archive_selected) {
                         let content = match self.archive_kind {
                             ArchiveKind::Tasks => self.archive_tasks[archive_idx].1.clone(),
-                            ArchiveKind::Assistants => {
-                                self.archive_assistants[archive_idx].1.clone()
-                            }
+                            ArchiveKind::Agents => self.archive_agents[archive_idx].1.clone(),
                         };
                         self.archive_preview = Some(content);
                         self.archive_scroll = 0;
@@ -4157,17 +3323,16 @@ impl App {
                             }
                         }
                     }
-                    ArchiveKind::Assistants => {
+                    ArchiveKind::Agents => {
                         let filtered = self.archive_filtered_indices();
-                        if let Some(&assistant_idx) = filtered.get(self.archive_selected) {
-                            let (assistant, _) = self.archive_assistants.remove(assistant_idx);
-                            let project = assistant.meta.project.clone();
-                            let name = assistant.meta.name.clone();
-                            if let Err(e) = use_cases::permanently_delete_archived_assistant(
-                                &self.config,
-                                assistant,
-                            ) {
-                                tracing::error!(project = %project, name = %name, error = %e, "failed to permanently delete archived assistant");
+                        if let Some(&agent_idx) = filtered.get(self.archive_selected) {
+                            let (agent, _) = self.archive_agents.remove(agent_idx);
+                            let project = agent.meta.project.clone();
+                            let name = agent.meta.name.clone();
+                            if let Err(e) =
+                                use_cases::permanently_delete_archived_agent(&self.config, agent)
+                            {
+                                tracing::error!(project = %project, name = %name, error = %e, "failed to permanently delete archived agent");
                                 self.set_status(format!("Delete failed: {e}"));
                             } else {
                                 self.set_status(format!("Deleted: {project}--{name}"));
@@ -4207,8 +3372,8 @@ impl App {
                                 self.create_wizard_from_picker(repo_name, repo_path, false)?;
 
                                 let prefill = format!(
-                                    "Reference: task \"{}\" (branch: {}). Examine ~/.agman/tasks/{}/TASK.md for context, and the git branch/PR if needed.\n\n\n",
-                                    task_id, branch_name, task_id,
+                                    "Reference: archived task \"{}\" (branch: {}). Examine the git branch/PR if needed.\n\n\n",
+                                    task_id, branch_name,
                                 );
                                 if let Some(wizard) = self.wizard.as_mut() {
                                     wizard.description_editor.textarea.insert_str(&prefill);
@@ -4216,22 +3381,22 @@ impl App {
                             }
                         }
                     }
-                    ArchiveKind::Assistants => {
+                    ArchiveKind::Agents => {
                         let filtered = self.archive_filtered_indices();
-                        if let Some(&assistant_idx) = filtered.get(self.archive_selected) {
-                            let assistant = &self.archive_assistants[assistant_idx].0;
-                            let project = assistant.meta.project.clone();
-                            let name = assistant.meta.name.clone();
-                            match use_cases::resume_assistant(&self.config, &project, &name) {
+                        if let Some(&agent_idx) = filtered.get(self.archive_selected) {
+                            let agent = &self.archive_agents[agent_idx].0;
+                            let project = agent.meta.project.clone();
+                            let name = agent.meta.name.clone();
+                            match use_cases::resume_agent(&self.config, &project, &name) {
                                 Ok(()) => {
-                                    self.set_status(format!("Restored assistant '{name}'"));
+                                    self.set_status(format!("Restored agent '{name}'"));
                                     self.archive_preview = None;
-                                    self.project_pane_focus = ProjectPaneFocus::Assistants;
+                                    self.project_pane_focus = ProjectPaneFocus::Agents;
                                     self.view = View::TaskList;
-                                    self.refresh_assistants();
+                                    self.refresh_agents();
                                 }
                                 Err(e) => {
-                                    tracing::error!(project = %project, name = %name, error = %e, "failed to restore archived assistant");
+                                    tracing::error!(project = %project, name = %name, error = %e, "failed to restore archived agent");
                                     self.set_status(format!("Restore failed: {e}"));
                                 }
                             }
@@ -4361,36 +3526,6 @@ impl App {
 
             // Action keys — handled before forwarding to VimTextArea
             match key.code {
-                KeyCode::Char('t') => {
-                    self.open_task_editor();
-                    return Ok(false);
-                }
-                KeyCode::Char('a') => {
-                    // 'a' is "answer" when task is InputNeeded; otherwise forward to editor
-                    if let Some(task) = self.selected_task() {
-                        if task.meta.status == TaskStatus::InputNeeded {
-                            self.open_task_editor();
-                            return Ok(false);
-                        }
-                    }
-                    // Fall through: for notes pane, 'a' triggers edit mode; for logs, blocked by read-only
-                }
-                KeyCode::Char('f') => {
-                    self.start_feedback();
-                    return Ok(false);
-                }
-                KeyCode::Char('x') => {
-                    self.open_command_list();
-                    return Ok(false);
-                }
-                KeyCode::Char('w') => {
-                    self.open_queue();
-                    return Ok(false);
-                }
-                KeyCode::Char('s') => {
-                    self.stop_task()?;
-                    return Ok(false);
-                }
                 KeyCode::Char('o') => {
                     let pr_info = self.selected_task().and_then(|t| {
                         t.meta
@@ -4407,11 +3542,7 @@ impl App {
                     return Ok(false);
                 }
                 KeyCode::Char('r') => {
-                    self.start_restart_wizard()?;
-                    return Ok(false);
-                }
-                KeyCode::Char('h') => {
-                    self.toggle_hold()?;
+                    self.restart_selected_task()?;
                     return Ok(false);
                 }
                 _ => {}
@@ -4481,81 +3612,6 @@ impl App {
                 self.notes_editing = false;
                 self.notes_editor.set_read_only(true);
                 self.save_notes()?;
-                return Ok(false);
-            }
-        }
-        Ok(false)
-    }
-
-    fn open_task_editor(&mut self) {
-        // Re-read the task file content from disk to ensure fresh content
-        if let Some(task) = self.selected_task() {
-            let content = task
-                .read_task()
-                .unwrap_or_else(|_| "No TASK.md available".to_string());
-            self.task_file_content = content.clone();
-
-            self.task_file_editor = VimTextArea::from_lines(content.lines());
-        }
-        self.view = View::TaskEditor;
-    }
-
-    fn handle_task_editor_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            // Check for Ctrl+S to save and close in any mode
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-                self.save_task_file()?;
-                self.task_file_editor.set_normal_mode();
-
-                // If the task is in InputNeeded state, resume the flow after saving
-                if self
-                    .selected_task()
-                    .is_some_and(|t| t.meta.status == TaskStatus::InputNeeded)
-                {
-                    self.resume_after_answering()?;
-                }
-
-                self.view = View::Preview;
-                return Ok(false);
-            }
-
-            let input = Input::from(event.clone());
-            let was_insert = self.task_file_editor.mode() == VimMode::Insert;
-
-            self.task_file_editor.input(input.clone());
-
-            let is_normal_now = self.task_file_editor.mode() == VimMode::Normal;
-
-            // If we pressed Esc while already in normal mode, cancel editing
-            if input.key == Key::Esc && !was_insert && is_normal_now {
-                self.view = View::Preview;
-                self.set_status("Task editor cancelled".to_string());
-                return Ok(false);
-            }
-        }
-        Ok(false)
-    }
-
-    fn handle_feedback_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            // Check for Ctrl+S to submit in any mode
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-                self.feedback_editor.set_normal_mode();
-                self.submit_feedback()?;
-                return Ok(false);
-            }
-
-            let input = Input::from(event.clone());
-            let was_insert = self.feedback_editor.mode() == VimMode::Insert;
-
-            self.feedback_editor.input(input.clone());
-
-            let is_normal_now = self.feedback_editor.mode() == VimMode::Normal;
-
-            // If we pressed Esc while already in normal mode, cancel feedback
-            if input.key == Key::Esc && !was_insert && is_normal_now {
-                self.view = View::Preview;
-                self.set_status("Feedback cancelled".to_string());
                 return Ok(false);
             }
         }
@@ -4869,169 +3925,6 @@ impl App {
                         return Ok(false);
                     }
                 }
-            }
-        }
-        Ok(false)
-    }
-
-    fn handle_command_list_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            // Check for Ctrl+C to quit
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                self.should_quit = true;
-                return Ok(false);
-            }
-
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.view = View::Preview;
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if !self.commands.is_empty() {
-                        self.selected_command_index =
-                            (self.selected_command_index + 1) % self.commands.len();
-                        self.command_list_state
-                            .select(Some(self.selected_command_index));
-                    }
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    if !self.commands.is_empty() {
-                        self.selected_command_index = if self.selected_command_index == 0 {
-                            self.commands.len() - 1
-                        } else {
-                            self.selected_command_index - 1
-                        };
-                        self.command_list_state
-                            .select(Some(self.selected_command_index));
-                    }
-                }
-                KeyCode::Enter => {
-                    self.run_selected_command()?;
-                }
-                _ => {}
-            }
-        }
-        Ok(false)
-    }
-
-    fn open_queue(&mut self) {
-        if let Some(task) = self.selected_task() {
-            if task.queued_item_count() == 0 {
-                self.set_status("No items queued for this task".to_string());
-                return;
-            }
-        } else {
-            self.set_status("No task selected".to_string());
-            return;
-        }
-        self.selected_queue_index = 0;
-        self.view = View::Queue;
-    }
-
-    fn handle_queue_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            // Check for Ctrl+C to quit
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                self.should_quit = true;
-                return Ok(false);
-            }
-
-            let queue_len = self
-                .selected_task()
-                .map(|t| t.queued_item_count())
-                .unwrap_or(0);
-
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.view = View::Preview;
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if queue_len > 0 {
-                        self.selected_queue_index = (self.selected_queue_index + 1) % queue_len;
-                    }
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    if queue_len > 0 {
-                        self.selected_queue_index = if self.selected_queue_index == 0 {
-                            queue_len - 1
-                        } else {
-                            self.selected_queue_index - 1
-                        };
-                    }
-                }
-                KeyCode::Char('d') | KeyCode::Delete => {
-                    self.delete_queue_item()?;
-                }
-                KeyCode::Char('c') => {
-                    self.clear_queue()?;
-                }
-                _ => {}
-            }
-        }
-        Ok(false)
-    }
-
-    fn handle_rebase_branch_picker_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                self.should_quit = true;
-                return Ok(false);
-            }
-
-            match key.code {
-                KeyCode::Esc => {
-                    self.view = View::Preview;
-                }
-                KeyCode::Up | KeyCode::Down => {
-                    let filtered = self.rebase_branch_filtered_indices();
-                    if !filtered.is_empty() {
-                        if key.code == KeyCode::Up {
-                            self.selected_rebase_branch_index =
-                                self.selected_rebase_branch_index.saturating_sub(1);
-                        } else {
-                            self.selected_rebase_branch_index =
-                                (self.selected_rebase_branch_index + 1).min(filtered.len() - 1);
-                        }
-                    }
-                }
-                KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let filtered = self.rebase_branch_filtered_indices();
-                    if !filtered.is_empty() {
-                        self.selected_rebase_branch_index =
-                            (self.selected_rebase_branch_index + 1).min(filtered.len() - 1);
-                    }
-                }
-                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.selected_rebase_branch_index =
-                        self.selected_rebase_branch_index.saturating_sub(1);
-                }
-                KeyCode::Enter => {
-                    let filtered = self.rebase_branch_filtered_indices();
-                    if let Some(&real_idx) = filtered.get(self.selected_rebase_branch_index) {
-                        if let Some(branch) = self.rebase_branches.get(real_idx).cloned() {
-                            self.run_branch_command(&branch)?;
-                        }
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.rebase_branch_search.input(Input {
-                        key: Key::Backspace,
-                        ctrl: false,
-                        alt: false,
-                        shift: false,
-                    });
-                    self.selected_rebase_branch_index = 0;
-                }
-                KeyCode::Char(c) => {
-                    self.rebase_branch_search.input(Input {
-                        key: Key::Char(c),
-                        ctrl: false,
-                        alt: false,
-                        shift: false,
-                    });
-                    self.selected_rebase_branch_index = 0;
-                }
-                _ => {}
             }
         }
         Ok(false)
@@ -5499,241 +4392,40 @@ impl App {
         Ok(false)
     }
 
-    fn delete_queue_item(&mut self) -> Result<()> {
-        if let Some(task) = self.tasks.get(self.selected_index) {
-            let queue_len = task.queued_item_count();
-            if queue_len == 0 {
-                return Ok(());
-            }
-
-            use_cases::delete_queue_item(task, self.selected_queue_index)?;
-
-            // Adjust selected index if needed
-            let remaining = task.queued_item_count();
-            if self.selected_queue_index >= remaining && self.selected_queue_index > 0 {
-                self.selected_queue_index -= 1;
-            }
-
-            if remaining == 0 {
-                self.view = View::Preview;
-                self.set_status("Queue cleared".to_string());
-            } else {
-                self.set_status(format!("Removed item ({} remaining)", remaining));
-            }
-        }
-        Ok(())
-    }
-
-    fn clear_queue(&mut self) -> Result<()> {
-        if let Some(task) = self.tasks.get_mut(self.selected_index) {
-            use_cases::clear_queue(task)?;
-            self.view = View::Preview;
-            self.set_status("Queue cleared".to_string());
-        }
-        Ok(())
-    }
-
-    // === Restart Wizard Methods ===
-
-    fn start_restart_wizard(&mut self) -> Result<()> {
+    fn restart_selected_task(&mut self) -> Result<()> {
         if self.tasks.is_empty() {
             return Ok(());
         }
-
-        // Extract task info before mutable borrows
-        let (task_id, status, flow_name, tmux_session, task_content) = match self.selected_task() {
-            Some(t) => {
-                let tmux_session = if t.meta.has_repos() {
-                    t.meta.primary_repo().tmux_session.clone()
-                } else if t.meta.is_multi_repo() {
-                    Config::tmux_session_name(&t.meta.name, &t.meta.branch_name)
-                } else {
-                    return Ok(());
-                };
-                (
-                    t.meta.task_id(),
-                    t.meta.status,
-                    t.meta.flow_name.clone(),
-                    tmux_session,
-                    t.read_task()
-                        .unwrap_or_else(|_| "No TASK.md available".to_string()),
-                )
+        let task_id = match self.selected_task() {
+            Some(task) if task.meta.has_repos() || task.meta.is_multi_repo() => task.meta.task_id(),
+            Some(task) => {
+                self.set_status(format!(
+                    "Task {} has no repos configured",
+                    task.meta.task_id()
+                ));
+                return Ok(());
             }
             None => return Ok(()),
         };
-
-        // If task is running, stop it first via the supervisor pathway. This
-        // kills the live harness, finalizes the session, and restores any
-        // pre-command flow snapshot — same as the `s` keybinding.
-        if status == TaskStatus::Running {
-            let config = self.config.clone();
-            if let Some(task) = self.tasks.get_mut(self.selected_index) {
-                if let Err(e) = use_cases::stop_task(&config, task) {
-                    tracing::warn!(
-                        task_id = %task_id,
-                        error = %e,
-                        "failed to stop task before rerun"
-                    );
-                }
-            }
-            tracing::info!(task_id = %task_id, old_status = "running", new_status = "stopped", "stopped task before rerun");
-            self.log_output(format!("Stopped {} before rerun", task_id));
-        }
-        // tmux_session is no longer used directly here — honor_stop handles
-        // the agman pane. Keep the binding for compile-time clarity.
-        let _ = &tmux_session;
-
-        // Load flow to enumerate steps
-        let flow_path = self.config.flow_path(&flow_name);
-        let flow = match Flow::load(&flow_path) {
-            Ok(f) => f,
-            Err(e) => {
-                self.set_status(format!("Failed to load flow '{}': {}", flow_name, e));
-                return Ok(());
-            }
-        };
-
-        let flow_steps: Vec<String> = flow
-            .steps
+        let task_idx = match self
+            .tasks
             .iter()
-            .enumerate()
-            .map(|(i, s)| s.display_label(i))
-            .collect();
-
-        if flow_steps.is_empty() {
-            self.set_status("Flow has no steps".to_string());
-            return Ok(());
+            .position(|task| task.meta.task_id() == task_id)
+        {
+            Some(idx) => idx,
+            None => return Ok(()),
+        };
+        let launch_error = supervisor::ensure_task_tmux(&self.config, &self.tasks[task_idx])
+            .and_then(|_| {
+                supervisor::launch_next_step(&self.config, &mut self.tasks[task_idx]).map(|_| ())
+            })
+            .err();
+        match launch_error {
+            None => self.set_status(format!("Restarted engineer for {}", task_id)),
+            Some(e) => self.set_status(format!("Restart failed: {}", e)),
         }
-
-        let task_editor = VimTextArea::from_lines(task_content.lines());
-
-        // Load preview if coming from TaskList
-        if self.view == View::TaskList {
-            self.load_preview();
-        }
-
-        self.restart_wizard = Some(RestartWizard {
-            step: RestartWizardStep::EditTask,
-            task_editor,
-            flow_steps,
-            selected_step_index: 0,
-            task_id,
-        });
-
-        self.view = View::RestartWizard;
+        self.refresh_tasks_and_select(&task_id);
         Ok(())
-    }
-
-    fn handle_restart_wizard_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            // Ctrl+C to quit
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                self.should_quit = true;
-                return Ok(false);
-            }
-
-            let wizard_step = match &self.restart_wizard {
-                Some(w) => w.step,
-                None => {
-                    self.view = View::Preview;
-                    return Ok(false);
-                }
-            };
-
-            match wizard_step {
-                RestartWizardStep::EditTask => {
-                    // Ctrl+S: save TASK.md and advance to SelectAgent
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('s')
-                    {
-                        // Save TASK.md
-                        let content = self
-                            .restart_wizard
-                            .as_ref()
-                            .map(|w| w.task_editor.lines_joined())
-                            .unwrap_or_default();
-                        let task_id = self
-                            .restart_wizard
-                            .as_ref()
-                            .map(|w| w.task_id.clone())
-                            .unwrap_or_default();
-                        if let Some(task) = self.tasks.iter().find(|t| t.meta.task_id() == task_id)
-                        {
-                            let _ = task.write_task(&content);
-                        }
-                        self.set_status("TASK.md saved".to_string());
-
-                        if let Some(w) = &mut self.restart_wizard {
-                            w.task_editor.set_normal_mode();
-                            w.step = RestartWizardStep::SelectAgent;
-                        }
-                        return Ok(false);
-                    }
-
-                    // Tab: skip to SelectAgent without saving
-                    if key.code == KeyCode::Tab {
-                        if let Some(w) = &mut self.restart_wizard {
-                            w.task_editor.set_normal_mode();
-                            w.step = RestartWizardStep::SelectAgent;
-                        }
-                        return Ok(false);
-                    }
-
-                    let input = Input::from(event.clone());
-                    let was_insert = self
-                        .restart_wizard
-                        .as_ref()
-                        .map(|w| w.task_editor.mode() == VimMode::Insert)
-                        .unwrap_or(false);
-
-                    if let Some(w) = &mut self.restart_wizard {
-                        w.task_editor.input(input.clone());
-                    }
-
-                    let is_normal_now = self
-                        .restart_wizard
-                        .as_ref()
-                        .map(|w| w.task_editor.mode() == VimMode::Normal)
-                        .unwrap_or(false);
-
-                    // Esc in normal mode → cancel wizard
-                    if input.key == Key::Esc && !was_insert && is_normal_now {
-                        self.restart_wizard = None;
-                        self.view = View::Preview;
-                        self.set_status("Restart cancelled".to_string());
-                        return Ok(false);
-                    }
-                }
-                RestartWizardStep::SelectAgent => match key.code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if let Some(w) = &mut self.restart_wizard {
-                            let max = w.flow_steps.len().saturating_sub(1);
-                            if w.selected_step_index < max {
-                                w.selected_step_index += 1;
-                            }
-                        }
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        if let Some(w) = &mut self.restart_wizard {
-                            if w.selected_step_index > 0 {
-                                w.selected_step_index -= 1;
-                            }
-                        }
-                    }
-                    KeyCode::Enter => {
-                        self.execute_restart_wizard()?;
-                    }
-                    KeyCode::Esc => {
-                        // Go back to EditTask step
-                        if let Some(w) = &mut self.restart_wizard {
-                            w.step = RestartWizardStep::EditTask;
-                        }
-                    }
-                    _ => {}
-                },
-            }
-        }
-        Ok(false)
     }
 
     fn handle_directory_picker_event(&mut self, event: Event) -> Result<bool> {
@@ -5901,16 +4593,7 @@ impl App {
         let targets: Vec<_> =
             use_cases::collect_inbox_poll_targets(&self.config, Tmux::session_exists)
                 .into_iter()
-                .map(|t| {
-                    (
-                        t.name,
-                        t.inbox_path,
-                        t.seq_path,
-                        t.session_name,
-                        t.window,
-                        t.rearm_path,
-                    )
-                })
+                .map(|t| (t.name, t.inbox_path, t.seq_path, t.session_name, t.window))
                 .collect();
 
         if targets.is_empty() {
@@ -5928,28 +4611,8 @@ impl App {
                 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
                 let mut results = Vec::new();
-                for (target, inbox_path, seq_path, session_name, window, rearm_path) in targets {
+                for (target, inbox_path, seq_path, session_name, window) in targets {
                     let window_ref = window.as_deref();
-
-                    // Cold-start re-arm: the supervisor touches `.inbox-rearm`
-                    // across kill→relaunch transitions because the gap between
-                    // the dying and freshly launched claude (~500ms) is shorter
-                    // than the poll interval (~2s), so the poller almost never
-                    // observes the brief shell state. Drop the stale
-                    // `first_ready_at` entry and delete the marker so the next
-                    // observed-ready tick restarts the 5s buffer from zero.
-                    if let Some(path) = rearm_path.as_ref() {
-                        if path.exists() {
-                            first_ready_at.remove(&target);
-                            if let Err(e) = std::fs::remove_file(path) {
-                                tracing::debug!(
-                                    target_name = &target,
-                                    error = %e,
-                                    "failed to remove .inbox-rearm marker"
-                                );
-                            }
-                        }
-                    }
 
                     let undelivered = match inbox::read_undelivered(&inbox_path, &seq_path) {
                         Ok(msgs) => msgs,
@@ -6193,180 +4856,6 @@ impl App {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Supervisor polling (drives flow progression for interactive-claude tasks)
-    // -----------------------------------------------------------------------
-
-    /// Spawn a background poll of every Running task's supervisor sentinel.
-    /// For each task with a live session (`meta.session_history.last()`),
-    /// call `supervisor::poll` and collect the outcome so the main loop can
-    /// log it. Dispatch (advance flow, launch next agent, notify PM) is NOT
-    /// wired yet — this iteration is observation-only.
-    fn start_supervisor_poll(&mut self) {
-        if self.supervisor_poll_active {
-            return;
-        }
-        self.supervisor_poll_active = true;
-        let config = self.config.clone();
-        let tx = self.supervisor_poll_tx.clone();
-
-        self.rt.spawn(async move {
-            let output = tokio::task::spawn_blocking(move || {
-                let mut items = Vec::new();
-                for task in Task::list_all(&config) {
-                    match supervisor::classify(&task) {
-                        supervisor::PollTarget::Skip => continue,
-                        supervisor::PollTarget::LiveSession { session_name } => {
-                            match supervisor::poll(&task) {
-                                Ok(outcome) => items.push(SupervisorPollItem::Tick {
-                                    task_id: task.meta.task_id(),
-                                    session_name,
-                                    outcome,
-                                }),
-                                Err(e) => {
-                                    tracing::warn!(
-                                        task_id = %task.meta.task_id(),
-                                        error = %e,
-                                        "supervisor poll failed"
-                                    );
-                                }
-                            }
-                        }
-                        supervisor::PollTarget::NeedsLaunch => {
-                            items.push(SupervisorPollItem::NeedsLaunch {
-                                task_id: task.meta.task_id(),
-                            });
-                        }
-                    }
-                }
-                SupervisorPollOutput { items }
-            })
-            .await
-            .unwrap_or_else(|_| SupervisorPollOutput { items: Vec::new() });
-            let _ = tx.send(output);
-        });
-    }
-
-    /// Drain any completed supervisor poll and dispatch outcomes.
-    ///
-    /// For `Condition(_)` this reloads the task from disk, calls
-    /// `supervisor::advance` (which applies the condition, advances the flow
-    /// step if appropriate, and launches the next agent), and logs the result.
-    /// For `StopRequested` this honors the `.stop` sentinel by killing the
-    /// running claude and transitioning the task to Stopped.
-    fn apply_supervisor_poll_results(&mut self) {
-        let output = match self.supervisor_poll_rx.try_recv() {
-            Ok(r) => r,
-            Err(_) => return,
-        };
-        self.supervisor_poll_active = false;
-
-        for item in output.items {
-            match item {
-                SupervisorPollItem::Tick {
-                    task_id,
-                    session_name,
-                    outcome,
-                } => match outcome {
-                    supervisor::PollOutcome::Idle => {}
-                    supervisor::PollOutcome::StopRequested => {
-                        tracing::info!(
-                            task_id = %task_id,
-                            session_name = %session_name,
-                            "supervisor poll: honoring stop sentinel"
-                        );
-                        let mut task = match Task::load_by_id(&self.config, &task_id) {
-                            Ok(t) => t,
-                            Err(e) => {
-                                tracing::warn!(
-                                    task_id = %task_id,
-                                    error = %e,
-                                    "failed to reload task for stop dispatch"
-                                );
-                                continue;
-                            }
-                        };
-                        if let Err(e) = supervisor::honor_stop(&self.config, &mut task) {
-                            tracing::error!(
-                                task_id = %task_id,
-                                error = %e,
-                                "supervisor honor_stop failed"
-                            );
-                        }
-                    }
-                    supervisor::PollOutcome::Condition(cond) => {
-                        tracing::info!(
-                            task_id = %task_id,
-                            session_name = %session_name,
-                            condition = %cond,
-                            "supervisor poll: dispatching condition"
-                        );
-                        let mut task = match Task::load_by_id(&self.config, &task_id) {
-                            Ok(t) => t,
-                            Err(e) => {
-                                tracing::warn!(
-                                    task_id = %task_id,
-                                    error = %e,
-                                    "failed to reload task for advance dispatch"
-                                );
-                                continue;
-                            }
-                        };
-                        match supervisor::advance(&self.config, &mut task, cond) {
-                            Ok(outcome) => {
-                                tracing::info!(
-                                    task_id = %task_id,
-                                    outcome = ?outcome,
-                                    "supervisor advance completed"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    task_id = %task_id,
-                                    error = %e,
-                                    "supervisor advance failed"
-                                );
-                            }
-                        }
-                    }
-                },
-                SupervisorPollItem::NeedsLaunch { task_id } => {
-                    tracing::info!(
-                        task_id = %task_id,
-                        "supervisor poll: half-state detected, retrying launch_next_step"
-                    );
-                    let mut task = match Task::load_by_id(&self.config, &task_id) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            tracing::warn!(
-                                task_id = %task_id,
-                                error = %e,
-                                "failed to reload task for relaunch"
-                            );
-                            continue;
-                        }
-                    };
-                    match supervisor::launch_next_step(&self.config, &mut task) {
-                        Ok(outcome) => {
-                            tracing::info!(
-                                task_id = %task_id,
-                                outcome = ?outcome,
-                                "supervisor relaunch completed"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                task_id = %task_id,
-                                error = %e,
-                                "supervisor relaunch failed"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     fn apply_respawn_results(&mut self) {
         let result = match self.respawn_rx.try_recv() {
             Ok(r) => r,
@@ -6386,143 +4875,6 @@ impl App {
             Err(e) => {
                 tracing::error!(target = %target, error = %e, "failed to respawn agent");
                 self.set_status(format!("respawn failed: {e}"));
-            }
-        }
-    }
-
-    /// Spawn a background task to poll linked PRs for all eligible tasks.
-    /// Uses tokio's spawn_blocking to run `gh pr view` calls off the main thread
-    /// and sends results back via the channel so the TUI stays responsive.
-    fn start_pr_poll(&mut self) {
-        if self.pr_poll_active {
-            return;
-        }
-
-        let eligible: Vec<(String, u64, PathBuf, Option<u64>)> = self
-            .tasks
-            .iter()
-            .filter(|t| {
-                t.meta.status == TaskStatus::Stopped
-                    && t.meta.has_repos()
-                    && t.meta.linked_pr.as_ref().is_some_and(|pr| pr.owned)
-            })
-            .map(|t| {
-                let pr = t.meta.linked_pr.as_ref().unwrap();
-                (
-                    t.meta.task_id(),
-                    pr.number,
-                    t.meta.primary_repo().worktree_path.clone(),
-                    t.meta.last_review_count,
-                )
-            })
-            .collect();
-
-        if eligible.is_empty() {
-            return;
-        }
-
-        self.pr_poll_active = true;
-        let tx = self.pr_poll_tx.clone();
-
-        self.rt.spawn(async move {
-            let results = tokio::task::spawn_blocking(move || run_pr_queries(eligible))
-                .await
-                .unwrap_or_default();
-            let _ = tx.send(results);
-        });
-    }
-
-    /// Check for completed PR poll results (non-blocking) and apply actions.
-    fn apply_pr_poll_results(&mut self) {
-        let results = match self.pr_poll_rx.try_recv() {
-            Ok(r) => r,
-            Err(_) => return,
-        };
-        self.pr_poll_active = false;
-
-        // First: handle non-delete actions
-        for result in &results {
-            match &result.action {
-                use_cases::PrPollAction::AddressReview { .. } => {
-                    if let Some(task) = self
-                        .tasks
-                        .iter_mut()
-                        .find(|t| t.meta.task_id() == result.task_id)
-                    {
-                        let _ = use_cases::update_last_review_count(task, result.review_count);
-                        let _ = use_cases::set_review_addressed(task, false);
-
-                        if let Err(e) = supervisor::ensure_task_tmux(task) {
-                            self.log_output(format!(
-                                "Failed to prepare tmux for {}: {}",
-                                result.task_id, e
-                            ));
-                            continue;
-                        }
-
-                        match use_cases::queue_command(task, &self.config, "address-review", None) {
-                            Ok(_) => {
-                                let _ = use_cases::set_review_addressed(task, true);
-                                self.log_output(format!(
-                                    "Auto-triggered address-review for {}: new review on PR #{}",
-                                    result.task_id, result.pr_number
-                                ));
-                            }
-                            Err(e) => {
-                                self.log_output(format!(
-                                    "Failed to auto-trigger address-review for {}: {}",
-                                    result.task_id, e
-                                ));
-                            }
-                        }
-                    }
-                }
-                use_cases::PrPollAction::None => {
-                    if let Some(task) = self
-                        .tasks
-                        .iter_mut()
-                        .find(|t| t.meta.task_id() == result.task_id)
-                    {
-                        if task.meta.last_review_count.is_none() {
-                            let _ = use_cases::update_last_review_count(task, result.review_count);
-                        }
-                    }
-                }
-                use_cases::PrPollAction::DeleteMerged => {} // handled below
-            }
-        }
-
-        // Then: handle deletions
-        let to_delete: Vec<(String, u64)> = results
-            .iter()
-            .filter(|r| matches!(r.action, use_cases::PrPollAction::DeleteMerged))
-            .map(|r| (r.task_id.clone(), r.pr_number))
-            .collect();
-
-        for (task_id, pr_number) in to_delete {
-            if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
-                let mut task = self.tasks.remove(idx);
-
-                // Kill all tmux sessions for the task
-                for repo in &task.meta.repos {
-                    let _ = Tmux::kill_session(&repo.tmux_session);
-                }
-                if task.meta.is_multi_repo() {
-                    let parent_session =
-                        Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
-                    let _ = Tmux::kill_session(&parent_session);
-                }
-
-                let _ = use_cases::archive_task(&self.config, &mut task, false);
-
-                self.log_output(format!(
-                    "Auto-archived task {}: PR #{} merged",
-                    task_id, pr_number
-                ));
-
-                if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
-                    self.selected_index = self.tasks.len() - 1;
-                }
             }
         }
     }
@@ -6562,7 +4914,7 @@ impl App {
 
         self.notifications = result.notifications;
 
-        // Auto-dismiss CI/workflow failure notifications
+        // Auto-dismiss CI/workagent failure notifications
         let ci_notifs: Vec<(String, String, String)> = self
             .notifications
             .iter()
@@ -6779,85 +5131,12 @@ impl App {
             "applied keybase poll results"
         );
     }
-
-    fn execute_restart_wizard(&mut self) -> Result<()> {
-        let (task_id, selected_step_index) = match &self.restart_wizard {
-            Some(w) => (w.task_id.clone(), w.selected_step_index),
-            None => return Ok(()),
-        };
-
-        tracing::info!(task_id = %task_id, step = selected_step_index, "TUI: rerun task from wizard");
-        // Find the task and update it
-        let task_idx = match self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
-            Some(i) => i,
-            None => {
-                self.set_status(format!("Task {} not found", task_id));
-                self.restart_wizard = None;
-                self.view = View::TaskList;
-                return Ok(());
-            }
-        };
-
-        let task_meta = &self.tasks[task_idx].meta;
-        if !task_meta.has_repos() && !task_meta.is_multi_repo() {
-            self.set_status(format!("Task {} has no repos configured", task_id));
-            self.restart_wizard = None;
-            self.view = View::TaskList;
-            return Ok(());
-        }
-
-        // Set flow_step and status, then launch via supervisor.
-        use_cases::restart_task(&mut self.tasks[task_idx], selected_step_index)?;
-        let _ = use_cases::set_review_addressed(&mut self.tasks[task_idx], false);
-
-        let task = &mut self.tasks[task_idx];
-        let launch_error = supervisor::ensure_task_tmux(task)
-            .and_then(|_| supervisor::launch_next_step(&self.config, task).map(|_| ()))
-            .err();
-
-        match launch_error {
-            None => {
-                self.set_status(format!(
-                    "Rerun: {} from step {}",
-                    task_id, selected_step_index
-                ));
-            }
-            Some(e) => {
-                tracing::error!(task_id = %task_id, error = %e, "failed to relaunch via supervisor");
-                self.set_status(format!("Rerun failed: {}", e));
-            }
-        }
-
-        self.restart_wizard = None;
-        self.view = View::TaskList;
-        self.refresh_tasks_and_select(&task_id);
-
-        Ok(())
-    }
 }
 
 impl Drop for App {
     fn drop(&mut self) {
         self.stop_caffeinate();
     }
-}
-
-/// Score a branch name against search terms for relevance ranking.
-/// Higher score = more relevant. Used by `rebase_branch_filtered_indices()`.
-fn branch_search_score(branch: &str, terms: &[&str]) -> i64 {
-    let branch_lower = branch.to_lowercase();
-    let segments: Vec<&str> = branch_lower.split(['/', '-']).collect();
-    let mut score: i64 = 0;
-    for term in terms {
-        if branch_lower == *term {
-            score += 1000;
-        } else if segments.iter().any(|seg| seg.starts_with(term)) {
-            score += 100;
-        }
-    }
-    // Shorter branch names rank higher as tiebreaker
-    score -= branch.len() as i64;
-    score
 }
 
 pub fn run_tui(config: Config) -> Result<()> {
@@ -6955,27 +5234,16 @@ pub fn run_tui(config: Config) -> Result<()> {
                 break;
             }
 
-            // Periodic refresh (drives visible project data and assistant activity)
+            // Periodic refresh (drives visible project data and agent activity)
             if last_refresh.elapsed() >= refresh_interval {
                 if app.view == View::ProjectList {
                     app.refresh_projects();
                 } else if app.view == View::TaskList {
                     app.refresh_tasks_for_project();
-                    app.refresh_assistants();
-                    // Check for stranded queue items on stopped tasks
-                    app.process_stranded_queue();
+                    app.refresh_agents();
                 }
                 last_refresh = Instant::now();
             }
-
-            // Poll linked PRs every 60 seconds (regardless of view)
-            if app.last_pr_poll.elapsed() >= Duration::from_secs(60) {
-                app.start_pr_poll();
-                app.last_pr_poll = Instant::now();
-            }
-
-            // Check for completed background PR poll results (non-blocking)
-            app.apply_pr_poll_results();
 
             // Poll GitHub notifications every 60 seconds (regardless of view)
             if app.last_gh_notif_poll.elapsed() >= Duration::from_secs(60) {
@@ -7012,15 +5280,6 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed inbox poll results (non-blocking)
             app.apply_inbox_poll_results();
-
-            // Poll task supervisor sentinels every 3 seconds. The supervisor
-            // drives flow progression — `apply_supervisor_poll_results` reacts
-            // to detected stop conditions and calls into `supervisor::advance`.
-            if app.last_supervisor_poll.elapsed() >= Duration::from_secs(3) {
-                app.start_supervisor_poll();
-                app.last_supervisor_poll = Instant::now();
-            }
-            app.apply_supervisor_poll_results();
 
             // Check for completed respawn results (non-blocking)
             app.apply_respawn_results();

@@ -1,5 +1,9 @@
 mod helpers;
 
+use agman::agent_model::{AgentAttachment, AgentKind, AgentRecord};
+use agman::inbox;
+use agman::task::{Task, TaskMeta};
+use agman::use_cases;
 use helpers::test_config;
 use std::fs;
 
@@ -39,10 +43,10 @@ fn migration_renames_legacy_ceo_dir() {
 }
 
 /// Legacy `~/.agman/researchers/` should be renamed to
-/// `~/.agman/assistants/` and each `meta.json` rewritten to the new
-/// kind-discriminated `AssistantMeta` shape with `kind: Researcher`.
+/// `~/.agman/agents/` and each `meta.json` rewritten to the new
+/// kind-discriminated agent shape with `kind: Researcher`.
 #[test]
-fn migration_renames_researchers_to_assistants_and_stamps_kind() {
+fn migration_renames_researchers_to_agents_and_stamps_kind() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
@@ -72,14 +76,14 @@ fn migration_renames_researchers_to_assistants_and_stamps_kind() {
 
     config.ensure_dirs().unwrap();
 
-    let assistants_dir = config.assistants_dir();
-    assert!(assistants_dir.exists(), "assistants dir should exist");
+    let agents_dir = config.agents_dir();
+    assert!(agents_dir.exists(), "agents dir should exist");
     assert!(
         !legacy_root.exists(),
         "legacy researchers dir should be gone"
     );
 
-    let new_entry = assistants_dir.join("alpha--scout");
+    let new_entry = agents_dir.join("alpha--scout");
     assert!(new_entry.exists());
 
     let migrated_meta: serde_json::Value =
@@ -108,18 +112,18 @@ fn migration_renames_researchers_to_assistants_and_stamps_kind() {
     assert!(new_entry.exists());
 }
 
-/// Legacy global assistant dirs are removed instead of being migrated forward.
+/// Legacy global agent dirs are removed instead of being migrated forward.
 #[test]
-fn migration_removes_legacy_global_assistant_dirs() {
+fn migration_removes_legacy_global_agent_dirs() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
-    let assistants_dir = config.assistants_dir();
-    let legacy = assistants_dir.join("ceo--scout");
+    let agents_dir = config.agents_dir();
+    let legacy = agents_dir.join("ceo--scout");
     fs::create_dir_all(&legacy).unwrap();
-    let cos = assistants_dir.join("chief-of-staff--legacy");
+    let cos = agents_dir.join("chief-of-staff--legacy");
     fs::create_dir_all(&cos).unwrap();
-    let kept = assistants_dir.join("alpha--kept");
+    let kept = agents_dir.join("alpha--kept");
     fs::create_dir_all(&kept).unwrap();
     let meta = serde_json::json!({
         "name": "scout",
@@ -139,12 +143,12 @@ fn migration_removes_legacy_global_assistant_dirs() {
     config.ensure_dirs().unwrap();
 
     assert!(!legacy.exists(), "legacy ceo-- dir should be gone");
-    assert!(!cos.exists(), "chief-of-staff assistant dir should be gone");
-    assert!(kept.exists(), "project-scoped assistant dir should remain");
+    assert!(!cos.exists(), "chief-of-staff agent dir should be gone");
+    assert!(kept.exists(), "project-scoped agent dir should remain");
 }
 
 /// `~/.agman/telegram/current-agent` containing `"ceo"` should be rewritten to
-/// `"chief-of-staff"`. Global assistant references should be reset there too.
+/// `"chief-of-staff"`. Global agent references should be reset there too.
 #[test]
 fn migration_rewrites_telegram_current_agent() {
     let tmp = tempfile::tempdir().unwrap();
@@ -167,7 +171,7 @@ fn migration_rewrites_telegram_current_agent() {
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
         "chief-of-staff",
-        "global assistant current-agent should reset to CoS"
+        "global agent current-agent should reset to CoS"
     );
 
     fs::write(&path, "operator:chief-of-staff--ops").unwrap();
@@ -175,11 +179,67 @@ fn migration_rewrites_telegram_current_agent() {
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
         "chief-of-staff",
-        "chief-of-staff assistant current-agent should reset to CoS"
+        "chief-of-staff agent current-agent should reset to CoS"
     );
 
     // Unrelated value left alone.
     fs::write(&path, "some-project").unwrap();
     config.ensure_dirs().unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "some-project");
+}
+
+#[test]
+fn task_migration_creates_seeded_engineer_for_active_task_without_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let task_dir = config.task_dir("repo", "feature");
+    fs::create_dir_all(&task_dir).unwrap();
+    let worktree_path = config.worktree_path("repo", "feature");
+    fs::create_dir_all(&worktree_path).unwrap();
+
+    let mut meta = TaskMeta::new(
+        "repo".to_string(),
+        "feature".to_string(),
+        worktree_path,
+        "new".to_string(),
+    );
+    meta.project = Some("alpha".to_string());
+    let task = Task {
+        meta,
+        dir: task_dir.clone(),
+    };
+    task.save_meta().unwrap();
+    fs::write(
+        task_dir.join("TASK.md"),
+        "# Legacy Goal\n\nKeep the old brief as context.\n",
+    )
+    .unwrap();
+
+    use_cases::migrate_old_tasks(&config);
+    use_cases::migrate_old_tasks(&config);
+
+    let agents: Vec<_> = AgentRecord::list_all(&config)
+        .unwrap()
+        .into_iter()
+        .filter(|agent| {
+            matches!(agent.meta.kind, AgentKind::Engineer)
+                && matches!(
+                    &agent.meta.attachment,
+                    AgentAttachment::Task { task_id, .. } if task_id == "repo--feature"
+                )
+        })
+        .collect();
+    assert_eq!(agents.len(), 1, "migration should be idempotent");
+    assert_eq!(agents[0].meta.project, "alpha");
+
+    let messages = inbox::read_messages(&config.agent_inbox("alpha", &agents[0].meta.name))
+        .expect("engineer inbox should be readable");
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].message.contains("Migration note"));
+    assert!(messages[0].message.contains("Legacy Goal"));
+    assert!(messages[0]
+        .message
+        .contains("included only as recovered background"));
 }

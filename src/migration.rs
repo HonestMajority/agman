@@ -6,12 +6,11 @@
 //!
 //! Steps:
 //! 1. Rename `~/.agman/ceo/` → `~/.agman/chief-of-staff/` (bail if both exist).
-//! 2. Rename `~/.agman/researchers/` → `~/.agman/assistants/` (bail if both
-//!    exist) and rewrite each `meta.json` to the new kind-discriminated
-//!    `AssistantMeta` shape with `kind: Researcher`, then purge any legacy
-//!    global assistant dirs (`ceo--*` or `chief-of-staff--*`).
+//! 2. Move old researcher records into `~/.agman/agents/`, rewrite their
+//!    `meta.json` files to the kind-discriminated shape, then purge any old
+//!    global agent dirs (`ceo--*` or `chief-of-staff--*`).
 //! 3. Rewrite `~/.agman/telegram/current-agent` if it points to `"ceo"` or
-//!    a global assistant.
+//!    a global agent.
 //! 4. Kill the legacy `agman-ceo` tmux session if it is still running.
 //!
 //! Inbox JSONL files are explicitly NOT rewritten — they are append-only logs.
@@ -24,8 +23,8 @@ use crate::config::Config;
 /// Run all idempotent legacy migrations.
 pub fn run(config: &Config) -> Result<()> {
     migrate_ceo_dir(config)?;
-    migrate_researchers_to_assistants(config)?;
-    crate::use_cases::purge_chief_of_staff_assistants(config);
+    migrate_legacy_agents_dir(config)?;
+    crate::use_cases::purge_chief_of_staff_agents(config);
     migrate_telegram_current_agent(config)?;
     kill_legacy_tmux_session();
     Ok(())
@@ -57,39 +56,49 @@ fn migrate_ceo_dir(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Step 2a: rename `~/.agman/researchers/` → `~/.agman/assistants/` and
-/// rewrite every `meta.json` from the old `ResearcherMeta` shape to the new
-/// kind-discriminated `AssistantMeta` (with `kind: Researcher`).
-fn migrate_researchers_to_assistants(config: &Config) -> Result<()> {
-    let legacy = config.base_dir.join("researchers");
-    let new = config.assistants_dir();
+/// Step 2a: move old researcher directories to `~/.agman/agents/` and rewrite
+/// their records to the current kind-discriminated shape.
+fn migrate_legacy_agents_dir(config: &Config) -> Result<()> {
+    let researchers = config.base_dir.join("researchers");
+    let new = config.agents_dir();
 
-    if !legacy.exists() {
+    if !researchers.exists() {
+        rewrite_legacy_agent_meta_files(&new);
         return Ok(());
     }
     if new.exists() {
         bail!(
             "migration: both legacy {} and new {} exist — refusing to merge automatically",
-            legacy.display(),
+            researchers.display(),
             new.display()
         );
     }
 
-    std::fs::rename(&legacy, &new)
-        .with_context(|| format!("failed to rename {} to {}", legacy.display(), new.display()))?;
+    std::fs::rename(&researchers, &new).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            researchers.display(),
+            new.display()
+        )
+    })?;
     tracing::info!(
-        from = %legacy.display(),
+        from = %researchers.display(),
         to = %new.display(),
-        "migration: renamed researchers dir to assistants"
+        "migration: renamed legacy agent dir to agents"
     );
 
+    rewrite_legacy_agent_meta_files(&new);
+    Ok(())
+}
+
+fn rewrite_legacy_agent_meta_files(new: &Path) {
     // Rewrite each meta.json into the new shape. Best-effort; per-entry
     // failures are logged but do not abort startup.
-    let entries = match std::fs::read_dir(&new) {
+    let entries = match std::fs::read_dir(new) {
         Ok(e) => e,
         Err(e) => {
-            tracing::warn!(error = %e, dir = %new.display(), "migration: failed to read assistants dir");
-            return Ok(());
+            tracing::warn!(error = %e, dir = %new.display(), "migration: failed to read agents dir");
+            return;
         }
     };
     for entry in entries.flatten() {
@@ -97,21 +106,20 @@ fn migrate_researchers_to_assistants(config: &Config) -> Result<()> {
         if !path.is_dir() {
             continue;
         }
-        if let Err(e) = rewrite_legacy_assistant_meta(&path) {
+        if let Err(e) = rewrite_legacy_agent_meta(&path) {
             tracing::warn!(
                 error = %e,
                 dir = %path.display(),
-                "migration: failed to rewrite assistant meta.json"
+                "migration: failed to rewrite agent meta.json"
             );
         }
     }
-    Ok(())
 }
 
 /// Rewrite a legacy `ResearcherMeta`-shaped `meta.json` to the new
-/// `AssistantMeta` shape with `kind: Researcher`. Idempotent — files already
+/// `AgentMeta` shape with `kind: Researcher`. Idempotent — files already
 /// in the new shape are left alone.
-fn rewrite_legacy_assistant_meta(dir: &Path) -> Result<()> {
+fn rewrite_legacy_agent_meta(dir: &Path) -> Result<()> {
     let meta_path = dir.join("meta.json");
     if !meta_path.exists() {
         return Ok(());
@@ -146,16 +154,16 @@ fn rewrite_legacy_assistant_meta(dir: &Path) -> Result<()> {
         }),
     );
 
-    let new_contents = serde_json::to_string_pretty(&value)
-        .context("failed to serialize updated assistant meta")?;
+    let new_contents =
+        serde_json::to_string_pretty(&value).context("failed to serialize updated agent meta")?;
     std::fs::write(&meta_path, new_contents)
         .with_context(|| format!("failed to write {}", meta_path.display()))?;
-    tracing::info!(path = %meta_path.display(), "migration: rewrote assistant meta.json to new kind shape");
+    tracing::info!(path = %meta_path.display(), "migration: rewrote agent meta.json to new kind shape");
     Ok(())
 }
 
 /// Step 3: rewrite `~/.agman/telegram/current-agent` if it points at the
-/// legacy CEO id or a global assistant.
+/// legacy CEO id or a global agent.
 fn migrate_telegram_current_agent(config: &Config) -> Result<()> {
     let path = config.telegram_current_agent_path();
     if !path.exists() {
@@ -171,7 +179,7 @@ fn migrate_telegram_current_agent(config: &Config) -> Result<()> {
     };
     let value = raw.trim();
 
-    let new_value = if value == "ceo" || is_global_assistant_ref(value) {
+    let new_value = if value == "ceo" || is_global_agent_ref(value) {
         Some("chief-of-staff".to_string())
     } else {
         None
@@ -192,7 +200,7 @@ fn migrate_telegram_current_agent(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn is_global_assistant_ref(value: &str) -> bool {
+fn is_global_agent_ref(value: &str) -> bool {
     ["researcher:", "operator:", "reviewer:", "tester:"]
         .iter()
         .filter_map(|prefix| value.strip_prefix(prefix))

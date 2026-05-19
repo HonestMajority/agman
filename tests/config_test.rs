@@ -11,9 +11,7 @@ fn config_new_sets_paths() {
 
     assert_eq!(config.base_dir, tmp.path().join(".agman"));
     assert_eq!(config.tasks_dir, tmp.path().join(".agman/tasks"));
-    assert_eq!(config.flows_dir, tmp.path().join(".agman/flows"));
     assert_eq!(config.prompts_dir, tmp.path().join(".agman/prompts"));
-    assert_eq!(config.commands_dir, tmp.path().join(".agman/commands"));
     assert_eq!(config.repos_dir, tmp.path().join("repos"));
 }
 
@@ -107,9 +105,8 @@ fn config_ensure_dirs() {
     config.ensure_dirs().unwrap();
 
     assert!(config.tasks_dir.exists());
-    assert!(config.flows_dir.exists());
     assert!(config.prompts_dir.exists());
-    assert!(config.commands_dir.exists());
+    assert!(config.agents_dir().exists());
 }
 
 #[test]
@@ -154,21 +151,9 @@ fn config_init_default_files() {
 
     config.init_default_files(false).unwrap();
 
-    // Verify representative flow files exist and are non-empty
-    let new_flow = config.flow_path("new");
-    assert!(new_flow.exists());
-    assert!(!std::fs::read_to_string(&new_flow).unwrap().is_empty());
-
-    let continue_flow = config.flow_path("continue");
-    assert!(continue_flow.exists());
-
-    // Verify representative prompt files exist
-    let coder = config.prompt_path("coder");
-    assert!(coder.exists());
-    assert!(!std::fs::read_to_string(&coder).unwrap().is_empty());
-
-    // Verify representative command files exist
-    let create_pr = config.command_path("create-pr");
-    assert!(create_pr.exists());
-    assert!(!std::fs::read_to_string(&create_pr).unwrap().is_empty());
+    let engineer = config.prompt_path("engineer");
+    assert!(engineer.exists());
+    assert!(std::fs::read_to_string(&engineer)
+        .unwrap()
+        .contains("long-lived task-attached engineer"));
 }

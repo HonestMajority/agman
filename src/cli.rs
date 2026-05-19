@@ -1,10 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
-use agman::task::TaskStatus;
-
 #[derive(Parser)]
 #[command(name = "agman")]
-#[command(about = "Agent Manager - Orchestrate stateless AI agents across isolated git worktrees")]
+#[command(about = "Agent Manager - Orchestrate long-lived AI agents across projects and tasks")]
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]
@@ -13,18 +11,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Run a stored command on a task
-    RunCommand {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-        /// Command identifier (e.g., "create-pr", "address-review")
-        command_id: String,
-        /// Branch name argument (used by commands like rebase)
-        #[arg(long)]
-        branch: Option<String>,
-    },
-
-    /// Initialize agman configuration (creates default flows, prompts, and commands)
+    /// Initialize agman configuration
     Init {
         /// Overwrite existing files with defaults
         #[arg(long, default_value_t = false)]
@@ -40,8 +27,8 @@ EXAMPLES:
   EOF
   agman send-message chief-of-staff @./message.md")]
     SendMessage {
-        /// Target: "chief-of-staff", "telegram", "researcher:<project>--<name>",
-        /// "reviewer:<project>--<name>", "tester:<project>--<name>", or a project name (for the PM)
+        /// Target: "chief-of-staff", "telegram", a project name (for the PM),
+        /// or "<kind>:<project>--<name>" for engineer/researcher/operator/reviewer/tester
         target: String,
         /// Message text (can also be provided via stdin or --file)
         #[arg(allow_hyphen_values = true)]
@@ -57,11 +44,11 @@ EXAMPLES:
     /// Create a new project with a PM
     #[command(after_help = "\
 EXAMPLES:
-  agman create-project myproj --description \"Frontend rewrite\"
-  agman create-project myproj --description \"Frontend rewrite\" --initial-message \"Kick off with the design doc at ./brief.md\"
-  agman create-project myproj --description \"Frontend rewrite\" --initial-message @./brief.md
-  cat <<'EOF' | agman create-project myproj --description \"Frontend rewrite\" --initial-message -
-  Multi-line brief via stdin using the - sentinel.
+  agman create-project myproj --description \"UI rewrite\"
+  agman create-project myproj --description \"UI rewrite\" --initial-message \"Kick off with the design doc\"
+  agman create-project myproj --description \"UI rewrite\" --initial-message @./goal.txt
+  cat <<'EOF' | agman create-project myproj --description \"UI rewrite\" --initial-message -
+  Multi-line message via stdin using the - sentinel.
   EOF")]
     CreateProject {
         /// Project name (alphanumeric + hyphens)
@@ -69,7 +56,7 @@ EXAMPLES:
         /// Human label for the project (shown in lists). Not sent to the PM.
         #[arg(long)]
         description: Option<String>,
-        /// Initial brief queued to the PM's inbox on spawn
+        /// Initial message sent to the PM's inbox on spawn
         /// (accepts inline text, @path, or - for stdin)
         #[arg(long, allow_hyphen_values = true)]
         initial_message: Option<String>,
@@ -121,12 +108,6 @@ EXAMPLES:
         file: Option<std::path::PathBuf>,
     },
 
-    /// Stop a running task
-    StopTask {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-    },
-
     /// Archive a task (remove worktrees, keep directory and branches)
     ArchiveTask {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
@@ -151,7 +132,7 @@ EXAMPLES:
         repo: String,
         /// Task name (becomes the branch name, e.g. 'fix-login-bug')
         task_name: String,
-        /// Task description for the TASK.md Goal section
+        /// Task description sent to the attached engineer
         #[arg(long, short, allow_hyphen_values = true)]
         description: Option<String>,
     },
@@ -160,13 +141,10 @@ EXAMPLES:
     ListPmTasks {
         /// Project name
         project: String,
-        /// Filter by task status (running, stopped, input_needed, on_hold)
-        #[arg(long)]
-        status: Option<StatusFilter>,
     },
 
-    /// Get status and recent log for a task
-    TaskStatus {
+    /// Show task metadata and recent log
+    TaskInfo {
         /// Task identifier (repo--branch format)
         task_id: String,
     },
@@ -180,51 +158,26 @@ EXAMPLES:
         tail: usize,
     },
 
-    /// Read the current plan (TASK.md) for a task
-    TaskCurrentPlan {
-        /// Task identifier (repo--branch format)
-        task_id: String,
-    },
-
     /// Show aggregated status across all projects and tasks
     Status,
 
-    /// Queue feedback on a running task
+    /// Create a project-scoped agent (researcher, operator, reviewer, or tester).
     #[command(after_help = "\
 EXAMPLES:
-  agman feedback myrepo--fix-bug \"Please also check edge cases\"
-  cat <<'EOF' | agman feedback myrepo--fix-bug -
-  Multi-line feedback via stdin using the - sentinel.
-  EOF
-  agman feedback myrepo--fix-bug @./feedback.md")]
-    Feedback {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-        /// Feedback text to queue
-        #[arg(allow_hyphen_values = true)]
-        feedback: Option<String>,
-        /// Read feedback from a file
-        #[arg(short = 'F', long)]
-        file: Option<std::path::PathBuf>,
-    },
-
-    /// Create a project-scoped assistant (researcher, operator, reviewer, or tester).
-    #[command(after_help = "\
-EXAMPLES:
-  agman create-assistant --kind researcher --name api-investigator --project backend --description \"Investigate the API latency\"
-  agman create-assistant --kind operator --name docs-updater --project docs --description \"Update the launch notes\"
-  agman create-assistant --kind reviewer --name pr-1247 --project reviews \\
-    --branch galoy:fix-deposit-flow \\
-    --branch lana-dashboard:fix-deposit-flow \\
+  agman create-agent --kind researcher --name api-investigator --project backend --description \"Investigate the API latency\"
+  agman create-agent --kind operator --name docs-updater --project docs --description \"Update the launch notes\"
+  agman create-agent --kind reviewer --name pr-1247 --project reviews \\
+    --branch galoy:fix-deposit-path \\
+    --branch lana-dashboard:fix-deposit-path \\
     --description \"Review the cross-repo deposit fix\"
-  agman create-assistant --kind tester --name browser-pass --project reviews \\
-    --branch galoy:fix-deposit-flow --browser \\
-    --description \"Exercise the deposit flow in browser\"")]
-    CreateAssistant {
-        /// Assistant kind: researcher, operator, reviewer, or tester
+  agman create-agent --kind tester --name browser-pass --project reviews \\
+    --branch galoy:fix-deposit-path --browser \\
+    --description \"Exercise the deposit path in browser\"")]
+    CreateAgent {
+        /// Agent kind: researcher, operator, reviewer, or tester
         #[arg(long, value_enum)]
-        kind: AssistantKindArg,
-        /// Assistant name (alphanumeric + hyphens)
+        kind: AgentKindArg,
+        /// Agent name (alphanumeric + hyphens)
         #[arg(long, short)]
         name: String,
         /// Project name
@@ -253,26 +206,79 @@ EXAMPLES:
         browser: bool,
     },
 
-    /// List assistants
-    ListAssistants {
+    /// List project agents
+    ListAgents {
         /// Project name
         #[arg(long)]
         project: String,
         /// Filter by kind
         #[arg(long, value_enum)]
-        kind: Option<AssistantKindArg>,
+        kind: Option<AgentKindArg>,
     },
 
-    /// Archive a project-scoped assistant
-    ArchiveAssistant {
-        /// Assistant name
+    /// Archive a project-scoped agent
+    ArchiveAgent {
+        /// Agent name
         name: String,
         /// Project name
         #[arg(long)]
         project: String,
     },
 
-    /// Create a researcher (alias for `create-assistant --kind researcher`).
+    /// Attach a non-engineer agent to a task
+    #[command(after_help = "\
+EXAMPLES:
+  agman attach-agent --project backend --name api-investigator --task backend--fix-login
+  agman attach-agent --project backend --name pr-review --task backend--fix-login --role-label \"PR review\"")]
+    AttachAgent {
+        /// Project name
+        #[arg(long)]
+        project: String,
+        /// Agent name
+        #[arg(long, short)]
+        name: String,
+        /// Task identifier (repo--branch format)
+        #[arg(long)]
+        task: String,
+        /// Optional role label shown with the task attachment
+        #[arg(long)]
+        role_label: Option<String>,
+    },
+
+    /// Move a non-engineer agent to another task
+    #[command(after_help = "\
+EXAMPLES:
+  agman move-agent --project backend --name api-investigator --task backend--new-task
+  agman move-agent --project backend --name pr-review --task backend--new-task --role-label \"Second pass\"")]
+    MoveAgent {
+        /// Project name
+        #[arg(long)]
+        project: String,
+        /// Agent name
+        #[arg(long, short)]
+        name: String,
+        /// Destination task identifier (repo--branch format)
+        #[arg(long)]
+        task: String,
+        /// Optional role label shown with the task attachment
+        #[arg(long)]
+        role_label: Option<String>,
+    },
+
+    /// Detach a non-engineer agent from its task
+    #[command(after_help = "\
+EXAMPLES:
+  agman detach-agent --project backend --name api-investigator")]
+    DetachAgent {
+        /// Project name
+        #[arg(long)]
+        project: String,
+        /// Agent name
+        #[arg(long, short)]
+        name: String,
+    },
+
+    /// Create a researcher agent.
     #[command(after_help = "\
 EXAMPLES:
   agman create-researcher my-research --project backend --description \"Investigate the API latency\"
@@ -300,7 +306,7 @@ EXAMPLES:
         description: Option<String>,
     },
 
-    /// Create an operator (alias for `create-assistant --kind operator`).
+    /// Create an operator agent.
     CreateOperator {
         name: String,
         #[arg(long)]
@@ -315,12 +321,12 @@ EXAMPLES:
         description: Option<String>,
     },
 
-    /// Create a reviewer (alias for `create-assistant --kind reviewer`).
+    /// Create a reviewer agent.
     #[command(after_help = "\
 EXAMPLES:
   agman create-reviewer --name pr-1247 --project reviews \\
-    --branch galoy:fix-deposit-flow \\
-    --branch lana-dashboard:fix-deposit-flow \\
+    --branch galoy:fix-deposit-path \\
+    --branch lana-dashboard:fix-deposit-path \\
     --description \"Review the cross-repo deposit fix\"")]
     CreateReviewer {
         /// Reviewer name (alphanumeric + hyphens)
@@ -337,12 +343,12 @@ EXAMPLES:
         description: Option<String>,
     },
 
-    /// Create a tester (alias for `create-assistant --kind tester`).
+    /// Create a tester agent.
     #[command(after_help = "\
 EXAMPLES:
   agman create-tester --name browser-pass --project reviews \\
-    --branch galoy:fix-deposit-flow --browser \\
-    --description \"Exercise the deposit flow\"")]
+    --branch galoy:fix-deposit-path --browser \\
+    --description \"Exercise the deposit path\"")]
     CreateTester {
         /// Tester name (alphanumeric + hyphens)
         #[arg(long, short)]
@@ -361,14 +367,14 @@ EXAMPLES:
         description: Option<String>,
     },
 
-    /// List researchers (alias for `list-assistants --kind researcher`).
+    /// List researcher agents.
     ListResearchers {
         /// Project name
         #[arg(long)]
         project: String,
     },
 
-    /// Archive a researcher (alias for `archive-assistant`).
+    /// Archive a researcher agent.
     ArchiveResearcher {
         /// Researcher name
         name: String,
@@ -393,28 +399,9 @@ EXAMPLES:
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum AssistantKindArg {
+pub enum AgentKindArg {
     Researcher,
     Operator,
     Reviewer,
     Tester,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum StatusFilter {
-    Running,
-    Stopped,
-    InputNeeded,
-    OnHold,
-}
-
-impl StatusFilter {
-    pub fn to_task_status(self) -> TaskStatus {
-        match self {
-            StatusFilter::Running => TaskStatus::Running,
-            StatusFilter::Stopped => TaskStatus::Stopped,
-            StatusFilter::InputNeeded => TaskStatus::InputNeeded,
-            StatusFilter::OnHold => TaskStatus::OnHold,
-        }
-    }
 }

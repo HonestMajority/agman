@@ -185,7 +185,7 @@ fn codex_build_session_command_always_bypasses_approvals_and_sandbox() {
     // `--dangerously-bypass-approvals-and-sandbox` (mirrors claude's
     // `--dangerously-skip-permissions`). Without it, codex prompts before
     // privileged-feeling shell commands (e.g. `git add`), deadlocking
-    // autonomous agman flows. Verify the flag is present for every
+    // autonomous agman agents. Verify the flag is present for every
     // session-key shape the codex builder emits.
     let h = HarnessKind::Codex.select();
     let work_dir = cwd();
