@@ -61,6 +61,16 @@ fn push_project_count_cell<'a>(
     spans.push(Span::styled(total_text, dim_count_style()));
 }
 
+fn push_project_total_count_cell<'a>(spans: &mut Vec<Span<'a>>, total: usize, width: usize) {
+    let total_text = total.to_string();
+    let cell_len = total_text.len();
+
+    if width > cell_len {
+        spans.push(Span::raw(" ".repeat(width - cell_len)));
+    }
+    spans.push(Span::styled(total_text, active_count_style(total)));
+}
+
 fn push_project_blank_cell<'a>(spans: &mut Vec<Span<'a>>, width: usize) {
     spans.push(Span::styled(" ".repeat(width), dim_count_style()));
 }
@@ -323,7 +333,7 @@ fn render_project_row<'a>(
         Span::styled(name_display, name_style),
         Span::raw(PROJECT_COL_GAP),
     ];
-    push_project_count_cell(&mut spans, total, total, PROJECT_TASK_COUNT_WIDTH);
+    push_project_total_count_cell(&mut spans, total, PROJECT_TASK_COUNT_WIDTH);
     spans.push(Span::raw(PROJECT_COL_GAP));
     push_project_count_cell(
         &mut spans,
@@ -548,9 +558,8 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(name_display, Style::default().fg(Color::DarkGray)),
             Span::raw(PROJECT_COL_GAP),
         ];
-        push_project_count_cell(
+        push_project_total_count_cell(
             &mut line,
-            app.unassigned_task_count,
             app.unassigned_task_count,
             PROJECT_TASK_COUNT_WIDTH,
         );
@@ -4112,7 +4121,7 @@ mod project_count_cell_tests {
     }
 
     #[test]
-    fn count_cell_right_aligns_and_colors_active_count() {
+    fn composite_count_cell_right_aligns_and_colors_active_count() {
         let mut spans = Vec::new();
 
         push_project_count_cell(&mut spans, 3, 12, 8);
@@ -4123,7 +4132,7 @@ mod project_count_cell_tests {
     }
 
     #[test]
-    fn count_cell_dims_zero_active_count() {
+    fn composite_count_cell_dims_zero_active_count() {
         let mut spans = Vec::new();
 
         push_project_count_cell(&mut spans, 0, 8, 8);
@@ -4131,6 +4140,28 @@ mod project_count_cell_tests {
         assert_eq!(span_text(&spans), vec!["     ", "0", "/8"]);
         assert_eq!(spans[1].style, dim_count_style());
         assert_eq!(spans[2].style, dim_count_style());
+    }
+
+    #[test]
+    fn total_count_cell_right_aligns_without_slash() {
+        let mut spans = Vec::new();
+
+        push_project_total_count_cell(&mut spans, 12, 8);
+
+        assert_eq!(span_text(&spans), vec!["      ", "12"]);
+        assert!(!span_text(&spans).join("").contains('/'));
+        assert_eq!(spans[1].style, Style::default().fg(Color::LightGreen));
+    }
+
+    #[test]
+    fn total_count_cell_dims_zero_without_slash() {
+        let mut spans = Vec::new();
+
+        push_project_total_count_cell(&mut spans, 0, 8);
+
+        assert_eq!(span_text(&spans), vec!["       ", "0"]);
+        assert!(!span_text(&spans).join("").contains('/'));
+        assert_eq!(spans[1].style, dim_count_style());
     }
 
     #[test]
