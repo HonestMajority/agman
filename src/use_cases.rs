@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::assistant::{
-    Assistant, AssistantKind, AssistantStatus, AssistantWorktree, TesterCapabilities,
+    AgentAttachment, Assistant, AssistantKind, AssistantStatus, AssistantWorktree,
+    TesterCapabilities,
 };
 use crate::config::Config;
 use crate::flow::{Flow, FlowStep};
@@ -226,6 +227,8 @@ pub fn create_task(
         task.save_meta()?;
     }
 
+    create_task_engineer(config, &task, description)?;
+
     // Increment repo usage stats
     let stats_path = config.repo_stats_path();
     let mut stats = RepoStats::load(&stats_path);
@@ -280,6 +283,8 @@ pub fn create_multi_repo_task(
     if task.meta.project.is_some() {
         task.save_meta()?;
     }
+
+    create_task_engineer(config, &task, description)?;
 
     Ok(task)
 }
@@ -502,26 +507,17 @@ pub fn resume_after_answering(task: &mut Task) -> Result<()> {
     Ok(())
 }
 
-/// Queue feedback for a task and, if the task is currently idle (Stopped),
-/// wake the supervisor so it drains the queue and launches the next step.
-///
-/// If `wake_if_idle` fails (for example, tmux is unavailable) the error is
-/// logged but *not* propagated — the feedback is already persisted in the
-/// queue, so the user's action should still be reported as successful.
-/// A subsequent supervisor poll or user action can retry the launch.
+/// Send feedback for a task to its attached engineer's inbox.
 pub fn queue_feedback(task: &mut Task, config: &Config, feedback: &str) -> Result<usize> {
-    tracing::info!(task_id = %task.meta.task_id(), "queuing feedback");
+    tracing::info!(task_id = %task.meta.task_id(), "routing task feedback to attached engineer");
     task.append_feedback_to_log(feedback)?;
-    task.queue_feedback(feedback)?;
-    let count = task.queued_item_count();
-    if let Err(e) = supervisor::wake_if_idle(config, task) {
-        tracing::warn!(
-            task_id = %task.meta.task_id(),
-            error = %e,
-            "wake_if_idle failed after queuing feedback"
-        );
-    }
-    Ok(count)
+    let engineer = attached_engineer_for_task(config, &task.meta.task_id())?;
+    let inbox_path = config.assistant_inbox(&engineer.meta.project, &engineer.meta.name);
+    inbox::append_message(&inbox_path, "task-feedback", feedback)?;
+    Ok(inbox::read_messages(&inbox_path)?
+        .into_iter()
+        .filter(|message| message.from == "task-feedback")
+        .count())
 }
 
 /// Queue a command for a task and, if the task is currently idle (Stopped),
@@ -2303,6 +2299,95 @@ pub fn create_pm_task(
     Ok(task)
 }
 
+fn create_task_engineer(config: &Config, task: &Task, brief: &str) -> Result<Assistant> {
+    let task_id = task.meta.task_id();
+    let project = task
+        .meta
+        .project
+        .as_deref()
+        .unwrap_or(task.meta.name.as_str());
+    let base_name = format!("engineer-{}", sanitize_agent_name(&task_id));
+    let name = unique_agent_name(config, project, &base_name);
+    let description = format!("Engineer attached to task {task_id}");
+    let engineer = Assistant::create_with_attachment(
+        config,
+        project,
+        &name,
+        &description,
+        AssistantKind::Engineer,
+        AgentAttachment::Task {
+            task_id: task_id.clone(),
+            role_label: Some("Engineer".to_string()),
+        },
+    )?;
+
+    let inbox_path = config.assistant_inbox(project, &name);
+    let message = format!("Task brief for {task_id}:\n\n{}", brief.trim());
+    inbox::append_message(&inbox_path, project, &message)?;
+
+    Ok(engineer)
+}
+
+fn attached_engineer_for_task(config: &Config, task_id: &str) -> Result<Assistant> {
+    let engineers: Vec<_> = Assistant::list_all(config)?
+        .into_iter()
+        .filter(|agent| {
+            agent.is_engineer()
+                && matches!(
+                    &agent.meta.attachment,
+                    AgentAttachment::Task { task_id: attached, .. } if attached == task_id
+                )
+                && agent.meta.status == AssistantStatus::Running
+        })
+        .collect();
+
+    match engineers.len() {
+        1 => Ok(engineers.into_iter().next().expect("one engineer")),
+        0 => bail!("task '{task_id}' has no attached engineer"),
+        n => bail!("task '{task_id}' has {n} attached engineers; expected exactly one"),
+    }
+}
+
+fn unique_agent_name(config: &Config, project: &str, base: &str) -> String {
+    if !config.assistant_dir(project, base).exists() {
+        return base.to_string();
+    }
+
+    for i in 2.. {
+        let candidate = format!("{base}-{i}");
+        if !config.assistant_dir(project, &candidate).exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded suffix search")
+}
+
+fn sanitize_agent_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut last_was_dash = false;
+    for ch in raw.chars() {
+        let next = if ch.is_ascii_alphanumeric() || ch == '_' {
+            last_was_dash = false;
+            Some(ch)
+        } else if !last_was_dash {
+            last_was_dash = true;
+            Some('-')
+        } else {
+            None
+        };
+        if let Some(ch) = next {
+            out.push(ch);
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "engineer".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Messaging
 // ---------------------------------------------------------------------------
@@ -2324,6 +2409,7 @@ pub enum SendTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssistantPrefix {
+    Engineer,
     Researcher,
     Operator,
     Reviewer,
@@ -2333,6 +2419,7 @@ pub enum AssistantPrefix {
 impl AssistantPrefix {
     fn as_str(&self) -> &'static str {
         match self {
+            AssistantPrefix::Engineer => "engineer",
             AssistantPrefix::Researcher => "researcher",
             AssistantPrefix::Operator => "operator",
             AssistantPrefix::Reviewer => "reviewer",
@@ -2342,7 +2429,7 @@ impl AssistantPrefix {
 }
 
 const VALID_TARGETS_HINT: &str =
-    "valid targets: chief-of-staff, telegram, <project>, researcher:<project>--<name>, operator:<project>--<name>, reviewer:<project>--<name>, tester:<project>--<name>, task:<repo>--<branch>";
+    "valid targets: chief-of-staff, telegram, <project>, engineer:<project>--<name>, researcher:<project>--<name>, operator:<project>--<name>, reviewer:<project>--<name>, tester:<project>--<name>, task:<repo>--<branch>";
 
 pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     if target.is_empty() {
@@ -2361,6 +2448,7 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     }
 
     for (prefix_str, prefix) in [
+        ("engineer:", AssistantPrefix::Engineer),
         ("researcher:", AssistantPrefix::Researcher),
         ("operator:", AssistantPrefix::Operator),
         ("reviewer:", AssistantPrefix::Reviewer),
@@ -2455,7 +2543,10 @@ pub fn agent_inbox_path(config: &Config, id: &str) -> Result<PathBuf> {
         SendTarget::Telegram => config.telegram_outbox(),
         SendTarget::Project(name) => config.project_inbox(&name),
         SendTarget::Assistant { project, name, .. } => config.assistant_inbox(&project, &name),
-        SendTarget::Task(task_id) => config.task_inbox(&task_id),
+        SendTarget::Task(task_id) => {
+            let engineer = attached_engineer_for_task(config, &task_id)?;
+            config.assistant_inbox(&engineer.meta.project, &engineer.meta.name)
+        }
     })
 }
 
@@ -2467,6 +2558,9 @@ pub fn agent_exists(config: &Config, id: &str) -> bool {
 fn agent_ref_for(id: String) -> AgentRef {
     let label = if id == "chief-of-staff" {
         "CoS".to_string()
+    } else if let Some(rest) = id.strip_prefix("engineer:") {
+        let name = rest.rsplit("--").next().unwrap_or(rest);
+        format!("E:{name}")
     } else if let Some(rest) = id.strip_prefix("researcher:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
         format!("R:{name}")
@@ -2517,9 +2611,15 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
             }
         }
         other => {
-            let assistant_prefix = ["researcher:", "operator:", "reviewer:", "tester:"]
-                .iter()
-                .find_map(|p| other.strip_prefix(p));
+            let assistant_prefix = [
+                "engineer:",
+                "researcher:",
+                "operator:",
+                "reviewer:",
+                "tester:",
+            ]
+            .iter()
+            .find_map(|p| other.strip_prefix(p));
             if let Some(rest) = assistant_prefix {
                 let pos = rest.find("--");
                 if let Some(pos) = pos {

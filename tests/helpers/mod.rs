@@ -1,4 +1,4 @@
-use agman::assistant::{Assistant, AssistantKind};
+use agman::assistant::{AgentAttachment, Assistant, AssistantKind};
 use agman::config::Config;
 use agman::project::Project;
 use agman::task::{Task, TaskMeta};
@@ -94,6 +94,20 @@ pub fn create_test_task(config: &Config, repo_name: &str, branch_name: &str) -> 
             std::fs::write(&path, "").unwrap();
         }
     }
+
+    let task_id = task.meta.task_id();
+    let engineer_name = format!("engineer-{}", task_id.replace("--", "-"));
+    let _ = Assistant::create_with_attachment(
+        config,
+        repo_name,
+        &engineer_name,
+        &format!("Engineer attached to task {task_id}"),
+        AssistantKind::Engineer,
+        AgentAttachment::Task {
+            task_id,
+            role_label: Some("Engineer".to_string()),
+        },
+    );
 
     task
 }

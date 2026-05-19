@@ -1,5 +1,6 @@
 mod helpers;
 
+use agman::assistant::{AgentAttachment, Assistant};
 use agman::git::parse_github_owner_repo;
 use agman::project::Project;
 use agman::repo_stats::RepoStats;
@@ -52,6 +53,22 @@ fn create_task_with_new_branch() {
     // Init files created
     assert!(task.dir.join("notes.md").exists());
     assert!(task.dir.join("agent.log").exists());
+
+    let engineers: Vec<_> = Assistant::list_for_project(&config, "myrepo")
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.is_engineer())
+        .collect();
+    assert_eq!(engineers.len(), 1);
+    assert!(matches!(
+        &engineers[0].meta.attachment,
+        AgentAttachment::Task { task_id, .. } if task_id == "myrepo--feat-branch"
+    ));
+    let messages =
+        agman::inbox::read_messages(&config.assistant_inbox("myrepo", &engineers[0].meta.name))
+            .unwrap();
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].message.contains("Build the widget"));
 
     // Default flows/prompts created
     assert!(config.flow_path("new").exists());
@@ -560,16 +577,13 @@ fn queue_feedback_on_running_task() {
     let count2 = use_cases::queue_feedback(&mut task, &config, "also fix the header").unwrap();
     assert_eq!(count2, 2);
 
-    let queue = task.read_queue();
-    assert_eq!(queue.len(), 2);
-    match &queue[0] {
-        QueueItem::Feedback { text } => assert_eq!(text, "fix the button"),
-        _ => panic!("Expected Feedback item"),
-    }
-    match &queue[1] {
-        QueueItem::Feedback { text } => assert_eq!(text, "also fix the header"),
-        _ => panic!("Expected Feedback item"),
-    }
+    assert_eq!(task.read_queue().len(), 0);
+    let messages =
+        agman::inbox::read_messages(&config.assistant_inbox("repo", "engineer-repo-branch"))
+            .unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].message, "fix the button");
+    assert_eq!(messages[1].message, "also fix the header");
 
     // Feedback should also be logged to agent.log
     let log = task.read_agent_log().unwrap();
@@ -578,8 +592,7 @@ fn queue_feedback_on_running_task() {
 }
 
 // ---------------------------------------------------------------------------
-// queue_feedback on a Stopped task drains + wakes via the supervisor
-// (TUI submit_feedback's Stopped branch).
+// queue_feedback on a stopped task still routes through the attached engineer.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -588,28 +601,16 @@ fn queue_feedback_on_stopped_task_drains_and_wakes() {
     let config = test_config(&tmp);
     let mut task = create_test_task(&config, "repo", "branch");
     task.update_status(TaskStatus::Stopped).unwrap();
-    // Simulate an earlier run leaving the task on some flow past step 0.
-    task.meta.flow_name = "new".to_string();
-    task.meta.flow_step = 3;
-    task.save_meta().unwrap();
+    let count = use_cases::queue_feedback(&mut task, &config, "please address the review").unwrap();
 
-    // queue_feedback on a Stopped task should drain (writing FEEDBACK.md,
-    // switching to the `continue` flow, resetting the step, flipping to
-    // Running) and then attempt to launch the next step. The launch itself
-    // errors in the test env because no tmux is available — wake_if_idle's
-    // error is warn-and-swallowed so queue_feedback still returns Ok.
-    let _ = use_cases::queue_feedback(&mut task, &config, "please address the review").unwrap();
-
-    // Queue was drained, not left pending.
+    assert_eq!(count, 1);
     assert_eq!(task.read_queue().len(), 0);
-    // Flow was switched to `continue` and reset to step 0.
-    assert_eq!(task.meta.flow_name, "continue");
-    assert_eq!(task.meta.flow_step, 0);
-    // Task was flipped to Running by drain_queue.
-    assert_eq!(task.meta.status, TaskStatus::Running);
-    // Feedback was persisted to FEEDBACK.md for the refiner agent to read.
-    let fb = task.read_feedback().unwrap();
-    assert_eq!(fb, "please address the review");
+    assert_eq!(task.meta.status, TaskStatus::Stopped);
+    assert_eq!(task.read_feedback().unwrap(), "");
+    let messages =
+        agman::inbox::read_messages(&config.assistant_inbox("repo", "engineer-repo-branch"))
+            .unwrap();
+    assert_eq!(messages[0].message, "please address the review");
 }
 
 // ---------------------------------------------------------------------------
@@ -2838,7 +2839,7 @@ fn use_case_send_message_rejects_nonexistent_task() {
 }
 
 #[test]
-fn use_case_send_message_to_task_appends_to_task_inbox() {
+fn use_case_send_message_to_task_appends_to_attached_engineer_inbox() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
@@ -2848,7 +2849,9 @@ fn use_case_send_message_to_task_appends_to_task_inbox() {
     let target = format!("task:{task_id}");
     use_cases::send_message(&config, &target, "pm", "nudge from pm").unwrap();
 
-    let messages = agman::inbox::read_messages(&config.task_inbox(&task_id)).unwrap();
+    let messages =
+        agman::inbox::read_messages(&config.assistant_inbox("repo", "engineer-repo-feature"))
+            .unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].from, "pm");
     assert_eq!(messages[0].message, "nudge from pm");
