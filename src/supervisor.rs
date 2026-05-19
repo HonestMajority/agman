@@ -47,7 +47,7 @@ pub fn supervisor_session(task: &Task) -> Result<String> {
     }
 }
 
-pub fn ensure_task_tmux(task: &Task) -> Result<String> {
+pub fn ensure_task_tmux(config: &Config, task: &Task) -> Result<String> {
     for repo in &task.meta.repos {
         Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path).with_context(|| {
             format!(
@@ -73,6 +73,31 @@ pub fn ensure_task_tmux(task: &Task) -> Result<String> {
             })?;
         }
     }
+    let task_id = task.meta.task_id();
+    match crate::use_cases::attached_agents_for_task(config, &task_id) {
+        Ok(agents) => {
+            for agent in agents {
+                if let Err(e) =
+                    crate::use_cases::link_agent_into_task_session(config, &agent, &task_id)
+                {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        agent = %agent.meta.name,
+                        error = %e,
+                        "failed to backfill linked agent window into task tmux session"
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                task_id = %task_id,
+                error = %e,
+                "failed to load attached agents for task tmux backfill"
+            );
+        }
+    }
+
     supervisor_session(task)
 }
 

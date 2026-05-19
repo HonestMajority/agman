@@ -27,8 +27,8 @@ EXAMPLES:
   EOF
   agman send-message chief-of-staff @./message.md")]
     SendMessage {
-        /// Target: "chief-of-staff", "telegram", "researcher:<project>--<name>",
-        /// "reviewer:<project>--<name>", "tester:<project>--<name>", or a project name (for the PM)
+        /// Target: "chief-of-staff", "telegram", a project name (for the PM),
+        /// or "<kind>:<project>--<name>" for engineer/researcher/operator/reviewer/tester
         target: String,
         /// Message text (can also be provided via stdin or --file)
         #[arg(allow_hyphen_values = true)]
@@ -223,6 +223,59 @@ EXAMPLES:
         /// Project name
         #[arg(long)]
         project: String,
+    },
+
+    /// Attach a non-engineer agent to a task
+    #[command(after_help = "\
+EXAMPLES:
+  agman attach-agent --project backend --name api-investigator --task backend--fix-login
+  agman attach-agent --project backend --name pr-review --task backend--fix-login --role-label \"PR review\"")]
+    AttachAgent {
+        /// Project name
+        #[arg(long)]
+        project: String,
+        /// Agent name
+        #[arg(long, short)]
+        name: String,
+        /// Task identifier (repo--branch format)
+        #[arg(long)]
+        task: String,
+        /// Optional role label shown with the task attachment
+        #[arg(long)]
+        role_label: Option<String>,
+    },
+
+    /// Move a non-engineer agent to another task
+    #[command(after_help = "\
+EXAMPLES:
+  agman move-agent --project backend --name api-investigator --task backend--new-task
+  agman move-agent --project backend --name pr-review --task backend--new-task --role-label \"Second pass\"")]
+    MoveAgent {
+        /// Project name
+        #[arg(long)]
+        project: String,
+        /// Agent name
+        #[arg(long, short)]
+        name: String,
+        /// Destination task identifier (repo--branch format)
+        #[arg(long)]
+        task: String,
+        /// Optional role label shown with the task attachment
+        #[arg(long)]
+        role_label: Option<String>,
+    },
+
+    /// Detach a non-engineer agent from its task
+    #[command(after_help = "\
+EXAMPLES:
+  agman detach-agent --project backend --name api-investigator")]
+    DetachAgent {
+        /// Project name
+        #[arg(long)]
+        project: String,
+        /// Agent name
+        #[arg(long, short)]
+        name: String,
     },
 
     /// Create a researcher agent.

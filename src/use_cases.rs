@@ -289,10 +289,31 @@ pub fn create_multi_repo_task(
 /// up when the task is permanently deleted (see `permanently_delete_archived_task`).
 ///
 /// This is the pure business logic behind archiving from the task list.
-/// It does NOT kill tmux sessions — that's a side effect handled by the caller.
+/// It archives and stops attached agents, but does NOT kill task tmux sessions —
+/// that's a side effect handled by the caller.
 /// It does NOT remove the task directory — the directory is kept as the archive.
 pub fn archive_task(config: &Config, task: &mut Task, saved: bool) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), saved, "archiving task");
+    let task_id = task.meta.task_id();
+    tracing::info!(task_id = %task_id, saved, "archiving task");
+
+    let attached_agents: Vec<_> = AgentRecord::list_all(config)?
+        .into_iter()
+        .filter(|agent| {
+            agent.meta.status != AgentStatus::Archived
+                && matches!(
+                    &agent.meta.attachment,
+                    AgentAttachment::Task { task_id: attached, .. } if attached == &task_id
+                )
+        })
+        .collect();
+    for agent in attached_agents {
+        archive_agent(config, &agent.meta.project, &agent.meta.name).with_context(|| {
+            format!(
+                "failed to archive agent '{}--{}' attached to task '{}'",
+                agent.meta.project, agent.meta.name, task_id
+            )
+        })?;
+    }
 
     // Remove worktrees (branches are kept for later reference)
     let parent_dir = task.meta.parent_dir.as_deref();
@@ -439,87 +460,6 @@ pub fn set_linked_pr(
         .ok_or_else(|| anyhow::anyhow!("Not a GitHub remote: {}", remote_url))?;
     let url = format!("https://github.com/{}/{}/pull/{}", owner, repo, pr_number);
     task.set_linked_pr(pr_number, url, owned, author)
-}
-
-/// Create a setup-only task: set up worktree and task files without starting an agent.
-/// The task will have `Stopped` status so the user can attach to the tmux session and explore.
-///
-/// This is the pure business logic behind `App::create_setup_only_task_from_wizard()`.
-/// It does NOT create tmux sessions — those are side effects handled by the TUI caller.
-pub fn create_setup_only_task(
-    config: &Config,
-    repo_name: &str,
-    branch_name: &str,
-    worktree_source: WorktreeSource,
-    parent_dir: Option<PathBuf>,
-    project: Option<String>,
-) -> Result<Task> {
-    tracing::info!(
-        repo = repo_name,
-        branch = branch_name,
-        "creating setup-only task"
-    );
-    let parent_dir_ref = parent_dir.as_deref();
-
-    // Initialize default files.
-    config.init_default_files(false)?;
-
-    // Set up or reuse worktree
-    let worktree_path = match worktree_source {
-        WorktreeSource::ExistingWorktree(path) => {
-            let _ = Git::direnv_allow(&path);
-            path
-        }
-        WorktreeSource::NewBranch { base_branch } => {
-            let path = Git::create_worktree_quiet(
-                config,
-                repo_name,
-                branch_name,
-                base_branch.as_deref(),
-                parent_dir_ref,
-            )?;
-            let _ = Git::direnv_allow(&path);
-            path
-        }
-        WorktreeSource::ExistingBranch => {
-            let path = Git::create_worktree_for_existing_branch_quiet(
-                config,
-                repo_name,
-                branch_name,
-                parent_dir_ref,
-            )?;
-            let _ = Git::direnv_allow(&path);
-            path
-        }
-    };
-
-    // Create task files
-    let mut task = Task::create(config, repo_name, branch_name, "", "none", worktree_path)?;
-
-    // Store parent_dir if repo is outside repos_dir
-    if parent_dir.is_some() {
-        task.meta.parent_dir = parent_dir;
-    }
-
-    // Assign to project if specified
-    if project.is_some() {
-        task.meta.project = project;
-    }
-
-    // Save if any optional fields were set after creation
-    if task.meta.parent_dir.is_some() || task.meta.project.is_some() {
-        task.save_meta()?;
-    }
-
-    // Increment repo usage stats
-    let stats_path = config.repo_stats_path();
-    let mut stats = RepoStats::load(&stats_path);
-    stats.increment(repo_name);
-    stats.save(&stats_path);
-
-    tracing::info!(task_id = %task.meta.task_id(), "setup-only task created");
-
-    Ok(task)
 }
 
 /// Migrate old-format `meta.json` files in-place to the new multi-repo format.
@@ -3784,6 +3724,7 @@ pub fn archive_agent(config: &Config, project: &str, name: &str) -> Result<()> {
     }
 
     agent.meta.status = AgentStatus::Archived;
+    agent.meta.attachment = AgentAttachment::Unattached;
     agent.save_meta()?;
 
     tracing::info!(project = project, name = name, "agent archived");
@@ -4135,12 +4076,12 @@ You CAN do anything the CEO directs you to do. Available write commands:
 - agman create-project <name> --description "<label>" [--initial-message <text|@file|->]
 - agman delete-project <name>
 - agman create-pm-task <project> <repo> <task-name> --description "..." (rare — usually PMs do this)
-- agman message <task-id> "..."
 - agman send-message <target> --from chief-of-staff
-- agman create-researcher <name> [--project <name>]
-- agman create-operator <name> [--project <name>]
-- agman create-tester --name <name> [--project <name>] --branch <repo>:<branch> [--browser]
-- agman archive-researcher <name> [--project <name>]
+- agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project <project> [--description "..."]
+- agman attach-agent --project <project> --name <name> --task <task-id> [--role-label "..."]
+- agman move-agent --project <project> --name <name> --task <task-id> [--role-label "..."]
+- agman detach-agent --project <project> --name <name>
+- agman archive-agent <name> --project <project>
 - agman respawn-agent <target> (rare)
 - All project-template commands (list-templates, get-template, etc.)
 
@@ -4200,7 +4141,7 @@ Concise. Bullets, not essays. The CEO uses you to avoid getting overwhelmed — 
 Messages tagged [Message from system]: are automated agman notifications. Act on them autonomously per the message instructions. No reply needed.
 "#;
 
-fn build_chief_of_staff_prompt(telegram_enabled: bool) -> String {
+pub fn build_chief_of_staff_prompt(telegram_enabled: bool) -> String {
     if !telegram_enabled {
         return DEFAULT_CHIEF_OF_STAFF_PROMPT.to_string();
     }
@@ -4692,7 +4633,10 @@ const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for
 - agman task-log <task-id> --tail 100
 
 ### Agent Management
-- agman create-agent {{PROJECT_NAME}} <name> --kind <researcher|tester|reviewer|operator>
+- agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project {{PROJECT_NAME}} --description "<description>"
+- agman attach-agent --project {{PROJECT_NAME}} --name <name> --task <task-id> [--role-label "..."]
+- agman move-agent --project {{PROJECT_NAME}} --name <name> --task <task-id> [--role-label "..."]
+- agman detach-agent --project {{PROJECT_NAME}} --name <name>
 - agman list-agents --project {{PROJECT_NAME}}
 - agman send-message <agent-or-project-target> --from {{PROJECT_NAME}}
 

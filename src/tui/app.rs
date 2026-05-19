@@ -1829,17 +1829,11 @@ impl App {
                 let description = wizard.description_editor.lines_joined();
                 let description = description.trim();
                 let is_multi = wizard.is_multi_repo;
-                if description.is_empty() {
-                    if is_multi {
-                        // Multi-repo tasks require a description (the repo-inspector
-                        // agent needs it to decide which repos are involved)
-                        let wizard = self.wizard.as_mut().unwrap();
-                        wizard.error_message =
-                            Some("Multi-repo tasks require a description".to_string());
-                        return Ok(());
-                    }
-                    // Empty description = setup-only mode
-                    return self.create_setup_only_task_from_wizard();
+                if description.is_empty() && is_multi {
+                    let wizard = self.wizard.as_mut().unwrap();
+                    wizard.error_message =
+                        Some("Multi-repo tasks require a description".to_string());
+                    return Ok(());
                 }
                 // Create the task
                 return self.create_task_from_wizard();
@@ -1943,7 +1937,7 @@ impl App {
 
             let task_id = task.meta.task_id();
             self.log_output("  Launching engineer via supervisor...".to_string());
-            if let Err(e) = supervisor::ensure_task_tmux(&task)
+            if let Err(e) = supervisor::ensure_task_tmux(&self.config, &task)
                 .and_then(|_| supervisor::launch_next_step(&self.config, &mut task).map(|_| ()))
             {
                 tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch multi-repo task engineer");
@@ -1996,7 +1990,7 @@ impl App {
 
             let task_id = task.meta.task_id();
             self.log_output("  Launching engineer via supervisor...".to_string());
-            if let Err(e) = supervisor::ensure_task_tmux(&task)
+            if let Err(e) = supervisor::ensure_task_tmux(&self.config, &task)
                 .and_then(|_| supervisor::launch_next_step(&self.config, &mut task).map(|_| ()))
             {
                 tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch task engineer");
@@ -2017,109 +2011,6 @@ impl App {
             }
             self.set_status(format!("Created task: {}", task_id));
         }
-
-        Ok(())
-    }
-
-    fn create_setup_only_task_from_wizard(&mut self) -> Result<()> {
-        let wizard = match &self.wizard {
-            Some(w) => w,
-            None => return Ok(()),
-        };
-
-        let repo_name = wizard.selected_repo_name().to_string();
-        let repo_path = wizard.selected_repo_path.clone();
-
-        let (branch_name, worktree_source) = match wizard.branch_source {
-            BranchSource::ExistingWorktree => {
-                let (branch, path) =
-                    wizard.existing_worktrees[wizard.selected_worktree_index].clone();
-                (branch, use_cases::WorktreeSource::ExistingWorktree(path))
-            }
-            BranchSource::NewBranch => {
-                let name = wizard.new_branch_editor.lines().join("").trim().to_string();
-                let base = wizard
-                    .base_branch_editor
-                    .lines()
-                    .join("")
-                    .trim()
-                    .to_string();
-                let base_branch = if base.is_empty() { None } else { Some(base) };
-                (name, use_cases::WorktreeSource::NewBranch { base_branch })
-            }
-            BranchSource::ExistingBranch => {
-                let name = wizard.existing_branches[wizard.selected_branch_index].clone();
-                (name, use_cases::WorktreeSource::ExistingBranch)
-            }
-        };
-
-        // Compute parent_dir when repo is outside repos_dir
-        let parent_dir = repo_path.parent().and_then(|p| {
-            if p != self.config.repos_dir {
-                Some(p.to_path_buf())
-            } else {
-                None
-            }
-        });
-
-        // Determine project assignment from current scope
-        let project = self
-            .current_project
-            .as_ref()
-            .filter(|p| p.as_str() != "(unassigned)")
-            .cloned();
-
-        tracing::info!(repo = %repo_name, branch = %branch_name, "creating setup-only task via wizard");
-        self.log_output(format!(
-            "Creating setup-only task {}--{}...",
-            repo_name, branch_name
-        ));
-
-        // Delegate business logic to use_cases
-        let task = match use_cases::create_setup_only_task(
-            &self.config,
-            &repo_name,
-            &branch_name,
-            worktree_source,
-            parent_dir,
-            project,
-        ) {
-            Ok(t) => t,
-            Err(e) => {
-                self.log_output(format!("  Error: {}", e));
-                if let Some(w) = &mut self.wizard {
-                    w.error_message = Some(format!("Failed to create task: {}", e));
-                }
-                return Ok(());
-            }
-        };
-
-        // Side effects: create tmux session (but do NOT start an agent)
-        let worktree_path = task.meta.primary_repo().worktree_path.clone();
-        self.log_output("  Creating tmux session...".to_string());
-        if let Err(e) = Tmux::create_session_with_windows(
-            &task.meta.primary_repo().tmux_session,
-            &worktree_path,
-        ) {
-            self.log_output(format!("  Error: {}", e));
-            if let Some(w) = &mut self.wizard {
-                w.error_message = Some(format!("Failed to create tmux session: {}", e));
-            }
-            return Ok(());
-        }
-
-        // No agent command sent — this is the key difference from create_task_from_wizard
-
-        // Success - close wizard and refresh
-        let task_id = task.meta.task_id();
-        self.wizard = None;
-        self.view = View::TaskList;
-        if self.current_project.is_some() {
-            self.refresh_tasks_for_project();
-        } else {
-            self.refresh_tasks_and_select(&task_id);
-        }
-        self.set_status(format!("Created setup-only task: {}", task_id));
 
         Ok(())
     }
@@ -4524,7 +4415,7 @@ impl App {
             Some(idx) => idx,
             None => return Ok(()),
         };
-        let launch_error = supervisor::ensure_task_tmux(&self.tasks[task_idx])
+        let launch_error = supervisor::ensure_task_tmux(&self.config, &self.tasks[task_idx])
             .and_then(|_| {
                 supervisor::launch_next_step(&self.config, &mut self.tasks[task_idx]).map(|_| ())
             })

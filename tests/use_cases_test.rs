@@ -49,6 +49,29 @@ fn create_task_creates_one_attached_engineer_and_initial_inbox_message() {
 }
 
 #[test]
+fn empty_description_task_still_creates_attached_engineer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo = init_test_repo(&tmp, "repo");
+
+    use_cases::create_task(
+        &config,
+        "repo",
+        "empty-desc",
+        "",
+        "new",
+        WorktreeSource::NewBranch { base_branch: None },
+        None,
+        None,
+    )
+    .unwrap();
+
+    let agents = use_cases::attached_agents_for_task(&config, "repo--empty-desc").unwrap();
+    assert_eq!(agents.len(), 1);
+    assert!(agents[0].is_engineer());
+}
+
+#[test]
 fn send_message_targets_specific_attached_engineer() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
@@ -161,10 +184,23 @@ fn project_status_separates_attached_and_unattached_agents() {
 
 #[test]
 fn prompts_describe_inbox_based_task_agent_model() {
+    let chief = use_cases::build_chief_of_staff_prompt(false);
+    assert!(chief.contains("agman send-message <target> --from chief-of-staff"));
+    assert!(chief.contains("agman create-agent --kind <researcher|operator|reviewer|tester>"));
+    assert!(chief.contains("agman attach-agent --project <project> --name <name> --task <task-id>"));
+    assert!(!chief.contains("agman message <task-id>"));
+
     let pm = use_cases::build_pm_prompt(false, "project");
     assert!(pm.contains("Every task owns one attached Engineer agent"));
     assert!(pm.contains("task-attached Researcher, Tester, Reviewer, and Operator agents"));
     assert!(pm.contains("messaging the task's attached Engineer through the inbox"));
+    assert!(pm.contains(
+        "agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project project"
+    ));
+    assert!(pm.contains("agman attach-agent --project project --name <name> --task <task-id>"));
+    assert!(pm.contains("agman move-agent --project project --name <name> --task <task-id>"));
+    assert!(pm.contains("agman detach-agent --project project --name <name>"));
+    assert!(!pm.contains("agman create-agent project <name>"));
     assert!(pm.contains("send-message"));
 
     let engineer =
@@ -204,4 +240,22 @@ fn task_with_missing_or_duplicate_engineer_is_rejected() {
     }
     let duplicate = use_cases::attached_agents_for_task(&config, "repo--branch").unwrap_err();
     assert!(duplicate.to_string().contains("attached engineers"));
+}
+
+#[test]
+fn archive_task_archives_and_unlinks_attached_agents() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+    let _researcher = create_test_researcher(&config, "repo", "research");
+    use_cases::attach_agent_to_task(&config, "repo", "research", "repo--branch", None).unwrap();
+
+    use_cases::archive_task(&config, &mut task, false).unwrap();
+
+    assert!(task.meta.archived_at.is_some());
+    for name in ["engineer-repo-branch", "research"] {
+        let agent = AgentRecord::load(config.agent_dir("repo", name)).unwrap();
+        assert_eq!(agent.meta.status, agman::agent_model::AgentStatus::Archived);
+        assert!(matches!(agent.meta.attachment, AgentAttachment::Unattached));
+    }
 }

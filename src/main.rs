@@ -220,6 +220,22 @@ fn main() -> Result<()> {
             cmd_archive_agent(&config, &project, &name)
         }
 
+        Some(Commands::AttachAgent {
+            project,
+            name,
+            task,
+            role_label,
+        }) => cmd_attach_agent(&config, &project, &name, &task, role_label),
+
+        Some(Commands::MoveAgent {
+            project,
+            name,
+            task,
+            role_label,
+        }) => cmd_move_agent(&config, &project, &name, &task, role_label),
+
+        Some(Commands::DetachAgent { project, name }) => cmd_detach_agent(&config, &project, &name),
+
         Some(Commands::CreateResearcher {
             name,
             project,
@@ -505,7 +521,7 @@ fn cmd_create_pm_task(
     let mut task = use_cases::create_pm_task(config, project, repo, task_name, &desc)?;
     let task_id = task.meta.task_id();
 
-    supervisor::ensure_task_tmux(&task)
+    supervisor::ensure_task_tmux(config, &task)
         .with_context(|| format!("failed to prepare tmux for PM task '{}'", task_id))?;
     supervisor::launch_next_step(config, &mut task)
         .with_context(|| format!("failed to launch agent for PM task '{}'", task_id))?;
@@ -846,6 +862,39 @@ fn cmd_list_agents(
 fn cmd_archive_agent(config: &Config, project: &str, name: &str) -> Result<()> {
     use_cases::archive_agent(config, project, name)?;
     println!("AgentRecord '{name}' in project '{project}' archived.");
+    Ok(())
+}
+
+fn cmd_attach_agent(
+    config: &Config,
+    project: &str,
+    name: &str,
+    task_id: &str,
+    role_label: Option<String>,
+) -> Result<()> {
+    let agent = use_cases::attach_agent_to_task(config, project, name, task_id, role_label)?;
+    println!(
+        "Agent '{}' attached to task '{}'.",
+        agent.meta.name, task_id
+    );
+    Ok(())
+}
+
+fn cmd_move_agent(
+    config: &Config,
+    project: &str,
+    name: &str,
+    task_id: &str,
+    role_label: Option<String>,
+) -> Result<()> {
+    let agent = use_cases::move_agent_to_task(config, project, name, task_id, role_label)?;
+    println!("Agent '{}' moved to task '{}'.", agent.meta.name, task_id);
+    Ok(())
+}
+
+fn cmd_detach_agent(config: &Config, project: &str, name: &str) -> Result<()> {
+    let agent = use_cases::detach_agent_from_task(config, project, name)?;
+    println!("Agent '{}' detached from its task.", agent.meta.name);
     Ok(())
 }
 
