@@ -105,6 +105,7 @@ enum ProjectTaskRowKey {
 #[derive(Debug, Clone, Copy)]
 pub enum ProjectDetailRow<'a> {
     AgentsSectionHeader,
+    SectionColumnSpacer,
     AgentsColumnsHeader,
     EmptyAgents,
     UnattachedAgent { agent: &'a AgentRecord },
@@ -1229,6 +1230,7 @@ impl App {
     pub fn project_detail_rows(&self) -> Vec<ProjectDetailRow<'_>> {
         let mut rows = Vec::new();
         rows.push(ProjectDetailRow::AgentsSectionHeader);
+        rows.push(ProjectDetailRow::SectionColumnSpacer);
         rows.push(ProjectDetailRow::AgentsColumnsHeader);
         if self.agents.is_empty() {
             rows.push(ProjectDetailRow::EmptyAgents);
@@ -1242,6 +1244,7 @@ impl App {
 
         rows.push(ProjectDetailRow::SectionSpacer);
         rows.push(ProjectDetailRow::TasksSectionHeader);
+        rows.push(ProjectDetailRow::SectionColumnSpacer);
         rows.push(ProjectDetailRow::TasksColumnsHeader);
         if self.tasks.is_empty() {
             rows.push(ProjectDetailRow::EmptyTasks);
@@ -1298,6 +1301,7 @@ impl App {
                 .project_task_row_key(task_row)
                 .map(ProjectDetailRowKey::AttachedAgent),
             ProjectDetailRow::AgentsSectionHeader
+            | ProjectDetailRow::SectionColumnSpacer
             | ProjectDetailRow::AgentsColumnsHeader
             | ProjectDetailRow::EmptyAgents
             | ProjectDetailRow::SectionSpacer
@@ -5720,33 +5724,35 @@ mod tests {
 
         let rows = app.project_detail_rows();
         assert!(matches!(rows[0], ProjectDetailRow::AgentsSectionHeader));
-        assert!(matches!(rows[1], ProjectDetailRow::AgentsColumnsHeader));
+        assert!(matches!(rows[1], ProjectDetailRow::SectionColumnSpacer));
+        assert!(matches!(rows[2], ProjectDetailRow::AgentsColumnsHeader));
         assert!(matches!(
-            rows[2],
+            rows[3],
             ProjectDetailRow::UnattachedAgent { agent }
                 if agent.meta.name == "unattached-reviewer"
         ));
-        assert!(matches!(rows[3], ProjectDetailRow::SectionSpacer));
-        assert!(matches!(rows[4], ProjectDetailRow::TasksSectionHeader));
-        assert!(matches!(rows[5], ProjectDetailRow::TasksColumnsHeader));
-        assert!(matches!(
-            rows[6],
-            ProjectDetailRow::Task(ProjectTaskRow::Task { .. })
-        ));
-        assert!(matches!(rows[7], ProjectDetailRow::AttachedAgentsHeader));
+        assert!(matches!(rows[4], ProjectDetailRow::SectionSpacer));
+        assert!(matches!(rows[5], ProjectDetailRow::TasksSectionHeader));
+        assert!(matches!(rows[6], ProjectDetailRow::SectionColumnSpacer));
+        assert!(matches!(rows[7], ProjectDetailRow::TasksColumnsHeader));
         assert!(matches!(
             rows[8],
+            ProjectDetailRow::Task(ProjectTaskRow::Task { .. })
+        ));
+        assert!(matches!(rows[9], ProjectDetailRow::AttachedAgentsHeader));
+        assert!(matches!(
+            rows[10],
             ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent { agent, .. })
                 if agent.meta.name.starts_with("engineer-")
         ));
-        assert!(matches!(rows[9], ProjectDetailRow::TaskGroupSpacer));
-        assert!(matches!(
-            rows[10],
-            ProjectDetailRow::Task(ProjectTaskRow::Task { .. })
-        ));
-        assert!(matches!(rows[11], ProjectDetailRow::AttachedAgentsHeader));
+        assert!(matches!(rows[11], ProjectDetailRow::TaskGroupSpacer));
         assert!(matches!(
             rows[12],
+            ProjectDetailRow::Task(ProjectTaskRow::Task { .. })
+        ));
+        assert!(matches!(rows[13], ProjectDetailRow::AttachedAgentsHeader));
+        assert!(matches!(
+            rows[14],
             ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent { agent, .. })
                 if agent.meta.name.starts_with("engineer-")
         ));
@@ -5844,10 +5850,12 @@ mod tests {
 
         let rows = app.project_detail_rows();
         assert!(matches!(rows[0], ProjectDetailRow::AgentsSectionHeader));
-        assert!(matches!(rows[1], ProjectDetailRow::AgentsColumnsHeader));
-        assert!(matches!(rows[3], ProjectDetailRow::SectionSpacer));
-        assert!(matches!(rows[4], ProjectDetailRow::TasksSectionHeader));
-        assert!(matches!(rows[5], ProjectDetailRow::TasksColumnsHeader));
+        assert!(matches!(rows[1], ProjectDetailRow::SectionColumnSpacer));
+        assert!(matches!(rows[2], ProjectDetailRow::AgentsColumnsHeader));
+        assert!(matches!(rows[4], ProjectDetailRow::SectionSpacer));
+        assert!(matches!(rows[5], ProjectDetailRow::TasksSectionHeader));
+        assert!(matches!(rows[6], ProjectDetailRow::SectionColumnSpacer));
+        assert!(matches!(rows[7], ProjectDetailRow::TasksColumnsHeader));
         assert!(matches!(
             rows.iter()
                 .find(|row| matches!(row, ProjectDetailRow::AttachedAgentsHeader)),
@@ -5858,6 +5866,9 @@ mod tests {
             .any(|row| matches!(row, ProjectDetailRow::TaskGroupSpacer)));
         assert!(!App::project_detail_row_is_actionable(
             &ProjectDetailRow::TaskGroupSpacer
+        ));
+        assert!(!App::project_detail_row_is_actionable(
+            &ProjectDetailRow::SectionColumnSpacer
         ));
     }
 

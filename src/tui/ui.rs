@@ -1286,7 +1286,9 @@ fn project_detail_list_item(
         ProjectDetailRow::UnattachedAgent { agent, .. } => {
             project_agent_row(app, agent, row_index == app.selected_index, agent_widths)
         }
-        ProjectDetailRow::SectionSpacer | ProjectDetailRow::TaskGroupSpacer => ListItem::new(""),
+        ProjectDetailRow::SectionColumnSpacer
+        | ProjectDetailRow::SectionSpacer
+        | ProjectDetailRow::TaskGroupSpacer => ListItem::new(""),
         ProjectDetailRow::TasksSectionHeader => ListItem::new(project_tasks_section_header()),
         ProjectDetailRow::TasksColumnsHeader => {
             ListItem::new(project_tasks_columns_header(task_widths))
@@ -1320,19 +1322,12 @@ fn project_section_style() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-fn project_section_divider_style() -> Style {
-    Style::default().fg(Color::DarkGray)
-}
-
 fn project_section_header(label: &'static str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("  {label} "), project_section_style()),
-        Span::styled("────────", project_section_divider_style()),
-    ])
+    Line::from(Span::styled(format!("  {label}"), project_section_style()))
 }
 
 fn project_agents_section_header() -> Line<'static> {
-    project_section_header("Agents")
+    project_section_header("AGENTS")
 }
 
 fn project_agents_columns_header(widths: AgentColumnWidths) -> Line<'static> {
@@ -1365,7 +1360,7 @@ fn project_agents_columns_header(widths: AgentColumnWidths) -> Line<'static> {
 }
 
 fn project_tasks_section_header() -> Line<'static> {
-    project_section_header("Tasks")
+    project_section_header("TASKS")
 }
 
 const PROJECT_TASK_PREFIX_WIDTH: usize = 2;
@@ -4244,16 +4239,18 @@ mod project_count_cell_tests {
     }
 
     #[test]
-    fn project_section_headers_render_labels_with_light_dividers() {
+    fn project_section_headers_render_uppercase_labels_without_dividers() {
         let agents = project_agents_section_header();
         let tasks = project_tasks_section_header();
 
-        assert_eq!(span_text(&agents.spans), vec!["  Agents ", "────────"]);
+        assert_eq!(span_text(&agents.spans), vec!["  AGENTS"]);
+        assert_eq!(agents.spans.len(), 1);
         assert_eq!(agents.spans[0].style, project_section_style());
-        assert_eq!(agents.spans[1].style, project_section_divider_style());
-        assert_eq!(span_text(&tasks.spans), vec!["  Tasks ", "────────"]);
+        assert!(!span_text(&agents.spans).join("").contains("─"));
+        assert_eq!(span_text(&tasks.spans), vec!["  TASKS"]);
+        assert_eq!(tasks.spans.len(), 1);
         assert_eq!(tasks.spans[0].style, project_section_style());
-        assert_eq!(tasks.spans[1].style, project_section_divider_style());
+        assert!(!span_text(&tasks.spans).join("").contains("─"));
     }
 
     #[test]
