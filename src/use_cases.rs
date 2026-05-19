@@ -3836,16 +3836,116 @@ pub fn list_assistants(
         all.retain(|a| {
             matches!(
                 (&a.meta.kind, k),
-                (
-                    AssistantKind::Researcher { .. },
-                    AssistantKindLabel::Researcher
-                ) | (AssistantKind::Operator { .. }, AssistantKindLabel::Operator)
+                (AssistantKind::Engineer, AssistantKindLabel::Engineer)
+                    | (
+                        AssistantKind::Researcher { .. },
+                        AssistantKindLabel::Researcher
+                    )
+                    | (AssistantKind::Operator { .. }, AssistantKindLabel::Operator)
                     | (AssistantKind::Reviewer { .. }, AssistantKindLabel::Reviewer)
                     | (AssistantKind::Tester { .. }, AssistantKindLabel::Tester)
             )
         });
     }
     Ok(all)
+}
+
+/// Running agents attached to a task, with the required engineer listed first.
+pub fn attached_agents_for_task(config: &Config, task_id: &str) -> Result<Vec<Assistant>> {
+    Task::load_by_id(config, task_id)?;
+
+    let mut agents: Vec<_> = Assistant::list_all(config)?
+        .into_iter()
+        .filter(|agent| {
+            agent.meta.status == AssistantStatus::Running
+                && matches!(
+                    &agent.meta.attachment,
+                    AgentAttachment::Task { task_id: attached, .. } if attached == task_id
+                )
+        })
+        .collect();
+
+    agents.sort_by(|a, b| {
+        let rank = |agent: &Assistant| match agent.meta.kind {
+            AssistantKind::Engineer => 0,
+            AssistantKind::Reviewer { .. } => 1,
+            AssistantKind::Tester { .. } => 2,
+            AssistantKind::Researcher { .. } => 3,
+            AssistantKind::Operator { .. } => 4,
+        };
+        rank(a)
+            .cmp(&rank(b))
+            .then_with(|| a.meta.name.cmp(&b.meta.name))
+    });
+
+    let engineers = agents.iter().filter(|agent| agent.is_engineer()).count();
+    match engineers {
+        1 => Ok(agents),
+        0 => bail!("task '{task_id}' has no attached engineer"),
+        n => bail!("task '{task_id}' has {n} attached engineers; expected exactly one"),
+    }
+}
+
+/// Running project agents that are not attached to any task.
+pub fn unattached_agents_for_project(config: &Config, project: &str) -> Result<Vec<Assistant>> {
+    let mut agents: Vec<_> = Assistant::list_for_project(config, project)?
+        .into_iter()
+        .filter(|agent| {
+            agent.meta.status == AssistantStatus::Running
+                && matches!(agent.meta.attachment, AgentAttachment::Unattached)
+        })
+        .collect();
+    agents.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
+    Ok(agents)
+}
+
+/// Attach a non-engineer project agent to a task.
+pub fn attach_agent_to_task(
+    config: &Config,
+    project: &str,
+    name: &str,
+    task_id: &str,
+    role_label: Option<String>,
+) -> Result<Assistant> {
+    Task::load_by_id(config, task_id)?;
+    let dir = config.assistant_dir(project, name);
+    let mut agent = Assistant::load(dir)?;
+    if agent.is_engineer() {
+        bail!("engineer agents are task-owned and cannot be manually attached or moved");
+    }
+    if agent.meta.status == AssistantStatus::Archived {
+        bail!("archived agent '{}--{}' cannot be attached", project, name);
+    }
+    agent.set_attachment(AgentAttachment::Task {
+        task_id: task_id.to_string(),
+        role_label,
+    })?;
+    Ok(agent)
+}
+
+/// Move a non-engineer project agent from its current attachment to a task.
+pub fn move_agent_to_task(
+    config: &Config,
+    project: &str,
+    name: &str,
+    task_id: &str,
+    role_label: Option<String>,
+) -> Result<Assistant> {
+    attach_agent_to_task(config, project, name, task_id, role_label)
+}
+
+/// Detach a non-engineer project agent from any task.
+pub fn detach_agent_from_task(config: &Config, project: &str, name: &str) -> Result<Assistant> {
+    let dir = config.assistant_dir(project, name);
+    let mut agent = Assistant::load(dir)?;
+    if agent.is_engineer() {
+        bail!("engineer agents must remain attached to their owning task");
+    }
+    if agent.meta.status == AssistantStatus::Archived {
+        bail!("archived agent '{}--{}' cannot be detached", project, name);
+    }
+    agent.set_attachment(AgentAttachment::Unattached)?;
+    Ok(agent)
 }
 
 /// Backwards-compatible researcher list (filters to the Researcher kind).

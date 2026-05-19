@@ -1,13 +1,14 @@
 mod helpers;
 
-use agman::assistant::{AgentAttachment, Assistant};
+use agman::assistant::{AgentAttachment, Assistant, AssistantKind};
 use agman::git::parse_github_owner_repo;
 use agman::project::Project;
 use agman::repo_stats::RepoStats;
 use agman::task::{QueueItem, SessionEntry, Task, TaskStatus};
 use agman::use_cases::{self, GithubItemKind, PrPollAction, WorktreeSource};
 use helpers::{
-    create_test_project, create_test_task, init_test_repo, init_test_repo_at, test_config,
+    create_test_project, create_test_researcher, create_test_task, init_test_repo,
+    init_test_repo_at, test_config,
 };
 
 // ---------------------------------------------------------------------------
@@ -97,6 +98,80 @@ fn pm_prompt_mentions_task_attached_engineers_and_inbox_workflow() {
     assert!(prompt.contains("task-attached Researcher, Tester, Reviewer, and Operator agents"));
     assert!(prompt.contains("messaging the task's attached Engineer through the inbox"));
     assert!(prompt.contains("rebase, push, PR, CI, and review-addressing"));
+}
+
+#[test]
+fn agent_attachment_helpers_enforce_task_engineer_and_unattached_lists() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _task = create_test_task(&config, "repo", "branch");
+    let _researcher = create_test_researcher(&config, "repo", "explore");
+
+    let unattached = use_cases::unattached_agents_for_project(&config, "repo").unwrap();
+    assert_eq!(unattached.len(), 1);
+    assert_eq!(unattached[0].meta.name, "explore");
+
+    let attached = use_cases::attach_agent_to_task(
+        &config,
+        "repo",
+        "explore",
+        "repo--branch",
+        Some("Domain research".to_string()),
+    )
+    .unwrap();
+    assert!(matches!(
+        &attached.meta.attachment,
+        AgentAttachment::Task {
+            task_id,
+            role_label: Some(label),
+        } if task_id == "repo--branch" && label == "Domain research"
+    ));
+
+    let attached_agents = use_cases::attached_agents_for_task(&config, "repo--branch").unwrap();
+    assert_eq!(attached_agents.len(), 2);
+    assert!(attached_agents[0].is_engineer());
+    assert_eq!(attached_agents[1].meta.name, "explore");
+    assert!(use_cases::unattached_agents_for_project(&config, "repo")
+        .unwrap()
+        .is_empty());
+
+    let detached = use_cases::detach_agent_from_task(&config, "repo", "explore").unwrap();
+    assert!(matches!(
+        detached.meta.attachment,
+        AgentAttachment::Unattached
+    ));
+}
+
+#[test]
+fn agent_attachment_helpers_reject_engineer_detach_or_move() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _task = create_test_task(&config, "repo", "branch");
+    let engineer = use_cases::attached_agents_for_task(&config, "repo--branch")
+        .unwrap()
+        .into_iter()
+        .find(|agent| matches!(agent.meta.kind, AssistantKind::Engineer))
+        .unwrap();
+
+    let detach_err = use_cases::detach_agent_from_task(&config, "repo", &engineer.meta.name)
+        .unwrap_err()
+        .to_string();
+    assert!(detach_err.contains("must remain attached"));
+
+    let move_err =
+        use_cases::move_agent_to_task(&config, "repo", &engineer.meta.name, "repo--branch", None)
+            .unwrap_err()
+            .to_string();
+    assert!(move_err.contains("cannot be manually attached"));
+
+    let attached_agents = use_cases::attached_agents_for_task(&config, "repo--branch").unwrap();
+    assert_eq!(
+        attached_agents
+            .iter()
+            .filter(|agent| matches!(agent.meta.kind, AssistantKind::Engineer))
+            .count(),
+        1
+    );
 }
 
 #[test]
