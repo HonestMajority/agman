@@ -1757,6 +1757,7 @@ fn draw_project_assistants_pane(f: &mut Frame, app: &App, area: Rect, focused: b
 
 fn assistant_kind_label(kind: &AssistantKind) -> &'static str {
     match kind {
+        AssistantKind::Engineer => "engineer",
         AssistantKind::Researcher { .. } => "researcher",
         AssistantKind::Operator { .. } => "operator",
         AssistantKind::Reviewer { .. } => "reviewer",
@@ -1768,6 +1769,9 @@ fn assistant_session_name(assistant: &agman::assistant::Assistant) -> String {
     use agman::config::Config;
 
     match &assistant.meta.kind {
+        AssistantKind::Engineer => {
+            Config::engineer_tmux_session(&assistant.meta.project, &assistant.meta.name)
+        }
         AssistantKind::Researcher { .. } => {
             Config::researcher_tmux_session(&assistant.meta.project, &assistant.meta.name)
         }

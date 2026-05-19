@@ -167,6 +167,12 @@ fn config_init_default_files() {
     assert!(coder.exists());
     assert!(!std::fs::read_to_string(&coder).unwrap().is_empty());
 
+    let engineer = config.prompt_path("engineer");
+    assert!(engineer.exists());
+    assert!(std::fs::read_to_string(&engineer)
+        .unwrap()
+        .contains("long-lived task-attached engineer"));
+
     // Verify representative command files exist
     let create_pr = config.command_path("create-pr");
     assert!(create_pr.exists());

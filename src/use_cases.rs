@@ -2079,6 +2079,7 @@ pub struct AssistantSummary {
 /// full `AssistantKind` payload (which carries kind-specific metadata).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssistantKindLabel {
+    Engineer,
     Researcher,
     Operator,
     Reviewer,
@@ -2128,6 +2129,10 @@ fn load_assistant_summaries(config: &Config, project: &str) -> Vec<AssistantSumm
         .filter(|a| a.meta.status != AssistantStatus::Archived)
         .map(|a| {
             let (session, kind) = match a.meta.kind {
+                AssistantKind::Engineer => (
+                    Config::engineer_tmux_session(&a.meta.project, &a.meta.name),
+                    AssistantKindLabel::Engineer,
+                ),
                 AssistantKind::Researcher { .. } => (
                     Config::researcher_tmux_session(&a.meta.project, &a.meta.name),
                     AssistantKindLabel::Researcher,
@@ -2483,6 +2488,7 @@ fn agent_ref_for(id: String) -> AgentRef {
 /// Send-message id prefix for an assistant, derived from its kind.
 fn assistant_send_id(a: &Assistant) -> String {
     let prefix = match a.meta.kind {
+        AssistantKind::Engineer => "engineer",
         AssistantKind::Researcher { .. } => "researcher",
         AssistantKind::Operator { .. } => "operator",
         AssistantKind::Reviewer { .. } => "reviewer",
@@ -3244,6 +3250,7 @@ pub fn agent_session_running(session_name: &str) -> bool {
 /// the assistant rename; reviewers/testers use kind-specific names.
 fn assistant_tmux_session(meta: &crate::assistant::AssistantMeta) -> String {
     match meta.kind {
+        AssistantKind::Engineer => Config::engineer_tmux_session(&meta.project, &meta.name),
         AssistantKind::Researcher { .. } => {
             Config::researcher_tmux_session(&meta.project, &meta.name)
         }
@@ -3257,6 +3264,7 @@ fn assistant_tmux_session(meta: &crate::assistant::AssistantMeta) -> String {
 /// dispatched on kind.
 fn assistant_send_target_id(meta: &crate::assistant::AssistantMeta) -> String {
     let prefix = match meta.kind {
+        AssistantKind::Engineer => "engineer",
         AssistantKind::Researcher { .. } => "researcher",
         AssistantKind::Operator { .. } => "operator",
         AssistantKind::Reviewer { .. } => "reviewer",
@@ -3460,6 +3468,7 @@ fn create_assistant(
         name = name,
         kind = match kind {
             AssistantKind::Researcher { .. } => "researcher",
+            AssistantKind::Engineer => "engineer",
             AssistantKind::Operator { .. } => "operator",
             AssistantKind::Reviewer { .. } => "reviewer",
             AssistantKind::Tester { .. } => "tester",
@@ -3505,6 +3514,26 @@ pub fn start_assistant_session(
 
     // Kind-dispatched prompt + working-dir resolution.
     let (prompt, work_dir, agent_base, session_name, capabilities) = match &assistant.meta.kind {
+        AssistantKind::Engineer => {
+            let task_id = match &assistant.meta.attachment {
+                crate::assistant::AgentAttachment::Task { task_id, .. } => task_id.as_str(),
+                crate::assistant::AgentAttachment::Unattached => "",
+            };
+            let task_worktree = if task_id.is_empty() {
+                None
+            } else {
+                Task::load_by_id(config, task_id)
+                    .ok()
+                    .and_then(|t| t.meta.repos.first().map(|repo| repo.worktree_path.clone()))
+            };
+            (
+                build_engineer_prompt(telegram_enabled, project, name, task_id),
+                task_worktree,
+                format!("agman-e-{project}--{name}"),
+                Config::engineer_tmux_session(project, name),
+                AssistantCapabilities::default(),
+            )
+        }
         AssistantKind::Researcher {
             repo,
             branch,
@@ -3582,6 +3611,7 @@ pub fn start_assistant_session(
     };
 
     let assistant_kind = match &assistant.meta.kind {
+        AssistantKind::Engineer => "engineer",
         AssistantKind::Researcher { .. } => "researcher",
         AssistantKind::Operator { .. } => "operator",
         AssistantKind::Reviewer { .. } => "reviewer",
@@ -3725,6 +3755,7 @@ pub fn list_researchers(config: &Config, project: Option<&str>) -> Result<Vec<As
 
 fn assistant_kind_name(kind: &AssistantKind) -> &'static str {
     match kind {
+        AssistantKind::Engineer => "engineer",
         AssistantKind::Researcher { .. } => "researcher",
         AssistantKind::Operator { .. } => "operator",
         AssistantKind::Reviewer { .. } => "reviewer",
@@ -3774,7 +3805,9 @@ fn cleanup_assistant_worktrees(config: &Config, assistant: &Assistant) {
                 }
             }
         }
-        AssistantKind::Researcher { .. } | AssistantKind::Operator { .. } => {}
+        AssistantKind::Engineer
+        | AssistantKind::Researcher { .. }
+        | AssistantKind::Operator { .. } => {}
     }
 }
 
@@ -4684,6 +4717,45 @@ Additional rules:
     format!("{base}{telegram_section}")
 }
 
+pub fn build_engineer_prompt(
+    telegram_enabled: bool,
+    project_name: &str,
+    engineer_name: &str,
+    task_id: &str,
+) -> String {
+    let base = DEFAULT_ENGINEER_PROMPT_TEMPLATE
+        .replace("{{PROJECT_NAME}}", project_name)
+        .replace("{{ENGINEER_NAME}}", engineer_name)
+        .replace("{{TASK_ID}}", task_id);
+    if !telegram_enabled {
+        return base;
+    }
+
+    let telegram_section = format!(
+        r#"
+
+## Telegram
+
+Telegram is connected and the user can switch chats over to you directly. When that happens, messages tagged `[Message from telegram]` will appear in your tmux session.
+
+**The one rule you must never break: acknowledge first, work second, report third.**
+
+`[Message from telegram]` means the user is on their phone and **cannot** see your tmux session. The only way to reach them is via the Telegram send command.
+
+Send command:
+```
+cat <<'AGMAN_MSG' | agman send-message telegram --from "engineer:{project_name}--{engineer_name}"
+<your reply>
+AGMAN_MSG
+```
+
+Keep Telegram replies concise.
+"#
+    );
+
+    format!("{base}{telegram_section}")
+}
+
 fn format_worktree_block(worktrees: &[AssistantWorktree]) -> String {
     if worktrees.is_empty() {
         "(no worktrees configured)".to_string()
@@ -4695,6 +4767,38 @@ fn format_worktree_block(worktrees: &[AssistantWorktree]) -> String {
             .join("\n")
     }
 }
+
+const DEFAULT_ENGINEER_PROMPT_TEMPLATE: &str = r#"You are an engineer agent for project "{{PROJECT_NAME}}", named "{{ENGINEER_NAME}}".
+
+You are attached to task "{{TASK_ID}}" and stay with that task as a long-lived, stateful engineering agent. The task is a project/worktree/branch/status container; your inbox conversation with the PM is the source of truth for current direction.
+
+## Authority
+
+You may handle broad engineering work end to end when the PM asks:
+- inspect and modify code
+- run builds, tests, linters, local smoke checks, and development servers
+- commit with clear conventional commit messages
+- rebase or merge branches
+- push branches
+- create or update pull requests
+- monitor CI and fix real failures
+- address PR review feedback critically and report what you changed
+
+Do not wait for a separate flow step or disposable command agent. Use judgment, keep scope tight, and ask only when genuinely blocked or when the PM's request is ambiguous in a risky way.
+
+## Communication
+
+Messages from the PM appear in your tmux session tagged `[Message from {{PROJECT_NAME}}]:`. The PM **cannot** see your tmux session — report progress, blockers, and completion using `agman send-message`.
+
+Reply via:
+```
+cat <<'AGMAN_MSG' | agman send-message {{PROJECT_NAME}} --from "engineer:{{PROJECT_NAME}}--{{ENGINEER_NAME}}"
+<status, blocker, or completion note>
+AGMAN_MSG
+```
+
+Keep updates concise and concrete: what changed, what you verified, what remains, and any blocker that needs a PM decision.
+"#;
 
 const DEFAULT_REVIEWER_PROMPT_TEMPLATE: &str = r#"You are a code reviewer assistant for project "{{PROJECT_NAME}}", named "{{REVIEWER_NAME}}".
 
@@ -4805,11 +4909,12 @@ AGMAN_MSG
 Keep reports concise and specific — what you changed, where, and any uncertainty. When you've completed the requested action, report back in a single message.
 "#;
 
-const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for the "{{PROJECT_NAME}}" project in agman. You manage tasks to accomplish your project's goals.
+const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for the "{{PROJECT_NAME}}" project in agman. You manage tasks and long-lived agents to accomplish your project's goals.
 
 ## Your Role
 - Receive goals from the CEO (the user, when they message you directly) or from the Chief of Staff (acting on the CEO's behalf), and break them into concrete tasks.
-- Create and monitor tasks within your project.
+- Create and monitor tasks within your project. Every task owns one attached Engineer agent.
+- Manage unattached and task-attached Researcher, Tester, Reviewer, and Operator agents.
 - Send stopping-point summaries to the Chief of Staff so the CoS stays informed.
 - Break goals into concrete, well-scoped tasks.
 
@@ -4821,6 +4926,11 @@ const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for
 - agman task-status <task-id>
 - agman task-log <task-id> --tail 100
 
+### Agent Management
+- agman create-agent {{PROJECT_NAME}} <name> --kind <researcher|tester|reviewer|operator>
+- agman list-agents --project {{PROJECT_NAME}}
+- agman send-message <agent-or-project-target> --from {{PROJECT_NAME}}
+
 ### Communication
 Report to the Chief of Staff:
 cat <<'AGMAN_MSG' | agman send-message chief-of-staff --from {{PROJECT_NAME}}
@@ -4830,6 +4940,7 @@ AGMAN_MSG
 ## Behavior Guidelines
 
 - When given work, suggest a task plan to the requester and wait for confirmation before creating tasks.
+- Direct implementation, rebase, push, PR, CI, and review-addressing work by messaging the task's attached Engineer through the inbox.
 - When the CEO asks a question, answer it — do not treat it as an implicit instruction to take action.
 - If a task fails, analyze the logs and either retry or escalate.
 - Never run long commands yourself — always spawn a task for implementation work.
@@ -4852,8 +4963,8 @@ Direct CEO messages always take priority over CoS direction. If they conflict, f
 
 ## Reactive Behavior
 
-- Relay completions: When a task, researcher, operator, or tester completes/fails/needs input, send a brief summary to the Chief of Staff with outcome details.
-- Do NOT poll: Tasks, researchers, operators, and testers notify you — wait for notifications.
+- Relay completions: When a task engineer, researcher, operator, reviewer, or tester completes/fails/needs input, send a brief summary to the Chief of Staff with outcome details.
+- Do NOT poll: Engineers and other agents notify you through inbox messages — wait for notifications unless the CEO explicitly asks for a status refresh.
 
 ## Message Routing
 
@@ -4864,6 +4975,11 @@ AGMAN_MSG
 
 [Message from researcher:{{PROJECT_NAME}}--<name>]: — researcher reports. Reply via send-message.
 cat <<'AGMAN_MSG' | agman send-message researcher:{{PROJECT_NAME}}--<researcher-name> --from {{PROJECT_NAME}}
+<your reply>
+AGMAN_MSG
+
+[Message from engineer:{{PROJECT_NAME}}--<name>]: — task engineer reports. Reply via send-message.
+cat <<'AGMAN_MSG' | agman send-message engineer:{{PROJECT_NAME}}--<engineer-name> --from {{PROJECT_NAME}}
 <your reply>
 AGMAN_MSG
 

@@ -59,6 +59,30 @@ fn create_task_with_new_branch() {
 }
 
 #[test]
+fn engineer_prompt_grants_end_to_end_authority_and_reports_by_inbox() {
+    let prompt =
+        use_cases::build_engineer_prompt(false, "alpha", "eng-repo-branch", "repo--branch");
+
+    assert!(prompt.contains("attached to task \"repo--branch\""));
+    assert!(prompt.contains("push branches"));
+    assert!(prompt.contains("create or update pull requests"));
+    assert!(prompt.contains("monitor CI"));
+    assert!(prompt.contains("address PR review feedback"));
+    assert!(prompt.contains("agman send-message alpha"));
+    assert!(prompt.contains("progress, blockers, and completion"));
+}
+
+#[test]
+fn pm_prompt_mentions_task_attached_engineers_and_inbox_workflow() {
+    let prompt = use_cases::build_pm_prompt(false, "alpha");
+
+    assert!(prompt.contains("Every task owns one attached Engineer agent"));
+    assert!(prompt.contains("task-attached Researcher, Tester, Reviewer, and Operator agents"));
+    assert!(prompt.contains("messaging the task's attached Engineer through the inbox"));
+    assert!(prompt.contains("rebase, push, PR, CI, and review-addressing"));
+}
+
+#[test]
 fn create_task_with_existing_worktree() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);

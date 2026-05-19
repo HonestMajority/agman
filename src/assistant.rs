@@ -16,6 +16,8 @@ pub enum AssistantStatus {
     Archived,
 }
 
+pub type AgentStatus = AssistantStatus;
+
 /// One worktree entry tracked by a worktree-backed assistant.
 ///
 /// `agman_created` records whether agman set up the worktree (and the local
@@ -34,13 +36,31 @@ pub struct TesterCapabilities {
     pub browser: bool,
 }
 
-/// Discriminator for the assistant kinds. Each kind carries its own
+/// Attachment state for long-lived agents.
+///
+/// Engineers are task-owned and must always be attached to exactly one task.
+/// Other agent kinds may be unattached project agents or attached to a task
+/// with an optional PM-facing role label.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum AgentAttachment {
+    #[default]
+    Unattached,
+    Task {
+        task_id: String,
+        #[serde(default)]
+        role_label: Option<String>,
+    },
+}
+
+/// Discriminator for the agent kinds. Each kind carries its own
 /// kind-specific metadata; everything else (harness stamping, inbox, tmux,
 /// telegram switcher, send-message routing, poll-target enumeration) is
 /// kind-agnostic and lives on the surrounding [`AssistantMeta`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum AssistantKind {
+pub enum AgentKind {
+    Engineer,
     Researcher {
         #[serde(default)]
         repo: Option<String>,
@@ -69,7 +89,9 @@ pub enum AssistantKind {
     },
 }
 
-/// Metadata stored in `~/.agman/assistants/<project>--<name>/meta.json`.
+pub type AssistantKind = AgentKind;
+
+/// Metadata stored in the agent state directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMeta {
     pub name: String,
@@ -79,8 +101,12 @@ pub struct AssistantMeta {
     #[serde(default = "default_now")]
     pub updated_at: DateTime<Utc>,
     pub status: AssistantStatus,
-    pub kind: AssistantKind,
+    pub kind: AgentKind,
+    #[serde(default)]
+    pub attachment: AgentAttachment,
 }
+
+pub type AgentMeta = AssistantMeta;
 
 /// A loaded assistant with its directory path.
 #[derive(Debug, Clone)]
@@ -101,9 +127,28 @@ impl Assistant {
         project: &str,
         name: &str,
         description: &str,
-        kind: AssistantKind,
+        kind: AgentKind,
+    ) -> Result<Self> {
+        Self::create_with_attachment(
+            config,
+            project,
+            name,
+            description,
+            kind,
+            AgentAttachment::Unattached,
+        )
+    }
+
+    pub fn create_with_attachment(
+        config: &Config,
+        project: &str,
+        name: &str,
+        description: &str,
+        kind: AgentKind,
+        attachment: AgentAttachment,
     ) -> Result<Self> {
         validate_assistant_name(name)?;
+        validate_agent_attachment(&kind, &attachment)?;
 
         let dir = config.assistant_dir(project, name);
         if dir.exists() {
@@ -121,6 +166,7 @@ impl Assistant {
             updated_at: Utc::now(),
             status: AssistantStatus::Running,
             kind,
+            attachment,
         };
 
         let mut assistant = Self { meta, dir };
@@ -183,22 +229,34 @@ impl Assistant {
 
     /// True if this assistant is a Researcher.
     pub fn is_researcher(&self) -> bool {
-        matches!(self.meta.kind, AssistantKind::Researcher { .. })
+        matches!(self.meta.kind, AgentKind::Researcher { .. })
     }
 
     /// True if this assistant is an Operator.
     pub fn is_operator(&self) -> bool {
-        matches!(self.meta.kind, AssistantKind::Operator { .. })
+        matches!(self.meta.kind, AgentKind::Operator { .. })
     }
 
     /// True if this assistant is a Reviewer.
     pub fn is_reviewer(&self) -> bool {
-        matches!(self.meta.kind, AssistantKind::Reviewer { .. })
+        matches!(self.meta.kind, AgentKind::Reviewer { .. })
     }
 
     /// True if this assistant is a Tester.
     pub fn is_tester(&self) -> bool {
-        matches!(self.meta.kind, AssistantKind::Tester { .. })
+        matches!(self.meta.kind, AgentKind::Tester { .. })
+    }
+
+    /// True if this agent is the task-owned Engineer.
+    pub fn is_engineer(&self) -> bool {
+        matches!(self.meta.kind, AgentKind::Engineer)
+    }
+
+    /// Set this agent's attachment and persist the metadata.
+    pub fn set_attachment(&mut self, attachment: AgentAttachment) -> Result<()> {
+        validate_agent_attachment(&self.meta.kind, &attachment)?;
+        self.meta.attachment = attachment;
+        self.save_meta()
     }
 
     /// Write meta.json to disk. Stamps `updated_at` before writing.
@@ -210,6 +268,23 @@ impl Assistant {
         std::fs::write(&meta_path, contents)
             .with_context(|| format!("failed to write {}", meta_path.display()))?;
         Ok(())
+    }
+}
+
+pub type AgentRecord = Assistant;
+
+pub fn validate_agent_attachment(kind: &AgentKind, attachment: &AgentAttachment) -> Result<()> {
+    match (kind, attachment) {
+        (AgentKind::Engineer, AgentAttachment::Task { task_id, .. }) if !task_id.is_empty() => {
+            Ok(())
+        }
+        (AgentKind::Engineer, _) => {
+            bail!("engineer agents must be attached to exactly one task")
+        }
+        (_, AgentAttachment::Task { task_id, .. }) if task_id.is_empty() => {
+            bail!("task attachment requires a non-empty task_id")
+        }
+        _ => Ok(()),
     }
 }
 

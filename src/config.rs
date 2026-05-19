@@ -126,6 +126,10 @@ impl Config {
         self.tasks_dir.join(Self::task_id(repo_name, branch_name))
     }
 
+    pub fn task_dir_from_id(&self, task_id: &str) -> PathBuf {
+        self.tasks_dir.join(task_id)
+    }
+
     /// Get task inbox path: ~/.agman/tasks/<id>/inbox.jsonl
     pub fn task_inbox(&self, task_id: &str) -> PathBuf {
         self.tasks_dir.join(task_id).join("inbox.jsonl")
@@ -373,6 +377,11 @@ impl Config {
         format!("agman-tester-{project}--{name}")
     }
 
+    /// Tmux session name for a task-attached engineer.
+    pub fn engineer_tmux_session(project: &str, name: &str) -> String {
+        format!("agman-engineer-{project}--{name}")
+    }
+
     // --- Project template paths ---
 
     /// Directory where project templates are stored: ~/.agman/project-templates/
@@ -406,6 +415,7 @@ impl Config {
 
         // Create default prompts if they don't exist
         let prompts = [
+            ("engineer", ENGINEER_PROMPT),
             ("coder", CODER_PROMPT),
             ("refiner", REFINER_PROMPT),
             ("checker", CHECKER_PROMPT),
@@ -484,6 +494,13 @@ steps:
       - agent: checker
         until: AGENT_DONE
     until: TASK_COMPLETE
+"#;
+
+const ENGINEER_PROMPT: &str = r#"You are a long-lived task-attached engineer agent.
+
+You own one agman task at a time. Work from PM inbox messages, keep state across the session, and handle implementation, tests, commits, rebases, pushes, pull requests, CI monitoring, and review-addressing when the PM asks.
+
+Report progress, blockers, and completion back to the PM with `agman send-message`. Ask only when genuinely blocked.
 "#;
 
 const CODER_PROMPT: &str = r#"You are a coding agent in a coder↔checker loop. After you finish, a checker reviews your work and may send you back. Partial progress is fine — you'll be called again.

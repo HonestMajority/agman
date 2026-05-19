@@ -753,6 +753,7 @@ fn format_assistants_line(assistants: &[use_cases::AssistantSummary]) -> String 
         .iter()
         .map(|a| {
             let kind_label = match a.kind {
+                use_cases::AssistantKindLabel::Engineer => "engineer",
                 use_cases::AssistantKindLabel::Researcher => "researcher",
                 use_cases::AssistantKindLabel::Operator => "operator",
                 use_cases::AssistantKindLabel::Reviewer => "reviewer",
@@ -1005,6 +1006,10 @@ fn cmd_list_assistants(
     println!("{}", "-".repeat(110));
     for a in &assistants {
         let (session_name, kind_str) = match a.meta.kind {
+            agman::assistant::AssistantKind::Engineer => (
+                Config::engineer_tmux_session(&a.meta.project, &a.meta.name),
+                "engineer",
+            ),
             agman::assistant::AssistantKind::Researcher { .. } => (
                 Config::researcher_tmux_session(&a.meta.project, &a.meta.name),
                 "researcher",
