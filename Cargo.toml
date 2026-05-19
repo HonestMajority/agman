@@ -2,7 +2,7 @@
 name = "agman"
 version = "0.1.0"
 edition = "2021"
-description = "Agent Manager - A CLI tool for orchestrating stateless AI agents across isolated git worktrees"
+description = "Agent Manager - A CLI tool for orchestrating long-lived AI agents across projects and tasks"
 authors = ["agman"]
 
 [dependencies]

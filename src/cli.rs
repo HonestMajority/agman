@@ -4,7 +4,7 @@ use agman::task::TaskStatus;
 
 #[derive(Parser)]
 #[command(name = "agman")]
-#[command(about = "Agent Manager - Orchestrate stateless AI agents across isolated git worktrees")]
+#[command(about = "Agent Manager - Orchestrate long-lived AI agents across projects and tasks")]
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]
@@ -13,18 +13,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Run a stored command on a task
-    RunCommand {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-        /// Command identifier (e.g., "create-pr", "address-review")
-        command_id: String,
-        /// Branch name argument (used by commands like rebase)
-        #[arg(long)]
-        branch: Option<String>,
-    },
-
-    /// Initialize agman configuration (creates default flows, prompts, and commands)
+    /// Initialize agman configuration
     Init {
         /// Overwrite existing files with defaults
         #[arg(long, default_value_t = false)]
@@ -180,12 +169,6 @@ EXAMPLES:
         tail: usize,
     },
 
-    /// Read the current plan (TASK.md) for a task
-    TaskCurrentPlan {
-        /// Task identifier (repo--branch format)
-        task_id: String,
-    },
-
     /// Show aggregated status across all projects and tasks
     Status,
 
@@ -208,23 +191,24 @@ EXAMPLES:
         file: Option<std::path::PathBuf>,
     },
 
-    /// Create a project-scoped assistant (researcher, operator, reviewer, or tester).
+    /// Create a project-scoped agent (researcher, operator, reviewer, or tester).
+    #[command(alias = "create-assistant")]
     #[command(after_help = "\
 EXAMPLES:
-  agman create-assistant --kind researcher --name api-investigator --project backend --description \"Investigate the API latency\"
-  agman create-assistant --kind operator --name docs-updater --project docs --description \"Update the launch notes\"
-  agman create-assistant --kind reviewer --name pr-1247 --project reviews \\
+  agman create-agent --kind researcher --name api-investigator --project backend --description \"Investigate the API latency\"
+  agman create-agent --kind operator --name docs-updater --project docs --description \"Update the launch notes\"
+  agman create-agent --kind reviewer --name pr-1247 --project reviews \\
     --branch galoy:fix-deposit-flow \\
     --branch lana-dashboard:fix-deposit-flow \\
     --description \"Review the cross-repo deposit fix\"
-  agman create-assistant --kind tester --name browser-pass --project reviews \\
+  agman create-agent --kind tester --name browser-pass --project reviews \\
     --branch galoy:fix-deposit-flow --browser \\
     --description \"Exercise the deposit flow in browser\"")]
-    CreateAssistant {
-        /// Assistant kind: researcher, operator, reviewer, or tester
+    CreateAgent {
+        /// Agent kind: researcher, operator, reviewer, or tester
         #[arg(long, value_enum)]
         kind: AssistantKindArg,
-        /// Assistant name (alphanumeric + hyphens)
+        /// Agent name (alphanumeric + hyphens)
         #[arg(long, short)]
         name: String,
         /// Project name
@@ -253,8 +237,9 @@ EXAMPLES:
         browser: bool,
     },
 
-    /// List assistants
-    ListAssistants {
+    /// List project agents
+    #[command(alias = "list-assistants")]
+    ListAgents {
         /// Project name
         #[arg(long)]
         project: String,
@@ -263,16 +248,17 @@ EXAMPLES:
         kind: Option<AssistantKindArg>,
     },
 
-    /// Archive a project-scoped assistant
-    ArchiveAssistant {
-        /// Assistant name
+    /// Archive a project-scoped agent
+    #[command(alias = "archive-assistant")]
+    ArchiveAgent {
+        /// Agent name
         name: String,
         /// Project name
         #[arg(long)]
         project: String,
     },
 
-    /// Create a researcher (alias for `create-assistant --kind researcher`).
+    /// Create a researcher agent.
     #[command(after_help = "\
 EXAMPLES:
   agman create-researcher my-research --project backend --description \"Investigate the API latency\"
@@ -300,7 +286,7 @@ EXAMPLES:
         description: Option<String>,
     },
 
-    /// Create an operator (alias for `create-assistant --kind operator`).
+    /// Create an operator agent.
     CreateOperator {
         name: String,
         #[arg(long)]
@@ -315,7 +301,7 @@ EXAMPLES:
         description: Option<String>,
     },
 
-    /// Create a reviewer (alias for `create-assistant --kind reviewer`).
+    /// Create a reviewer agent.
     #[command(after_help = "\
 EXAMPLES:
   agman create-reviewer --name pr-1247 --project reviews \\
@@ -337,7 +323,7 @@ EXAMPLES:
         description: Option<String>,
     },
 
-    /// Create a tester (alias for `create-assistant --kind tester`).
+    /// Create a tester agent.
     #[command(after_help = "\
 EXAMPLES:
   agman create-tester --name browser-pass --project reviews \\
@@ -361,14 +347,14 @@ EXAMPLES:
         description: Option<String>,
     },
 
-    /// List researchers (alias for `list-assistants --kind researcher`).
+    /// List researcher agents.
     ListResearchers {
         /// Project name
         #[arg(long)]
         project: String,
     },
 
-    /// Archive a researcher (alias for `archive-assistant`).
+    /// Archive a researcher agent.
     ArchiveResearcher {
         /// Researcher name
         name: String,

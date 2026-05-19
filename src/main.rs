@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use agman::assistant::TesterCapabilities;
-use agman::command;
 use agman::config::Config;
 use agman::supervisor;
 use agman::task::{Task, TaskStatus};
@@ -73,12 +72,6 @@ fn main() -> Result<()> {
     use_cases::purge_chief_of_staff_assistants(&config);
 
     match cli.command {
-        Some(Commands::RunCommand {
-            task_id,
-            command_id,
-            branch,
-        }) => cmd_run_command(&config, &task_id, &command_id, branch.as_deref()),
-
         Some(Commands::Init { force }) => {
             config.init_default_files(force)?;
             println!("agman initialized at {}", config.base_dir.display());
@@ -146,15 +139,13 @@ fn main() -> Result<()> {
 
         Some(Commands::TaskLog { task_id, tail }) => cmd_task_log(&config, &task_id, tail),
 
-        Some(Commands::TaskCurrentPlan { task_id }) => cmd_task_current_plan(&config, &task_id),
-
         Some(Commands::Feedback {
             task_id,
             feedback,
             file,
         }) => cmd_queue_feedback(&config, &task_id, feedback.as_deref(), file.as_deref()),
 
-        Some(Commands::CreateAssistant {
+        Some(Commands::CreateAgent {
             kind,
             name,
             project,
@@ -231,11 +222,11 @@ fn main() -> Result<()> {
             }
         }
 
-        Some(Commands::ListAssistants { project, kind }) => {
+        Some(Commands::ListAgents { project, kind }) => {
             cmd_list_assistants(&config, Some(project.as_str()), kind)
         }
 
-        Some(Commands::ArchiveAssistant { name, project }) => {
+        Some(Commands::ArchiveAgent { name, project }) => {
             cmd_archive_assistant(&config, &project, &name)
         }
 
@@ -312,73 +303,6 @@ fn main() -> Result<()> {
             run_tui(config)
         }
     }
-}
-
-fn cmd_run_command(
-    config: &Config,
-    task_id: &str,
-    command_id: &str,
-    branch: Option<&str>,
-) -> Result<()> {
-    config.init_default_files(false)?;
-
-    let mut task = Task::load_by_id(config, task_id)?;
-
-    // Guard: refuse create-pr if a PR is already linked
-    if command_id == "create-pr" {
-        if let Some(ref pr) = task.meta.linked_pr {
-            println!("PR #{} already linked — use monitor-pr instead.", pr.number);
-            return Ok(());
-        }
-    }
-
-    if !task.meta.has_repos() {
-        anyhow::bail!("Task '{}' has no repos configured yet", task.meta.task_id());
-    }
-
-    // Load the command (validate it exists + get metadata)
-    let cmd = command::StoredCommand::get_by_id(&config.commands_dir, command_id)?
-        .ok_or_else(|| anyhow::anyhow!("Command '{}' not found", command_id))?;
-
-    // Validate the branch arg loudly at the CLI boundary — drain_queue silently
-    // drops malformed command queue items, which would be a confusing UX here.
-    if cmd.requires_arg.as_deref() == Some("branch") && branch.is_none() {
-        anyhow::bail!("Command '{}' requires --branch argument", command_id);
-    }
-
-    println!("Running command: {}", cmd.name);
-    println!("  Description: {}", cmd.description);
-    println!("  Task: {}", task.meta.task_id());
-    if let Some(b) = branch {
-        println!("  Target branch: {}", b);
-    }
-    println!();
-
-    if task.meta.status == TaskStatus::Running {
-        let count = use_cases::queue_command(&mut task, config, command_id, branch)?;
-        tracing::info!(task_id = %task_id, command_id, count, "queued command via CLI");
-        println!(
-            "Command queued for '{}' ({} item(s) in queue)",
-            task_id, count
-        );
-    } else {
-        supervisor::ensure_task_tmux(&task)
-            .with_context(|| format!("failed to prepare tmux for command on '{}'", task_id))?;
-
-        let count = use_cases::queue_command(&mut task, config, command_id, branch)?;
-        tracing::info!(
-            task_id = %task_id,
-            command_id,
-            count,
-            "queued command via CLI; supervisor waking"
-        );
-        println!(
-            "Command queued for '{}' ({} item(s) in queue); supervisor waking",
-            task_id, count
-        );
-    }
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -676,16 +600,6 @@ fn cmd_list_pm_tasks(
 fn cmd_task_status(config: &Config, task_id: &str) -> Result<()> {
     let text = use_cases::get_task_status_text(config, task_id)?;
     println!("{}", text);
-    Ok(())
-}
-
-fn cmd_task_current_plan(config: &Config, task_id: &str) -> Result<()> {
-    let text = use_cases::get_task_current_plan(config, task_id)?;
-    if text.is_empty() {
-        println!("(no plan)");
-    } else {
-        println!("{}", text);
-    }
     Ok(())
 }
 
