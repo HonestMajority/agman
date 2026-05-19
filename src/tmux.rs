@@ -246,7 +246,20 @@ impl Tmux {
         agent_name: &str,
         canonical_session: &str,
     ) -> String {
-        build_linked_agent_window_name(kind, agent_name, canonical_session)
+        let suffix = linked_agent_window_hash_suffix(canonical_session, 4);
+        build_linked_agent_window_name(kind, agent_name, &suffix)
+    }
+
+    pub(crate) fn linked_agent_window_name_with_suffix(
+        kind: &str,
+        agent_name: &str,
+        suffix: &str,
+    ) -> String {
+        build_linked_agent_window_name(kind, agent_name, suffix)
+    }
+
+    pub(crate) fn linked_agent_window_hash_suffix(canonical_session: &str, len: usize) -> String {
+        linked_agent_window_hash_suffix(canonical_session, len)
     }
 
     pub fn link_agent_window(
@@ -260,7 +273,9 @@ impl Tmux {
         if !Self::session_exists(canonical_session) {
             anyhow::bail!("agent tmux session '{canonical_session}' does not exist");
         }
-        if Self::window_exists(task_session, window_name)? {
+        if Self::window_exists(task_session, window_name)?
+            && Self::same_window_id(canonical_session, &format!("{task_session}:{window_name}"))?
+        {
             return Ok(());
         }
 
@@ -276,7 +291,12 @@ impl Tmux {
             );
         }
         if Self::window_exists(task_session, window_name)? {
-            return Ok(());
+            if Self::same_window_id(canonical_session, &format!("{task_session}:{window_name}"))? {
+                return Ok(());
+            }
+            anyhow::bail!(
+                "task tmux session '{task_session}' already has a different window named '{window_name}'"
+            );
         }
 
         let args = link_window_args(task_session, canonical_session, window_name);
@@ -294,8 +314,17 @@ impl Tmux {
         Ok(())
     }
 
-    pub fn unlink_agent_window(task_session: &str, window_name: &str) -> Result<()> {
+    pub fn unlink_agent_window(
+        task_session: &str,
+        canonical_session: &str,
+        window_name: &str,
+    ) -> Result<()> {
         if !Self::session_exists(task_session) || !Self::window_exists(task_session, window_name)? {
+            return Ok(());
+        }
+        if Self::session_exists(canonical_session)
+            && !Self::same_window_id(canonical_session, &format!("{task_session}:{window_name}"))?
+        {
             return Ok(());
         }
 
@@ -312,6 +341,32 @@ impl Tmux {
             );
         }
         Ok(())
+    }
+
+    fn same_window_id(left_target: &str, right_target: &str) -> Result<bool> {
+        let Some(left_id) = Self::window_id(left_target)? else {
+            return Ok(false);
+        };
+        let Some(right_id) = Self::window_id(right_target)? else {
+            return Ok(false);
+        };
+        Ok(left_id == right_id)
+    }
+
+    fn window_id(target: &str) -> Result<Option<String>> {
+        let output = Command::new("tmux")
+            .args(["display-message", "-p", "-t", target, "#{window_id}"])
+            .output()
+            .context("failed to query tmux window id")?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if id.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(id))
+        }
     }
 
     fn window_exists(session_name: &str, window_name: &str) -> Result<bool> {
@@ -750,12 +805,10 @@ pub fn unlink_window_args(task_session: &str, window_name: &str) -> Vec<String> 
     ]
 }
 
-fn build_linked_agent_window_name(kind: &str, agent_name: &str, canonical_session: &str) -> String {
+fn build_linked_agent_window_name(kind: &str, agent_name: &str, suffix: &str) -> String {
     const MAX_WINDOW_NAME_LEN: usize = 24;
-    const HASH_SUFFIX_LEN: usize = 4;
 
     let prefix = title_case_kind(kind);
-    let suffix = stable_hash_suffix(canonical_session, HASH_SUFFIX_LEN);
     let max_slug_len = MAX_WINDOW_NAME_LEN.saturating_sub(prefix.len() + suffix.len() + 2);
     let slug = compact_agent_slug(kind, agent_name, max_slug_len);
     format!("{prefix}-{slug}-{suffix}")
@@ -770,7 +823,7 @@ fn stable_hash32(raw: &str) -> u32 {
     hash
 }
 
-fn stable_hash_suffix(raw: &str, len: usize) -> String {
+fn linked_agent_window_hash_suffix(raw: &str, len: usize) -> String {
     let mut hash = stable_hash32(raw) as u64;
     let base = 36_u64.pow(len as u32);
     hash %= base;

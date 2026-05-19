@@ -91,6 +91,74 @@ fn ensure_task_tmux_backfills_attached_agent_windows_after_creation_and_recreati
     assert_compact_agent_windows(&recreated_windows);
 }
 
+#[test]
+fn ensure_task_tmux_disambiguates_compact_agent_window_label_collisions() {
+    if Command::new("tmux").arg("-V").output().is_err() {
+        eprintln!("skipping tmux label collision smoke: tmux binary is unavailable");
+        return;
+    }
+
+    let project = "proj";
+    let first_name = "researcher-agent-window-names-9089";
+    let second_name = "researcher-agent-window-names-10056";
+    let first_session = Config::researcher_tmux_session(project, first_name);
+    let second_session = Config::researcher_tmux_session(project, second_name);
+    if Tmux::session_exists(&first_session) || Tmux::session_exists(&second_session) {
+        eprintln!("skipping tmux label collision smoke: fixture session already exists");
+        return;
+    }
+
+    let fixed_first = Tmux::linked_agent_window_name("researcher", first_name, &first_session);
+    let fixed_second = Tmux::linked_agent_window_name("researcher", second_name, &second_session);
+    assert_eq!(fixed_first, fixed_second);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let branch = format!("branch-{}", unique_test_name());
+    let task = create_test_task(&config, project, &branch);
+    let task_id = task.meta.task_id();
+    let first = create_test_researcher(&config, project, first_name);
+    let second = create_test_researcher(&config, project, second_name);
+    use_cases::attach_agent_to_task(&config, project, &first.meta.name, &task_id, None).unwrap();
+    use_cases::attach_agent_to_task(&config, project, &second.meta.name, &task_id, None).unwrap();
+
+    let engineer = use_cases::attached_engineer_for_task(&config, &task_id).unwrap();
+    let engineer_session = Config::engineer_tmux_session(project, &engineer.meta.name);
+    let task_session = task.meta.primary_repo().tmux_session.clone();
+    let _cleanup = TmuxCleanup {
+        sessions: vec![
+            task_session.clone(),
+            engineer_session.clone(),
+            first_session.clone(),
+            second_session.clone(),
+        ],
+    };
+
+    create_tmux_session(&engineer_session, tmp.path());
+    create_tmux_session(&first_session, tmp.path());
+    create_tmux_session(&second_session, tmp.path());
+
+    supervisor::ensure_task_tmux(&config, &task).unwrap();
+
+    let windows = window_names(&task_session);
+    let researcher_windows: Vec<_> = windows
+        .iter()
+        .filter(|name| name.starts_with("Researcher-"))
+        .cloned()
+        .collect();
+    assert_eq!(researcher_windows.len(), 2, "{windows:?}");
+    assert_ne!(researcher_windows[0], researcher_windows[1]);
+    assert!(!researcher_windows.contains(&fixed_first));
+    assert_compact_agent_windows(&windows);
+    let first_canonical_windows = window_names(&first_session);
+    let second_canonical_windows = window_names(&second_session);
+    assert_eq!(first_canonical_windows.len(), 1);
+    assert_eq!(second_canonical_windows.len(), 1);
+    assert_ne!(first_canonical_windows[0], second_canonical_windows[0]);
+    assert!(researcher_windows.contains(&first_canonical_windows[0]));
+    assert!(researcher_windows.contains(&second_canonical_windows[0]));
+}
+
 fn unique_test_name() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
