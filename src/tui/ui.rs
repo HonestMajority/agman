@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::app::{
     AgentActivitySample, App, ArchiveKind, BranchSource, DirKind, DirPickerOrigin, NotesFocus,
-    PreviewPane, ProjectPaneFocus, View, WizardStep,
+    PreviewPane, ProjectPaneFocus, ProjectTaskRow, View, WizardStep,
 };
 use super::vim::VimMode;
 
@@ -1233,10 +1233,59 @@ fn draw_tasks_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
         return;
     }
 
-    // Build task list.
+    // Build task list with attached agents as child rows.
     let mut items: Vec<ListItem> = Vec::new();
 
-    for (task_index, task) in app.tasks.iter().enumerate() {
+    for (row_index, row) in app.project_task_rows().iter().enumerate() {
+        let ProjectTaskRow::Task {
+            task_index: _,
+            task,
+        } = row
+        else {
+            if let ProjectTaskRow::Agent { agent, .. } = row {
+                let is_selected = focused && row_index == app.selected_index;
+                let (status, status_icon, status_color) = agent_runtime_status(app, agent);
+                let text_style = if is_selected {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                let row_style = if is_selected {
+                    Style::default().bg(Color::Rgb(40, 40, 50))
+                } else {
+                    Style::default()
+                };
+                let label = format!("{} {}", agent_kind_label(&agent.meta.kind), agent.meta.name);
+                let display_label = truncate_to_width(&label, repo_width + branch_width + 4);
+                let line = Line::from(vec![
+                    Span::raw("       "),
+                    Span::styled(status_icon, Style::default().fg(status_color)),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!(
+                            "{:<width$}",
+                            display_label,
+                            width = repo_width + branch_width + 4
+                        ),
+                        text_style,
+                    ),
+                    Span::raw(COL_GAP),
+                    Span::styled(
+                        format!("{:<width$}", status, width = PR_WIDTH),
+                        Style::default().fg(status_color),
+                    ),
+                    Span::raw(COL_GAP),
+                    Span::styled(
+                        time_since_datetime(&agent.meta.created_at),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]);
+                items.push(ListItem::new(line).style(row_style));
+            }
+            continue;
+        };
         // Build display repo name (truncate if needed, prefix multi-repo tasks)
         let repo_label = if task.meta.is_multi_repo() {
             format!("[M] {}", task.meta.name)
@@ -1258,7 +1307,7 @@ fn draw_tasks_pane(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             full_branch.clone()
         };
 
-        let is_selected = focused && task_index == app.selected_index;
+        let is_selected = focused && row_index == app.selected_index;
         let text_color = if is_selected {
             Color::White
         } else {

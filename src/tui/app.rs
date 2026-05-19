@@ -84,6 +84,18 @@ pub enum ArchiveKind {
     Agents,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ProjectTaskRow<'a> {
+    Task {
+        task_index: usize,
+        task: &'a Task,
+    },
+    Agent {
+        task_index: usize,
+        agent: &'a AgentRecord,
+    },
+}
+
 /// A live tmux popup spawned by agman. The `Child` is polled each tick of
 /// the main loop via `try_wait` so the loop never blocks on the popup.
 struct ActivePopup {
@@ -637,8 +649,9 @@ pub struct App {
     pub project_picker: Option<ProjectPicker>,
     // Project deletion
     pub project_to_delete: Option<String>,
-    // Agents (researchers + reviewers)
+    // Unattached project agents plus task-attached child rows.
     pub agents: Vec<AgentRecord>,
+    pub attached_task_agents: HashMap<String, Vec<AgentRecord>>,
     pub agent_list_index: usize,
     pub agent_activity: HashMap<String, AgentActivitySample>,
     agent_activity_query_failed_logged: bool,
@@ -825,6 +838,7 @@ impl App {
             project_picker: None,
             project_to_delete: None,
             agents: Vec::new(),
+            attached_task_agents: HashMap::new(),
             agent_list_index: 0,
             agent_activity: HashMap::new(),
             agent_activity_query_failed_logged: false,
@@ -944,22 +958,25 @@ impl App {
     pub fn refresh_tasks(&mut self) {
         let prev_task_id = self.selected_task().map(|t| t.meta.task_id());
         self.tasks = Task::list_all(&self.config);
+        self.refresh_attached_task_agents();
         if let Some(ref id) = prev_task_id {
-            if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == *id) {
+            if let Some(idx) = self.project_task_rows().iter().position(
+                |row| matches!(row, ProjectTaskRow::Task { task, .. } if task.meta.task_id() == *id),
+            ) {
                 self.selected_index = idx;
                 return;
             }
         }
-        if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
-            self.selected_index = self.tasks.len() - 1;
-        }
+        self.clamp_project_task_selection();
     }
 
     /// Refresh the task list and restore selection to the task with the given ID.
     /// If the task is no longer present, selection falls back to a valid index.
     fn refresh_tasks_and_select(&mut self, task_id: &str) {
         self.refresh_tasks_for_project();
-        if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == task_id) {
+        if let Some(idx) = self.project_task_rows().iter().position(
+            |row| matches!(row, ProjectTaskRow::Task { task, .. } if task.meta.task_id() == task_id),
+        ) {
             self.selected_index = idx;
         }
     }
@@ -1035,11 +1052,17 @@ impl App {
             return;
         }
 
-        self.agents = use_cases::list_agents(&self.config, self.current_project.as_deref(), None)
-            .unwrap_or_else(|e| {
+        self.agents = if let Some(project) = self.current_project.as_deref() {
+            use_cases::unattached_agents_for_project(&self.config, project).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "failed to list agents");
                 Vec::new()
-            });
+            })
+        } else {
+            use_cases::list_agents(&self.config, None, None).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to list agents");
+                Vec::new()
+            })
+        };
         self.agents
             .retain(|agent| agent.meta.status != AgentStatus::Archived);
         self.agents
@@ -1053,8 +1076,12 @@ impl App {
     }
 
     fn refresh_agent_activity(&mut self) {
-        let active_sessions: HashSet<String> =
-            self.agents.iter().map(Self::agent_session_name).collect();
+        let active_sessions: HashSet<String> = self
+            .agents
+            .iter()
+            .chain(self.attached_task_agents.values().flatten())
+            .map(Self::agent_session_name)
+            .collect();
         self.refresh_agent_activity_for_sessions(active_sessions);
     }
 
@@ -1136,20 +1163,89 @@ impl App {
                 .collect(),
             None => all,
         };
+        self.refresh_attached_task_agents();
         // Restore selection
         if let Some(ref id) = prev_task_id {
-            if let Some(idx) = self.tasks.iter().position(|t| t.meta.task_id() == *id) {
+            if let Some(idx) = self.project_task_rows().iter().position(
+                |row| matches!(row, ProjectTaskRow::Task { task, .. } if task.meta.task_id() == *id),
+            ) {
                 self.selected_index = idx;
                 return;
             }
         }
-        if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
-            self.selected_index = self.tasks.len() - 1;
+        self.clamp_project_task_selection();
+    }
+
+    fn refresh_attached_task_agents(&mut self) {
+        self.attached_task_agents.clear();
+        for task in &self.tasks {
+            let task_id = task.meta.task_id();
+            match use_cases::attached_agents_for_task(&self.config, &task_id) {
+                Ok(agents) => {
+                    self.attached_task_agents.insert(task_id, agents);
+                }
+                Err(e) => {
+                    tracing::warn!(task_id = %task_id, error = %e, "failed to list attached task agents");
+                }
+            }
+        }
+    }
+
+    pub fn project_task_rows(&self) -> Vec<ProjectTaskRow<'_>> {
+        let mut rows = Vec::new();
+        for (task_index, task) in self.tasks.iter().enumerate() {
+            rows.push(ProjectTaskRow::Task { task_index, task });
+            if let Some(agents) = self.attached_task_agents.get(&task.meta.task_id()) {
+                rows.extend(
+                    agents
+                        .iter()
+                        .map(|agent| ProjectTaskRow::Agent { task_index, agent }),
+                );
+            }
+        }
+        rows
+    }
+
+    fn project_task_row_count(&self) -> usize {
+        self.tasks.len()
+            + self
+                .attached_task_agents
+                .values()
+                .map(Vec::len)
+                .sum::<usize>()
+    }
+
+    fn selected_task_index(&self) -> Option<usize> {
+        match self.project_task_rows().get(self.selected_index) {
+            Some(ProjectTaskRow::Task { task_index, .. })
+            | Some(ProjectTaskRow::Agent { task_index, .. }) => Some(*task_index),
+            None => None,
+        }
+    }
+
+    fn selected_project_task_row(&self) -> Option<ProjectTaskRow<'_>> {
+        self.project_task_rows().get(self.selected_index).copied()
+    }
+
+    fn selected_attached_agent(&self) -> Option<&AgentRecord> {
+        match self.selected_project_task_row() {
+            Some(ProjectTaskRow::Agent { agent, .. }) => Some(agent),
+            _ => None,
+        }
+    }
+
+    fn clamp_project_task_selection(&mut self) {
+        let row_count = self.project_task_row_count();
+        if row_count == 0 {
+            self.selected_index = 0;
+        } else if self.selected_index >= row_count {
+            self.selected_index = row_count - 1;
         }
     }
 
     pub fn selected_task(&self) -> Option<&Task> {
-        self.tasks.get(self.selected_index)
+        self.selected_task_index()
+            .and_then(|task_index| self.tasks.get(task_index))
     }
 
     pub fn set_status(&mut self, message: String) {
@@ -1186,15 +1282,17 @@ impl App {
     }
 
     fn next_task(&mut self) {
-        if !self.tasks.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.tasks.len();
+        let row_count = self.project_task_row_count();
+        if row_count > 0 {
+            self.selected_index = (self.selected_index + 1) % row_count;
         }
     }
 
     fn previous_task(&mut self) {
-        if !self.tasks.is_empty() {
+        let row_count = self.project_task_row_count();
+        if row_count > 0 {
             self.selected_index = if self.selected_index == 0 {
-                self.tasks.len() - 1
+                row_count - 1
             } else {
                 self.selected_index - 1
             };
@@ -1247,14 +1345,11 @@ impl App {
         }
     }
 
-    fn open_selected_agent(&mut self) {
+    fn open_agent(&mut self, agent: &AgentRecord) {
         if self.popup.is_some() {
             return;
         }
 
-        let Some(agent) = self.selected_agent() else {
-            return;
-        };
         let project = agent.meta.project.clone();
         let name = agent.meta.name.clone();
         let session_name = Self::agent_session_name(agent);
@@ -1281,6 +1376,20 @@ impl App {
                 self.set_status(format!("Failed to attach: {e}"));
             }
         }
+    }
+
+    fn open_selected_agent(&mut self) {
+        let Some(agent) = self.selected_agent().cloned() else {
+            return;
+        };
+        self.open_agent(&agent);
+    }
+
+    fn open_selected_attached_agent(&mut self) {
+        let Some(agent) = self.selected_attached_agent().cloned() else {
+            return;
+        };
+        self.open_agent(&agent);
     }
 
     fn start_agent_wizard(&mut self) {
@@ -1368,7 +1477,10 @@ impl App {
 
     fn start_focused_archive_confirm(&mut self) {
         let has_selection = match self.project_pane_focus {
-            ProjectPaneFocus::Tasks => !self.tasks.is_empty(),
+            ProjectPaneFocus::Tasks => matches!(
+                self.selected_project_task_row(),
+                Some(ProjectTaskRow::Task { .. })
+            ),
             ProjectPaneFocus::Agents => self.selected_agent().is_some(),
         };
         if has_selection {
@@ -1469,7 +1581,10 @@ impl App {
             return Ok(());
         }
 
-        let mut task = self.tasks.remove(self.selected_index);
+        let Some(task_index) = self.selected_task_index() else {
+            return Ok(());
+        };
+        let mut task = self.tasks.remove(task_index);
         let task_id = task.meta.task_id();
 
         tracing::info!(task_id = %task_id, saved, "TUI: archive task requested");
@@ -1492,9 +1607,8 @@ impl App {
         use_cases::archive_task(&self.config, &mut task, saved)?;
         self.log_output("  Archived task".to_string());
 
-        if self.selected_index >= self.tasks.len() && !self.tasks.is_empty() {
-            self.selected_index = self.tasks.len() - 1;
-        }
+        self.refresh_attached_task_agents();
+        self.clamp_project_task_selection();
 
         let label = if saved {
             "Archived & saved"
@@ -2280,19 +2394,24 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.next_task();
             }
-            KeyCode::Enter => {
-                if !self.tasks.is_empty() {
+            KeyCode::Enter => match self.selected_project_task_row() {
+                Some(ProjectTaskRow::Task { .. }) => {
                     self.load_preview();
                     self.preview_pane = PreviewPane::Logs;
                     self.view = View::Preview;
                 }
-            }
+                Some(ProjectTaskRow::Agent { .. }) => {
+                    self.open_selected_attached_agent();
+                }
+                None => {}
+            },
             KeyCode::Char('d') => {
                 self.start_focused_archive_confirm();
             }
             KeyCode::Char('G') => {
-                if !self.tasks.is_empty() {
-                    self.selected_index = self.tasks.len() - 1;
+                let row_count = self.project_task_row_count();
+                if row_count > 0 {
+                    self.selected_index = row_count - 1;
                 }
             }
             KeyCode::Char('g') => {
