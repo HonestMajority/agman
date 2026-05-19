@@ -259,3 +259,41 @@ fn archive_task_archives_and_unlinks_attached_agents() {
         assert!(matches!(agent.meta.attachment, AgentAttachment::Unattached));
     }
 }
+
+#[test]
+fn permanently_delete_archived_task_archives_and_unlinks_stale_attached_agents() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let mut task = create_test_task(&config, "repo", "branch");
+    let _researcher = create_test_researcher(&config, "repo", "research");
+    use_cases::attach_agent_to_task(&config, "repo", "research", "repo--branch", None).unwrap();
+    task.meta.archived_at = Some(chrono::Utc::now());
+    task.save_meta().unwrap();
+
+    use_cases::permanently_delete_archived_task(&config, task).unwrap();
+
+    assert!(!config.task_dir("repo", "branch").exists());
+    for name in ["engineer-repo-branch", "research"] {
+        let agent = AgentRecord::load(config.agent_dir("repo", name)).unwrap();
+        assert_eq!(agent.meta.status, agman::agent_model::AgentStatus::Archived);
+        assert!(matches!(agent.meta.attachment, AgentAttachment::Unattached));
+    }
+}
+
+#[test]
+fn fully_delete_task_archives_and_unlinks_attached_agents() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let task = create_test_task(&config, "repo", "branch");
+    let _researcher = create_test_researcher(&config, "repo", "research");
+    use_cases::attach_agent_to_task(&config, "repo", "research", "repo--branch", None).unwrap();
+
+    use_cases::fully_delete_task(&config, task).unwrap();
+
+    assert!(!config.task_dir("repo", "branch").exists());
+    for name in ["engineer-repo-branch", "research"] {
+        let agent = AgentRecord::load(config.agent_dir("repo", name)).unwrap();
+        assert_eq!(agent.meta.status, agman::agent_model::AgentStatus::Archived);
+        assert!(matches!(agent.meta.attachment, AgentAttachment::Unattached));
+    }
+}

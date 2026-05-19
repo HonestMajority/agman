@@ -296,24 +296,7 @@ pub fn archive_task(config: &Config, task: &mut Task, saved: bool) -> Result<()>
     let task_id = task.meta.task_id();
     tracing::info!(task_id = %task_id, saved, "archiving task");
 
-    let attached_agents: Vec<_> = AgentRecord::list_all(config)?
-        .into_iter()
-        .filter(|agent| {
-            agent.meta.status != AgentStatus::Archived
-                && matches!(
-                    &agent.meta.attachment,
-                    AgentAttachment::Task { task_id: attached, .. } if attached == &task_id
-                )
-        })
-        .collect();
-    for agent in attached_agents {
-        archive_agent(config, &agent.meta.project, &agent.meta.name).with_context(|| {
-            format!(
-                "failed to archive agent '{}--{}' attached to task '{}'",
-                agent.meta.project, agent.meta.name, task_id
-            )
-        })?;
-    }
+    archive_agents_attached_to_task(config, &task_id)?;
 
     // Remove worktrees (branches are kept for later reference)
     let parent_dir = task.meta.parent_dir.as_deref();
@@ -330,13 +313,38 @@ pub fn archive_task(config: &Config, task: &mut Task, saved: bool) -> Result<()>
     Ok(())
 }
 
+fn archive_agents_attached_to_task(config: &Config, task_id: &str) -> Result<()> {
+    let attached_agents: Vec<_> = AgentRecord::list_all(config)?
+        .into_iter()
+        .filter(|agent| {
+            matches!(
+                &agent.meta.attachment,
+                AgentAttachment::Task { task_id: attached, .. } if attached == task_id
+            )
+        })
+        .collect();
+
+    for agent in attached_agents {
+        archive_agent(config, &agent.meta.project, &agent.meta.name).with_context(|| {
+            format!(
+                "failed to archive agent '{}--{}' attached to task '{}'",
+                agent.meta.project, agent.meta.name, task_id
+            )
+        })?;
+    }
+    Ok(())
+}
+
 /// Permanently delete an archived task by deleting its git branches and removing
 /// its directory from disk.
 ///
 /// Used from the archive view and by `purge_old_archives`. Branch deletion is
 /// best-effort — branches may have already been manually deleted.
 pub fn permanently_delete_archived_task(config: &Config, task: Task) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), "permanently deleting archived task");
+    let task_id = task.meta.task_id();
+    tracing::info!(task_id = %task_id, "permanently deleting archived task");
+
+    archive_agents_attached_to_task(config, &task_id)?;
 
     // Delete branches for all repos (best-effort)
     let parent_dir = task.meta.parent_dir.as_deref();
@@ -352,9 +360,13 @@ pub fn permanently_delete_archived_task(config: &Config, task: Task) -> Result<(
 /// Fully delete a task: remove worktrees, delete branches, and remove the task
 /// directory. This is the "nuclear option" — everything is gone immediately.
 ///
-/// Like `archive_task`, this does NOT kill tmux sessions — the caller handles that.
+/// Like `archive_task`, this does NOT kill task tmux sessions — the caller handles that.
+/// Attached agents are archived and their canonical tmux sessions are stopped.
 pub fn fully_delete_task(config: &Config, task: Task) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), "fully deleting task");
+    let task_id = task.meta.task_id();
+    tracing::info!(task_id = %task_id, "fully deleting task");
+
+    archive_agents_attached_to_task(config, &task_id)?;
 
     // Remove worktrees (best-effort)
     let parent_dir = task.meta.parent_dir.as_deref();
