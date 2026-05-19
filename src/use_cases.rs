@@ -557,13 +557,17 @@ pub fn migrate_old_tasks(config: &Config) {
         let dir_name = entry.file_name().to_string_lossy().to_string();
         let task_dir = entry.path();
 
-        if let Err(e) = migrate_single_task(&task_dir, &dir_name) {
+        if let Err(e) = migrate_single_task(config, &task_dir, &dir_name) {
             tracing::warn!(task_id = %dir_name, error = %e, "failed to migrate old task");
         }
     }
 }
 
-fn migrate_single_task(task_dir: &std::path::Path, dir_name: &str) -> anyhow::Result<()> {
+fn migrate_single_task(
+    config: &Config,
+    task_dir: &std::path::Path,
+    dir_name: &str,
+) -> anyhow::Result<()> {
     let meta_path = task_dir.join("meta.json");
     if !meta_path.exists() {
         return Ok(());
@@ -583,7 +587,7 @@ fn migrate_single_task(task_dir: &std::path::Path, dir_name: &str) -> anyhow::Re
 
     if !has_repo_name || has_repos {
         tracing::debug!(task_id = %dir_name, "skipping task (already new format or unrecognized)");
-        return Ok(());
+        return ensure_migrated_task_engineer(config, task_dir, dir_name);
     }
 
     // Extract old values before mutation
@@ -632,6 +636,60 @@ fn migrate_single_task(task_dir: &std::path::Path, dir_name: &str) -> anyhow::Re
     std::fs::write(&meta_path, new_content)?;
     tracing::info!(task_id = %dir_name, "migrated old-format meta.json");
 
+    ensure_migrated_task_engineer(config, task_dir, dir_name)?;
+
+    Ok(())
+}
+
+fn ensure_migrated_task_engineer(
+    config: &Config,
+    task_dir: &std::path::Path,
+    dir_name: &str,
+) -> anyhow::Result<()> {
+    let meta_path = task_dir.join("meta.json");
+    let content = std::fs::read_to_string(&meta_path)
+        .with_context(|| format!("failed to read {}", meta_path.display()))?;
+    let meta: crate::task::TaskMeta = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse {}", meta_path.display()))?;
+    if meta.archived_at.is_some() {
+        return Ok(());
+    }
+
+    let task = Task {
+        meta,
+        dir: task_dir.to_path_buf(),
+    };
+    let task_id = task.meta.task_id();
+    let running_engineers = AgentRecord::list_all(config)?
+        .into_iter()
+        .filter(|agent| {
+            agent.is_engineer()
+                && agent.meta.status == AgentStatus::Running
+                && matches!(
+                    &agent.meta.attachment,
+                    AgentAttachment::Task { task_id: attached, .. } if attached == &task_id
+                )
+        })
+        .count();
+    if running_engineers > 0 {
+        return Ok(());
+    }
+
+    let legacy_brief = std::fs::read_to_string(task_dir.join("TASK.md"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let goal = match legacy_brief {
+        Some(brief) => format!(
+            "Migration note: this long-lived Engineer agent was created while upgrading task state from the old task model. The legacy TASK.md text below is included only as recovered background.\n\nLegacy brief:\n\n{brief}"
+        ),
+        None => format!(
+            "Migration note: this long-lived Engineer agent was created while upgrading task state from the old task model. No legacy TASK.md brief was found for task {task_id}."
+        ),
+    };
+
+    create_task_engineer(config, &task, &goal)?;
+    tracing::info!(task_id = %dir_name, "created attached engineer during task migration");
     Ok(())
 }
 
