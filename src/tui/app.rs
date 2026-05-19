@@ -104,11 +104,13 @@ enum ProjectTaskRowKey {
 
 #[derive(Debug, Clone, Copy)]
 pub enum ProjectDetailRow<'a> {
-    AgentsHeader,
+    AgentsSectionHeader,
+    AgentsColumnsHeader,
     EmptyAgents,
     UnattachedAgent { agent: &'a AgentRecord },
     SectionSpacer,
-    TasksHeader,
+    TasksSectionHeader,
+    TasksColumnsHeader,
     EmptyTasks,
     Task(ProjectTaskRow<'a>),
     AttachedAgentsHeader,
@@ -1225,7 +1227,8 @@ impl App {
 
     pub fn project_detail_rows(&self) -> Vec<ProjectDetailRow<'_>> {
         let mut rows = Vec::new();
-        rows.push(ProjectDetailRow::AgentsHeader);
+        rows.push(ProjectDetailRow::AgentsSectionHeader);
+        rows.push(ProjectDetailRow::AgentsColumnsHeader);
         if self.agents.is_empty() {
             rows.push(ProjectDetailRow::EmptyAgents);
         } else {
@@ -1237,7 +1240,8 @@ impl App {
         }
 
         rows.push(ProjectDetailRow::SectionSpacer);
-        rows.push(ProjectDetailRow::TasksHeader);
+        rows.push(ProjectDetailRow::TasksSectionHeader);
+        rows.push(ProjectDetailRow::TasksColumnsHeader);
         if self.tasks.is_empty() {
             rows.push(ProjectDetailRow::EmptyTasks);
         } else {
@@ -1288,10 +1292,12 @@ impl App {
             ProjectDetailRow::AttachedAgent(task_row) => self
                 .project_task_row_key(task_row)
                 .map(ProjectDetailRowKey::AttachedAgent),
-            ProjectDetailRow::AgentsHeader
+            ProjectDetailRow::AgentsSectionHeader
+            | ProjectDetailRow::AgentsColumnsHeader
             | ProjectDetailRow::EmptyAgents
             | ProjectDetailRow::SectionSpacer
-            | ProjectDetailRow::TasksHeader
+            | ProjectDetailRow::TasksSectionHeader
+            | ProjectDetailRow::TasksColumnsHeader
             | ProjectDetailRow::EmptyTasks
             | ProjectDetailRow::AttachedAgentsHeader => None,
         }
@@ -1435,7 +1441,7 @@ impl App {
         let rows = self.project_detail_rows();
         let tasks_start = rows
             .iter()
-            .position(|row| matches!(row, ProjectDetailRow::TasksHeader))
+            .position(|row| matches!(row, ProjectDetailRow::TasksSectionHeader))
             .unwrap_or(0);
         let in_agents_section = self.selected_index < tasks_start;
         let mut search_range = if in_agents_section {
@@ -1455,7 +1461,7 @@ impl App {
         let rows = self.project_detail_rows();
         let tasks_start = rows
             .iter()
-            .position(|row| matches!(row, ProjectDetailRow::TasksHeader))
+            .position(|row| matches!(row, ProjectDetailRow::TasksSectionHeader))
             .unwrap_or(0);
         let in_tasks_section = self.selected_index > tasks_start;
         let mut search_range = if in_tasks_section {
@@ -5707,22 +5713,24 @@ mod tests {
         app.clamp_project_detail_selection();
 
         let rows = app.project_detail_rows();
-        assert!(matches!(rows[0], ProjectDetailRow::AgentsHeader));
+        assert!(matches!(rows[0], ProjectDetailRow::AgentsSectionHeader));
+        assert!(matches!(rows[1], ProjectDetailRow::AgentsColumnsHeader));
         assert!(matches!(
-            rows[1],
+            rows[2],
             ProjectDetailRow::UnattachedAgent { agent }
                 if agent.meta.name == "unattached-reviewer"
         ));
-        assert!(matches!(rows[2], ProjectDetailRow::SectionSpacer));
-        assert!(matches!(rows[3], ProjectDetailRow::TasksHeader));
+        assert!(matches!(rows[3], ProjectDetailRow::SectionSpacer));
+        assert!(matches!(rows[4], ProjectDetailRow::TasksSectionHeader));
+        assert!(matches!(rows[5], ProjectDetailRow::TasksColumnsHeader));
         assert!(matches!(
-            rows[4],
+            rows[6],
             ProjectDetailRow::Task(ProjectTaskRow::Task { task, .. })
                 if task.meta.task_id() == task_id
         ));
-        assert!(matches!(rows[5], ProjectDetailRow::AttachedAgentsHeader));
+        assert!(matches!(rows[7], ProjectDetailRow::AttachedAgentsHeader));
         assert!(matches!(
-            rows[6],
+            rows[8],
             ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent { agent, .. })
                 if agent.meta.name.starts_with("engineer-")
         ));
@@ -5795,7 +5803,11 @@ mod tests {
         ));
 
         let rows = app.project_detail_rows();
-        assert!(matches!(rows[2], ProjectDetailRow::SectionSpacer));
+        assert!(matches!(rows[0], ProjectDetailRow::AgentsSectionHeader));
+        assert!(matches!(rows[1], ProjectDetailRow::AgentsColumnsHeader));
+        assert!(matches!(rows[3], ProjectDetailRow::SectionSpacer));
+        assert!(matches!(rows[4], ProjectDetailRow::TasksSectionHeader));
+        assert!(matches!(rows[5], ProjectDetailRow::TasksColumnsHeader));
         assert!(matches!(
             rows.iter()
                 .find(|row| matches!(row, ProjectDetailRow::AttachedAgentsHeader)),
