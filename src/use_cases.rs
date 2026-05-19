@@ -4,21 +4,18 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::assistant::{
-    AgentAttachment, Assistant, AssistantKind, AssistantStatus, AssistantWorktree,
-    TesterCapabilities,
+use crate::agent_model::{
+    AgentAttachment, AgentKind, AgentRecord, AgentStatus, AgentWorktree, TesterCapabilities,
 };
 use crate::config::Config;
-use crate::flow::{Flow, FlowStep};
 use crate::git::{self, Git};
 use crate::harness::{
-    self, AssistantCapabilities, HarnessKind, LaunchContext, RegisterContext, SessionKey,
+    self, AgentCapabilities, HarnessKind, LaunchContext, RegisterContext, SessionKey,
 };
 use crate::inbox;
 use crate::project::Project;
 use crate::repo_stats::RepoStats;
-use crate::supervisor;
-use crate::task::{QueueItem, RepoEntry, Task, TaskStatus};
+use crate::task::Task;
 use crate::tmux::Tmux;
 
 /// Required external tools that must be on $PATH (harness binary excluded —
@@ -118,19 +115,18 @@ pub enum WorktreeSource {
     ExistingWorktree(PathBuf),
 }
 
-/// Create a new task: set up worktree, create task files, write TASK.md, increment repo stats.
+/// Create a new task: set up worktree, create task files, increment repo stats.
 /// Returns the created Task and its task_id.
 ///
 /// This is the pure business logic behind `App::create_task_from_wizard()`.
-/// It does NOT create tmux sessions or start flows — those are side effects
-/// handled by the TUI caller.
+/// It does not create tmux sessions; launch is handled by the caller.
 #[allow(clippy::too_many_arguments)]
 pub fn create_task(
     config: &Config,
     repo_name: &str,
     branch_name: &str,
     description: &str,
-    flow_name: &str,
+    launch_mode: &str,
     worktree_source: WorktreeSource,
     parent_dir: Option<PathBuf>,
     project: Option<String>,
@@ -138,12 +134,12 @@ pub fn create_task(
     tracing::info!(
         repo = repo_name,
         branch = branch_name,
-        flow = flow_name,
+        launch_mode,
         "creating task"
     );
     let parent_dir_ref = parent_dir.as_deref();
 
-    // Initialize default files (flows, prompts, commands)
+    // Initialize default files.
     config.init_default_files(false)?;
 
     // Set up or reuse worktree
@@ -208,7 +204,7 @@ pub fn create_task(
         repo_name,
         branch_name,
         description,
-        flow_name,
+        launch_mode,
         worktree_path,
     )?;
 
@@ -238,30 +234,28 @@ pub fn create_task(
     Ok(task)
 }
 
-/// Create a multi-repo task: set up task dir and TASK.md, but no worktrees yet.
-/// Repos will be populated by the `setup_repos` post-hook after the repo-inspector runs.
+/// Create a multi-repo task: set up task dir, but no worktrees yet.
 ///
 /// This is the pure business logic behind multi-repo task creation in the wizard.
-/// It does NOT create tmux sessions or start flows — those are side effects
-/// handled by the TUI caller.
+/// It does not create tmux sessions; launch is handled by the caller.
 pub fn create_multi_repo_task(
     config: &Config,
     name: &str,
     branch_name: &str,
     description: &str,
-    flow_name: &str,
+    launch_mode: &str,
     parent_dir: PathBuf,
     project: Option<String>,
 ) -> Result<Task> {
     tracing::info!(
         name = name,
         branch = branch_name,
-        flow = flow_name,
+        launch_mode,
         parent_dir = %parent_dir.display(),
         "creating multi-repo task"
     );
 
-    // Initialize default files (flows, prompts, commands)
+    // Initialize default files.
     config.init_default_files(false)?;
 
     // Create task files (no worktrees — repos not yet determined)
@@ -270,7 +264,7 @@ pub fn create_multi_repo_task(
         name,
         branch_name,
         description,
-        flow_name,
+        launch_mode,
         parent_dir,
     )?;
 
@@ -390,9 +384,7 @@ pub fn purge_old_archives(config: &Config) -> Result<usize> {
     Ok(purged)
 }
 
-/// List archived tasks for a project with their TASK.md content loaded.
-///
-/// Returns (task, task_md_content) pairs for use in the archive view.
+/// List archived tasks for a project.
 pub fn list_archived_tasks(config: &Config, project: &str) -> Vec<(Task, String)> {
     Task::list_archived(config)
         .into_iter()
@@ -403,80 +395,8 @@ pub fn list_archived_tasks(config: &Config, project: &str) -> Vec<(Task, String)
                 task.meta.project.as_deref() == Some(project)
             }
         })
-        .map(|task| {
-            let content = task.read_task().unwrap_or_default();
-            (task, content)
-        })
+        .map(|task| (task, String::new()))
         .collect()
-}
-
-/// Stop a running task by driving the full supervisor stop pathway.
-///
-/// Routes through `supervisor::honor_stop`, which:
-/// - Kills the currently-running harness in the agman pane (so it doesn't
-///   stay orphaned after the user clicked stop).
-/// - Finalizes the last `SessionEntry` with `stopped_at` + `condition =
-///   STOPPED`.
-/// - Restores any pre-command flow snapshot so the task is back to its
-///   original flow position when stopped mid-stored-command.
-/// - Clears the `.stop` and other sentinel files.
-/// - Sets status to Stopped and clears `current_agent`.
-///
-/// This is the pure business logic behind `App::stop_task()`. The supervisor
-/// pathway is preferred over a direct status flip because directly setting
-/// status to Stopped would orphan the live harness in the agman window, leak
-/// session-history entries with `stopped_at = null`, and leave stored-command
-/// flow state stranded.
-pub fn stop_task(config: &Config, task: &mut Task) -> Result<()> {
-    if task.meta.status == TaskStatus::Stopped {
-        return Ok(());
-    }
-    tracing::info!(
-        task_id = %task.meta.task_id(),
-        old_status = %task.meta.status,
-        new_status = "stopped",
-        "stopping task via supervisor::honor_stop"
-    );
-    crate::supervisor::honor_stop(config, task)
-}
-
-/// Mark a stopped task as seen (user has viewed it in the preview).
-///
-/// This is the pure business logic behind "mark as read" when the user
-/// navigates into the Preview view for a stopped task.
-pub fn mark_task_seen(task: &mut Task) -> Result<()> {
-    if task.meta.seen {
-        return Ok(());
-    }
-    tracing::info!(task_id = %task.meta.task_id(), "marking task as seen");
-    task.meta.seen = true;
-    task.save_meta()
-}
-
-/// Put a stopped task on hold.
-///
-/// This is the pure business logic behind `App::toggle_hold()`.
-/// Only transitions from Stopped → OnHold.
-pub fn put_on_hold(task: &mut Task) -> Result<()> {
-    if task.meta.status != TaskStatus::Stopped {
-        return Ok(());
-    }
-    tracing::info!(task_id = %task.meta.task_id(), old_status = "stopped", new_status = "on_hold", "putting task on hold");
-    task.update_status(TaskStatus::OnHold)?;
-    Ok(())
-}
-
-/// Resume a task from on-hold back to stopped.
-///
-/// This is the pure business logic behind `App::toggle_hold()`.
-/// Only transitions from OnHold → Stopped.
-pub fn resume_from_hold(task: &mut Task) -> Result<()> {
-    if task.meta.status != TaskStatus::OnHold {
-        return Ok(());
-    }
-    tracing::info!(task_id = %task.meta.task_id(), old_status = "on_hold", new_status = "stopped", "resuming task from hold");
-    task.update_status(TaskStatus::Stopped)?;
-    Ok(())
 }
 
 /// Toggle hold status on a project.
@@ -494,68 +414,7 @@ pub fn toggle_project_hold(config: &Config, project_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Resume a task after the user has answered questions: set status back to Running.
-///
-/// This is the pure business logic behind `App::resume_after_answering()`.
-/// It does NOT create tmux sessions or dispatch flows — those are side effects.
-pub fn resume_after_answering(task: &mut Task) -> Result<()> {
-    if task.meta.status != TaskStatus::InputNeeded {
-        return Ok(());
-    }
-    tracing::info!(task_id = %task.meta.task_id(), old_status = "input_needed", new_status = "running", "resuming task after answering");
-    task.update_status(TaskStatus::Running)?;
-    Ok(())
-}
-
-/// Send feedback for a task to its attached engineer's inbox.
-pub fn queue_feedback(task: &mut Task, config: &Config, feedback: &str) -> Result<usize> {
-    tracing::info!(task_id = %task.meta.task_id(), "routing task feedback to attached engineer");
-    task.append_feedback_to_log(feedback)?;
-    let engineer = attached_engineer_for_task(config, &task.meta.task_id())?;
-    let inbox_path = config.assistant_inbox(&engineer.meta.project, &engineer.meta.name);
-    inbox::append_message(&inbox_path, "task-feedback", feedback)?;
-    Ok(inbox::read_messages(&inbox_path)?
-        .into_iter()
-        .filter(|message| message.from == "task-feedback")
-        .count())
-}
-
-/// Queue a command for a task and, if the task is currently idle (Stopped),
-/// wake the supervisor so it drains the queue and launches the command flow.
-///
-/// Error-swallowing semantics match `queue_feedback`.
-pub fn queue_command(
-    task: &mut Task,
-    config: &Config,
-    command_id: &str,
-    branch: Option<&str>,
-) -> Result<usize> {
-    tracing::info!(task_id = %task.meta.task_id(), command_id, "queuing command");
-    task.queue_command(command_id, branch)?;
-    let count = task.queued_item_count();
-    if let Err(e) = supervisor::wake_if_idle(config, task) {
-        tracing::warn!(
-            task_id = %task.meta.task_id(),
-            error = %e,
-            "wake_if_idle failed after queuing command"
-        );
-    }
-    Ok(count)
-}
-
-/// Delete a single queued item by index.
-pub fn delete_queue_item(task: &Task, index: usize) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), index, "deleting queued item");
-    task.remove_queue_item(index)
-}
-
-/// Clear all queued items.
-pub fn clear_queue(task: &Task) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), "clearing all queued items");
-    task.clear_queue()
-}
-
-/// List all tasks, sorted by status (running > input_needed > stopped) then by updated_at desc.
+/// List all tasks, sorted by status then by updated_at desc.
 pub fn list_tasks(config: &Config) -> Vec<Task> {
     Task::list_all(config)
 }
@@ -564,77 +423,6 @@ pub fn list_tasks(config: &Config) -> Vec<Task> {
 pub fn save_notes(task: &Task, notes: &str) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), "saving notes");
     task.write_notes(notes)
-}
-
-/// Save TASK.md content for a task.
-pub fn save_task_file(task: &Task, content: &str) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), "saving task file");
-    task.write_task(content)
-}
-
-/// List all stored commands from the commands directory.
-pub fn list_commands(config: &Config) -> Result<Vec<crate::command::StoredCommand>> {
-    crate::command::StoredCommand::list_all(&config.commands_dir)
-}
-
-/// Restart a task from a specific flow step: set flow_step and status to Running.
-///
-/// This is the pure business logic behind `App::execute_restart_wizard()`.
-/// It does NOT create tmux sessions or dispatch flow-run — those are side effects.
-pub fn restart_task(task: &mut Task, step_index: usize) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), step = step_index, old_status = %task.meta.status, new_status = "running", "restarting task");
-    task.meta.flow_step = step_index;
-    task.update_status(TaskStatus::Running)?;
-    Ok(())
-}
-
-/// Action to take for a task after polling its linked PR.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PrPollAction {
-    /// No action needed.
-    None,
-    /// PR was merged — delete the task.
-    DeleteMerged,
-    /// New review detected — run the address-review command.
-    AddressReview { new_count: u64 },
-}
-
-/// Pure decision function: given PR state data, determine what action to take.
-///
-/// - If the PR is merged, always delete.
-/// - If `last_review_count` is `None`, this is the first poll — return `None` (just seed the count).
-/// - If the current count exceeds the stored count, a new review arrived.
-/// - Otherwise, no action.
-pub fn determine_pr_poll_action(
-    _status: TaskStatus,
-    pr_merged: bool,
-    current_review_count: u64,
-    last_review_count: Option<u64>,
-) -> PrPollAction {
-    if pr_merged {
-        return PrPollAction::DeleteMerged;
-    }
-    match last_review_count {
-        Some(prev) if current_review_count > prev => PrPollAction::AddressReview {
-            new_count: current_review_count,
-        },
-        None => PrPollAction::None, // first poll, just seed
-        _ => PrPollAction::None,
-    }
-}
-
-/// Set the `review_addressed` flag on a task and persist to disk.
-pub fn set_review_addressed(task: &mut Task, addressed: bool) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), addressed, "setting review_addressed flag");
-    task.meta.review_addressed = addressed;
-    task.save_meta()
-}
-
-/// Update the `last_review_count` on a task and persist to disk.
-pub fn update_last_review_count(task: &mut Task, count: u64) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), count, "updating last review count");
-    task.meta.last_review_count = Some(count);
-    task.save_meta()
 }
 
 /// Set the linked PR for a task by constructing the URL from the worktree's origin remote.
@@ -653,7 +441,7 @@ pub fn set_linked_pr(
     task.set_linked_pr(pr_number, url, owned, author)
 }
 
-/// Create a setup-only task: set up worktree, create task files, but do NOT start any flow.
+/// Create a setup-only task: set up worktree and task files without starting an agent.
 /// The task will have `Stopped` status so the user can attach to the tmux session and explore.
 ///
 /// This is the pure business logic behind `App::create_setup_only_task_from_wizard()`.
@@ -673,7 +461,7 @@ pub fn create_setup_only_task(
     );
     let parent_dir_ref = parent_dir.as_deref();
 
-    // Initialize default files (flows, prompts, commands)
+    // Initialize default files.
     config.init_default_files(false)?;
 
     // Set up or reuse worktree
@@ -723,12 +511,6 @@ pub fn create_setup_only_task(
         task.save_meta()?;
     }
 
-    // Override status to Stopped (Task::create sets Running by default)
-    task.update_status(TaskStatus::Stopped)?;
-
-    // Write a minimal TASK.md (empty goal, ready for user to fill via feedback)
-    task.write_task("# Goal\n")?;
-
     // Increment repo usage stats
     let stats_path = config.repo_stats_path();
     let mut stats = RepoStats::load(&stats_path);
@@ -740,52 +522,12 @@ pub fn create_setup_only_task(
     Ok(task)
 }
 
-/// Parse repo names from the `# Repos` section in TASK.md content.
-///
-/// Expects lines matching `- <name>: <rationale>` under the `# Repos` heading.
-/// Returns just the repo names.
-pub fn parse_repos_from_task_md(content: &str) -> Vec<String> {
-    let mut repos = Vec::new();
-    let mut in_repos_section = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        if trimmed == "# Repos" {
-            in_repos_section = true;
-            continue;
-        }
-
-        // A new top-level heading ends the Repos section
-        if in_repos_section && trimmed.starts_with("# ") {
-            break;
-        }
-
-        if in_repos_section {
-            if let Some(rest) = trimmed.strip_prefix("- ") {
-                // Extract repo name before the colon
-                let name = if let Some(colon_pos) = rest.find(':') {
-                    rest[..colon_pos].trim()
-                } else {
-                    rest.trim()
-                };
-                if !name.is_empty() {
-                    repos.push(name.to_string());
-                }
-            }
-        }
-    }
-
-    repos
-}
-
 /// Migrate old-format `meta.json` files in-place to the new multi-repo format.
 ///
 /// Old format had `repo_name`, `tmux_session`, `worktree_path` at the top level.
 /// New format renames `repo_name` to `name` and nests per-repo fields inside `repos`.
 ///
-/// Also copies TASK.md from the worktree to the task directory if it only exists
-/// in the worktree (pre-refactor location).
+/// Also salvages legacy task text into metadata when found.
 ///
 /// This runs at TUI startup and is a one-time migration — once files are rewritten,
 /// they stay in the new format.
@@ -886,104 +628,9 @@ fn migrate_single_task(task_dir: &std::path::Path, dir_name: &str) -> anyhow::Re
         obj.insert("parent_dir".to_string(), serde_json::Value::Null);
     }
 
-    // Write back
     let new_content = serde_json::to_string_pretty(&val)?;
     std::fs::write(&meta_path, new_content)?;
-
     tracing::info!(task_id = %dir_name, "migrated old-format meta.json");
-
-    // TASK.md migration: copy from worktree to task dir if missing
-    let task_md_in_dir = task_dir.join("TASK.md");
-    if !task_md_in_dir.exists() && !worktree_path.is_empty() {
-        let worktree_task_md = PathBuf::from(&worktree_path).join("TASK.md");
-        if worktree_task_md.exists() {
-            std::fs::copy(&worktree_task_md, &task_md_in_dir)?;
-            tracing::info!(task_id = %dir_name, "copied TASK.md from worktree to task dir");
-        }
-    }
-
-    Ok(())
-}
-
-/// Post-hook: read `# Repos` from TASK.md, create worktrees + tmux sessions,
-/// and populate `task.meta.repos`.
-///
-/// Called after the repo-inspector agent finishes (via the `setup_repos` post-hook).
-pub fn setup_repos_from_task_md(config: &Config, task: &mut Task, skip_tmux: bool) -> Result<()> {
-    let task_content = task
-        .read_task()
-        .context("Failed to read TASK.md for repo setup")?;
-    let repo_names = parse_repos_from_task_md(&task_content);
-
-    if repo_names.is_empty() {
-        anyhow::bail!(
-            "No repos found in TASK.md # Repos section for task '{}'",
-            task.meta.task_id()
-        );
-    }
-
-    tracing::info!(
-        task_id = %task.meta.task_id(),
-        repos = ?repo_names,
-        "setting up repos from TASK.md"
-    );
-
-    let mut entries = Vec::new();
-
-    let parent_dir = task.meta.parent_dir.as_deref();
-
-    for repo_name in &repo_names {
-        // Check if worktree already exists (idempotent on retry after partial failure)
-        let candidate = config.worktree_path_for(parent_dir, repo_name, &task.meta.branch_name);
-        let worktree_path = if candidate.exists() {
-            tracing::info!(repo = repo_name, branch = %task.meta.branch_name, "worktree already exists, reusing");
-            let _ = Git::direnv_allow(&candidate);
-            candidate
-        } else {
-            let path = Git::create_worktree_quiet(
-                config,
-                repo_name,
-                &task.meta.branch_name,
-                None,
-                parent_dir,
-            )
-            .with_context(|| format!("Failed to create worktree for repo '{}'", repo_name))?;
-            let _ = Git::direnv_allow(&path);
-            path
-        };
-
-        // Copy configured files (e.g. .env) from main repo to worktree (best-effort)
-        if let Err(e) = copy_repo_files_to_worktree(config, repo_name, &worktree_path, parent_dir) {
-            tracing::warn!(repo = repo_name, branch = %task.meta.branch_name, error = %e, "failed to copy repo files to worktree");
-        }
-
-        let tmux_session = Config::tmux_session_name(repo_name, &task.meta.branch_name);
-        if !skip_tmux && !Tmux::session_exists(&tmux_session) {
-            if let Err(e) = Tmux::create_session_with_windows(&tmux_session, &worktree_path) {
-                tracing::warn!(repo = repo_name, error = %e, "failed to create tmux session (non-fatal)");
-            }
-        }
-
-        entries.push(RepoEntry {
-            repo_name: repo_name.clone(),
-            worktree_path,
-            tmux_session,
-        });
-
-        // Save incrementally so partial progress is preserved on failure
-        task.meta.repos = entries.clone();
-        task.save_meta()?;
-    }
-
-    // Final save (entries == task.meta.repos at this point, but be explicit)
-    task.meta.repos = entries;
-    task.save_meta()?;
-
-    tracing::info!(
-        task_id = %task.meta.task_id(),
-        repo_count = repo_names.len(),
-        "repos setup complete"
-    );
 
     Ok(())
 }
@@ -1929,7 +1576,7 @@ pub fn create_project(
     if let Some(msg) = initial_message.map(str::trim).filter(|m| !m.is_empty()) {
         let inbox_path = config.project_inbox(name);
         crate::inbox::append_message(&inbox_path, "chief-of-staff", msg)?;
-        tracing::debug!(project = name, "queued initial message to project inbox");
+        tracing::debug!(project = name, "sent initial message to project inbox");
     }
 
     // Eagerly start PM session for the new project
@@ -1949,7 +1596,6 @@ pub fn list_projects(config: &Config) -> Result<Vec<Project>> {
 pub struct ProjectStatusInfo {
     pub project: Project,
     pub total_tasks: usize,
-    pub active_tasks: usize,
     pub archived_tasks: usize,
 }
 
@@ -1957,7 +1603,7 @@ pub struct ProjectStatusInfo {
 pub fn project_status(config: &Config, name: &str) -> Result<ProjectStatusInfo> {
     let project = Project::load_by_name(config, name)?;
     let tasks = list_project_tasks(config, name)?;
-    let active_tasks = tasks.len();
+    let total_tasks = tasks.len();
     let archived_tasks = Task::list_archived(config)
         .iter()
         .filter(|t| t.meta.project.as_deref() == Some(name))
@@ -1965,8 +1611,7 @@ pub fn project_status(config: &Config, name: &str) -> Result<ProjectStatusInfo> 
 
     Ok(ProjectStatusInfo {
         project,
-        total_tasks: active_tasks + archived_tasks,
-        active_tasks,
+        total_tasks: total_tasks + archived_tasks,
         archived_tasks,
     })
 }
@@ -2016,22 +1661,22 @@ pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
         archived_count += 1;
     }
 
-    // Archive all non-archived assistants (researchers and reviewers).
-    let assistants = Assistant::list_for_project(config, project_name)?;
-    let mut assistant_archived_count = 0;
-    for assistant in &assistants {
-        if assistant.meta.status == AssistantStatus::Archived {
+    // Archive all non-archived agents (researchers and reviewers).
+    let agents = AgentRecord::list_for_project(config, project_name)?;
+    let mut agent_archived_count = 0;
+    for agent in &agents {
+        if agent.meta.status == AgentStatus::Archived {
             continue;
         }
-        if let Err(e) = archive_assistant(config, &assistant.meta.project, &assistant.meta.name) {
+        if let Err(e) = archive_agent(config, &agent.meta.project, &agent.meta.name) {
             tracing::warn!(
                 project = %project_name,
-                assistant = %assistant.meta.name,
+                agent = %agent.meta.name,
                 error = %e,
-                "failed to archive assistant during project deletion"
+                "failed to archive agent during project deletion"
             );
         } else {
-            assistant_archived_count += 1;
+            agent_archived_count += 1;
         }
     }
 
@@ -2041,7 +1686,7 @@ pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
     // Remove project directory
     std::fs::remove_dir_all(config.project_dir(project_name))?;
 
-    tracing::info!(project = %project_name, archived_count, assistant_archived_count, "deleted project");
+    tracing::info!(project = %project_name, archived_count, agent_archived_count, "deleted project");
 
     Ok(())
 }
@@ -2053,28 +1698,24 @@ pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
 /// Summary of a single task for the aggregated status view.
 pub struct TaskSummary {
     pub task_id: String,
-    pub status: TaskStatus,
-    pub flow_step: usize,
-    pub total_steps: Option<usize>,
-    pub current_agent: Option<String>,
+    pub engineer: Option<String>,
     pub updated_at: DateTime<Utc>,
-    pub queued_count: usize,
 }
 
-/// Summary of an assistant for the aggregated
+/// Summary of an agent for the aggregated
 /// status view. The kind is exposed so renderers can group/label as needed.
-pub struct AssistantSummary {
+pub struct AgentSummary {
     pub name: String,
     pub project: String,
     pub status: String,
     pub description: String,
-    pub kind: AssistantKindLabel,
+    pub kind: AgentKindLabel,
 }
 
 /// Lightweight kind discriminator for status views — avoids leaking the
-/// full `AssistantKind` payload (which carries kind-specific metadata).
+/// full `AgentKind` payload (which carries kind-specific metadata).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssistantKindLabel {
+pub enum AgentKindLabel {
     Engineer,
     Researcher,
     Operator,
@@ -2087,7 +1728,7 @@ pub struct ProjectGroup {
     pub name: String,
     pub tasks: Vec<TaskSummary>,
     pub archived_count: usize,
-    pub assistants: Vec<AssistantSummary>,
+    pub agents: Vec<AgentSummary>,
     pub held: bool,
 }
 
@@ -2099,51 +1740,49 @@ pub struct AggregatedStatus {
 }
 
 fn task_to_summary(config: &Config, task: &Task) -> TaskSummary {
-    let total_steps = Flow::load(&config.flow_path(&task.meta.flow_name))
+    let engineer = attached_engineer_for_task(config, &task.meta.task_id())
         .ok()
-        .map(|f| f.steps.len());
-
+        .map(|agent| agent.meta.name);
     TaskSummary {
         task_id: task.meta.task_id(),
-        status: task.meta.status,
-        flow_step: task.meta.flow_step,
-        total_steps,
-        current_agent: task.meta.current_agent.clone(),
+        engineer,
         updated_at: task.meta.updated_at,
-        queued_count: task.queued_item_count(),
     }
 }
 
-/// Build assistant summaries for a given project, filtering out archived ones.
-fn load_assistant_summaries(config: &Config, project: &str) -> Vec<AssistantSummary> {
-    let assistants = match Assistant::list_for_project(config, project) {
+/// Build agent summaries for a given project, filtering out archived ones.
+fn load_agent_summaries(config: &Config, project: &str) -> Vec<AgentSummary> {
+    let agents = match AgentRecord::list_for_project(config, project) {
         Ok(a) => a,
         Err(_) => return Vec::new(),
     };
-    assistants
+    agents
         .into_iter()
-        .filter(|a| a.meta.status != AssistantStatus::Archived)
+        .filter(|a| {
+            a.meta.status != AgentStatus::Archived
+                && matches!(a.meta.attachment, AgentAttachment::Unattached)
+        })
         .map(|a| {
             let (session, kind) = match a.meta.kind {
-                AssistantKind::Engineer => (
+                AgentKind::Engineer => (
                     Config::engineer_tmux_session(&a.meta.project, &a.meta.name),
-                    AssistantKindLabel::Engineer,
+                    AgentKindLabel::Engineer,
                 ),
-                AssistantKind::Researcher { .. } => (
+                AgentKind::Researcher { .. } => (
                     Config::researcher_tmux_session(&a.meta.project, &a.meta.name),
-                    AssistantKindLabel::Researcher,
+                    AgentKindLabel::Researcher,
                 ),
-                AssistantKind::Operator { .. } => (
+                AgentKind::Operator { .. } => (
                     Config::operator_tmux_session(&a.meta.project, &a.meta.name),
-                    AssistantKindLabel::Operator,
+                    AgentKindLabel::Operator,
                 ),
-                AssistantKind::Reviewer { .. } => (
+                AgentKind::Reviewer { .. } => (
                     Config::reviewer_tmux_session(&a.meta.project, &a.meta.name),
-                    AssistantKindLabel::Reviewer,
+                    AgentKindLabel::Reviewer,
                 ),
-                AssistantKind::Tester { .. } => (
+                AgentKind::Tester { .. } => (
                     Config::tester_tmux_session(&a.meta.project, &a.meta.name),
-                    AssistantKindLabel::Tester,
+                    AgentKindLabel::Tester,
                 ),
             };
             let status = if Tmux::session_exists(&session) {
@@ -2151,7 +1790,7 @@ fn load_assistant_summaries(config: &Config, project: &str) -> Vec<AssistantSumm
             } else {
                 "stopped"
             };
-            AssistantSummary {
+            AgentSummary {
                 name: a.meta.name,
                 project: a.meta.project,
                 status: status.to_string(),
@@ -2178,10 +1817,10 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
         let tasks = list_project_tasks(config, &project.meta.name)?;
         let summaries: Vec<TaskSummary> =
             tasks.iter().map(|t| task_to_summary(config, t)).collect();
-        let assistants = load_assistant_summaries(config, &project.meta.name);
+        let agents = load_agent_summaries(config, &project.meta.name);
 
-        // Skip projects with no active tasks and no active assistants
-        if summaries.is_empty() && assistants.is_empty() {
+        // Skip projects with no active tasks and no active agents
+        if summaries.is_empty() && agents.is_empty() {
             continue;
         }
 
@@ -2193,7 +1832,7 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
             name: project.meta.name.clone(),
             tasks: summaries,
             archived_count,
-            assistants,
+            agents,
             held: project.meta.held,
         });
     }
@@ -2299,7 +1938,7 @@ pub fn create_pm_task(
     Ok(task)
 }
 
-fn create_task_engineer(config: &Config, task: &Task, brief: &str) -> Result<Assistant> {
+pub fn create_task_engineer(config: &Config, task: &Task, goal: &str) -> Result<AgentRecord> {
     let task_id = task.meta.task_id();
     let project = task
         .meta
@@ -2309,27 +1948,27 @@ fn create_task_engineer(config: &Config, task: &Task, brief: &str) -> Result<Ass
     let base_name = format!("engineer-{}", sanitize_agent_name(&task_id));
     let name = unique_agent_name(config, project, &base_name);
     let description = format!("Engineer attached to task {task_id}");
-    let engineer = Assistant::create_with_attachment(
+    let engineer = AgentRecord::create_with_attachment(
         config,
         project,
         &name,
         &description,
-        AssistantKind::Engineer,
+        AgentKind::Engineer,
         AgentAttachment::Task {
             task_id: task_id.clone(),
             role_label: Some("Engineer".to_string()),
         },
     )?;
 
-    let inbox_path = config.assistant_inbox(project, &name);
-    let message = format!("Task brief for {task_id}:\n\n{}", brief.trim());
+    let inbox_path = config.agent_inbox(project, &name);
+    let message = format!("Task goal for {task_id}:\n\n{}", goal.trim());
     inbox::append_message(&inbox_path, project, &message)?;
 
     Ok(engineer)
 }
 
-fn attached_engineer_for_task(config: &Config, task_id: &str) -> Result<Assistant> {
-    let engineers: Vec<_> = Assistant::list_all(config)?
+pub fn attached_engineer_for_task(config: &Config, task_id: &str) -> Result<AgentRecord> {
+    let engineers: Vec<_> = AgentRecord::list_all(config)?
         .into_iter()
         .filter(|agent| {
             agent.is_engineer()
@@ -2337,7 +1976,7 @@ fn attached_engineer_for_task(config: &Config, task_id: &str) -> Result<Assistan
                     &agent.meta.attachment,
                     AgentAttachment::Task { task_id: attached, .. } if attached == task_id
                 )
-                && agent.meta.status == AssistantStatus::Running
+                && agent.meta.status == AgentStatus::Running
         })
         .collect();
 
@@ -2349,13 +1988,13 @@ fn attached_engineer_for_task(config: &Config, task_id: &str) -> Result<Assistan
 }
 
 fn unique_agent_name(config: &Config, project: &str, base: &str) -> String {
-    if !config.assistant_dir(project, base).exists() {
+    if !config.agent_dir(project, base).exists() {
         return base.to_string();
     }
 
     for i in 2.. {
         let candidate = format!("{base}-{i}");
-        if !config.assistant_dir(project, &candidate).exists() {
+        if !config.agent_dir(project, &candidate).exists() {
             return candidate;
         }
     }
@@ -2396,19 +2035,18 @@ pub enum SendTarget {
     ChiefOfStaff,
     Telegram,
     Project(String),
-    /// A long-lived assistant. The kind is recorded
-    /// on disk in `meta.json` and is irrelevant for routing — all assistant prefixes
-    /// resolve to the same `assistants/<project>--<name>/inbox.jsonl`.
-    Assistant {
+    /// A long-lived agent. The kind is recorded
+    /// on disk in `meta.json` and is irrelevant for routing — all agent prefixes
+    /// resolve to the same `agents/<project>--<name>/inbox.jsonl`.
+    AgentRecord {
         project: String,
         name: String,
-        prefix: AssistantPrefix,
+        prefix: AgentPrefix,
     },
-    Task(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssistantPrefix {
+pub enum AgentPrefix {
     Engineer,
     Researcher,
     Operator,
@@ -2416,20 +2054,20 @@ pub enum AssistantPrefix {
     Tester,
 }
 
-impl AssistantPrefix {
+impl AgentPrefix {
     fn as_str(&self) -> &'static str {
         match self {
-            AssistantPrefix::Engineer => "engineer",
-            AssistantPrefix::Researcher => "researcher",
-            AssistantPrefix::Operator => "operator",
-            AssistantPrefix::Reviewer => "reviewer",
-            AssistantPrefix::Tester => "tester",
+            AgentPrefix::Engineer => "engineer",
+            AgentPrefix::Researcher => "researcher",
+            AgentPrefix::Operator => "operator",
+            AgentPrefix::Reviewer => "reviewer",
+            AgentPrefix::Tester => "tester",
         }
     }
 }
 
 const VALID_TARGETS_HINT: &str =
-    "valid targets: chief-of-staff, telegram, <project>, engineer:<project>--<name>, researcher:<project>--<name>, operator:<project>--<name>, reviewer:<project>--<name>, tester:<project>--<name>, task:<repo>--<branch>";
+    "valid targets: chief-of-staff, telegram, <project>, engineer:<project>--<name>, researcher:<project>--<name>, operator:<project>--<name>, reviewer:<project>--<name>, tester:<project>--<name>";
 
 pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     if target.is_empty() {
@@ -2448,11 +2086,11 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     }
 
     for (prefix_str, prefix) in [
-        ("engineer:", AssistantPrefix::Engineer),
-        ("researcher:", AssistantPrefix::Researcher),
-        ("operator:", AssistantPrefix::Operator),
-        ("reviewer:", AssistantPrefix::Reviewer),
-        ("tester:", AssistantPrefix::Tester),
+        ("engineer:", AgentPrefix::Engineer),
+        ("researcher:", AgentPrefix::Researcher),
+        ("operator:", AgentPrefix::Operator),
+        ("reviewer:", AgentPrefix::Reviewer),
+        ("tester:", AgentPrefix::Tester),
     ] {
         if let Some(rest) = target.strip_prefix(prefix_str) {
             let pos = rest.find("--").ok_or_else(|| {
@@ -2470,36 +2108,22 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
                 );
             }
             if project == "chief-of-staff" {
-                anyhow::bail!("chief-of-staff assistants are no longer supported");
+                anyhow::bail!("chief-of-staff agents are no longer supported");
             }
-            let dir = config.assistant_dir(project, name);
+            let dir = config.agent_dir(project, name);
             if !dir.exists() {
                 anyhow::bail!(
-                    "unknown {kind} '{rest}' — no assistant found at {}",
+                    "unknown {kind} '{rest}' — no agent found at {}",
                     dir.display(),
                     kind = prefix.as_str()
                 );
             }
-            return Ok(SendTarget::Assistant {
+            return Ok(SendTarget::AgentRecord {
                 project: project.to_string(),
                 name: name.to_string(),
                 prefix,
             });
         }
-    }
-
-    if let Some(task_id) = target.strip_prefix("task:") {
-        if task_id.is_empty() {
-            anyhow::bail!("invalid task id '': expected 'task:<repo>--<branch>'");
-        }
-        let dir = config.tasks_dir.join(task_id);
-        if !dir.exists() {
-            anyhow::bail!(
-                "unknown task '{task_id}' — no task found at {}",
-                dir.display()
-            );
-        }
-        return Ok(SendTarget::Task(task_id.to_string()));
     }
 
     if target.contains(':') {
@@ -2528,7 +2152,7 @@ pub fn send_message(config: &Config, target: &str, from: &str, message: &str) ->
 /// Shorthand reference to an agent for UI rendering (e.g. Telegram button lists).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRef {
-    /// Agent id in send-message form: `"chief-of-staff"`, `"<project>"`, or an assistant id.
+    /// Agent id in send-message form: `"chief-of-staff"`, `"<project>"`, or an agent id.
     pub id: String,
     /// Short human label (e.g. `"CoS"`, `"PM:foo"`, `"R:bar"`).
     pub label: String,
@@ -2542,11 +2166,7 @@ pub fn agent_inbox_path(config: &Config, id: &str) -> Result<PathBuf> {
         SendTarget::ChiefOfStaff => config.chief_of_staff_inbox(),
         SendTarget::Telegram => config.telegram_outbox(),
         SendTarget::Project(name) => config.project_inbox(&name),
-        SendTarget::Assistant { project, name, .. } => config.assistant_inbox(&project, &name),
-        SendTarget::Task(task_id) => {
-            let engineer = attached_engineer_for_task(config, &task_id)?;
-            config.assistant_inbox(&engineer.meta.project, &engineer.meta.name)
-        }
+        SendTarget::AgentRecord { project, name, .. } => config.agent_inbox(&project, &name),
     })
 }
 
@@ -2579,14 +2199,14 @@ fn agent_ref_for(id: String) -> AgentRef {
     AgentRef { id, label }
 }
 
-/// Send-message id prefix for an assistant, derived from its kind.
-fn assistant_send_id(a: &Assistant) -> String {
+/// Send-message id prefix for an agent, derived from its kind.
+fn agent_send_id(a: &AgentRecord) -> String {
     let prefix = match a.meta.kind {
-        AssistantKind::Engineer => "engineer",
-        AssistantKind::Researcher { .. } => "researcher",
-        AssistantKind::Operator { .. } => "operator",
-        AssistantKind::Reviewer { .. } => "reviewer",
-        AssistantKind::Tester { .. } => "tester",
+        AgentKind::Engineer => "engineer",
+        AgentKind::Researcher { .. } => "researcher",
+        AgentKind::Operator { .. } => "operator",
+        AgentKind::Reviewer { .. } => "reviewer",
+        AgentKind::Tester { .. } => "tester",
     };
     format!("{prefix}:{}--{}", a.meta.project, a.meta.name)
 }
@@ -2594,9 +2214,9 @@ fn assistant_send_id(a: &Assistant) -> String {
 /// Agents reachable from `current` via a Telegram `/ls` switch list.
 ///
 /// - From `"chief-of-staff"`: all PMs (sorted by name).
-/// - From `"<project>"`: that project's assistants (`Running` only) plus
+/// - From `"<project>"`: that project's agents (`Running` only) plus
 ///   `"chief-of-staff"`.
-/// - From an assistant id (`"researcher:<proj>--<name>"`, `"operator:<proj>--<name>"`,
+/// - From an agent id (`"researcher:<proj>--<name>"`, `"operator:<proj>--<name>"`,
 ///   `"reviewer:<proj>--<name>"`, or `"tester:<proj>--<name>"`): its
 ///   project plus `"chief-of-staff"` — de-duplicated by id.
 pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
@@ -2611,7 +2231,7 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
             }
         }
         other => {
-            let assistant_prefix = [
+            let agent_prefix = [
                 "engineer:",
                 "researcher:",
                 "operator:",
@@ -2620,7 +2240,7 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
             ]
             .iter()
             .find_map(|p| other.strip_prefix(p));
-            if let Some(rest) = assistant_prefix {
+            if let Some(rest) = agent_prefix {
                 let pos = rest.find("--");
                 if let Some(pos) = pos {
                     let project = &rest[..pos];
@@ -2631,10 +2251,10 @@ pub fn relative_agent_list(config: &Config, current: &str) -> Vec<AgentRef> {
                 }
             } else {
                 // Project-scoped view.
-                if let Ok(assistants) = Assistant::list_for_project(config, other) {
-                    for a in assistants {
-                        if a.meta.status == AssistantStatus::Running {
-                            ids.push(assistant_send_id(&a));
+                if let Ok(agents) = AgentRecord::list_for_project(config, other) {
+                    for a in agents {
+                        if a.meta.status == AgentStatus::Running {
+                            ids.push(agent_send_id(&a));
                         }
                     }
                 }
@@ -2758,8 +2378,8 @@ pub fn respawn_agent(config: &Config, target: &str, force: bool, timeout_secs: u
         .iter()
         .any(|prefix| target.starts_with(prefix))
     {
-        tracing::info!(target = target, "rejected assistant respawn attempt");
-        bail!("Respawning assistants is not supported. Create a new assistant instead.");
+        tracing::info!(target = target, "rejected agent respawn attempt");
+        bail!("Respawning agents is not supported. Create a new agent instead.");
     }
 
     // Parse target to determine agent type and resolve paths
@@ -3342,39 +2962,37 @@ pub fn agent_session_running(session_name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Assistant management (Researcher + Operator + Reviewer + Tester)
+// AgentRecord management (Researcher + Operator + Reviewer + Tester)
 // ---------------------------------------------------------------------------
 
-/// Tmux session name for an assistant, dispatched on kind. Researchers keep
+/// Tmux session name for an agent, dispatched on kind. Researchers keep
 /// the legacy `agman-researcher-…` naming so existing sessions resume after
-/// the assistant rename; reviewers/testers use kind-specific names.
-fn assistant_tmux_session(meta: &crate::assistant::AssistantMeta) -> String {
+/// the agent rename; reviewers/testers use kind-specific names.
+fn agent_tmux_session(meta: &crate::agent_model::AgentMeta) -> String {
     match meta.kind {
-        AssistantKind::Engineer => Config::engineer_tmux_session(&meta.project, &meta.name),
-        AssistantKind::Researcher { .. } => {
-            Config::researcher_tmux_session(&meta.project, &meta.name)
-        }
-        AssistantKind::Operator { .. } => Config::operator_tmux_session(&meta.project, &meta.name),
-        AssistantKind::Reviewer { .. } => Config::reviewer_tmux_session(&meta.project, &meta.name),
-        AssistantKind::Tester { .. } => Config::tester_tmux_session(&meta.project, &meta.name),
+        AgentKind::Engineer => Config::engineer_tmux_session(&meta.project, &meta.name),
+        AgentKind::Researcher { .. } => Config::researcher_tmux_session(&meta.project, &meta.name),
+        AgentKind::Operator { .. } => Config::operator_tmux_session(&meta.project, &meta.name),
+        AgentKind::Reviewer { .. } => Config::reviewer_tmux_session(&meta.project, &meta.name),
+        AgentKind::Tester { .. } => Config::tester_tmux_session(&meta.project, &meta.name),
     }
 }
 
-/// Send-message id for an assistant (e.g. `"researcher:<proj>--<name>"`),
+/// Send-message id for an agent (e.g. `"researcher:<proj>--<name>"`),
 /// dispatched on kind.
-fn assistant_send_target_id(meta: &crate::assistant::AssistantMeta) -> String {
+fn agent_send_target_id(meta: &crate::agent_model::AgentMeta) -> String {
     let prefix = match meta.kind {
-        AssistantKind::Engineer => "engineer",
-        AssistantKind::Researcher { .. } => "researcher",
-        AssistantKind::Operator { .. } => "operator",
-        AssistantKind::Reviewer { .. } => "reviewer",
-        AssistantKind::Tester { .. } => "tester",
+        AgentKind::Engineer => "engineer",
+        AgentKind::Researcher { .. } => "researcher",
+        AgentKind::Operator { .. } => "operator",
+        AgentKind::Reviewer { .. } => "reviewer",
+        AgentKind::Tester { .. } => "tester",
     };
     format!("{prefix}:{}--{}", meta.project, meta.name)
 }
 
 /// Create a new researcher for a project. Researcher kind is the legacy
-/// behavior; the assistant abstraction is what's new.
+/// behavior; the agent abstraction is what's new.
 pub fn create_researcher(
     config: &Config,
     project: &str,
@@ -3383,13 +3001,13 @@ pub fn create_researcher(
     repo: Option<String>,
     branch: Option<String>,
     task_id: Option<String>,
-) -> Result<Assistant> {
-    let kind = AssistantKind::Researcher {
+) -> Result<AgentRecord> {
+    let kind = AgentKind::Researcher {
         repo,
         branch,
         task_id,
     };
-    create_assistant(config, project, name, description, kind)
+    create_agent(config, project, name, description, kind)
 }
 
 pub fn create_operator(
@@ -3400,18 +3018,18 @@ pub fn create_operator(
     repo: Option<String>,
     branch: Option<String>,
     task_id: Option<String>,
-) -> Result<Assistant> {
-    let kind = AssistantKind::Operator {
+) -> Result<AgentRecord> {
+    let kind = AgentKind::Operator {
         repo,
         branch,
         task_id,
     };
-    create_assistant(config, project, name, description, kind)
+    create_agent(config, project, name, description, kind)
 }
 
 /// Resolved (`(repo, branch)`, worktree path, `agman_created`) for a reviewer
-/// before persisting the assistant. Built by `resolve_assistant_worktrees`.
-type AssistantEntries = Vec<AssistantWorktree>;
+/// before persisting the agent. Built by `resolve_agent_worktrees`.
+type AgentEntries = Vec<AgentWorktree>;
 
 /// Spec for a reviewer at create time: which `(repo, branch)` pairs to scope
 /// it to. The `parent_dir` knob mirrors the task code path — non-`None` means
@@ -3423,7 +3041,7 @@ pub struct WorktreeSpec {
     pub parent_dir: Option<PathBuf>,
 }
 
-/// Create a new reviewer assistant. For each `(repo, branch)` pair the
+/// Create a new reviewer agent. For each `(repo, branch)` pair the
 /// resolution rules are:
 /// 1. If a worktree already exists for that branch → use it as-is
 ///    (`agman_created = false`). No fetch, no writes.
@@ -3441,13 +3059,13 @@ pub fn create_reviewer(
     name: &str,
     description: &str,
     spec: WorktreeSpec,
-) -> Result<Assistant> {
+) -> Result<AgentRecord> {
     if spec.branches.is_empty() {
         anyhow::bail!("reviewer requires at least one --branch <repo>:<branch>");
     }
-    let worktrees = resolve_assistant_worktrees(config, &spec)?;
-    let kind = AssistantKind::Reviewer { worktrees };
-    create_assistant(config, project, name, description, kind)
+    let worktrees = resolve_agent_worktrees(config, &spec)?;
+    let kind = AgentKind::Reviewer { worktrees };
+    create_agent(config, project, name, description, kind)
 }
 
 pub fn create_tester(
@@ -3457,11 +3075,11 @@ pub fn create_tester(
     description: &str,
     spec: WorktreeSpec,
     capabilities: TesterCapabilities,
-) -> Result<Assistant> {
+) -> Result<AgentRecord> {
     if spec.branches.is_empty() {
         anyhow::bail!("tester requires at least one --branch <repo>:<branch>");
     }
-    let worktrees = resolve_assistant_worktrees(config, &spec)?;
+    let worktrees = resolve_agent_worktrees(config, &spec)?;
     let harness_kind = config.harness_kind();
     if capabilities.browser && matches!(harness_kind, HarnessKind::Goose | HarnessKind::Pi) {
         let note = format!(
@@ -3471,19 +3089,19 @@ pub fn create_tester(
         tracing::warn!(harness = %harness_kind, "browser capability not available; tester spawned without it");
         println!("{note}");
     }
-    let kind = AssistantKind::Tester {
+    let kind = AgentKind::Tester {
         worktrees,
         capabilities,
     };
-    create_assistant(config, project, name, description, kind)
+    create_agent(config, project, name, description, kind)
 }
 
 /// Walk the `(repo, branch)` list applying the three-step decision tree.
-/// Returns the resolved `AssistantWorktree` entries on success. On failure,
+/// Returns the resolved `AgentWorktree` entries on success. On failure,
 /// returns the first error encountered without creating any worktrees that
 /// were resolved by step 3 in earlier iterations — callers should treat the
 /// reviewer as not-created.
-fn resolve_assistant_worktrees(config: &Config, spec: &WorktreeSpec) -> Result<AssistantEntries> {
+fn resolve_agent_worktrees(config: &Config, spec: &WorktreeSpec) -> Result<AgentEntries> {
     // Two-phase to honour the "no littering" rule: phase 1 classifies every
     // entry without side effects, bailing on the local-branch-no-worktree
     // case; phase 2 actually creates worktrees from origin for entries that
@@ -3523,7 +3141,7 @@ fn resolve_assistant_worktrees(config: &Config, spec: &WorktreeSpec) -> Result<A
     for (repo, branch, plan) in planned {
         match plan {
             Plan::Existing { path } => {
-                entries.push(AssistantWorktree {
+                entries.push(AgentWorktree {
                     repo,
                     branch,
                     path,
@@ -3532,7 +3150,7 @@ fn resolve_assistant_worktrees(config: &Config, spec: &WorktreeSpec) -> Result<A
             }
             Plan::FromOrigin => {
                 let path = Git::create_worktree_from_origin(config, &repo, &branch, parent_dir)?;
-                entries.push(AssistantWorktree {
+                entries.push(AgentWorktree {
                     repo,
                     branch,
                     path,
@@ -3544,18 +3162,18 @@ fn resolve_assistant_worktrees(config: &Config, spec: &WorktreeSpec) -> Result<A
     Ok(entries)
 }
 
-/// Shared assistant-creation backbone. Validates the project, persists the
-/// meta, and queues the description into the assistant's inbox so the TUI
+/// Shared agent-creation backbone. Validates the project, persists the
+/// meta, and sends the description into the agent's inbox so the TUI
 /// poller delivers it once the harness is ready.
-fn create_assistant(
+fn create_agent(
     config: &Config,
     project: &str,
     name: &str,
     description: &str,
-    kind: AssistantKind,
-) -> Result<Assistant> {
+    kind: AgentKind,
+) -> Result<AgentRecord> {
     if project == "chief-of-staff" {
-        anyhow::bail!("chief-of-staff assistants are no longer supported; pass a real project");
+        anyhow::bail!("chief-of-staff agents are no longer supported; pass a real project");
     }
 
     let project_dir = config.project_dir(project);
@@ -3567,43 +3185,43 @@ fn create_assistant(
         project = project,
         name = name,
         kind = match kind {
-            AssistantKind::Researcher { .. } => "researcher",
-            AssistantKind::Engineer => "engineer",
-            AssistantKind::Operator { .. } => "operator",
-            AssistantKind::Reviewer { .. } => "reviewer",
-            AssistantKind::Tester { .. } => "tester",
+            AgentKind::Researcher { .. } => "researcher",
+            AgentKind::Engineer => "engineer",
+            AgentKind::Operator { .. } => "operator",
+            AgentKind::Reviewer { .. } => "reviewer",
+            AgentKind::Tester { .. } => "tester",
         },
-        "creating assistant"
+        "creating agent"
     );
-    let assistant = Assistant::create(config, project, name, description, kind)?;
+    let agent = AgentRecord::create(config, project, name, description, kind)?;
 
     // Queue the description as the first inbox message so the TUI poller
     // delivers it to the tmux session once the harness is ready.
     if !description.is_empty() {
-        let inbox_path = config.assistant_inbox(project, name);
+        let inbox_path = config.agent_inbox(project, name);
         crate::inbox::append_message(&inbox_path, "user", description)?;
         tracing::debug!(
             project = project,
             name = name,
-            "queued assistant description to inbox"
+            "sent agent description to inbox"
         );
     }
 
-    Ok(assistant)
+    Ok(agent)
 }
 
-/// Start an assistant's tmux session under the configured harness.
+/// Start an agent's tmux session under the configured harness.
 /// Dispatches on kind for prompt template and working-directory resolution;
 /// everything else is kind-agnostic. See `start_chief_of_staff_session` for
 /// the `force_fresh` semantics.
-pub fn start_assistant_session(
+pub fn start_agent_session(
     config: &Config,
     project: &str,
     name: &str,
     force_fresh: bool,
 ) -> Result<()> {
-    let dir = config.assistant_dir(project, name);
-    let assistant = Assistant::load(dir.clone())?;
+    let dir = config.agent_dir(project, name);
+    let agent = AgentRecord::load(dir.clone())?;
 
     let kind = harness::read_or_stamp(&dir, config.harness_kind())?;
     let harness = kind.select();
@@ -3613,11 +3231,11 @@ pub fn start_assistant_session(
         && chat_id.as_deref().is_some_and(|c| !c.is_empty());
 
     // Kind-dispatched prompt + working-dir resolution.
-    let (prompt, work_dir, agent_base, session_name, capabilities) = match &assistant.meta.kind {
-        AssistantKind::Engineer => {
-            let task_id = match &assistant.meta.attachment {
-                crate::assistant::AgentAttachment::Task { task_id, .. } => task_id.as_str(),
-                crate::assistant::AgentAttachment::Unattached => "",
+    let (prompt, work_dir, agent_base, session_name, capabilities) = match &agent.meta.kind {
+        AgentKind::Engineer => {
+            let task_id = match &agent.meta.attachment {
+                crate::agent_model::AgentAttachment::Task { task_id, .. } => task_id.as_str(),
+                crate::agent_model::AgentAttachment::Unattached => "",
             };
             let task_worktree = if task_id.is_empty() {
                 None
@@ -3631,10 +3249,10 @@ pub fn start_assistant_session(
                 task_worktree,
                 format!("agman-e-{project}--{name}"),
                 Config::engineer_tmux_session(project, name),
-                AssistantCapabilities::default(),
+                AgentCapabilities::default(),
             )
         }
-        AssistantKind::Researcher {
+        AgentKind::Researcher {
             repo,
             branch,
             task_id,
@@ -3651,10 +3269,10 @@ pub fn start_assistant_session(
                 work_dir,
                 format!("agman-r-{project}--{name}"),
                 Config::researcher_tmux_session(project, name),
-                AssistantCapabilities::default(),
+                AgentCapabilities::default(),
             )
         }
-        AssistantKind::Operator {
+        AgentKind::Operator {
             repo,
             branch,
             task_id,
@@ -3671,10 +3289,10 @@ pub fn start_assistant_session(
                 work_dir,
                 format!("agman-o-{project}--{name}"),
                 Config::operator_tmux_session(project, name),
-                AssistantCapabilities::default(),
+                AgentCapabilities::default(),
             )
         }
-        AssistantKind::Reviewer { worktrees } => {
+        AgentKind::Reviewer { worktrees } => {
             let prompt = build_reviewer_prompt(telegram_enabled, project, name, worktrees);
             let cwd = worktrees.first().map(|w| w.path.clone());
             (
@@ -3682,10 +3300,10 @@ pub fn start_assistant_session(
                 cwd,
                 format!("agman-rv-{project}--{name}"),
                 Config::reviewer_tmux_session(project, name),
-                AssistantCapabilities::default(),
+                AgentCapabilities::default(),
             )
         }
-        AssistantKind::Tester {
+        AgentKind::Tester {
             worktrees,
             capabilities,
         } => {
@@ -3703,19 +3321,19 @@ pub fn start_assistant_session(
                 cwd,
                 format!("agman-t-{project}--{name}"),
                 Config::tester_tmux_session(project, name),
-                AssistantCapabilities {
+                AgentCapabilities {
                     browser: capabilities.browser,
                 },
             )
         }
     };
 
-    let assistant_kind = match &assistant.meta.kind {
-        AssistantKind::Engineer => "engineer",
-        AssistantKind::Researcher { .. } => "researcher",
-        AssistantKind::Operator { .. } => "operator",
-        AssistantKind::Reviewer { .. } => "reviewer",
-        AssistantKind::Tester { .. } => "tester",
+    let agent_kind = match &agent.meta.kind {
+        AgentKind::Engineer => "engineer",
+        AgentKind::Researcher { .. } => "researcher",
+        AgentKind::Operator { .. } => "operator",
+        AgentKind::Reviewer { .. } => "reviewer",
+        AgentKind::Tester { .. } => "tester",
     };
 
     tracing::info!(
@@ -3725,8 +3343,8 @@ pub fn start_assistant_session(
         telegram_enabled,
         harness = %kind,
         force_fresh,
-        kind = assistant_kind,
-        "starting assistant session"
+        kind = agent_kind,
+        "starting agent session"
     );
 
     let cwd = work_dir.as_deref().unwrap_or(&dir);
@@ -3742,7 +3360,7 @@ pub fn start_assistant_session(
         .ensure_workspace_trusted(&prep.cwd)
         .with_context(|| {
             format!(
-                "failed to pre-stamp workspace trust for assistant '{}--{}' at {}",
+                "failed to pre-stamp workspace trust for agent '{}--{}' at {}",
                 project,
                 name,
                 prep.cwd.display()
@@ -3752,7 +3370,7 @@ pub fn start_assistant_session(
         .ensure_capabilities_configured(&capabilities)
         .with_context(|| {
             format!(
-                "failed to configure assistant capabilities for '{}--{}'",
+                "failed to configure agent capabilities for '{}--{}'",
                 project, name
             )
         })?;
@@ -3776,8 +3394,8 @@ pub fn start_assistant_session(
     Ok(())
 }
 
-/// Resolve the working directory for assistant kinds with repo/branch/task hints.
-/// Worktree-backed assistants use the first worktree path directly.
+/// Resolve the working directory for agent kinds with repo/branch/task hints.
+/// Worktree-backed agents use the first worktree path directly.
 fn resolve_repo_hinted_work_dir(
     config: &Config,
     repo: Option<&str>,
@@ -3822,28 +3440,25 @@ fn resolve_repo_hinted_work_dir(
     None
 }
 
-/// List assistants, optionally filtered by project and/or kind.
-pub fn list_assistants(
+/// List agents, optionally filtered by project and/or kind.
+pub fn list_agents(
     config: &Config,
     project: Option<&str>,
-    kind: Option<AssistantKindLabel>,
-) -> Result<Vec<Assistant>> {
+    kind: Option<AgentKindLabel>,
+) -> Result<Vec<AgentRecord>> {
     let mut all = match project {
-        Some(p) => Assistant::list_for_project(config, p)?,
-        None => Assistant::list_all(config)?,
+        Some(p) => AgentRecord::list_for_project(config, p)?,
+        None => AgentRecord::list_all(config)?,
     };
     if let Some(k) = kind {
         all.retain(|a| {
             matches!(
                 (&a.meta.kind, k),
-                (AssistantKind::Engineer, AssistantKindLabel::Engineer)
-                    | (
-                        AssistantKind::Researcher { .. },
-                        AssistantKindLabel::Researcher
-                    )
-                    | (AssistantKind::Operator { .. }, AssistantKindLabel::Operator)
-                    | (AssistantKind::Reviewer { .. }, AssistantKindLabel::Reviewer)
-                    | (AssistantKind::Tester { .. }, AssistantKindLabel::Tester)
+                (AgentKind::Engineer, AgentKindLabel::Engineer)
+                    | (AgentKind::Researcher { .. }, AgentKindLabel::Researcher)
+                    | (AgentKind::Operator { .. }, AgentKindLabel::Operator)
+                    | (AgentKind::Reviewer { .. }, AgentKindLabel::Reviewer)
+                    | (AgentKind::Tester { .. }, AgentKindLabel::Tester)
             )
         });
     }
@@ -3851,13 +3466,13 @@ pub fn list_assistants(
 }
 
 /// Running agents attached to a task, with the required engineer listed first.
-pub fn attached_agents_for_task(config: &Config, task_id: &str) -> Result<Vec<Assistant>> {
+pub fn attached_agents_for_task(config: &Config, task_id: &str) -> Result<Vec<AgentRecord>> {
     Task::load_by_id(config, task_id)?;
 
-    let mut agents: Vec<_> = Assistant::list_all(config)?
+    let mut agents: Vec<_> = AgentRecord::list_all(config)?
         .into_iter()
         .filter(|agent| {
-            agent.meta.status == AssistantStatus::Running
+            agent.meta.status == AgentStatus::Running
                 && matches!(
                     &agent.meta.attachment,
                     AgentAttachment::Task { task_id: attached, .. } if attached == task_id
@@ -3866,12 +3481,12 @@ pub fn attached_agents_for_task(config: &Config, task_id: &str) -> Result<Vec<As
         .collect();
 
     agents.sort_by(|a, b| {
-        let rank = |agent: &Assistant| match agent.meta.kind {
-            AssistantKind::Engineer => 0,
-            AssistantKind::Reviewer { .. } => 1,
-            AssistantKind::Tester { .. } => 2,
-            AssistantKind::Researcher { .. } => 3,
-            AssistantKind::Operator { .. } => 4,
+        let rank = |agent: &AgentRecord| match agent.meta.kind {
+            AgentKind::Engineer => 0,
+            AgentKind::Reviewer { .. } => 1,
+            AgentKind::Tester { .. } => 2,
+            AgentKind::Researcher { .. } => 3,
+            AgentKind::Operator { .. } => 4,
         };
         rank(a)
             .cmp(&rank(b))
@@ -3887,11 +3502,11 @@ pub fn attached_agents_for_task(config: &Config, task_id: &str) -> Result<Vec<As
 }
 
 /// Running project agents that are not attached to any task.
-pub fn unattached_agents_for_project(config: &Config, project: &str) -> Result<Vec<Assistant>> {
-    let mut agents: Vec<_> = Assistant::list_for_project(config, project)?
+pub fn unattached_agents_for_project(config: &Config, project: &str) -> Result<Vec<AgentRecord>> {
+    let mut agents: Vec<_> = AgentRecord::list_for_project(config, project)?
         .into_iter()
         .filter(|agent| {
-            agent.meta.status == AssistantStatus::Running
+            agent.meta.status == AgentStatus::Running
                 && matches!(agent.meta.attachment, AgentAttachment::Unattached)
         })
         .collect();
@@ -3906,14 +3521,14 @@ pub fn attach_agent_to_task(
     name: &str,
     task_id: &str,
     role_label: Option<String>,
-) -> Result<Assistant> {
+) -> Result<AgentRecord> {
     Task::load_by_id(config, task_id)?;
-    let dir = config.assistant_dir(project, name);
-    let mut agent = Assistant::load(dir)?;
+    let dir = config.agent_dir(project, name);
+    let mut agent = AgentRecord::load(dir)?;
     if agent.is_engineer() {
         bail!("engineer agents are task-owned and cannot be manually attached or moved");
     }
-    if agent.meta.status == AssistantStatus::Archived {
+    if agent.meta.status == AgentStatus::Archived {
         bail!("archived agent '{}--{}' cannot be attached", project, name);
     }
     agent.set_attachment(AgentAttachment::Task {
@@ -3930,18 +3545,18 @@ pub fn move_agent_to_task(
     name: &str,
     task_id: &str,
     role_label: Option<String>,
-) -> Result<Assistant> {
+) -> Result<AgentRecord> {
     attach_agent_to_task(config, project, name, task_id, role_label)
 }
 
 /// Detach a non-engineer project agent from any task.
-pub fn detach_agent_from_task(config: &Config, project: &str, name: &str) -> Result<Assistant> {
-    let dir = config.assistant_dir(project, name);
-    let mut agent = Assistant::load(dir)?;
+pub fn detach_agent_from_task(config: &Config, project: &str, name: &str) -> Result<AgentRecord> {
+    let dir = config.agent_dir(project, name);
+    let mut agent = AgentRecord::load(dir)?;
     if agent.is_engineer() {
         bail!("engineer agents must remain attached to their owning task");
     }
-    if agent.meta.status == AssistantStatus::Archived {
+    if agent.meta.status == AgentStatus::Archived {
         bail!("archived agent '{}--{}' cannot be detached", project, name);
     }
     agent.set_attachment(AgentAttachment::Unattached)?;
@@ -3949,33 +3564,33 @@ pub fn detach_agent_from_task(config: &Config, project: &str, name: &str) -> Res
 }
 
 /// Backwards-compatible researcher list (filters to the Researcher kind).
-pub fn list_researchers(config: &Config, project: Option<&str>) -> Result<Vec<Assistant>> {
-    list_assistants(config, project, Some(AssistantKindLabel::Researcher))
+pub fn list_researchers(config: &Config, project: Option<&str>) -> Result<Vec<AgentRecord>> {
+    list_agents(config, project, Some(AgentKindLabel::Researcher))
 }
 
-fn assistant_kind_name(kind: &AssistantKind) -> &'static str {
+fn agent_kind_name(kind: &AgentKind) -> &'static str {
     match kind {
-        AssistantKind::Engineer => "engineer",
-        AssistantKind::Researcher { .. } => "researcher",
-        AssistantKind::Operator { .. } => "operator",
-        AssistantKind::Reviewer { .. } => "reviewer",
-        AssistantKind::Tester { .. } => "tester",
+        AgentKind::Engineer => "engineer",
+        AgentKind::Researcher { .. } => "researcher",
+        AgentKind::Operator { .. } => "operator",
+        AgentKind::Reviewer { .. } => "reviewer",
+        AgentKind::Tester { .. } => "tester",
     }
 }
 
-fn archived_assistant_content(assistant: &Assistant) -> String {
+fn archived_agent_content(agent: &AgentRecord) -> String {
     let mut out = format!(
         "Name: {}\nType: {}\nProject: {}\nStatus: {:?}\nCreated: {}\nUpdated: {}\n\nDescription:\n{}\n",
-        assistant.meta.name,
-        assistant_kind_name(&assistant.meta.kind),
-        assistant.meta.project,
-        assistant.meta.status,
-        assistant.meta.created_at,
-        assistant.meta.updated_at,
-        assistant.meta.description
+        agent.meta.name,
+        agent_kind_name(&agent.meta.kind),
+        agent.meta.project,
+        agent.meta.status,
+        agent.meta.created_at,
+        agent.meta.updated_at,
+        agent.meta.description
     );
 
-    let inbox_path = assistant.dir.join("inbox.jsonl");
+    let inbox_path = agent.dir.join("inbox.jsonl");
     if let Ok(messages) = inbox::read_messages(&inbox_path) {
         if !messages.is_empty() {
             out.push_str("\nInbox:\n");
@@ -3989,108 +3604,106 @@ fn archived_assistant_content(assistant: &Assistant) -> String {
     out
 }
 
-fn cleanup_assistant_worktrees(config: &Config, assistant: &Assistant) {
-    match &assistant.meta.kind {
-        AssistantKind::Reviewer { worktrees } | AssistantKind::Tester { worktrees, .. } => {
+fn cleanup_agent_worktrees(config: &Config, agent: &AgentRecord) {
+    match &agent.meta.kind {
+        AgentKind::Reviewer { worktrees } | AgentKind::Tester { worktrees, .. } => {
             for entry in worktrees {
                 if !entry.agman_created {
                     continue;
                 }
                 let repo_path = config.repo_path(&entry.repo);
                 if let Err(e) = Git::remove_worktree(&repo_path, &entry.path) {
-                    tracing::warn!(repo = %entry.repo, branch = %entry.branch, error = %e, "failed to remove assistant worktree");
+                    tracing::warn!(repo = %entry.repo, branch = %entry.branch, error = %e, "failed to remove agent worktree");
                 }
                 if let Err(e) = Git::delete_branch(&repo_path, &entry.branch) {
-                    tracing::warn!(repo = %entry.repo, branch = %entry.branch, error = %e, "failed to delete assistant branch");
+                    tracing::warn!(repo = %entry.repo, branch = %entry.branch, error = %e, "failed to delete agent branch");
                 }
             }
         }
-        AssistantKind::Engineer
-        | AssistantKind::Researcher { .. }
-        | AssistantKind::Operator { .. } => {}
+        AgentKind::Engineer | AgentKind::Researcher { .. } | AgentKind::Operator { .. } => {}
     }
 }
 
-/// Archive an assistant by stopping its tmux session and hiding it from active
-/// assistant lists. Worktrees and branches are preserved so archive restore can
-/// resume the assistant in place.
-pub fn archive_assistant(config: &Config, project: &str, name: &str) -> Result<()> {
-    let dir = config.assistant_dir(project, name);
-    let mut assistant = Assistant::load(dir)?;
+/// Archive an agent by stopping its tmux session and hiding it from active
+/// agent lists. Worktrees and branches are preserved so archive restore can
+/// resume the agent in place.
+pub fn archive_agent(config: &Config, project: &str, name: &str) -> Result<()> {
+    let dir = config.agent_dir(project, name);
+    let mut agent = AgentRecord::load(dir)?;
 
-    let session_name = assistant_tmux_session(&assistant.meta);
+    let session_name = agent_tmux_session(&agent.meta);
     if Tmux::session_exists(&session_name) {
-        tracing::info!(session = &session_name, "killing assistant tmux session");
+        tracing::info!(session = &session_name, "killing agent tmux session");
         Tmux::kill_session(&session_name)?;
     }
 
-    assistant.meta.status = AssistantStatus::Archived;
-    assistant.save_meta()?;
+    agent.meta.status = AgentStatus::Archived;
+    agent.save_meta()?;
 
-    tracing::info!(project = project, name = name, "assistant archived");
+    tracing::info!(project = project, name = name, "agent archived");
     Ok(())
 }
 
-/// Permanently delete an archived assistant. Worktree/branch cleanup is
-/// best-effort; the assistant directory removal is the durable delete step.
-pub fn permanently_delete_archived_assistant(config: &Config, assistant: Assistant) -> Result<()> {
-    if assistant.meta.status != AssistantStatus::Archived {
+/// Permanently delete an archived agent. Worktree/branch cleanup is
+/// best-effort; the agent directory removal is the durable delete step.
+pub fn permanently_delete_archived_agent(config: &Config, agent: AgentRecord) -> Result<()> {
+    if agent.meta.status != AgentStatus::Archived {
         bail!(
-            "assistant '{}--{}' is not archived",
-            assistant.meta.project,
-            assistant.meta.name
+            "agent '{}--{}' is not archived",
+            agent.meta.project,
+            agent.meta.name
         );
     }
 
-    let session_name = assistant_tmux_session(&assistant.meta);
+    let session_name = agent_tmux_session(&agent.meta);
     if let Err(e) = Tmux::kill_session(&session_name) {
-        tracing::warn!(session = %session_name, error = %e, "failed to kill assistant tmux session during permanent delete");
+        tracing::warn!(session = %session_name, error = %e, "failed to kill agent tmux session during permanent delete");
     }
 
-    cleanup_assistant_worktrees(config, &assistant);
+    cleanup_agent_worktrees(config, &agent);
 
     tracing::info!(
-        project = %assistant.meta.project,
-        name = %assistant.meta.name,
-        "permanently deleting archived assistant"
+        project = %agent.meta.project,
+        name = %agent.meta.name,
+        "permanently deleting archived agent"
     );
-    if assistant.dir.exists() {
-        std::fs::remove_dir_all(&assistant.dir)
-            .with_context(|| format!("failed to remove {}", assistant.dir.display()))?;
+    if agent.dir.exists() {
+        std::fs::remove_dir_all(&agent.dir)
+            .with_context(|| format!("failed to remove {}", agent.dir.display()))?;
     }
     Ok(())
 }
 
-/// List archived assistants for one project, sorted by most recently updated.
-pub fn list_archived_assistants(config: &Config, project: &str) -> Vec<(Assistant, String)> {
-    let mut assistants = match Assistant::list_for_project(config, project) {
-        Ok(assistants) => assistants,
+/// List archived agents for one project, sorted by most recently updated.
+pub fn list_archived_agents(config: &Config, project: &str) -> Vec<(AgentRecord, String)> {
+    let mut agents = match AgentRecord::list_for_project(config, project) {
+        Ok(agents) => agents,
         Err(e) => {
-            tracing::warn!(project = project, error = %e, "failed to list archived assistants");
+            tracing::warn!(project = project, error = %e, "failed to list archived agents");
             return Vec::new();
         }
     };
-    assistants.retain(|assistant| assistant.meta.status == AssistantStatus::Archived);
-    assistants.sort_by(|a, b| b.meta.updated_at.cmp(&a.meta.updated_at));
-    assistants
+    agents.retain(|agent| agent.meta.status == AgentStatus::Archived);
+    agents.sort_by(|a, b| b.meta.updated_at.cmp(&a.meta.updated_at));
+    agents
         .into_iter()
-        .map(|assistant| {
-            let content = archived_assistant_content(&assistant);
-            (assistant, content)
+        .map(|agent| {
+            let content = archived_agent_content(&agent);
+            (agent, content)
         })
         .collect()
 }
 
-pub fn purge_chief_of_staff_assistants(config: &Config) {
-    let assistants_dir = config.assistants_dir();
-    if !assistants_dir.exists() {
+pub fn purge_chief_of_staff_agents(config: &Config) {
+    let agents_dir = config.agents_dir();
+    if !agents_dir.exists() {
         return;
     }
 
-    let entries = match std::fs::read_dir(&assistants_dir) {
+    let entries = match std::fs::read_dir(&agents_dir) {
         Ok(entries) => entries,
         Err(e) => {
-            tracing::warn!(error = %e, "failed to scan assistants for chief-of-staff purge");
+            tracing::warn!(error = %e, "failed to scan agents for chief-of-staff purge");
             return;
         }
     };
@@ -4111,15 +3724,15 @@ pub fn purge_chief_of_staff_assistants(config: &Config) {
             continue;
         };
 
-        match Assistant::load(path.clone()) {
-            Ok(assistant) => {
-                let session = assistant_tmux_session(&assistant.meta);
+        match AgentRecord::load(path.clone()) {
+            Ok(agent) => {
+                let session = agent_tmux_session(&agent.meta);
                 if let Err(e) = Tmux::kill_session(&session) {
-                    tracing::warn!(session = %session, error = %e, "failed to kill global assistant session");
+                    tracing::warn!(session = %session, error = %e, "failed to kill global agent session");
                 }
             }
             Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to load global assistant before purge");
+                tracing::warn!(path = %path.display(), error = %e, "failed to load global agent before purge");
                 for session in [
                     Config::researcher_tmux_session(project, name),
                     Config::operator_tmux_session(project, name),
@@ -4133,51 +3746,51 @@ pub fn purge_chief_of_staff_assistants(config: &Config) {
 
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {
-                tracing::info!(project = %project, name = %name, path = %path.display(), "removed global assistant");
+                tracing::info!(project = %project, name = %name, path = %path.display(), "removed global agent");
             }
             Err(e) => {
-                tracing::warn!(project = %project, name = %name, path = %path.display(), error = %e, "failed to remove global assistant");
+                tracing::warn!(project = %project, name = %name, path = %path.display(), error = %e, "failed to remove global agent");
             }
         }
     }
 }
 
-/// Backwards-compatible researcher archive — delegates to `archive_assistant`.
+/// Backwards-compatible researcher archive — delegates to `archive_agent`.
 pub fn archive_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
-    archive_assistant(config, project, name)
+    archive_agent(config, project, name)
 }
 
-/// Resume an archived assistant: start a new tmux session and flip status to
-/// Running. `start_assistant_session` will pick up any stamped session-id
+/// Resume an archived agent: start a new tmux session and flip status to
+/// Running. `start_agent_session` will pick up any stamped session-id
 /// (claude) or session-name (codex/goose/pi) and resume the underlying
 /// conversation if available; archive does not delete those handles.
-pub fn resume_assistant(config: &Config, project: &str, name: &str) -> Result<()> {
-    start_assistant_session(config, project, name, false)?;
+pub fn resume_agent(config: &Config, project: &str, name: &str) -> Result<()> {
+    start_agent_session(config, project, name, false)?;
 
-    let dir = config.assistant_dir(project, name);
-    let mut assistant = Assistant::load(dir)?;
-    assistant.meta.status = AssistantStatus::Running;
-    assistant.save_meta()?;
+    let dir = config.agent_dir(project, name);
+    let mut agent = AgentRecord::load(dir)?;
+    agent.meta.status = AgentStatus::Running;
+    agent.save_meta()?;
 
-    tracing::info!(project = project, name = name, "assistant resumed");
+    tracing::info!(project = project, name = name, "agent resumed");
     Ok(())
 }
 
 /// Backwards-compat alias used by callers that haven't migrated to the new
-/// name yet. Identical to `start_assistant_session`.
+/// name yet. Identical to `start_agent_session`.
 pub fn start_researcher_session(
     config: &Config,
     project: &str,
     name: &str,
     force_fresh: bool,
 ) -> Result<()> {
-    start_assistant_session(config, project, name, force_fresh)
+    start_agent_session(config, project, name, force_fresh)
 }
 
 /// Backwards-compat alias used by callers that haven't migrated to the new
-/// name yet. Identical to `resume_assistant`.
+/// name yet. Identical to `resume_agent`.
 pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
-    resume_assistant(config, project, name)
+    resume_agent(config, project, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -4189,29 +3802,21 @@ pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<(
 #[derive(Debug, Clone)]
 pub struct InboxPollTarget {
     /// `"chief-of-staff"`, `"<project>"`, `"researcher:<project>--<name>"`,
-    /// `"operator:<project>--<name>"`, `"reviewer:<project>--<name>"`, or `"task:<id>"`.
+    /// `"operator:<project>--<name>"`, or `"reviewer:<project>--<name>"`.
     pub name: String,
     pub inbox_path: PathBuf,
     pub seq_path: PathBuf,
     pub session_name: String,
     /// Optional window within `session_name` where delivery should happen.
-    /// `None` for single-window sessions (Chief of Staff/PM/assistant);
+    /// `None` for single-window sessions (Chief of Staff/PM/agent);
     /// `Some("agman")` for task sessions whose interactive harness lives in the
     /// `agman` window.
     pub window: Option<String>,
-    /// Optional re-arm marker path. When present on disk, the poll worker
-    /// drops its in-memory cold-start ready-buffer entry for this target and
-    /// deletes the file, forcing the buffer to restart from zero on the next
-    /// observed-ready tick. Currently set only for task targets (the
-    /// supervisor touches `<task_dir>/.inbox-rearm` across kill→relaunch
-    /// transitions). `None` for Chief of Staff/PM/assistant targets, whose
-    /// harness is never restarted under the supervisor.
-    pub rearm_path: Option<PathBuf>,
 }
 
 /// Enumerate all inbox delivery targets from disk.
 ///
-/// Reads projects and assistants directly from the filesystem so delivery does
+/// Reads projects and agents directly from the filesystem so delivery does
 /// not depend on which TUI view the user has visited. `session_exists` is a
 /// predicate — production callers pass `Tmux::session_exists`; tests pass a
 /// stub like `|_| true`.
@@ -4230,7 +3835,6 @@ pub fn collect_inbox_poll_targets(
             seq_path: config.chief_of_staff_seq(),
             session_name: cos_session,
             window: None,
-            rearm_path: None,
         });
     }
 
@@ -4246,7 +3850,6 @@ pub fn collect_inbox_poll_targets(
                         seq_path: config.project_seq(&p.meta.name),
                         session_name,
                         window: None,
-                        rearm_path: None,
                     });
                 }
             }
@@ -4256,59 +3859,28 @@ pub fn collect_inbox_poll_targets(
         }
     }
 
-    // Assistant targets (researchers + reviewers, single iteration over disk).
-    match Assistant::list_all(config) {
-        Ok(assistants) => {
-            for a in assistants {
-                if a.meta.project == "chief-of-staff" || a.meta.status != AssistantStatus::Running {
+    // AgentRecord targets (researchers + reviewers, single iteration over disk).
+    match AgentRecord::list_all(config) {
+        Ok(agents) => {
+            for a in agents {
+                if a.meta.project == "chief-of-staff" || a.meta.status != AgentStatus::Running {
                     continue;
                 }
-                let session_name = assistant_tmux_session(&a.meta);
+                let session_name = agent_tmux_session(&a.meta);
                 if session_exists(&session_name) {
                     targets.push(InboxPollTarget {
-                        name: assistant_send_target_id(&a.meta),
-                        inbox_path: config.assistant_inbox(&a.meta.project, &a.meta.name),
-                        seq_path: config.assistant_seq(&a.meta.project, &a.meta.name),
+                        name: agent_send_target_id(&a.meta),
+                        inbox_path: config.agent_inbox(&a.meta.project, &a.meta.name),
+                        seq_path: config.agent_seq(&a.meta.project, &a.meta.name),
                         session_name,
                         window: None,
-                        rearm_path: None,
                     });
                 }
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "collect_inbox_poll_targets: failed to list assistants, skipping assistant targets");
+            tracing::warn!(error = %e, "collect_inbox_poll_targets: failed to list agents, skipping agent targets");
         }
-    }
-
-    // Task targets. Tasks host their interactive harness in the `agman` window
-    // of their session (single-repo: primary repo's session; multi-repo:
-    // parent-dir session). `session_name` carries only the session; the
-    // caller must deliver to the `agman` window specifically via the
-    // window-aware tmux APIs.
-    for task in Task::list_all(config) {
-        if task.meta.status != TaskStatus::Running {
-            continue;
-        }
-        let session_name = if task.meta.is_multi_repo() {
-            Config::tmux_session_name(&task.meta.name, &task.meta.branch_name)
-        } else if task.meta.has_repos() {
-            task.meta.primary_repo().tmux_session.clone()
-        } else {
-            continue;
-        };
-        if !session_exists(&session_name) {
-            continue;
-        }
-        let task_id = task.meta.task_id();
-        targets.push(InboxPollTarget {
-            name: format!("task:{task_id}"),
-            inbox_path: config.task_inbox(&task_id),
-            seq_path: config.task_inbox_seq(&task_id),
-            session_name,
-            window: Some(crate::supervisor::AGMAN_WINDOW.to_string()),
-            rearm_path: Some(task.rearm_path()),
-        });
     }
 
     targets
@@ -4333,164 +3905,28 @@ pub fn stalled_targets_from_counts(
 // Task query (for CLI commands)
 // ---------------------------------------------------------------------------
 
-/// Format a chrono::Duration into a human-readable string like "2m", "1h 23m".
-fn format_duration(duration: chrono::Duration) -> String {
-    let total_secs = duration.num_seconds().max(0);
-    let hours = total_secs / 3600;
-    let minutes = (total_secs % 3600) / 60;
-    if hours > 0 {
-        format!("{}h {}m", hours, minutes)
-    } else {
-        format!("{}m", minutes)
-    }
-}
-
-/// Extract the Goal section from a TASK.md file.
-/// Returns None if the file doesn't exist or has no `# Goal` section.
-/// Truncates to the first 5 lines or 500 characters, whichever comes first.
-fn extract_goal_summary(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let mut lines = content.lines();
-    // Find the "# Goal" heading
-    let mut found = false;
-    for line in lines.by_ref() {
-        if line.trim() == "# Goal" {
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        return None;
-    }
-    // Collect lines until the next heading or EOF
-    let mut goal_lines = Vec::new();
-    let mut char_count = 0;
-    for line in lines {
-        if line.starts_with('#') {
-            break;
-        }
-        // Skip leading blank lines
-        if goal_lines.is_empty() && line.trim().is_empty() {
-            continue;
-        }
-        if char_count + line.len() + 1 > 500 {
-            // Line would exceed 500 chars — stop without including partial line
-            break;
-        }
-        char_count += line.len() + 1; // +1 for newline
-        goal_lines.push(line);
-        if goal_lines.len() >= 5 {
-            break;
-        }
-    }
-    if goal_lines.is_empty() {
-        return None;
-    }
-    Some(goal_lines.join("\n"))
-}
-
-/// Get a formatted status string for a task.
-pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
+/// Get formatted metadata for a task.
+pub fn get_task_info_text(config: &Config, task_id: &str) -> Result<String> {
     let (repo, branch) =
         Config::parse_task_id(task_id).context(format!("invalid task ID: {}", task_id))?;
     let task = Task::load(config, &repo, &branch)?;
 
     let mut out = String::new();
     out.push_str(&format!("Task: {}\n", task_id));
-    out.push_str(&format!("Status: {}\n", task.meta.status));
 
     if let Some(archived_at) = &task.meta.archived_at {
         let suffix = if task.meta.saved { " (saved)" } else { "" };
         out.push_str(&format!("Archived: {}{}\n", archived_at, suffix));
     }
 
-    // Rich flow step display
-    let flow_line = match Flow::load(&config.flow_path(&task.meta.flow_name)) {
-        Ok(flow) => {
-            let total = flow.steps.len();
-            let step = task.meta.flow_step;
-            if let Some(flow_step) = flow.get_step(step) {
-                let agent_name = match flow_step {
-                    FlowStep::Agent(s) => s.agent.clone(),
-                    FlowStep::Loop(l) => {
-                        let agents: Vec<&str> = l.steps.iter().map(|s| s.agent.as_str()).collect();
-                        format!("loop: {}", agents.join(" → "))
-                    }
-                };
-                format!(
-                    "Flow: {} (step {}/{}: {})\n",
-                    task.meta.flow_name,
-                    step + 1,
-                    total,
-                    agent_name,
-                )
-            } else {
-                format!(
-                    "Flow: {} (step {}/{})\n",
-                    task.meta.flow_name,
-                    step + 1,
-                    total,
-                )
-            }
-        }
-        Err(_) => format!(
-            "Flow: {} (step {})\n",
-            task.meta.flow_name,
-            task.meta.flow_step + 1,
-        ),
-    };
-    out.push_str(&flow_line);
-
-    if let Some(ref agent) = task.meta.current_agent {
-        out.push_str(&format!("Agent: {}\n", agent));
+    if let Ok(engineer) = attached_engineer_for_task(config, &task.meta.task_id()) {
+        out.push_str(&format!("Engineer: {}\n", engineer.meta.name));
     }
     if let Some(ref project) = task.meta.project {
         out.push_str(&format!("Project: {}\n", project));
     }
     out.push_str(&format!("Created: {}\n", task.meta.created_at));
     out.push_str(&format!("Updated: {}\n", task.meta.updated_at));
-
-    // Elapsed time for running tasks
-    if task.meta.status == TaskStatus::Running {
-        let elapsed = Utc::now().signed_duration_since(task.meta.updated_at);
-        out.push_str(&format!("Running for: {}\n", format_duration(elapsed)));
-    }
-
-    // Queue info
-    let queue = task.read_queue();
-    if queue.is_empty() {
-        out.push_str("Queue: empty\n");
-    } else {
-        out.push_str(&format!(
-            "Queue: {} item{}\n",
-            queue.len(),
-            if queue.len() == 1 { "" } else { "s" }
-        ));
-        for item in &queue {
-            match item {
-                QueueItem::Feedback { text } => {
-                    let truncated = if text.chars().count() > 50 {
-                        format!("{}...", text.chars().take(50).collect::<String>())
-                    } else {
-                        text.clone()
-                    };
-                    out.push_str(&format!("  [feedback] {}\n", truncated));
-                }
-                QueueItem::Command { command_id, branch } => {
-                    let branch_str = branch
-                        .as_deref()
-                        .map(|b| format!(" ({})", b))
-                        .unwrap_or_default();
-                    out.push_str(&format!("  [cmd] {}{}\n", command_id, branch_str));
-                }
-            }
-        }
-    }
-
-    // Task goal from TASK.md
-    if let Some(goal) = extract_goal_summary(&task.dir.join("TASK.md")) {
-        out.push_str(&format!("\nGoal:\n{}\n", goal));
-    }
 
     // Append last few lines of agent log
     let log_tail = get_task_log_tail(config, task_id, 10)?;
@@ -4500,23 +3936,6 @@ pub fn get_task_status_text(config: &Config, task_id: &str) -> Result<String> {
     }
 
     Ok(out)
-}
-
-/// Read the full contents of a task's TASK.md.
-pub fn get_task_current_plan(config: &Config, task_id: &str) -> Result<String> {
-    let (repo, branch) =
-        Config::parse_task_id(task_id).context(format!("invalid task ID: {}", task_id))?;
-    let task = Task::load(config, &repo, &branch)?;
-    let plan_path = task.dir.join("TASK.md");
-
-    if !plan_path.exists() {
-        return Ok(String::new());
-    }
-
-    let contents = std::fs::read_to_string(&plan_path)
-        .with_context(|| format!("failed to read {}", plan_path.display()))?;
-
-    Ok(contents)
 }
 
 /// Read the last N lines of a task's agent.log.
@@ -4561,7 +3980,7 @@ Always cross-reference your mental model against current ground truth before ans
 - agman list-projects — overview of all projects with PM status and task counts
 - agman project-status <name> — single-project deep view
 - agman list-pm-tasks <project> — task list for a project
-- agman task-status <task-id> — task detail
+- agman task-info <task-id> — task detail
 - agman task-log <task-id> --tail 100 — recent task log
 
 ## Authority
@@ -4570,7 +3989,7 @@ You CAN do anything the CEO directs you to do. Available write commands:
 - agman create-project <name> --description "<label>" [--initial-message <text|@file|->]
 - agman delete-project <name>
 - agman create-pm-task <project> <repo> <task-name> --description "..." (rare — usually PMs do this)
-- agman feedback <task-id> "..."
+- agman message <task-id> "..."
 - agman send-message <target> --from chief-of-staff
 - agman create-researcher <name> [--project <name>]
 - agman create-operator <name> [--project <name>]
@@ -4614,9 +4033,9 @@ When you receive a message from a PM, respond via send-message — your tmux ses
 
 When the CEO asks you to start a project that matches a template:
 1. agman list-templates — see available templates
-2. agman get-template <name> > /tmp/brief.md — copy to scratch file
+2. agman get-template <name> > /tmp/goal.txt — copy to scratch file
 3. Edit the scratch file to fit the instance
-4. agman create-project <proj> --description "<label>" --initial-message @/tmp/brief.md
+4. agman create-project <proj> --description "<label>" --initial-message @/tmp/goal.txt
 
 Never edit a template just to customize one project — modify the scratch file.
 
@@ -4798,7 +4217,7 @@ Additional rules:
     format!("{base}{telegram_section}")
 }
 
-/// Build a reviewer assistant's system prompt. Pattern mirrors
+/// Build a reviewer agent's system prompt. Pattern mirrors
 /// `build_researcher_prompt` — same telegram opt-in, same heredoc style — but
 /// the body is reviewer-specific: read-only worktree audits with the explicit
 /// rules from the plan (no fetch, no writes, no GitHub posts).
@@ -4806,7 +4225,7 @@ pub fn build_reviewer_prompt(
     telegram_enabled: bool,
     project_name: &str,
     reviewer_name: &str,
-    worktrees: &[AssistantWorktree],
+    worktrees: &[AgentWorktree],
 ) -> String {
     let worktree_block = if worktrees.is_empty() {
         "(no worktrees configured)".to_string()
@@ -4863,7 +4282,7 @@ pub fn build_tester_prompt(
     telegram_enabled: bool,
     project_name: &str,
     tester_name: &str,
-    worktrees: &[AssistantWorktree],
+    worktrees: &[AgentWorktree],
     caps: TesterCapabilities,
     harness_kind: HarnessKind,
 ) -> String {
@@ -4956,7 +4375,7 @@ Keep Telegram replies concise.
     format!("{base}{telegram_section}")
 }
 
-fn format_worktree_block(worktrees: &[AssistantWorktree]) -> String {
+fn format_worktree_block(worktrees: &[AgentWorktree]) -> String {
     if worktrees.is_empty() {
         "(no worktrees configured)".to_string()
     } else {
@@ -4982,9 +4401,9 @@ You may handle broad engineering work end to end when the PM asks:
 - push branches
 - create or update pull requests
 - monitor CI and fix real failures
-- address PR review feedback critically and report what you changed
+- address PR review message critically and report what you changed
 
-Do not wait for a separate flow step or disposable command agent. Use judgment, keep scope tight, and ask only when genuinely blocked or when the PM's request is ambiguous in a risky way.
+Do not wait for another agent to take over. Use judgment, keep scope tight, and ask only when genuinely blocked or when the PM's request is ambiguous in a risky way.
 
 ## Communication
 
@@ -5000,7 +4419,7 @@ AGMAN_MSG
 Keep updates concise and concrete: what changed, what you verified, what remains, and any blocker that needs a PM decision.
 "#;
 
-const DEFAULT_REVIEWER_PROMPT_TEMPLATE: &str = r#"You are a code reviewer assistant for project "{{PROJECT_NAME}}", named "{{REVIEWER_NAME}}".
+const DEFAULT_REVIEWER_PROMPT_TEMPLATE: &str = r#"You are a code reviewer agent for project "{{PROJECT_NAME}}", named "{{REVIEWER_NAME}}".
 
 Your job is to read code from the worktrees listed below — including uncommitted, staged, and unstaged changes — and deliver opinions back to the PM. You are stateless between questions but the session is long-lived: the PM may follow up with more questions on the same review.
 
@@ -5032,7 +4451,7 @@ AGMAN_MSG
 Keep findings concise and specific — file paths, line numbers, and the actual issue. The PM will follow up with more questions if they need to dig deeper.
 "#;
 
-const DEFAULT_TESTER_PROMPT_TEMPLATE: &str = r#"You are a tester assistant for project "{{PROJECT_NAME}}", named "{{TESTER_NAME}}".
+const DEFAULT_TESTER_PROMPT_TEMPLATE: &str = r#"You are a tester agent for project "{{PROJECT_NAME}}", named "{{TESTER_NAME}}".
 
 Your job is to verify behavior — run tests, exercise endpoints, interact with the app, and report what you find. You are stateless between questions but the session is long-lived: the PM may follow up with more questions on the same test pass.
 
@@ -5082,9 +4501,9 @@ Keep reports concise and actionable. When you've completed your research, summar
 
 "#;
 
-const DEFAULT_OPERATOR_PROMPT_TEMPLATE: &str = r#"You are an operator assistant for project "{{PROJECT_NAME}}", named "{{OPERATOR_NAME}}".
+const DEFAULT_OPERATOR_PROMPT_TEMPLATE: &str = r#"You are an operator agent for project "{{PROJECT_NAME}}", named "{{OPERATOR_NAME}}".
 
-You are an action-taking assistant. Your job is to do the thing your PM asks — edit a Google doc, ack an incident in PagerDuty, post a Slack message, update a Notion page. Use whatever tools are available to you. Report back when done.
+You are an action-taking agent. Your job is to do the thing your PM asks — edit a Google doc, ack an incident in PagerDuty, post a Slack message, update a Notion page. Use whatever tools are available to you. Report back when done.
 
 External state changes are expected. Hit third-party APIs, drive MCP-backed integrations, mutate documents, post messages — that's the point.
 
@@ -5123,7 +4542,7 @@ const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for
 ### Task Management
 - agman create-pm-task {{PROJECT_NAME}} <repo> <task-name> --description "<description>"
 - agman list-pm-tasks {{PROJECT_NAME}}
-- agman task-status <task-id>
+- agman task-info <task-id>
 - agman task-log <task-id> --tail 100
 
 ### Agent Management

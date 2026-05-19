@@ -108,9 +108,9 @@ fn migration_renames_researchers_to_agents_and_stamps_kind() {
     assert!(new_entry.exists());
 }
 
-/// Legacy global assistant dirs are removed instead of being migrated forward.
+/// Legacy global agent dirs are removed instead of being migrated forward.
 #[test]
-fn migration_removes_legacy_global_assistant_dirs() {
+fn migration_removes_legacy_global_agent_dirs() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
@@ -139,12 +139,12 @@ fn migration_removes_legacy_global_assistant_dirs() {
     config.ensure_dirs().unwrap();
 
     assert!(!legacy.exists(), "legacy ceo-- dir should be gone");
-    assert!(!cos.exists(), "chief-of-staff assistant dir should be gone");
-    assert!(kept.exists(), "project-scoped assistant dir should remain");
+    assert!(!cos.exists(), "chief-of-staff agent dir should be gone");
+    assert!(kept.exists(), "project-scoped agent dir should remain");
 }
 
 /// `~/.agman/telegram/current-agent` containing `"ceo"` should be rewritten to
-/// `"chief-of-staff"`. Global assistant references should be reset there too.
+/// `"chief-of-staff"`. Global agent references should be reset there too.
 #[test]
 fn migration_rewrites_telegram_current_agent() {
     let tmp = tempfile::tempdir().unwrap();
@@ -167,7 +167,7 @@ fn migration_rewrites_telegram_current_agent() {
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
         "chief-of-staff",
-        "global assistant current-agent should reset to CoS"
+        "global agent current-agent should reset to CoS"
     );
 
     fs::write(&path, "operator:chief-of-staff--ops").unwrap();
@@ -175,7 +175,7 @@ fn migration_rewrites_telegram_current_agent() {
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
         "chief-of-staff",
-        "chief-of-staff assistant current-agent should reset to CoS"
+        "chief-of-staff agent current-agent should reset to CoS"
     );
 
     // Unrelated value left alone.

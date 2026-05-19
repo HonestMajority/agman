@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::assistant::{Assistant, AssistantKind, AssistantStatus};
+use crate::agent_model::{AgentKind, AgentRecord, AgentStatus};
 use crate::config::Config;
 use crate::inbox;
 use crate::use_cases;
@@ -425,11 +425,13 @@ pub fn parse_sender_tag(text: &str) -> Option<&str> {
     Some(&rest[..close])
 }
 
-/// Resolve a sender tag (e.g. `"CoS"`, `"PM:foo"`, `"R:bar"`, `"O:bar"`) back to a
-/// send-target agent id usable with [`use_cases::agent_inbox_path`].
+/// Resolve a sender tag back to a send-target agent id usable with
+/// [`use_cases::agent_inbox_path`].
 ///
 /// - `"CoS"` → `Some("chief-of-staff")`
 /// - `"PM:<id>"` → `Some(id)` if the project agent exists
+/// - `"E:<name>"` → `Some("engineer:<project>--<name>")` when exactly one
+///   running engineer matches; `None` for zero or multiple matches.
 /// - `"R:<name>"` → `Some("researcher:<project>--<name>")` when exactly one
 ///   running researcher matches; `None` for zero or multiple matches.
 /// - `"O:<name>"` → `Some("operator:<project>--<name>")` with the same
@@ -451,14 +453,16 @@ pub fn resolve_tag_to_agent(config: &Config, tag: &str) -> Option<String> {
         } else {
             None
         }
+    } else if let Some(name) = tag.strip_prefix("E:") {
+        resolve_agent_tag(config, name, AgentKindFilter::Engineer)
     } else if let Some(name) = tag.strip_prefix("Rv:") {
-        resolve_assistant_tag(config, name, AssistantKindFilter::Reviewer)
+        resolve_agent_tag(config, name, AgentKindFilter::Reviewer)
     } else if let Some(name) = tag.strip_prefix("O:") {
-        resolve_assistant_tag(config, name, AssistantKindFilter::Operator)
+        resolve_agent_tag(config, name, AgentKindFilter::Operator)
     } else if let Some(name) = tag.strip_prefix("T:") {
-        resolve_assistant_tag(config, name, AssistantKindFilter::Tester)
+        resolve_agent_tag(config, name, AgentKindFilter::Tester)
     } else if let Some(name) = tag.strip_prefix("R:") {
-        resolve_assistant_tag(config, name, AssistantKindFilter::Researcher)
+        resolve_agent_tag(config, name, AgentKindFilter::Researcher)
     } else {
         None
     }?;
@@ -470,41 +474,37 @@ pub fn resolve_tag_to_agent(config: &Config, tag: &str) -> Option<String> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AssistantKindFilter {
+enum AgentKindFilter {
+    Engineer,
     Researcher,
     Operator,
     Reviewer,
     Tester,
 }
 
-fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter) -> Option<String> {
+fn resolve_agent_tag(config: &Config, name: &str, kind: AgentKindFilter) -> Option<String> {
     if name.is_empty() {
         return None;
     }
-    let assistants = match Assistant::list_all(config) {
+    let agents = match AgentRecord::list_all(config) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(error = %e, "telegram: failed to list assistants for tag resolution");
+            tracing::warn!(error = %e, "telegram: failed to list agents for tag resolution");
             return None;
         }
     };
-    let matches: Vec<&Assistant> = assistants
+    let matches: Vec<&AgentRecord> = agents
         .iter()
         .filter(|a| a.meta.project != "chief-of-staff")
-        .filter(|a| a.meta.name == name && a.meta.status == AssistantStatus::Running)
+        .filter(|a| a.meta.name == name && a.meta.status == AgentStatus::Running)
         .filter(|a| {
             matches!(
                 (&a.meta.kind, kind),
-                (
-                    AssistantKind::Researcher { .. },
-                    AssistantKindFilter::Researcher
-                ) | (
-                    AssistantKind::Operator { .. },
-                    AssistantKindFilter::Operator
-                ) | (
-                    AssistantKind::Reviewer { .. },
-                    AssistantKindFilter::Reviewer
-                ) | (AssistantKind::Tester { .. }, AssistantKindFilter::Tester)
+                (AgentKind::Engineer, AgentKindFilter::Engineer)
+                    | (AgentKind::Researcher { .. }, AgentKindFilter::Researcher)
+                    | (AgentKind::Operator { .. }, AgentKindFilter::Operator)
+                    | (AgentKind::Reviewer { .. }, AgentKindFilter::Reviewer)
+                    | (AgentKind::Tester { .. }, AgentKindFilter::Tester)
             )
         })
         .collect();
@@ -512,10 +512,11 @@ fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter)
         1 => {
             let a = matches[0];
             let prefix = match kind {
-                AssistantKindFilter::Researcher => "researcher",
-                AssistantKindFilter::Operator => "operator",
-                AssistantKindFilter::Reviewer => "reviewer",
-                AssistantKindFilter::Tester => "tester",
+                AgentKindFilter::Engineer => "engineer",
+                AgentKindFilter::Researcher => "researcher",
+                AgentKindFilter::Operator => "operator",
+                AgentKindFilter::Reviewer => "reviewer",
+                AgentKindFilter::Tester => "tester",
             };
             Some(format!("{prefix}:{}--{}", a.meta.project, a.meta.name))
         }
@@ -525,7 +526,7 @@ fn resolve_assistant_tag(config: &Config, name: &str, kind: AssistantKindFilter)
                 tag = %name,
                 count = n,
                 kind = ?kind,
-                "telegram: ambiguous assistant tag, falling back"
+                "telegram: ambiguous agent tag, falling back"
             );
             None
         }
@@ -669,14 +670,14 @@ fn drain_outbox(ctx: &BotCtx) {
                     seq = msg.seq,
                     from = %msg.from,
                     preview = %preview,
-                    "telegram: permanent send failure, moving to dead-letter queue",
+                    "telegram: permanent send failure, moving to dead-letter file",
                 );
                 if let Err(e) =
                     append_dead_letter(&ctx.telegram_dead_letter, &msg, "permanent send failure")
                 {
                     tracing::warn!(error = %e, seq = msg.seq, "telegram: failed to write dead-letter entry");
                 }
-                // Mark delivered anyway so the queue unblocks for subsequent messages.
+                // Mark delivered anyway so subsequent messages can proceed.
                 if let Err(e) = inbox::mark_delivered(&ctx.telegram_outbox_seq, msg.seq) {
                     tracing::warn!(error = %e, seq = msg.seq, "telegram: failed to mark dead-lettered message delivered");
                 }
@@ -716,6 +717,7 @@ fn append_dead_letter(path: &Path, msg: &inbox::InboxMessage, reason: &str) -> s
 /// Short human-readable sender tag rendered on outbound Telegram messages.
 ///
 /// - `"chief-of-staff"` → `"CoS"`
+/// - `"engineer:<project>--<name>"` → `"E:<name>"` (text after the last `--`)
 /// - `"researcher:<project>--<name>"` → `"R:<name>"` (text after the last `--`)
 /// - `"operator:<project>--<name>"` → `"O:<name>"` (text after the last `--`)
 /// - `"reviewer:<project>--<name>"` → `"Rv:<name>"` (text after the last `--`)
@@ -724,6 +726,10 @@ fn append_dead_letter(path: &Path, msg: &inbox::InboxMessage, reason: &str) -> s
 pub fn format_sender_tag(from: &str) -> String {
     if from == "chief-of-staff" {
         return "CoS".to_string();
+    }
+    if let Some(rest) = from.strip_prefix("engineer:") {
+        let name = rest.rsplit("--").next().unwrap_or(rest);
+        return format!("E:{name}");
     }
     if let Some(rest) = from.strip_prefix("researcher:") {
         let name = rest.rsplit("--").next().unwrap_or(rest);
@@ -930,7 +936,13 @@ pub fn parent_of(current: &str) -> Option<String> {
     if current == "chief-of-staff" {
         return None;
     }
-    for prefix in ["researcher:", "operator:", "reviewer:", "tester:"] {
+    for prefix in [
+        "engineer:",
+        "researcher:",
+        "operator:",
+        "reviewer:",
+        "tester:",
+    ] {
         if let Some(rest) = current.strip_prefix(prefix) {
             if let Some(pos) = rest.find("--") {
                 let project = &rest[..pos];

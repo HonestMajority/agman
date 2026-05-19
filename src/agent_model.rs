@@ -11,20 +11,18 @@ fn default_now() -> DateTime<Utc> {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum AssistantStatus {
+pub enum AgentStatus {
     Running,
     Archived,
 }
 
-pub type AgentStatus = AssistantStatus;
-
-/// One worktree entry tracked by a worktree-backed assistant.
+/// One worktree entry tracked by a worktree-backed agent.
 ///
 /// `agman_created` records whether agman set up the worktree (and the local
 /// branch) itself — drives archive cleanup. Worktrees that already existed
 /// when the reviewer was created are left intact on archive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssistantWorktree {
+pub struct AgentWorktree {
     pub repo: String,
     pub branch: String,
     pub path: PathBuf,
@@ -56,7 +54,7 @@ pub enum AgentAttachment {
 /// Discriminator for the agent kinds. Each kind carries its own
 /// kind-specific metadata; everything else (harness stamping, inbox, tmux,
 /// telegram switcher, send-message routing, poll-target enumeration) is
-/// kind-agnostic and lives on the surrounding [`AssistantMeta`].
+/// kind-agnostic and lives on the surrounding [`AgentMeta`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AgentKind {
@@ -79,49 +77,42 @@ pub enum AgentKind {
     },
     Reviewer {
         #[serde(default)]
-        worktrees: Vec<AssistantWorktree>,
+        worktrees: Vec<AgentWorktree>,
     },
     Tester {
         #[serde(default)]
-        worktrees: Vec<AssistantWorktree>,
+        worktrees: Vec<AgentWorktree>,
         #[serde(default)]
         capabilities: TesterCapabilities,
     },
 }
 
-pub type AssistantKind = AgentKind;
-
 /// Metadata stored in the agent state directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssistantMeta {
+pub struct AgentMeta {
     pub name: String,
     pub project: String,
     pub description: String,
     pub created_at: DateTime<Utc>,
     #[serde(default = "default_now")]
     pub updated_at: DateTime<Utc>,
-    pub status: AssistantStatus,
+    pub status: AgentStatus,
     pub kind: AgentKind,
     #[serde(default)]
     pub attachment: AgentAttachment,
 }
 
-pub type AgentMeta = AssistantMeta;
-
-/// A loaded assistant with its directory path.
+/// A loaded agent with its directory path.
 #[derive(Debug, Clone)]
-pub struct Assistant {
-    pub meta: AssistantMeta,
+pub struct AgentRecord {
+    pub meta: AgentMeta,
     pub dir: PathBuf,
 }
 
-impl Assistant {
-    /// Create a new assistant on disk.
+impl AgentRecord {
+    /// Create a new agent on disk.
     ///
-    /// Callers in `use_cases` decide the kind. Researcher kind preserves the
-    /// pre-existing behavior (optional repo/branch/task_id); Reviewer kind
-    /// records the resolved worktree list (see `create_assistant` for the
-    /// worktree resolution rules).
+    /// Callers in `use_cases` decide the kind and attachment.
     pub fn create(
         config: &Config,
         project: &str,
@@ -147,79 +138,73 @@ impl Assistant {
         kind: AgentKind,
         attachment: AgentAttachment,
     ) -> Result<Self> {
-        validate_assistant_name(name)?;
+        validate_agent_name(name)?;
         validate_agent_attachment(&kind, &attachment)?;
 
-        let dir = config.assistant_dir(project, name);
+        let dir = config.agent_dir(project, name);
         if dir.exists() {
             bail!("agent '{name}' already exists in project '{project}'");
         }
 
         std::fs::create_dir_all(&dir)
-            .with_context(|| format!("failed to create assistant dir {}", dir.display()))?;
+            .with_context(|| format!("failed to create agent dir {}", dir.display()))?;
 
-        let meta = AssistantMeta {
+        let meta = AgentMeta {
             name: name.to_string(),
             project: project.to_string(),
             description: description.to_string(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
-            status: AssistantStatus::Running,
+            status: AgentStatus::Running,
             kind,
             attachment,
         };
 
-        let mut assistant = Self { meta, dir };
-        assistant.save_meta()?;
-        Ok(assistant)
+        let mut agent = Self { meta, dir };
+        agent.save_meta()?;
+        Ok(agent)
     }
 
-    /// Load an assistant from its directory.
+    /// Load an agent from its directory.
     pub fn load(dir: PathBuf) -> Result<Self> {
         let meta_path = dir.join("meta.json");
         let contents = std::fs::read_to_string(&meta_path)
             .with_context(|| format!("failed to read {}", meta_path.display()))?;
-        let meta: AssistantMeta = serde_json::from_str(&contents)
+        let meta: AgentMeta = serde_json::from_str(&contents)
             .with_context(|| format!("failed to parse {}", meta_path.display()))?;
         Ok(Self { meta, dir })
     }
 
     /// List all agents across all projects.
     pub fn list_all(config: &Config) -> Result<Vec<Self>> {
-        let mut assistants = Vec::new();
-        for agents_dir in [config.agents_dir(), config.legacy_assistants_dir()] {
-            if !agents_dir.exists() {
-                continue;
-            }
-
+        let mut agents = Vec::new();
+        let agents_dir = config.agents_dir();
+        if agents_dir.exists() {
             for entry in std::fs::read_dir(&agents_dir)
                 .with_context(|| format!("failed to read {}", agents_dir.display()))?
             {
-                let entry = entry?;
-                let path = entry.path();
+                let path = entry?.path();
                 if path.is_dir() && path.join("meta.json").exists() {
                     match Self::load(path) {
-                        Ok(assistant) => assistants.push(assistant),
-                        Err(e) => {
-                            tracing::warn!(error = %e, "skipping invalid agent directory");
-                        }
+                        Ok(agent) => agents.push(agent),
+                        Err(e) => tracing::warn!(error = %e, "skipping invalid agent directory"),
                     }
                 }
             }
         }
-        assistants.sort_by(|a, b| {
-            let status_ord = |s: &AssistantStatus| match s {
-                AssistantStatus::Running => 0,
-                AssistantStatus::Archived => 1,
+        agents.sort_by(|a, b| {
+            let status_ord = |s: &AgentStatus| match s {
+                AgentStatus::Running => 0,
+                AgentStatus::Archived => 1,
             };
             status_ord(&a.meta.status)
                 .cmp(&status_ord(&b.meta.status))
                 .then_with(|| b.meta.updated_at.cmp(&a.meta.updated_at))
         });
-        Ok(assistants)
+        Ok(agents)
     }
 
-    /// List assistants for a specific project.
+    /// List agents for a specific project.
     pub fn list_for_project(config: &Config, project: &str) -> Result<Vec<Self>> {
         let all = Self::list_all(config)?;
         Ok(all
@@ -228,22 +213,22 @@ impl Assistant {
             .collect())
     }
 
-    /// True if this assistant is a Researcher.
+    /// True if this agent is a Researcher.
     pub fn is_researcher(&self) -> bool {
         matches!(self.meta.kind, AgentKind::Researcher { .. })
     }
 
-    /// True if this assistant is an Operator.
+    /// True if this agent is an Operator.
     pub fn is_operator(&self) -> bool {
         matches!(self.meta.kind, AgentKind::Operator { .. })
     }
 
-    /// True if this assistant is a Reviewer.
+    /// True if this agent is a Reviewer.
     pub fn is_reviewer(&self) -> bool {
         matches!(self.meta.kind, AgentKind::Reviewer { .. })
     }
 
-    /// True if this assistant is a Tester.
+    /// True if this agent is a Tester.
     pub fn is_tester(&self) -> bool {
         matches!(self.meta.kind, AgentKind::Tester { .. })
     }
@@ -264,15 +249,13 @@ impl Assistant {
     pub fn save_meta(&mut self) -> Result<()> {
         self.meta.updated_at = Utc::now();
         let meta_path = self.dir.join("meta.json");
-        let contents = serde_json::to_string_pretty(&self.meta)
-            .context("failed to serialize assistant meta")?;
+        let contents =
+            serde_json::to_string_pretty(&self.meta).context("failed to serialize agent meta")?;
         std::fs::write(&meta_path, contents)
             .with_context(|| format!("failed to write {}", meta_path.display()))?;
         Ok(())
     }
 }
-
-pub type AgentRecord = Assistant;
 
 pub fn validate_agent_attachment(kind: &AgentKind, attachment: &AgentAttachment) -> Result<()> {
     match (kind, attachment) {
@@ -289,17 +272,17 @@ pub fn validate_agent_attachment(kind: &AgentKind, attachment: &AgentAttachment)
     }
 }
 
-/// Validate assistant name: alphanumeric, hyphens, and underscores only.
-fn validate_assistant_name(name: &str) -> Result<()> {
+/// Validate agent name: alphanumeric, hyphens, and underscores only.
+fn validate_agent_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        bail!("assistant name cannot be empty");
+        bail!("agent name cannot be empty");
     }
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         bail!(
-            "assistant name '{}' is invalid: only alphanumeric characters, hyphens, and underscores are allowed",
+            "agent name '{}' is invalid: only alphanumeric characters, hyphens, and underscores are allowed",
             name
         );
     }

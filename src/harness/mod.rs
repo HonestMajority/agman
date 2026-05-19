@@ -157,7 +157,7 @@ pub fn read_or_stamp(state_dir: &Path, default_kind: HarnessKind) -> Result<Harn
 
 /// How the upcoming launch maps to a harness session id/name.
 ///
-/// Task agents always use `Auto` (every flow step is a fresh session;
+/// Task agents always use `Auto` (every agent step is a fresh session;
 /// agman never resumes them). Long-lived agents (CEO/PM/researcher) use
 /// `Pin` on first launch and `Resume` on subsequent launches.
 ///
@@ -178,9 +178,9 @@ pub enum SessionKey<'a> {
     Resume(&'a str),
 }
 
-/// Optional assistant capabilities requested at launch time.
+/// Optional agent capabilities requested at launch time.
 #[derive(Default, Clone, Copy, Debug)]
-pub struct AssistantCapabilities {
+pub struct AgentCapabilities {
     pub browser: bool,
 }
 
@@ -211,8 +211,8 @@ pub struct LaunchContext<'a> {
     /// pane content (needed by the inbox snippet-verification loop). Claude
     /// ignores.
     pub no_alt_screen: bool,
-    /// Optional assistant capabilities. Non-assistant launches pass default.
-    pub capabilities: AssistantCapabilities,
+    /// Optional agent capabilities. Non-agent launches pass default.
+    pub capabilities: AgentCapabilities,
     /// Whether this launch pins a fresh session, resumes a prior one, or
     /// neither. See `SessionKey` for the per-variant behaviour.
     pub session_key: SessionKey<'a>,
@@ -256,9 +256,9 @@ pub trait Harness: Send + Sync {
     /// usable state and `/rename` paste-injects run as shell commands).
     fn ensure_workspace_trusted(&self, cwd: &Path) -> Result<()>;
 
-    /// Ensure any requested assistant capabilities are configured before
+    /// Ensure any requested agent capabilities are configured before
     /// launch. Harnesses that do not need setup use the default no-op.
-    fn ensure_capabilities_configured(&self, _caps: &AssistantCapabilities) -> Result<()> {
+    fn ensure_capabilities_configured(&self, _caps: &AgentCapabilities) -> Result<()> {
         Ok(())
     }
 

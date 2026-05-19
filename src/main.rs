@@ -5,13 +5,13 @@ mod tui;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use agman::assistant::TesterCapabilities;
+use agman::agent_model::TesterCapabilities;
 use agman::config::Config;
 use agman::supervisor;
-use agman::task::{Task, TaskStatus};
+use agman::task::Task;
 use agman::tmux::Tmux;
 use agman::use_cases;
-use cli::{AssistantKindArg, Cli, Commands};
+use cli::{AgentKindArg, Cli, Commands};
 use tui::run_tui;
 
 fn resolve_text_arg(
@@ -69,7 +69,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     tracing::debug!(command = ?cli.command, "dispatching command");
-    use_cases::purge_chief_of_staff_assistants(&config);
+    use_cases::purge_chief_of_staff_agents(&config);
 
     match cli.command {
         Some(Commands::Init { force }) => {
@@ -118,8 +118,6 @@ fn main() -> Result<()> {
             cmd_create_template(&config, &name, body.as_deref(), file.as_deref())
         }
 
-        Some(Commands::StopTask { task_id }) => cmd_stop_task(&config, &task_id),
-
         Some(Commands::ArchiveTask { task_id, save }) => cmd_archive_task(&config, &task_id, save),
 
         Some(Commands::CreatePmTask {
@@ -129,21 +127,13 @@ fn main() -> Result<()> {
             description,
         }) => cmd_create_pm_task(&config, &project, &repo, &task_name, description),
 
-        Some(Commands::ListPmTasks { project, status }) => {
-            cmd_list_pm_tasks(&config, &project, status)
-        }
+        Some(Commands::ListPmTasks { project }) => cmd_list_pm_tasks(&config, &project),
 
         Some(Commands::Status) => cmd_status(&config),
 
-        Some(Commands::TaskStatus { task_id }) => cmd_task_status(&config, &task_id),
+        Some(Commands::TaskInfo { task_id }) => cmd_task_info(&config, &task_id),
 
         Some(Commands::TaskLog { task_id, tail }) => cmd_task_log(&config, &task_id, tail),
-
-        Some(Commands::Feedback {
-            task_id,
-            feedback,
-            file,
-        }) => cmd_queue_feedback(&config, &task_id, feedback.as_deref(), file.as_deref()),
 
         Some(Commands::CreateAgent {
             kind,
@@ -158,7 +148,7 @@ fn main() -> Result<()> {
         }) => {
             let project = project.as_str();
             match kind {
-                AssistantKindArg::Researcher => {
+                AgentKindArg::Researcher => {
                     if browser {
                         anyhow::bail!("--browser is tester-only");
                     }
@@ -178,7 +168,7 @@ fn main() -> Result<()> {
                         description,
                     )
                 }
-                AssistantKindArg::Operator => {
+                AgentKindArg::Operator => {
                     if browser {
                         anyhow::bail!("--browser is tester-only");
                     }
@@ -198,7 +188,7 @@ fn main() -> Result<()> {
                         description,
                     )
                 }
-                AssistantKindArg::Reviewer => {
+                AgentKindArg::Reviewer => {
                     if browser {
                         anyhow::bail!("--browser is tester-only");
                     }
@@ -210,7 +200,7 @@ fn main() -> Result<()> {
                     }
                     cmd_create_reviewer(&config, project, &name, branch_pair, description)
                 }
-                AssistantKindArg::Tester => {
+                AgentKindArg::Tester => {
                     if repo.is_some() || branch_for_researcher.is_some() || task.is_some() {
                         anyhow::bail!(
                             "--repo / --branch-for-researcher / --task are researcher/operator-only; \
@@ -223,11 +213,11 @@ fn main() -> Result<()> {
         }
 
         Some(Commands::ListAgents { project, kind }) => {
-            cmd_list_assistants(&config, Some(project.as_str()), kind)
+            cmd_list_agents(&config, Some(project.as_str()), kind)
         }
 
         Some(Commands::ArchiveAgent { name, project }) => {
-            cmd_archive_assistant(&config, &project, &name)
+            cmd_archive_agent(&config, &project, &name)
         }
 
         Some(Commands::CreateResearcher {
@@ -263,14 +253,14 @@ fn main() -> Result<()> {
             description,
         }) => cmd_create_tester(&config, &project, &name, branch_pair, browser, description),
 
-        Some(Commands::ListResearchers { project }) => cmd_list_assistants(
+        Some(Commands::ListResearchers { project }) => cmd_list_agents(
             &config,
             Some(project.as_str()),
-            Some(AssistantKindArg::Researcher),
+            Some(AgentKindArg::Researcher),
         ),
 
         Some(Commands::ArchiveResearcher { name, project }) => {
-            cmd_archive_assistant(&config, &project, &name)
+            cmd_archive_agent(&config, &project, &name)
         }
 
         Some(Commands::RespawnAgent {
@@ -352,7 +342,7 @@ fn cmd_create_project(
         project.dir.display()
     );
     if initial_trimmed.is_some() {
-        println!("Initial message queued to PM inbox.");
+        println!("Initial message sent to PM inbox.");
     }
     Ok(())
 }
@@ -403,26 +393,18 @@ fn cmd_list_projects(config: &Config) -> Result<()> {
     }
 
     let archived = Task::list_archived(config);
-    println!(
-        "{:<20} {:<8} {:<8} {:<8}",
-        "NAME", "TASKS", "ACTIVE", "ARCHIVED"
-    );
-    println!("{}", "-".repeat(48));
+    println!("{:<20} {:<8} {:<8}", "NAME", "TASKS", "ARCHIVED");
+    println!("{}", "-".repeat(38));
     for p in &projects {
         let tasks = use_cases::list_project_tasks(config, &p.meta.name).unwrap_or_default();
-        let active = tasks
-            .iter()
-            .filter(|t| t.meta.status == TaskStatus::Running)
-            .count();
         let archived_count = archived
             .iter()
             .filter(|t| t.meta.project.as_deref() == Some(&p.meta.name))
             .count();
         println!(
-            "{:<20} {:<8} {:<8} {:<8}",
+            "{:<20} {:<8} {:<8}",
             p.meta.name,
             tasks.len(),
-            active,
             archived_count
         );
     }
@@ -435,16 +417,20 @@ fn cmd_project_status(config: &Config, name: &str) -> Result<()> {
     println!("Description: {}", status.project.meta.description);
     println!("Created: {}", status.project.meta.created_at);
     println!(
-        "Tasks: {} active, {} archived",
-        status.active_tasks, status.archived_tasks
+        "Tasks: {} total, {} archived",
+        status.total_tasks, status.archived_tasks
     );
 
     let tasks = use_cases::list_project_tasks(config, name)?;
     if !tasks.is_empty() {
-        println!("\n{:<30} {:<15}", "TASK", "STATUS");
-        println!("{}", "-".repeat(45));
+        println!("\n{:<30} {:<20}", "TASK", "UPDATED");
+        println!("{}", "-".repeat(52));
         for t in &tasks {
-            println!("{:<30} {:<15}", t.meta.task_id(), t.meta.status);
+            println!(
+                "{:<30} {:<20}",
+                t.meta.task_id(),
+                t.meta.updated_at.format("%Y-%m-%d %H:%M")
+            );
         }
     }
     Ok(())
@@ -453,35 +439,6 @@ fn cmd_project_status(config: &Config, name: &str) -> Result<()> {
 fn cmd_delete_project(config: &Config, name: &str) -> Result<()> {
     use_cases::delete_project(config, name)?;
     println!("Project '{}' deleted. All tasks have been archived.", name);
-    Ok(())
-}
-
-fn cmd_stop_task(config: &Config, task_id: &str) -> Result<()> {
-    let mut task = Task::load_by_id(config, task_id)?;
-
-    // Send Ctrl+C to tmux sessions (best-effort)
-    for repo in &task.meta.repos {
-        if Tmux::session_exists(&repo.tmux_session) {
-            if let Err(e) = Tmux::send_ctrl_c_to_window(&repo.tmux_session, "agman") {
-                tracing::warn!(task_id = %task.meta.task_id(), error = %e, "failed to interrupt tmux session");
-            }
-        }
-    }
-    if task.meta.is_multi_repo() && task.meta.repos.is_empty() {
-        let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
-        if Tmux::session_exists(&parent_session) {
-            if let Err(e) = Tmux::send_ctrl_c_to_window(&parent_session, "agman") {
-                tracing::warn!(task_id = %task.meta.task_id(), error = %e, "failed to interrupt parent tmux session");
-            }
-        }
-    }
-
-    let display_id = task.meta.task_id();
-    use_cases::stop_task(config, &mut task)?;
-
-    tracing::info!(task_id = %display_id, "stopped task via CLI");
-    println!("Task '{}' stopped.", display_id);
-
     Ok(())
 }
 
@@ -551,37 +508,26 @@ fn cmd_create_pm_task(
     supervisor::ensure_task_tmux(&task)
         .with_context(|| format!("failed to prepare tmux for PM task '{}'", task_id))?;
     supervisor::launch_next_step(config, &mut task)
-        .with_context(|| format!("failed to launch flow for PM task '{}'", task_id))?;
+        .with_context(|| format!("failed to launch agent for PM task '{}'", task_id))?;
 
     println!("Task '{}' created in project '{}'", task_id, project);
     Ok(())
 }
 
-fn cmd_list_pm_tasks(
-    config: &Config,
-    project: &str,
-    status: Option<cli::StatusFilter>,
-) -> Result<()> {
-    let mut tasks = use_cases::list_project_tasks(config, project)?;
-
-    if let Some(filter) = status {
-        let target = filter.to_task_status();
-        tracing::debug!(project, %target, "filtering tasks by status");
-        tasks.retain(|t| t.meta.status == target);
-    }
+fn cmd_list_pm_tasks(config: &Config, project: &str) -> Result<()> {
+    let tasks = use_cases::list_project_tasks(config, project)?;
 
     if tasks.is_empty() {
         println!("No tasks in project '{}'.", project);
         return Ok(());
     }
 
-    println!("{:<30} {:<15} {:<20}", "TASK", "STATUS", "UPDATED");
-    println!("{}", "-".repeat(65));
+    println!("{:<30} {:<20}", "TASK", "UPDATED");
+    println!("{}", "-".repeat(52));
     for t in &tasks {
         println!(
-            "{:<30} {:<15} {:<20}",
+            "{:<30} {:<20}",
             t.meta.task_id(),
-            t.meta.status,
             t.meta.updated_at.format("%Y-%m-%d %H:%M")
         );
     }
@@ -597,8 +543,8 @@ fn cmd_list_pm_tasks(
     Ok(())
 }
 
-fn cmd_task_status(config: &Config, task_id: &str) -> Result<()> {
-    let text = use_cases::get_task_status_text(config, task_id)?;
+fn cmd_task_info(config: &Config, task_id: &str) -> Result<()> {
+    let text = use_cases::get_task_info_text(config, task_id)?;
     println!("{}", text);
     Ok(())
 }
@@ -629,49 +575,25 @@ fn format_relative_time(dt: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
-fn format_status_breakdown(tasks: &[use_cases::TaskSummary]) -> String {
-    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for t in tasks {
-        *counts.entry(format!("{}", t.status)).or_insert(0) += 1;
-    }
-    counts
-        .iter()
-        .map(|(k, v)| format!("{} {}", v, k))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn format_task_line(t: &use_cases::TaskSummary) {
-    let step_str = match t.total_steps {
-        Some(total) => format!("step {}/{}", t.flow_step, total),
-        None => format!("step {}", t.flow_step),
-    };
-    let agent_str = match &t.current_agent {
-        Some(agent) => format!(" ({})", agent),
+    let agent_str = match &t.engineer {
+        Some(agent) => format!(" engineer:{}", agent),
         None => String::new(),
     };
     let time_str = format_relative_time(t.updated_at);
-    let status_str = if t.queued_count > 0 {
-        format!("{} (+{})", t.status, t.queued_count)
-    } else {
-        format!("{}", t.status)
-    };
-    println!(
-        "  {:<40} {:<14} {}{:<20} {}",
-        t.task_id, status_str, step_str, agent_str, time_str
-    );
+    println!("  {:<40} {:<24} {}", t.task_id, agent_str, time_str);
 }
 
-fn format_assistants_line(assistants: &[use_cases::AssistantSummary]) -> String {
-    assistants
+fn format_agents_line(agents: &[use_cases::AgentSummary]) -> String {
+    agents
         .iter()
         .map(|a| {
             let kind_label = match a.kind {
-                use_cases::AssistantKindLabel::Engineer => "engineer",
-                use_cases::AssistantKindLabel::Researcher => "researcher",
-                use_cases::AssistantKindLabel::Operator => "operator",
-                use_cases::AssistantKindLabel::Reviewer => "reviewer",
-                use_cases::AssistantKindLabel::Tester => "tester",
+                use_cases::AgentKindLabel::Engineer => "engineer",
+                use_cases::AgentKindLabel::Researcher => "researcher",
+                use_cases::AgentKindLabel::Operator => "operator",
+                use_cases::AgentKindLabel::Reviewer => "reviewer",
+                use_cases::AgentKindLabel::Tester => "tester",
             };
             format!("{} [{}] ({})", a.name, kind_label, a.status)
         })
@@ -691,28 +613,23 @@ fn cmd_status(config: &Config) -> Result<()> {
         } else {
             "tasks"
         };
-        let breakdown = format_status_breakdown(&group.tasks);
         let archived_suffix = if group.archived_count > 0 {
             format!(", +{} archived", group.archived_count)
         } else {
             String::new()
         };
         println!(
-            "{} ({} {}: {}{})",
+            "{} ({} {}{})",
             group.name,
             group.tasks.len(),
             task_word,
-            breakdown,
             archived_suffix
         );
         for t in &group.tasks {
             format_task_line(t);
         }
-        if !group.assistants.is_empty() {
-            println!(
-                "  Assistants: {}",
-                format_assistants_line(&group.assistants)
-            );
+        if !group.agents.is_empty() {
+            println!("  Agents: {}", format_agents_line(&group.agents));
         }
     }
 
@@ -742,42 +659,6 @@ fn cmd_status(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn cmd_queue_feedback(
-    config: &Config,
-    task_id: &str,
-    feedback: Option<&str>,
-    file: Option<&std::path::Path>,
-) -> Result<()> {
-    let resolved = resolve_text_arg(feedback, file, "feedback")?;
-    let mut task = Task::load_by_id(config, task_id)?;
-    let feedback = resolved.trim_end();
-
-    if task.meta.status == TaskStatus::Running {
-        let count = use_cases::queue_feedback(&mut task, config, feedback)?;
-        tracing::info!(task_id = %task_id, count, "queued feedback via CLI");
-        println!(
-            "Feedback queued for '{}' ({} item(s) in queue)",
-            task_id, count
-        );
-    } else {
-        supervisor::ensure_task_tmux(&task)
-            .with_context(|| format!("failed to prepare tmux for feedback on '{}'", task_id))?;
-
-        let count = use_cases::queue_feedback(&mut task, config, feedback)?;
-        tracing::info!(
-            task_id = %task_id,
-            count,
-            "queued feedback via CLI; supervisor waking"
-        );
-        println!(
-            "Feedback queued for '{}' ({} item(s) in queue); supervisor waking",
-            task_id, count
-        );
-    }
-
-    Ok(())
-}
-
 fn cmd_create_researcher(
     config: &Config,
     project: &str,
@@ -791,12 +672,12 @@ fn cmd_create_researcher(
         Some(d) => resolve_text_arg(Some(&d), None, "description")?,
         None => String::new(),
     };
-    let assistant = use_cases::create_researcher(config, project, name, &desc, repo, branch, task)?;
-    use_cases::start_assistant_session(config, project, name, false)?;
+    let agent = use_cases::create_researcher(config, project, name, &desc, repo, branch, task)?;
+    use_cases::start_agent_session(config, project, name, false)?;
     println!(
         "Researcher '{}' created for project '{}' (tmux: {})",
-        assistant.meta.name,
-        assistant.meta.project,
+        agent.meta.name,
+        agent.meta.project,
         Config::researcher_tmux_session(project, name),
     );
     Ok(())
@@ -815,12 +696,12 @@ fn cmd_create_operator(
         Some(d) => resolve_text_arg(Some(&d), None, "description")?,
         None => String::new(),
     };
-    let assistant = use_cases::create_operator(config, project, name, &desc, repo, branch, task)?;
-    use_cases::start_assistant_session(config, project, name, false)?;
+    let agent = use_cases::create_operator(config, project, name, &desc, repo, branch, task)?;
+    use_cases::start_agent_session(config, project, name, false)?;
     println!(
         "Operator '{}' created for project '{}' (tmux: {})",
-        assistant.meta.name,
-        assistant.meta.project,
+        agent.meta.name,
+        agent.meta.project,
         Config::operator_tmux_session(project, name),
     );
     Ok(())
@@ -842,12 +723,12 @@ fn cmd_create_reviewer(
         branches,
         parent_dir: None,
     };
-    let assistant = use_cases::create_reviewer(config, project, name, &desc, spec)?;
-    use_cases::start_assistant_session(config, project, name, false)?;
+    let agent = use_cases::create_reviewer(config, project, name, &desc, spec)?;
+    use_cases::start_agent_session(config, project, name, false)?;
     println!(
         "Reviewer '{}' created for project '{}' (tmux: {})",
-        assistant.meta.name,
-        assistant.meta.project,
+        agent.meta.name,
+        agent.meta.project,
         Config::reviewer_tmux_session(project, name),
     );
     Ok(())
@@ -871,12 +752,12 @@ fn cmd_create_tester(
         parent_dir: None,
     };
     let capabilities = TesterCapabilities { browser };
-    let assistant = use_cases::create_tester(config, project, name, &desc, spec, capabilities)?;
-    use_cases::start_assistant_session(config, project, name, false)?;
+    let agent = use_cases::create_tester(config, project, name, &desc, spec, capabilities)?;
+    use_cases::start_agent_session(config, project, name, false)?;
     println!(
         "Tester '{}' created for project '{}' (tmux: {})",
-        assistant.meta.name,
-        assistant.meta.project,
+        agent.meta.name,
+        agent.meta.project,
         Config::tester_tmux_session(project, name),
     );
     Ok(())
@@ -896,20 +777,20 @@ fn parse_branch_pairs(branch_pairs: &[String]) -> Result<Vec<(String, String)>> 
     Ok(branches)
 }
 
-fn cmd_list_assistants(
+fn cmd_list_agents(
     config: &Config,
     project: Option<&str>,
-    kind: Option<AssistantKindArg>,
+    kind: Option<AgentKindArg>,
 ) -> Result<()> {
     let kind_label = kind.map(|k| match k {
-        AssistantKindArg::Researcher => use_cases::AssistantKindLabel::Researcher,
-        AssistantKindArg::Operator => use_cases::AssistantKindLabel::Operator,
-        AssistantKindArg::Reviewer => use_cases::AssistantKindLabel::Reviewer,
-        AssistantKindArg::Tester => use_cases::AssistantKindLabel::Tester,
+        AgentKindArg::Researcher => use_cases::AgentKindLabel::Researcher,
+        AgentKindArg::Operator => use_cases::AgentKindLabel::Operator,
+        AgentKindArg::Reviewer => use_cases::AgentKindLabel::Reviewer,
+        AgentKindArg::Tester => use_cases::AgentKindLabel::Tester,
     });
-    let assistants = use_cases::list_assistants(config, project, kind_label)?;
-    if assistants.is_empty() {
-        println!("No assistants.");
+    let agents = use_cases::list_agents(config, project, kind_label)?;
+    if agents.is_empty() {
+        println!("No agents.");
         return Ok(());
     }
 
@@ -918,30 +799,30 @@ fn cmd_list_assistants(
         "NAME", "KIND", "PROJECT", "STATUS", "CREATED"
     );
     println!("{}", "-".repeat(110));
-    for a in &assistants {
+    for a in &agents {
         let (session_name, kind_str) = match a.meta.kind {
-            agman::assistant::AssistantKind::Engineer => (
+            agman::agent_model::AgentKind::Engineer => (
                 Config::engineer_tmux_session(&a.meta.project, &a.meta.name),
                 "engineer",
             ),
-            agman::assistant::AssistantKind::Researcher { .. } => (
+            agman::agent_model::AgentKind::Researcher { .. } => (
                 Config::researcher_tmux_session(&a.meta.project, &a.meta.name),
                 "researcher",
             ),
-            agman::assistant::AssistantKind::Operator { .. } => (
+            agman::agent_model::AgentKind::Operator { .. } => (
                 Config::operator_tmux_session(&a.meta.project, &a.meta.name),
                 "operator",
             ),
-            agman::assistant::AssistantKind::Reviewer { .. } => (
+            agman::agent_model::AgentKind::Reviewer { .. } => (
                 Config::reviewer_tmux_session(&a.meta.project, &a.meta.name),
                 "reviewer",
             ),
-            agman::assistant::AssistantKind::Tester { .. } => (
+            agman::agent_model::AgentKind::Tester { .. } => (
                 Config::tester_tmux_session(&a.meta.project, &a.meta.name),
                 "tester",
             ),
         };
-        let status = if a.meta.status == agman::assistant::AssistantStatus::Archived {
+        let status = if a.meta.status == agman::agent_model::AgentStatus::Archived {
             "archived"
         } else if Tmux::session_exists(&session_name) {
             "running"
@@ -962,9 +843,9 @@ fn cmd_list_assistants(
     Ok(())
 }
 
-fn cmd_archive_assistant(config: &Config, project: &str, name: &str) -> Result<()> {
-    use_cases::archive_assistant(config, project, name)?;
-    println!("Assistant '{name}' in project '{project}' archived.");
+fn cmd_archive_agent(config: &Config, project: &str, name: &str) -> Result<()> {
+    use_cases::archive_agent(config, project, name)?;
+    println!("AgentRecord '{name}' in project '{project}' archived.");
     Ok(())
 }
 

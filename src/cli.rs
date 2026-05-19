@@ -1,7 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
-use agman::task::TaskStatus;
-
 #[derive(Parser)]
 #[command(name = "agman")]
 #[command(about = "Agent Manager - Orchestrate long-lived AI agents across projects and tasks")]
@@ -46,11 +44,11 @@ EXAMPLES:
     /// Create a new project with a PM
     #[command(after_help = "\
 EXAMPLES:
-  agman create-project myproj --description \"Frontend rewrite\"
-  agman create-project myproj --description \"Frontend rewrite\" --initial-message \"Kick off with the design doc at ./brief.md\"
-  agman create-project myproj --description \"Frontend rewrite\" --initial-message @./brief.md
-  cat <<'EOF' | agman create-project myproj --description \"Frontend rewrite\" --initial-message -
-  Multi-line brief via stdin using the - sentinel.
+  agman create-project myproj --description \"UI rewrite\"
+  agman create-project myproj --description \"UI rewrite\" --initial-message \"Kick off with the design doc\"
+  agman create-project myproj --description \"UI rewrite\" --initial-message @./goal.txt
+  cat <<'EOF' | agman create-project myproj --description \"UI rewrite\" --initial-message -
+  Multi-line message via stdin using the - sentinel.
   EOF")]
     CreateProject {
         /// Project name (alphanumeric + hyphens)
@@ -58,7 +56,7 @@ EXAMPLES:
         /// Human label for the project (shown in lists). Not sent to the PM.
         #[arg(long)]
         description: Option<String>,
-        /// Initial brief queued to the PM's inbox on spawn
+        /// Initial message sent to the PM's inbox on spawn
         /// (accepts inline text, @path, or - for stdin)
         #[arg(long, allow_hyphen_values = true)]
         initial_message: Option<String>,
@@ -110,12 +108,6 @@ EXAMPLES:
         file: Option<std::path::PathBuf>,
     },
 
-    /// Stop a running task
-    StopTask {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-    },
-
     /// Archive a task (remove worktrees, keep directory and branches)
     ArchiveTask {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
@@ -140,7 +132,7 @@ EXAMPLES:
         repo: String,
         /// Task name (becomes the branch name, e.g. 'fix-login-bug')
         task_name: String,
-        /// Task description for the TASK.md Goal section
+        /// Task description sent to the attached engineer
         #[arg(long, short, allow_hyphen_values = true)]
         description: Option<String>,
     },
@@ -149,13 +141,10 @@ EXAMPLES:
     ListPmTasks {
         /// Project name
         project: String,
-        /// Filter by task status (running, stopped, input_needed, on_hold)
-        #[arg(long)]
-        status: Option<StatusFilter>,
     },
 
-    /// Get status and recent log for a task
-    TaskStatus {
+    /// Show task metadata and recent log
+    TaskInfo {
         /// Task identifier (repo--branch format)
         task_id: String,
     },
@@ -172,42 +161,22 @@ EXAMPLES:
     /// Show aggregated status across all projects and tasks
     Status,
 
-    /// Queue feedback on a running task
-    #[command(after_help = "\
-EXAMPLES:
-  agman feedback myrepo--fix-bug \"Please also check edge cases\"
-  cat <<'EOF' | agman feedback myrepo--fix-bug -
-  Multi-line feedback via stdin using the - sentinel.
-  EOF
-  agman feedback myrepo--fix-bug @./feedback.md")]
-    Feedback {
-        /// Task identifier (repo--branch format, or just branch if unambiguous)
-        task_id: String,
-        /// Feedback text to queue
-        #[arg(allow_hyphen_values = true)]
-        feedback: Option<String>,
-        /// Read feedback from a file
-        #[arg(short = 'F', long)]
-        file: Option<std::path::PathBuf>,
-    },
-
     /// Create a project-scoped agent (researcher, operator, reviewer, or tester).
-    #[command(alias = "create-assistant")]
     #[command(after_help = "\
 EXAMPLES:
   agman create-agent --kind researcher --name api-investigator --project backend --description \"Investigate the API latency\"
   agman create-agent --kind operator --name docs-updater --project docs --description \"Update the launch notes\"
   agman create-agent --kind reviewer --name pr-1247 --project reviews \\
-    --branch galoy:fix-deposit-flow \\
-    --branch lana-dashboard:fix-deposit-flow \\
+    --branch galoy:fix-deposit-path \\
+    --branch lana-dashboard:fix-deposit-path \\
     --description \"Review the cross-repo deposit fix\"
   agman create-agent --kind tester --name browser-pass --project reviews \\
-    --branch galoy:fix-deposit-flow --browser \\
-    --description \"Exercise the deposit flow in browser\"")]
+    --branch galoy:fix-deposit-path --browser \\
+    --description \"Exercise the deposit path in browser\"")]
     CreateAgent {
         /// Agent kind: researcher, operator, reviewer, or tester
         #[arg(long, value_enum)]
-        kind: AssistantKindArg,
+        kind: AgentKindArg,
         /// Agent name (alphanumeric + hyphens)
         #[arg(long, short)]
         name: String,
@@ -238,18 +207,16 @@ EXAMPLES:
     },
 
     /// List project agents
-    #[command(alias = "list-assistants")]
     ListAgents {
         /// Project name
         #[arg(long)]
         project: String,
         /// Filter by kind
         #[arg(long, value_enum)]
-        kind: Option<AssistantKindArg>,
+        kind: Option<AgentKindArg>,
     },
 
     /// Archive a project-scoped agent
-    #[command(alias = "archive-assistant")]
     ArchiveAgent {
         /// Agent name
         name: String,
@@ -305,8 +272,8 @@ EXAMPLES:
     #[command(after_help = "\
 EXAMPLES:
   agman create-reviewer --name pr-1247 --project reviews \\
-    --branch galoy:fix-deposit-flow \\
-    --branch lana-dashboard:fix-deposit-flow \\
+    --branch galoy:fix-deposit-path \\
+    --branch lana-dashboard:fix-deposit-path \\
     --description \"Review the cross-repo deposit fix\"")]
     CreateReviewer {
         /// Reviewer name (alphanumeric + hyphens)
@@ -327,8 +294,8 @@ EXAMPLES:
     #[command(after_help = "\
 EXAMPLES:
   agman create-tester --name browser-pass --project reviews \\
-    --branch galoy:fix-deposit-flow --browser \\
-    --description \"Exercise the deposit flow\"")]
+    --branch galoy:fix-deposit-path --browser \\
+    --description \"Exercise the deposit path\"")]
     CreateTester {
         /// Tester name (alphanumeric + hyphens)
         #[arg(long, short)]
@@ -379,28 +346,9 @@ EXAMPLES:
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
-pub enum AssistantKindArg {
+pub enum AgentKindArg {
     Researcher,
     Operator,
     Reviewer,
     Tester,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum StatusFilter {
-    Running,
-    Stopped,
-    InputNeeded,
-    OnHold,
-}
-
-impl StatusFilter {
-    pub fn to_task_status(self) -> TaskStatus {
-        match self {
-            StatusFilter::Running => TaskStatus::Running,
-            StatusFilter::Stopped => TaskStatus::Stopped,
-            StatusFilter::InputNeeded => TaskStatus::InputNeeded,
-            StatusFilter::OnHold => TaskStatus::OnHold,
-        }
-    }
 }

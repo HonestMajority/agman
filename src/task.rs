@@ -4,51 +4,16 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::config::Config;
-use crate::flow::StopCondition;
 use crate::harness::HarnessKind;
-
-/// A single item in the task queue (feedback or command).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum QueueItem {
-    Feedback {
-        text: String,
-    },
-    Command {
-        command_id: String,
-        branch: Option<String>,
-    },
-}
 
 #[derive(Debug, Clone, Copy)]
 enum SectionKind {
     AgentOutput,
-    UserFeedback,
 }
 
 struct LogSection<'a> {
     kind: SectionKind,
     lines: Vec<&'a str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskStatus {
-    Running,
-    Stopped,
-    InputNeeded,
-    OnHold,
-}
-
-impl std::fmt::Display for TaskStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TaskStatus::Running => write!(f, "running"),
-            TaskStatus::Stopped => write!(f, "stopped"),
-            TaskStatus::InputNeeded => write!(f, "input needed"),
-            TaskStatus::OnHold => write!(f, "on hold"),
-        }
-    }
 }
 
 /// A single repo entry within a task. For single-repo tasks there is exactly one;
@@ -60,7 +25,7 @@ pub struct RepoEntry {
     pub tmux_session: String,
 }
 
-/// A single interactive agent session run by the supervisor.
+/// A legacy interactive session record retained for older task metadata.
 ///
 /// Records the deterministic session name passed to the harness at launch
 /// (`claude --name <name>`, `codex` post-launch `/rename <name>`,
@@ -96,17 +61,8 @@ pub struct TaskMeta {
     /// it is the parent directory name (e.g. "repos").
     pub name: String,
     pub branch_name: String,
-    pub status: TaskStatus,
     /// All repos involved in this task. Single-repo tasks have exactly one entry.
     pub repos: Vec<RepoEntry>,
-    pub flow_name: String,
-    pub current_agent: Option<String>,
-    pub flow_step: usize,
-    /// Index within a `FlowStep::Loop`'s inner `steps`. Zero when the current
-    /// flow step is an `Agent` or when we are entering a loop. Reset whenever
-    /// `flow_step` is advanced or reset.
-    #[serde(default)]
-    pub flow_sub_step: usize,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// The parent directory containing the repo(s), when it differs from `config.repos_dir`.
@@ -124,16 +80,6 @@ pub struct TaskMeta {
     /// Linked GitHub PR (number + URL), populated when a PR is created
     #[serde(default)]
     pub linked_pr: Option<LinkedPr>,
-    /// Number of reviews seen on the linked PR during last poll
-    #[serde(default)]
-    pub last_review_count: Option<u64>,
-    /// Whether the address-review flow has been run since the last review
-    #[serde(default)]
-    pub review_addressed: bool,
-    /// Whether the user has seen this task since it last stopped.
-    /// Reset to false on every transition to Stopped; set to true when the user opens preview.
-    #[serde(default)]
-    pub seen: bool,
     /// When set, this task is archived (removed from active list, but directory kept).
     /// The timestamp records when the task was archived.
     #[serde(default)]
@@ -144,23 +90,10 @@ pub struct TaskMeta {
     /// The project this task belongs to (None for unassigned/legacy tasks).
     #[serde(default)]
     pub project: Option<String>,
-    /// History of interactive agent sessions run by the supervisor.
-    /// Appended to on every agent step; persists across iterations so the
-    /// user can manually resume a prior harness session from a shell. Each entry records the harness that
-    /// spawned it on `SessionEntry.harness` so the kill path can dispatch
-    /// the right slash command independently of the current global setting.
-    #[serde(default)]
+    /// Legacy session history is retained only for deserializing older task
+    /// metadata; new task-attached agents own their canonical sessions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub session_history: Vec<SessionEntry>,
-    /// Snapshot of `flow_name` captured before a stored command took over via
-    /// `drain_queue`. Restored when the command flow completes without a
-    /// terminal `post_action` (archive/delete). `None` outside of command
-    /// flows.
-    #[serde(default)]
-    pub pre_command_flow_name: Option<String>,
-    /// Companion to `pre_command_flow_name` — the `flow_step` captured before
-    /// the stored command took over. Restored together with `pre_command_flow_name`.
-    #[serde(default)]
-    pub pre_command_flow_step: Option<usize>,
 }
 
 fn default_true() -> bool {
@@ -182,7 +115,7 @@ impl TaskMeta {
         name: String,
         branch_name: String,
         worktree_path: PathBuf,
-        flow_name: String,
+        _launch_mode: String,
     ) -> Self {
         let now = Utc::now();
         let tmux_session = Config::tmux_session_name(&name, &branch_name);
@@ -194,26 +127,16 @@ impl TaskMeta {
         Self {
             name,
             branch_name,
-            status: TaskStatus::Running,
             repos: vec![repo_entry],
-            flow_name,
-            current_agent: None,
-            flow_step: 0,
-            flow_sub_step: 0,
             created_at: now,
             updated_at: now,
             parent_dir: None,
             multi_repo: Some(false),
             linked_pr: None,
-            last_review_count: None,
-            review_addressed: false,
-            seen: false,
             archived_at: None,
             saved: false,
             project: None,
             session_history: Vec::new(),
-            pre_command_flow_name: None,
-            pre_command_flow_step: None,
         }
     }
 
@@ -222,32 +145,22 @@ impl TaskMeta {
         name: String,
         branch_name: String,
         parent_dir: PathBuf,
-        flow_name: String,
+        _launch_mode: String,
     ) -> Self {
         let now = Utc::now();
         Self {
             name,
             branch_name,
-            status: TaskStatus::Running,
             repos: vec![],
-            flow_name,
-            current_agent: None,
-            flow_step: 0,
-            flow_sub_step: 0,
             created_at: now,
             updated_at: now,
             parent_dir: Some(parent_dir),
             multi_repo: Some(true),
             linked_pr: None,
-            last_review_count: None,
-            review_addressed: false,
-            seen: false,
             archived_at: None,
             saved: false,
             project: None,
             session_history: Vec::new(),
-            pre_command_flow_name: None,
-            pre_command_flow_step: None,
         }
     }
 
@@ -290,14 +203,14 @@ impl Task {
         config: &Config,
         name: &str,
         branch_name: &str,
-        description: &str,
-        flow_name: &str,
+        _description: &str,
+        launch_mode: &str,
         worktree_path: PathBuf,
     ) -> Result<Self> {
         tracing::info!(
             repo = name,
             branch = branch_name,
-            flow = flow_name,
+            launch_mode,
             "creating task"
         );
         let dir = config.task_dir(name, branch_name);
@@ -307,33 +220,29 @@ impl Task {
             name.to_string(),
             branch_name.to_string(),
             worktree_path.clone(),
-            flow_name.to_string(),
+            launch_mode.to_string(),
         );
 
         let task = Self { meta, dir };
         task.save_meta()?;
         task.init_files()?;
 
-        // Write TASK.md to the task directory
-        task.write_task(&format!("# Goal\n{}\n", description))?;
-
         Ok(task)
     }
 
-    /// Create a multi-repo task: task dir + TASK.md, but no worktrees yet.
-    /// Repos will be populated later by the setup_repos post-hook.
+    /// Create a multi-repo task: task dir only; repos are added separately.
     pub fn create_multi(
         config: &Config,
         name: &str,
         branch_name: &str,
-        description: &str,
-        flow_name: &str,
+        _description: &str,
+        launch_mode: &str,
         parent_dir: PathBuf,
     ) -> Result<Self> {
         tracing::info!(
             name = name,
             branch = branch_name,
-            flow = flow_name,
+            launch_mode,
             "creating multi-repo task"
         );
         let dir = config.task_dir(name, branch_name);
@@ -343,14 +252,12 @@ impl Task {
             name.to_string(),
             branch_name.to_string(),
             parent_dir,
-            flow_name.to_string(),
+            launch_mode.to_string(),
         );
 
         let task = Self { meta, dir };
         task.save_meta()?;
         task.init_files()?;
-
-        task.write_task(&format!("# Goal\n{}\n", description))?;
 
         Ok(task)
     }
@@ -443,21 +350,7 @@ impl Task {
             }
         }
 
-        // Sort by: running first, then input_needed, then stopped; within each group by updated_at desc
-        tasks.sort_by(|a, b| {
-            let order = |s: TaskStatus| match s {
-                TaskStatus::Running => 0,
-                TaskStatus::InputNeeded => 1,
-                TaskStatus::Stopped => 2,
-                TaskStatus::OnHold => 3,
-            };
-            let ord = order(a.meta.status).cmp(&order(b.meta.status));
-            if ord != std::cmp::Ordering::Equal {
-                ord
-            } else {
-                b.meta.updated_at.cmp(&a.meta.updated_at)
-            }
-        });
+        tasks.sort_by(|a, b| b.meta.updated_at.cmp(&a.meta.updated_at));
 
         tasks
     }
@@ -524,42 +417,6 @@ impl Task {
         Ok(())
     }
 
-    pub fn update_status(&mut self, status: TaskStatus) -> Result<()> {
-        tracing::debug!(task_id = %self.meta.task_id(), status = %status, "updating task status");
-        self.meta.status = status;
-        if status == TaskStatus::Stopped {
-            self.meta.seen = false;
-        }
-        self.meta.updated_at = Utc::now();
-        self.save_meta()
-    }
-
-    pub fn update_agent(&mut self, agent: Option<String>) -> Result<()> {
-        self.meta.current_agent = agent;
-        self.meta.updated_at = Utc::now();
-        self.save_meta()
-    }
-
-    pub fn advance_flow_step(&mut self) -> Result<()> {
-        self.meta.flow_step += 1;
-        self.meta.flow_sub_step = 0;
-        self.meta.updated_at = Utc::now();
-        self.save_meta()
-    }
-
-    /// Update `flow_sub_step` (position within a `FlowStep::Loop`) and persist.
-    pub fn set_flow_sub_step(&mut self, sub_step: usize) -> Result<()> {
-        self.meta.flow_sub_step = sub_step;
-        self.meta.updated_at = Utc::now();
-        self.save_meta()
-    }
-
-    pub fn write_task(&self, content: &str) -> Result<()> {
-        let task_path = self.dir.join("TASK.md");
-        std::fs::write(&task_path, content)?;
-        Ok(())
-    }
-
     fn init_files(&self) -> Result<()> {
         // Create empty files that will be populated later
         let files = ["notes.md", "agent.log"];
@@ -572,11 +429,6 @@ impl Task {
         }
 
         Ok(())
-    }
-
-    pub fn read_task(&self) -> Result<String> {
-        let path = self.dir.join("TASK.md");
-        std::fs::read_to_string(&path).context("Failed to read TASK.md")
     }
 
     pub fn read_notes(&self) -> Result<String> {
@@ -598,9 +450,8 @@ impl Task {
     /// Read a structured tail of agent.log that preserves section boundaries.
     ///
     /// Instead of a flat tail of N lines, this parses the log into sections
-    /// (agent runs, user feedback, transitions) and returns a condensed view:
+    /// (agent runs and transitions) and returns a condensed view:
     /// - All agent start/finish markers are kept
-    /// - All user feedback blocks are kept in full
     /// - All stop condition lines are kept
     /// - For each agent's output, only the last `per_agent_tail` lines are kept
     /// - Oldest agent sections are truncated first if total exceeds `max_lines`
@@ -643,23 +494,6 @@ impl Task {
                     lines: std::mem::take(&mut current_lines),
                 });
                 current_kind = SectionKind::AgentOutput;
-            } else if trimmed.starts_with("--- User feedback at ") && trimmed.ends_with("---") {
-                // Flush previous section
-                if !current_lines.is_empty() {
-                    sections.push(LogSection {
-                        kind: current_kind,
-                        lines: std::mem::take(&mut current_lines),
-                    });
-                }
-                current_kind = SectionKind::UserFeedback;
-                current_lines.push(line);
-            } else if trimmed == "--- End user feedback ---" {
-                current_lines.push(line);
-                sections.push(LogSection {
-                    kind: current_kind,
-                    lines: std::mem::take(&mut current_lines),
-                });
-                current_kind = SectionKind::AgentOutput;
             } else {
                 current_lines.push(line);
             }
@@ -678,12 +512,6 @@ impl Task {
 
         for section in &sections {
             match section.kind {
-                SectionKind::UserFeedback => {
-                    // Keep all feedback lines
-                    for line in &section.lines {
-                        result_lines.push(line.to_string());
-                    }
-                }
                 SectionKind::AgentOutput => {
                     // Separate structural lines (markers, stop conditions) from normal output
                     let mut structural_head: Vec<&str> = Vec::new();
@@ -790,164 +618,6 @@ impl Task {
         }
     }
 
-    /// Write feedback for the refiner agent to process
-    pub fn write_feedback(&self, feedback: &str) -> Result<()> {
-        let path = self.dir.join("FEEDBACK.md");
-        std::fs::write(&path, feedback)?;
-        Ok(())
-    }
-
-    /// Read feedback (if any)
-    pub fn read_feedback(&self) -> Result<String> {
-        let path = self.dir.join("FEEDBACK.md");
-        if path.exists() {
-            std::fs::read_to_string(&path).context("Failed to read FEEDBACK.md")
-        } else {
-            Ok(String::new())
-        }
-    }
-
-    /// Append a user feedback entry to agent.log with structured markers
-    pub fn append_feedback_to_log(&self, feedback: &str) -> Result<()> {
-        let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-        let entry = format!(
-            "\n--- User feedback at {} ---\n{}\n--- End user feedback ---\n",
-            timestamp, feedback
-        );
-        self.append_agent_log(&entry)
-    }
-
-    /// Clear feedback after it's been processed
-    pub fn clear_feedback(&self) -> Result<()> {
-        let path = self.dir.join("FEEDBACK.md");
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-        }
-        Ok(())
-    }
-
-    /// Path to the task queue file
-    fn queue_file_path(&self) -> PathBuf {
-        self.dir.join("queue.json")
-    }
-
-    /// Path to the old feedback queue file (for migration)
-    fn old_queue_file_path(&self) -> PathBuf {
-        self.dir.join("feedback_queue.json")
-    }
-
-    /// Read the queue from its dedicated file, with migration from old format
-    fn read_queue_file(&self) -> Vec<QueueItem> {
-        let path = self.queue_file_path();
-        if path.exists() {
-            return match std::fs::read_to_string(&path) {
-                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-                Err(_) => Vec::new(),
-            };
-        }
-
-        // Migration: if old feedback_queue.json exists, convert it
-        let old_path = self.old_queue_file_path();
-        if old_path.exists() {
-            let old_items: Vec<String> = match std::fs::read_to_string(&old_path) {
-                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-                Err(_) => return Vec::new(),
-            };
-            let migrated: Vec<QueueItem> = old_items
-                .into_iter()
-                .map(|text| QueueItem::Feedback { text })
-                .collect();
-            // Write new format and delete old file
-            if let Ok(content) = serde_json::to_string_pretty(&migrated) {
-                let _ = std::fs::write(&path, content);
-            }
-            let _ = std::fs::remove_file(&old_path);
-            return migrated;
-        }
-
-        Vec::new()
-    }
-
-    /// Write the queue to its dedicated file (deletes file if empty)
-    fn write_queue_file(&self, queue: &[QueueItem]) -> Result<()> {
-        let path = self.queue_file_path();
-        if queue.is_empty() {
-            if path.exists() {
-                std::fs::remove_file(&path)?;
-            }
-        } else {
-            let content = serde_json::to_string_pretty(queue)?;
-            std::fs::write(&path, content)?;
-        }
-        Ok(())
-    }
-
-    /// Queue feedback to be processed when the task stops
-    pub fn queue_feedback(&self, feedback: &str) -> Result<()> {
-        let mut queue = self.read_queue_file();
-        tracing::debug!(task_id = %self.meta.task_id(), queue_size = queue.len() + 1, "queuing feedback");
-        queue.push(QueueItem::Feedback {
-            text: feedback.to_string(),
-        });
-        self.write_queue_file(&queue)
-    }
-
-    /// Queue a command to be run when the task stops
-    pub fn queue_command(&self, command_id: &str, branch: Option<&str>) -> Result<()> {
-        let mut queue = self.read_queue_file();
-        tracing::debug!(task_id = %self.meta.task_id(), queue_size = queue.len() + 1, command_id, "queuing command");
-        queue.push(QueueItem::Command {
-            command_id: command_id.to_string(),
-            branch: branch.map(|b| b.to_string()),
-        });
-        self.write_queue_file(&queue)
-    }
-
-    /// Pop the first item from the queue
-    pub fn pop_queue(&self) -> Result<Option<QueueItem>> {
-        let mut queue = self.read_queue_file();
-        if queue.is_empty() {
-            return Ok(None);
-        }
-        let item = queue.remove(0);
-        self.write_queue_file(&queue)?;
-        Ok(Some(item))
-    }
-
-    /// Check if there are queued items
-    pub fn has_queued_items(&self) -> bool {
-        !self.read_queue_file().is_empty()
-    }
-
-    /// Get the number of queued items
-    pub fn queued_item_count(&self) -> usize {
-        self.read_queue_file().len()
-    }
-
-    /// Read all queued items (for display purposes)
-    pub fn read_queue(&self) -> Vec<QueueItem> {
-        self.read_queue_file()
-    }
-
-    /// Remove a single queue item by index
-    pub fn remove_queue_item(&self, index: usize) -> Result<()> {
-        let mut queue = self.read_queue_file();
-        if index < queue.len() {
-            queue.remove(index);
-            self.write_queue_file(&queue)?;
-        }
-        Ok(())
-    }
-
-    /// Clear all queued items
-    pub fn clear_queue(&self) -> Result<()> {
-        let path = self.queue_file_path();
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-        }
-        Ok(())
-    }
-
     pub fn set_linked_pr(
         &mut self,
         number: u64,
@@ -1039,139 +709,6 @@ impl Task {
             }
         }
         Ok(result)
-    }
-
-    /// Reset flow step to 0 for re-running
-    pub fn reset_flow_step(&mut self) -> Result<()> {
-        self.meta.flow_step = 0;
-        self.meta.flow_sub_step = 0;
-        self.meta.updated_at = Utc::now();
-        self.save_meta()
-    }
-
-    // ---------------------------------------------------------------------
-    // Supervisor sentinel files
-    // ---------------------------------------------------------------------
-    //
-    // Three existence-based sentinel files signal completion. The agent's
-    // last action is to `touch` one of them; the supervisor polls for their
-    // existence to detect the stop condition. No content is read from these
-    // files — only their presence matters. Pane scanning for magic strings
-    // is intentionally not used: it is fragile in interactive mode (strings
-    // can appear in code blocks or scrollback unrelated to the actual
-    // signal).
-
-    /// Path to the `.agent-done` sentinel — "this agent finished its work,
-    /// hand off to the next step in the flow".
-    pub fn agent_done_path(&self) -> PathBuf {
-        self.dir.join(".agent-done")
-    }
-
-    /// Path to the `.task-complete` sentinel — "the entire task is done,
-    /// stop the flow".
-    pub fn task_complete_path(&self) -> PathBuf {
-        self.dir.join(".task-complete")
-    }
-
-    /// Path to the `.input-needed` sentinel — "I need user input to continue".
-    pub fn input_needed_path(&self) -> PathBuf {
-        self.dir.join(".input-needed")
-    }
-
-    /// Path to the stop sentinel. The TUI writes this to ask the supervisor
-    /// to cancel the current step gracefully.
-    pub fn stop_path(&self) -> PathBuf {
-        self.dir.join(".stop")
-    }
-
-    /// Check the three sentinel files in priority order and, if any exist,
-    /// remove them all and return the corresponding `StopCondition`.
-    ///
-    /// Priority: `TaskComplete` > `InputNeeded` > `AgentDone`. The priority
-    /// matters only in the (pathological) case where an agent created more
-    /// than one sentinel — we pick the strongest signal. In normal operation
-    /// only one sentinel is ever present.
-    pub fn take_sentinel(&self) -> Result<Option<StopCondition>> {
-        let candidates = [
-            (self.task_complete_path(), StopCondition::TaskComplete),
-            (self.input_needed_path(), StopCondition::InputNeeded),
-            (self.agent_done_path(), StopCondition::AgentDone),
-        ];
-        let mut found: Option<StopCondition> = None;
-        for (path, cond) in &candidates {
-            if path.exists() {
-                if found.is_none() {
-                    found = Some(*cond);
-                }
-                let _ = std::fs::remove_file(path);
-            }
-        }
-        Ok(found)
-    }
-
-    /// Remove all three sentinel files. Called by the supervisor before
-    /// launching a new agent step so the next agent's sentinel can't be
-    /// confused with stale state from the prior step.
-    pub fn clear_sentinels(&self) -> Result<()> {
-        for path in [
-            self.agent_done_path(),
-            self.task_complete_path(),
-            self.input_needed_path(),
-        ] {
-            if path.exists() {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-        Ok(())
-    }
-
-    /// Write the `.stop` sentinel to request supervisor cancellation.
-    pub fn request_stop(&self) -> Result<()> {
-        std::fs::write(self.stop_path(), "").context("Failed to write .stop sentinel")
-    }
-
-    /// Return true if a `.stop` sentinel is present.
-    pub fn stop_requested(&self) -> bool {
-        self.stop_path().exists()
-    }
-
-    /// Remove the `.stop` sentinel after the supervisor has honored it.
-    pub fn clear_stop(&self) -> Result<()> {
-        let path = self.stop_path();
-        if path.exists() {
-            std::fs::remove_file(&path).context("Failed to remove .stop sentinel")?;
-        }
-        Ok(())
-    }
-
-    /// Path to the `.inbox-rearm` marker. The supervisor touches this file
-    /// after killing the prior claude and before launching a new one. The
-    /// inbox poll worker checks for it on each tick: if present, it drops the
-    /// in-memory `first_ready_at` entry for this target and deletes the file,
-    /// forcing the cold-start ready-buffer to restart from zero.
-    ///
-    /// This exists because the supervisor's kill→relaunch transition is
-    /// faster (~500ms) than the inbox poll interval (~2s), so the poller
-    /// rarely observes the brief shell state between the dying and freshly
-    /// launched claude. Without this marker the prior `first_ready_at` value
-    /// persists, the buffer is bypassed, and messages get pasted into a
-    /// still-mounting Ink UI.
-    pub fn rearm_path(&self) -> PathBuf {
-        self.dir.join(".inbox-rearm")
-    }
-
-    /// Touch the `.inbox-rearm` marker (create the file, contents irrelevant).
-    pub fn touch_rearm(&self) -> Result<()> {
-        std::fs::write(self.rearm_path(), "").context("Failed to write .inbox-rearm marker")
-    }
-
-    /// Remove the `.inbox-rearm` marker if present.
-    pub fn clear_rearm(&self) -> Result<()> {
-        let path = self.rearm_path();
-        if path.exists() {
-            std::fs::remove_file(&path).context("Failed to remove .inbox-rearm marker")?;
-        }
-        Ok(())
     }
 
     /// Append a session record to `meta.session_history` and persist.

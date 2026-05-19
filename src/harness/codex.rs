@@ -4,9 +4,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use super::{
-    AssistantCapabilities, Harness, HarnessKind, LaunchContext, RegisterContext, SessionKey,
-};
+use super::{AgentCapabilities, Harness, HarnessKind, LaunchContext, RegisterContext, SessionKey};
 
 pub struct CodexHarness;
 
@@ -40,7 +38,7 @@ impl Harness for CodexHarness {
             // Always run codex with full approval+sandbox bypass. Mirrors
             // claude's `--dangerously-skip-permissions`. Without this, codex
             // prompts before privileged-feeling shell commands (`git add`,
-            // etc.), which deadlocks autonomous agman flows.
+            // etc.), which deadlocks autonomous agman agents.
             cmd.push_str(" --dangerously-bypass-approvals-and-sandbox");
             if ctx.no_alt_screen {
                 cmd.push_str(" --no-alt-screen");
@@ -68,7 +66,7 @@ impl Harness for CodexHarness {
         // Always run codex with full approval+sandbox bypass. Mirrors
         // claude's `--dangerously-skip-permissions`. Without this, codex
         // prompts before privileged-feeling shell commands (`git add`, etc.),
-        // which deadlocks autonomous agman flows.
+        // which deadlocks autonomous agman agents.
         cmd.push_str(" --dangerously-bypass-approvals-and-sandbox");
         if ctx.no_alt_screen {
             cmd.push_str(" --no-alt-screen");
@@ -87,7 +85,7 @@ impl Harness for CodexHarness {
         ensure_workspace_trusted_in(&trust_file, cwd)
     }
 
-    fn ensure_capabilities_configured(&self, caps: &AssistantCapabilities) -> Result<()> {
+    fn ensure_capabilities_configured(&self, caps: &AgentCapabilities) -> Result<()> {
         if caps.browser {
             let config_toml = super::harness_home(HarnessKind::Codex).join("config.toml");
             ensure_browser_mcp_in(&config_toml)?;

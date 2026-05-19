@@ -1,9 +1,7 @@
 pub mod agent;
-pub mod assistant;
-pub mod command;
+pub mod agent_model;
 pub mod config;
 pub mod dismissed_notifications;
-pub mod flow;
 pub mod git;
 pub mod harness;
 pub mod inbox;

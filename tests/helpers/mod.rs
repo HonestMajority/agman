@@ -1,4 +1,4 @@
-use agman::assistant::{AgentAttachment, Assistant, AssistantKind};
+use agman::agent_model::{AgentAttachment, AgentKind, AgentRecord};
 use agman::config::Config;
 use agman::project::Project;
 use agman::task::{Task, TaskMeta};
@@ -85,7 +85,8 @@ pub fn create_test_task(config: &Config, repo_name: &str, branch_name: &str) -> 
         "new".to_string(),
     );
 
-    let task = Task { meta, dir };
+    let mut task = Task { meta, dir };
+    task.meta.project = Some(repo_name.to_string());
     task.save_meta().unwrap();
     // Create the same init files that Task::create() makes
     for file in ["notes.md", "agent.log"] {
@@ -97,12 +98,12 @@ pub fn create_test_task(config: &Config, repo_name: &str, branch_name: &str) -> 
 
     let task_id = task.meta.task_id();
     let engineer_name = format!("engineer-{}", task_id.replace("--", "-"));
-    let _ = Assistant::create_with_attachment(
+    let _ = AgentRecord::create_with_attachment(
         config,
         repo_name,
         &engineer_name,
         &format!("Engineer attached to task {task_id}"),
-        AssistantKind::Engineer,
+        AgentKind::Engineer,
         AgentAttachment::Task {
             task_id,
             role_label: Some("Engineer".to_string()),
@@ -119,16 +120,16 @@ pub fn create_test_project(config: &Config, name: &str) -> Project {
     Project::create(config, name, &format!("Test project {name}")).unwrap()
 }
 
-/// Create a minimal Researcher-kind Assistant for testing.
+/// Create a minimal Researcher-kind AgentRecord for testing.
 #[allow(dead_code)]
-pub fn create_test_researcher(config: &Config, project: &str, name: &str) -> Assistant {
+pub fn create_test_researcher(config: &Config, project: &str, name: &str) -> AgentRecord {
     config.ensure_dirs().unwrap();
-    Assistant::create(
+    AgentRecord::create(
         config,
         project,
         name,
         "test description",
-        AssistantKind::Researcher {
+        AgentKind::Researcher {
             repo: None,
             branch: None,
             task_id: None,
