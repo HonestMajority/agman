@@ -1286,7 +1286,7 @@ fn project_detail_list_item(
         ProjectDetailRow::UnattachedAgent { agent, .. } => {
             project_agent_row(app, agent, row_index == app.selected_index, agent_widths)
         }
-        ProjectDetailRow::SectionSpacer => ListItem::new(""),
+        ProjectDetailRow::SectionSpacer | ProjectDetailRow::TaskGroupSpacer => ListItem::new(""),
         ProjectDetailRow::TasksSectionHeader => ListItem::new(project_tasks_section_header()),
         ProjectDetailRow::TasksColumnsHeader => {
             ListItem::new(project_tasks_columns_header(task_widths))
@@ -1320,8 +1320,19 @@ fn project_section_style() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+fn project_section_divider_style() -> Style {
+    Style::default().fg(Color::DarkGray)
+}
+
+fn project_section_header(label: &'static str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {label} "), project_section_style()),
+        Span::styled("────────", project_section_divider_style()),
+    ])
+}
+
 fn project_agents_section_header() -> Line<'static> {
-    Line::from(Span::styled("Agents", project_section_style()))
+    project_section_header("Agents")
 }
 
 fn project_agents_columns_header(widths: AgentColumnWidths) -> Line<'static> {
@@ -1354,8 +1365,11 @@ fn project_agents_columns_header(widths: AgentColumnWidths) -> Line<'static> {
 }
 
 fn project_tasks_section_header() -> Line<'static> {
-    Line::from(Span::styled("Tasks", project_section_style()))
+    project_section_header("Tasks")
 }
+
+const PROJECT_TASK_PREFIX_WIDTH: usize = 2;
+const PROJECT_TASK_PREFIX: &str = "▸ ";
 
 fn project_tasks_columns_header(widths: TaskColumnWidths) -> Line<'static> {
     const COL_GAP: &str = "    ";
@@ -1363,6 +1377,7 @@ fn project_tasks_columns_header(widths: TaskColumnWidths) -> Line<'static> {
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
     Line::from(vec![
+        Span::raw(" ".repeat(PROJECT_TASK_PREFIX_WIDTH)),
         Span::styled(
             format!("{:<width$}", "REPO", width = widths.repo),
             header_style,
@@ -1595,14 +1610,18 @@ fn project_task_line(
     let selected_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
+    let repo_style = if is_selected {
+        selected_style
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    };
     Line::from(vec![
+        Span::styled(PROJECT_TASK_PREFIX, Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!("{:<width$}", display_repo, width = widths.repo),
-            if is_selected {
-                selected_style
-            } else {
-                Style::default().fg(text_color)
-            },
+            repo_style,
         ),
         Span::raw(COL_GAP),
         Span::styled(
@@ -4225,14 +4244,16 @@ mod project_count_cell_tests {
     }
 
     #[test]
-    fn project_section_headers_only_render_section_labels() {
+    fn project_section_headers_render_labels_with_light_dividers() {
         let agents = project_agents_section_header();
         let tasks = project_tasks_section_header();
 
-        assert_eq!(span_text(&agents.spans), vec!["Agents"]);
+        assert_eq!(span_text(&agents.spans), vec!["  Agents ", "────────"]);
         assert_eq!(agents.spans[0].style, project_section_style());
-        assert_eq!(span_text(&tasks.spans), vec!["Tasks"]);
+        assert_eq!(agents.spans[1].style, project_section_divider_style());
+        assert_eq!(span_text(&tasks.spans), vec!["  Tasks ", "────────"]);
         assert_eq!(tasks.spans[0].style, project_section_style());
+        assert_eq!(tasks.spans[1].style, project_section_divider_style());
     }
 
     #[test]
@@ -4260,7 +4281,7 @@ mod project_count_cell_tests {
     }
 
     #[test]
-    fn project_task_columns_header_starts_at_repo() {
+    fn project_task_columns_header_reserves_task_prefix() {
         let widths = TaskColumnWidths {
             repo: 12,
             branch: 10,
@@ -4270,6 +4291,7 @@ mod project_count_cell_tests {
         assert_eq!(
             span_text(&project_tasks_columns_header(widths).spans),
             vec![
+                "  ",
                 "REPO        ",
                 "    ",
                 "BRANCH    ",
@@ -4282,7 +4304,7 @@ mod project_count_cell_tests {
     }
 
     #[test]
-    fn project_task_row_starts_with_repo_text() {
+    fn project_task_row_shows_parent_prefix_and_aligns_repo() {
         let task = task_with_repo("agman-improvements", "fix-headers");
         let widths = TaskColumnWidths {
             repo: 20,
@@ -4290,9 +4312,16 @@ mod project_count_cell_tests {
             pr: 8,
         };
 
+        let line = project_task_line(&task, false, widths);
+        let spans = span_text(&line.spans);
+        assert_eq!(spans[0], PROJECT_TASK_PREFIX);
+        assert_eq!(spans[1], "agman-improvements  ");
+        assert_eq!(line.spans[0].style, Style::default().fg(Color::DarkGray));
         assert_eq!(
-            span_text(&project_task_line(&task, false, widths).spans)[0],
-            "agman-improvements  "
+            line.spans[1].style,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
         );
     }
 

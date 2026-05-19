@@ -109,6 +109,7 @@ pub enum ProjectDetailRow<'a> {
     EmptyAgents,
     UnattachedAgent { agent: &'a AgentRecord },
     SectionSpacer,
+    TaskGroupSpacer,
     TasksSectionHeader,
     TasksColumnsHeader,
     EmptyTasks,
@@ -1250,16 +1251,20 @@ impl App {
                     task_index,
                     task,
                 }));
-                let Some(agents) = self.attached_task_agents.get(&task.meta.task_id()) else {
-                    continue;
-                };
-                if agents.is_empty() {
-                    continue;
+                if let Some(agents) = self.attached_task_agents.get(&task.meta.task_id()) {
+                    if !agents.is_empty() {
+                        rows.push(ProjectDetailRow::AttachedAgentsHeader);
+                        rows.extend(agents.iter().map(|agent| {
+                            ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent {
+                                task_index,
+                                agent,
+                            })
+                        }));
+                    }
                 }
-                rows.push(ProjectDetailRow::AttachedAgentsHeader);
-                rows.extend(agents.iter().map(|agent| {
-                    ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent { task_index, agent })
-                }));
+                if task_index + 1 < self.tasks.len() {
+                    rows.push(ProjectDetailRow::TaskGroupSpacer);
+                }
             }
         }
         rows
@@ -1296,6 +1301,7 @@ impl App {
             | ProjectDetailRow::AgentsColumnsHeader
             | ProjectDetailRow::EmptyAgents
             | ProjectDetailRow::SectionSpacer
+            | ProjectDetailRow::TaskGroupSpacer
             | ProjectDetailRow::TasksSectionHeader
             | ProjectDetailRow::TasksColumnsHeader
             | ProjectDetailRow::EmptyTasks
@@ -5692,8 +5698,8 @@ mod tests {
         let unique = unique_name();
         let project = format!("repo-{unique}");
         let branch = format!("branch-{unique}");
-        let task = create_test_task(&config, &project, &branch);
-        let task_id = task.meta.task_id();
+        create_test_task(&config, &project, &branch);
+        create_test_task(&config, &project, &format!("branch-b-{unique}"));
         AgentRecord::create(
             &config,
             &project,
@@ -5725,14 +5731,28 @@ mod tests {
         assert!(matches!(rows[5], ProjectDetailRow::TasksColumnsHeader));
         assert!(matches!(
             rows[6],
-            ProjectDetailRow::Task(ProjectTaskRow::Task { task, .. })
-                if task.meta.task_id() == task_id
+            ProjectDetailRow::Task(ProjectTaskRow::Task { .. })
         ));
         assert!(matches!(rows[7], ProjectDetailRow::AttachedAgentsHeader));
         assert!(matches!(
             rows[8],
             ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent { agent, .. })
                 if agent.meta.name.starts_with("engineer-")
+        ));
+        assert!(matches!(rows[9], ProjectDetailRow::TaskGroupSpacer));
+        assert!(matches!(
+            rows[10],
+            ProjectDetailRow::Task(ProjectTaskRow::Task { .. })
+        ));
+        assert!(matches!(rows[11], ProjectDetailRow::AttachedAgentsHeader));
+        assert!(matches!(
+            rows[12],
+            ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent { agent, .. })
+                if agent.meta.name.starts_with("engineer-")
+        ));
+        assert!(!matches!(
+            rows.last(),
+            Some(ProjectDetailRow::TaskGroupSpacer)
         ));
         assert!(matches!(
             app.selected_project_detail_row(),
@@ -5749,6 +5769,7 @@ mod tests {
         let project = format!("repo-{unique}");
         let branch = format!("branch-{unique}");
         create_test_task(&config, &project, &branch);
+        create_test_task(&config, &project, &format!("branch-b-{unique}"));
         AgentRecord::create(
             &config,
             &project,
@@ -5788,6 +5809,25 @@ mod tests {
         app.next_project_detail_row();
         assert!(matches!(
             app.selected_project_detail_row(),
+            Some(ProjectDetailRow::Task(ProjectTaskRow::Task { .. }))
+        ));
+        app.previous_project_detail_row();
+        assert!(matches!(
+            app.selected_project_detail_row(),
+            Some(ProjectDetailRow::AttachedAgent(
+                ProjectTaskRow::Agent { .. }
+            ))
+        ));
+        app.select_last_project_detail_row();
+        assert!(matches!(
+            app.selected_project_detail_row(),
+            Some(ProjectDetailRow::AttachedAgent(
+                ProjectTaskRow::Agent { .. }
+            ))
+        ));
+        app.next_project_detail_row();
+        assert!(matches!(
+            app.selected_project_detail_row(),
             Some(ProjectDetailRow::UnattachedAgent { .. })
         ));
 
@@ -5812,6 +5852,12 @@ mod tests {
             rows.iter()
                 .find(|row| matches!(row, ProjectDetailRow::AttachedAgentsHeader)),
             Some(ProjectDetailRow::AttachedAgentsHeader)
+        ));
+        assert!(rows
+            .iter()
+            .any(|row| matches!(row, ProjectDetailRow::TaskGroupSpacer)));
+        assert!(!App::project_detail_row_is_actionable(
+            &ProjectDetailRow::TaskGroupSpacer
         ));
     }
 
