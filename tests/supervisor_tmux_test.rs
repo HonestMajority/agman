@@ -36,7 +36,11 @@ fn ensure_task_tmux_backfills_attached_agent_windows_after_creation_and_recreati
     let branch = format!("branch-{unique}");
     let task = create_test_task(&config, &project, &branch);
     let task_id = task.meta.task_id();
-    let researcher = create_test_researcher(&config, &project, "research");
+    let researcher = create_test_researcher(
+        &config,
+        &project,
+        "researcher-agent-window-names-and-selection",
+    );
     use_cases::attach_agent_to_task(&config, &project, &researcher.meta.name, &task_id, None)
         .unwrap();
 
@@ -65,6 +69,15 @@ fn ensure_task_tmux_backfills_attached_agent_windows_after_creation_and_recreati
     let first_windows = window_names(&task_session);
     assert!(first_windows.contains(&engineer_window));
     assert!(first_windows.contains(&researcher_window));
+    assert_eq!(
+        window_names(&engineer_session),
+        vec![engineer_window.clone()]
+    );
+    assert_eq!(
+        window_names(&researcher_session),
+        vec![researcher_window.clone()]
+    );
+    assert_compact_agent_windows(&first_windows);
 
     Command::new("tmux")
         .args(["kill-session", "-t", &task_session])
@@ -75,6 +88,7 @@ fn ensure_task_tmux_backfills_attached_agent_windows_after_creation_and_recreati
     let recreated_windows = window_names(&task_session);
     assert!(recreated_windows.contains(&engineer_window));
     assert!(recreated_windows.contains(&researcher_window));
+    assert_compact_agent_windows(&recreated_windows);
 }
 
 fn unique_test_name() -> String {
@@ -112,4 +126,24 @@ fn window_names(session: &str) -> Vec<String> {
         .lines()
         .map(str::to_string)
         .collect()
+}
+
+fn assert_compact_agent_windows(windows: &[String]) {
+    let agent_windows: Vec<_> = windows
+        .iter()
+        .filter(|name| {
+            name.starts_with("Engineer-")
+                || name.starts_with("Researcher-")
+                || name.starts_with("engineer-")
+                || name.starts_with("researcher-")
+        })
+        .collect();
+    assert!(!agent_windows.is_empty(), "no agent windows in {windows:?}");
+    for name in agent_windows {
+        assert!(name.len() <= 24, "agent window label is too long: {name}");
+        assert!(
+            name.starts_with("Engineer-") || name.starts_with("Researcher-"),
+            "agent window label kept old lowercase form: {name}"
+        );
+    }
 }
