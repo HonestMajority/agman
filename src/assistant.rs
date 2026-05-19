@@ -152,7 +152,7 @@ impl Assistant {
 
         let dir = config.assistant_dir(project, name);
         if dir.exists() {
-            bail!("assistant '{name}' already exists in project '{project}'");
+            bail!("agent '{name}' already exists in project '{project}'");
         }
 
         std::fs::create_dir_all(&dir)
@@ -184,24 +184,25 @@ impl Assistant {
         Ok(Self { meta, dir })
     }
 
-    /// List all assistants across all projects.
+    /// List all agents across all projects.
     pub fn list_all(config: &Config) -> Result<Vec<Self>> {
-        let assistants_dir = config.assistants_dir();
-        if !assistants_dir.exists() {
-            return Ok(Vec::new());
-        }
-
         let mut assistants = Vec::new();
-        for entry in std::fs::read_dir(&assistants_dir)
-            .with_context(|| format!("failed to read {}", assistants_dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() && path.join("meta.json").exists() {
-                match Self::load(path) {
-                    Ok(assistant) => assistants.push(assistant),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "skipping invalid assistant directory");
+        for agents_dir in [config.agents_dir(), config.legacy_assistants_dir()] {
+            if !agents_dir.exists() {
+                continue;
+            }
+
+            for entry in std::fs::read_dir(&agents_dir)
+                .with_context(|| format!("failed to read {}", agents_dir.display()))?
+            {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() && path.join("meta.json").exists() {
+                    match Self::load(path) {
+                        Ok(assistant) => assistants.push(assistant),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "skipping invalid agent directory");
+                        }
                     }
                 }
             }

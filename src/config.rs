@@ -116,8 +116,7 @@ impl Config {
         std::fs::create_dir_all(&self.commands_dir)
             .context("Failed to create commands directory")?;
         std::fs::create_dir_all(&self.notes_dir).context("Failed to create notes directory")?;
-        std::fs::create_dir_all(self.assistants_dir())
-            .context("Failed to create assistants directory")?;
+        std::fs::create_dir_all(self.agents_dir()).context("Failed to create agents directory")?;
         Ok(())
     }
 
@@ -328,15 +327,23 @@ impl Config {
         self.base_dir.join("whisper").join("ggml-base.bin")
     }
 
-    // --- Assistant paths ---
+    // --- Agent paths ---
     //
-    // Assistants share the on-disk layout under
-    // `~/.agman/assistants/<project>--<name>/`. The kind discriminator lives
+    // Agents share the on-disk layout under
+    // `~/.agman/agents/<project>--<name>/`. The kind discriminator lives
     // inside `meta.json`. Tmux session names diverge by kind so a researcher
     // and reviewer with the same name+project don't collide on resume.
 
-    pub fn assistants_dir(&self) -> PathBuf {
+    pub fn agents_dir(&self) -> PathBuf {
+        self.base_dir.join("agents")
+    }
+
+    pub fn legacy_assistants_dir(&self) -> PathBuf {
         self.base_dir.join("assistants")
+    }
+
+    pub fn assistants_dir(&self) -> PathBuf {
+        self.agents_dir()
     }
 
     pub fn assistant_dir(&self, project: &str, name: &str) -> PathBuf {

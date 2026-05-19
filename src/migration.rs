@@ -6,10 +6,11 @@
 //!
 //! Steps:
 //! 1. Rename `~/.agman/ceo/` → `~/.agman/chief-of-staff/` (bail if both exist).
-//! 2. Rename `~/.agman/researchers/` → `~/.agman/assistants/` (bail if both
-//!    exist) and rewrite each `meta.json` to the new kind-discriminated
-//!    `AssistantMeta` shape with `kind: Researcher`, then purge any legacy
-//!    global assistant dirs (`ceo--*` or `chief-of-staff--*`).
+//! 2. Rename `~/.agman/assistants/` or `~/.agman/researchers/` →
+//!    `~/.agman/agents/` (bail if both source and destination exist) and
+//!    rewrite each legacy researcher `meta.json` to the kind-discriminated
+//!    agent shape, then purge any legacy global agent dirs (`ceo--*` or
+//!    `chief-of-staff--*`).
 //! 3. Rewrite `~/.agman/telegram/current-agent` if it points to `"ceo"` or
 //!    a global assistant.
 //! 4. Kill the legacy `agman-ceo` tmux session if it is still running.
@@ -24,7 +25,7 @@ use crate::config::Config;
 /// Run all idempotent legacy migrations.
 pub fn run(config: &Config) -> Result<()> {
     migrate_ceo_dir(config)?;
-    migrate_researchers_to_assistants(config)?;
+    migrate_legacy_agents_dir(config)?;
     crate::use_cases::purge_chief_of_staff_assistants(config);
     migrate_telegram_current_agent(config)?;
     kill_legacy_tmux_session();
@@ -57,14 +58,28 @@ fn migrate_ceo_dir(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Step 2a: rename `~/.agman/researchers/` → `~/.agman/assistants/` and
-/// rewrite every `meta.json` from the old `ResearcherMeta` shape to the new
-/// kind-discriminated `AssistantMeta` (with `kind: Researcher`).
-fn migrate_researchers_to_assistants(config: &Config) -> Result<()> {
-    let legacy = config.base_dir.join("researchers");
-    let new = config.assistants_dir();
+/// Step 2a: rename legacy agent directories to `~/.agman/agents/` and rewrite
+/// old `ResearcherMeta` records to the current kind-discriminated shape.
+fn migrate_legacy_agents_dir(config: &Config) -> Result<()> {
+    let researchers = config.base_dir.join("researchers");
+    let assistants = config.legacy_assistants_dir();
+    let new = config.agents_dir();
 
-    if !legacy.exists() {
+    let legacy = if assistants.exists() {
+        Some(assistants)
+    } else if researchers.exists() {
+        Some(researchers)
+    } else {
+        None
+    };
+
+    let Some(legacy) = legacy else {
+        rewrite_legacy_agent_meta_files(&new);
+        return Ok(());
+    };
+
+    if legacy == new {
+        rewrite_legacy_agent_meta_files(&new);
         return Ok(());
     }
     if new.exists() {
@@ -80,16 +95,21 @@ fn migrate_researchers_to_assistants(config: &Config) -> Result<()> {
     tracing::info!(
         from = %legacy.display(),
         to = %new.display(),
-        "migration: renamed researchers dir to assistants"
+        "migration: renamed legacy agent dir to agents"
     );
 
+    rewrite_legacy_agent_meta_files(&new);
+    Ok(())
+}
+
+fn rewrite_legacy_agent_meta_files(new: &Path) {
     // Rewrite each meta.json into the new shape. Best-effort; per-entry
     // failures are logged but do not abort startup.
-    let entries = match std::fs::read_dir(&new) {
+    let entries = match std::fs::read_dir(new) {
         Ok(e) => e,
         Err(e) => {
-            tracing::warn!(error = %e, dir = %new.display(), "migration: failed to read assistants dir");
-            return Ok(());
+            tracing::warn!(error = %e, dir = %new.display(), "migration: failed to read agents dir");
+            return;
         }
     };
     for entry in entries.flatten() {
@@ -101,11 +121,10 @@ fn migrate_researchers_to_assistants(config: &Config) -> Result<()> {
             tracing::warn!(
                 error = %e,
                 dir = %path.display(),
-                "migration: failed to rewrite assistant meta.json"
+                "migration: failed to rewrite agent meta.json"
             );
         }
     }
-    Ok(())
 }
 
 /// Rewrite a legacy `ResearcherMeta`-shaped `meta.json` to the new

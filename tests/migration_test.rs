@@ -39,10 +39,10 @@ fn migration_renames_legacy_ceo_dir() {
 }
 
 /// Legacy `~/.agman/researchers/` should be renamed to
-/// `~/.agman/assistants/` and each `meta.json` rewritten to the new
-/// kind-discriminated `AssistantMeta` shape with `kind: Researcher`.
+/// `~/.agman/agents/` and each `meta.json` rewritten to the new
+/// kind-discriminated agent shape with `kind: Researcher`.
 #[test]
-fn migration_renames_researchers_to_assistants_and_stamps_kind() {
+fn migration_renames_researchers_to_agents_and_stamps_kind() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
@@ -72,14 +72,14 @@ fn migration_renames_researchers_to_assistants_and_stamps_kind() {
 
     config.ensure_dirs().unwrap();
 
-    let assistants_dir = config.assistants_dir();
-    assert!(assistants_dir.exists(), "assistants dir should exist");
+    let agents_dir = config.agents_dir();
+    assert!(agents_dir.exists(), "agents dir should exist");
     assert!(
         !legacy_root.exists(),
         "legacy researchers dir should be gone"
     );
 
-    let new_entry = assistants_dir.join("alpha--scout");
+    let new_entry = agents_dir.join("alpha--scout");
     assert!(new_entry.exists());
 
     let migrated_meta: serde_json::Value =
@@ -114,12 +114,12 @@ fn migration_removes_legacy_global_assistant_dirs() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
 
-    let assistants_dir = config.assistants_dir();
-    let legacy = assistants_dir.join("ceo--scout");
+    let agents_dir = config.agents_dir();
+    let legacy = agents_dir.join("ceo--scout");
     fs::create_dir_all(&legacy).unwrap();
-    let cos = assistants_dir.join("chief-of-staff--legacy");
+    let cos = agents_dir.join("chief-of-staff--legacy");
     fs::create_dir_all(&cos).unwrap();
-    let kept = assistants_dir.join("alpha--kept");
+    let kept = agents_dir.join("alpha--kept");
     fs::create_dir_all(&kept).unwrap();
     let meta = serde_json::json!({
         "name": "scout",

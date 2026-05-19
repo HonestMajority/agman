@@ -41,6 +41,8 @@ fn agent_model_serializes_engineer_attachment() {
     .unwrap();
 
     assert!(agent.is_engineer());
+    assert!(agent.dir.starts_with(config.agents_dir()));
+    assert!(!agent.dir.starts_with(config.legacy_assistants_dir()));
     let raw = std::fs::read_to_string(agent.dir.join("meta.json")).unwrap();
     assert!(raw.contains("\"type\": \"engineer\""));
     assert!(raw.contains("\"task_id\": \"repo--branch\""));
@@ -51,6 +53,36 @@ fn agent_model_serializes_engineer_attachment() {
         loaded.meta.attachment,
         AgentAttachment::Task { ref task_id, .. } if task_id == "repo--branch"
     ));
+}
+
+#[test]
+fn agent_list_reads_legacy_assistant_state_for_migration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    config.ensure_dirs().unwrap();
+
+    let legacy_dir = config.legacy_assistants_dir().join("project--legacy");
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    std::fs::write(
+        legacy_dir.join("meta.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "name": "legacy",
+            "project": "project",
+            "description": "old assistant state",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "status": "running",
+            "kind": { "type": "researcher", "repo": null, "branch": null, "task_id": null },
+            "attachment": { "type": "unattached" }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let agents = Assistant::list_for_project(&config, "project").unwrap();
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].meta.name, "legacy");
+    assert!(agents[0].dir.starts_with(config.legacy_assistants_dir()));
 }
 
 #[test]
