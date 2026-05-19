@@ -435,7 +435,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     let project_width = max_name_len.clamp(MIN_PROJECT_WIDTH, MAX_PROJECT_WIDTH);
 
     // Calculate description width
-    // Layout: 4 (leading) + project_width + gaps + TASKS + ASSISTANTS
+    // Layout: 4 (leading) + project_width + gaps + TASKS + AGENTS
     let fixed_width = 4
         + project_width
         + PROJECT_COL_GAP.len()
@@ -464,7 +464,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(
             format!(
                 "{:>width$}",
-                "ASSISTANTS",
+                "AGENTS",
                 width = PROJECT_ASSISTANT_COUNT_WIDTH
             ),
             header_style,
