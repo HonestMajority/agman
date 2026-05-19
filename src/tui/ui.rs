@@ -1136,6 +1136,7 @@ fn draw_project_detail(f: &mut Frame, app: &App, area: Rect) {
                 app,
                 *row,
                 row_index,
+                inner.width,
                 agent_widths,
                 task_widths,
                 attached_agent_widths,
@@ -1270,6 +1271,7 @@ fn project_detail_list_item(
     app: &App,
     row: ProjectDetailRow<'_>,
     row_index: usize,
+    list_width: u16,
     agent_widths: AgentColumnWidths,
     task_widths: TaskColumnWidths,
     attached_agent_widths: AttachedAgentColumnWidths,
@@ -1286,9 +1288,10 @@ fn project_detail_list_item(
         ProjectDetailRow::UnattachedAgent { agent, .. } => {
             project_agent_row(app, agent, row_index == app.selected_index, agent_widths)
         }
-        ProjectDetailRow::SectionColumnSpacer
-        | ProjectDetailRow::SectionSpacer
-        | ProjectDetailRow::TaskGroupSpacer => ListItem::new(""),
+        ProjectDetailRow::SectionColumnSpacer => {
+            ListItem::new(project_section_separator(list_width))
+        }
+        ProjectDetailRow::SectionSpacer | ProjectDetailRow::TaskGroupSpacer => ListItem::new(""),
         ProjectDetailRow::TasksSectionHeader => ListItem::new(project_tasks_section_header()),
         ProjectDetailRow::TasksColumnsHeader => {
             ListItem::new(project_tasks_columns_header(task_widths))
@@ -1324,6 +1327,21 @@ fn project_section_style() -> Style {
 
 fn project_section_header(label: &'static str) -> Line<'static> {
     Line::from(Span::styled(format!("  {label}"), project_section_style()))
+}
+
+fn project_section_separator(width: u16) -> Line<'static> {
+    let gutter_width = width.min(2) as usize;
+    let separator_width = width.saturating_sub(2) as usize;
+    let separator = format!(
+        "{}{}",
+        " ".repeat(gutter_width),
+        "─".repeat(separator_width)
+    );
+
+    Line::from(Span::styled(
+        separator,
+        Style::default().fg(Color::DarkGray),
+    ))
 }
 
 fn project_agents_section_header() -> Line<'static> {
@@ -4251,6 +4269,32 @@ mod project_count_cell_tests {
         assert_eq!(tasks.spans.len(), 1);
         assert_eq!(tasks.spans[0].style, project_section_style());
         assert!(!span_text(&tasks.spans).join("").contains("─"));
+    }
+
+    #[test]
+    fn project_section_separator_uses_gutter_and_dim_rule() {
+        let separator = project_section_separator(12);
+
+        assert_eq!(span_text(&separator.spans), vec!["  ──────────"]);
+        assert_eq!(separator.spans.len(), 1);
+        assert_eq!(
+            separator.spans[0].style,
+            Style::default().fg(Color::DarkGray)
+        );
+    }
+
+    #[test]
+    fn project_section_separator_handles_narrow_widths() {
+        for width in [0, 1, 2] {
+            let separator = project_section_separator(width);
+            let text = span_text(&separator.spans).join("");
+
+            assert_eq!(text.chars().count(), width as usize);
+            assert_eq!(
+                separator.spans[0].style,
+                Style::default().fg(Color::DarkGray)
+            );
+        }
     }
 
     #[test]
