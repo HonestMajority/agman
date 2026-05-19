@@ -1275,7 +1275,10 @@ fn project_detail_list_item(
     attached_agent_widths: AttachedAgentColumnWidths,
 ) -> ListItem<'static> {
     match row {
-        ProjectDetailRow::AgentsHeader => ListItem::new(project_agents_header(agent_widths)),
+        ProjectDetailRow::AgentsSectionHeader => ListItem::new(project_agents_section_header()),
+        ProjectDetailRow::AgentsColumnsHeader => {
+            ListItem::new(project_agents_columns_header(agent_widths))
+        }
         ProjectDetailRow::EmptyAgents => ListItem::new(Line::from(Span::styled(
             "  No unattached agents",
             Style::default().fg(Color::DarkGray),
@@ -1284,7 +1287,10 @@ fn project_detail_list_item(
             project_agent_row(app, agent, row_index == app.selected_index, agent_widths)
         }
         ProjectDetailRow::SectionSpacer => ListItem::new(""),
-        ProjectDetailRow::TasksHeader => ListItem::new(project_tasks_header(task_widths)),
+        ProjectDetailRow::TasksSectionHeader => ListItem::new(project_tasks_section_header()),
+        ProjectDetailRow::TasksColumnsHeader => {
+            ListItem::new(project_tasks_columns_header(task_widths))
+        }
         ProjectDetailRow::EmptyTasks => ListItem::new(Line::from(Span::styled(
             "  No tasks",
             Style::default().fg(Color::DarkGray),
@@ -1314,14 +1320,17 @@ fn project_section_style() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-fn project_agents_header(widths: AgentColumnWidths) -> Line<'static> {
+fn project_agents_section_header() -> Line<'static> {
+    Line::from(Span::styled("Agents", project_section_style()))
+}
+
+fn project_agents_columns_header(widths: AgentColumnWidths) -> Line<'static> {
     const COL_GAP: &str = "   ";
     let header_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
     Line::from(vec![
-        Span::styled("Agents", project_section_style()),
-        Span::raw("  "),
+        Span::raw("    "),
         Span::styled(
             format!("{:<width$}", "NAME", width = widths.name),
             header_style,
@@ -1344,14 +1353,16 @@ fn project_agents_header(widths: AgentColumnWidths) -> Line<'static> {
     ])
 }
 
-fn project_tasks_header(widths: TaskColumnWidths) -> Line<'static> {
+fn project_tasks_section_header() -> Line<'static> {
+    Line::from(Span::styled("Tasks", project_section_style()))
+}
+
+fn project_tasks_columns_header(widths: TaskColumnWidths) -> Line<'static> {
     const COL_GAP: &str = "    ";
     let header_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
     Line::from(vec![
-        Span::styled("Tasks", project_section_style()),
-        Span::raw("   "),
         Span::styled(
             format!("{:<width$}", "REPO", width = widths.repo),
             header_style,
@@ -1536,6 +1547,20 @@ fn project_task_row(
     is_selected: bool,
     widths: TaskColumnWidths,
 ) -> ListItem<'static> {
+    let line = project_task_line(task, is_selected, widths);
+    let style = if is_selected {
+        Style::default().bg(Color::Rgb(40, 40, 50))
+    } else {
+        Style::default()
+    };
+    ListItem::new(line).style(style)
+}
+
+fn project_task_line(
+    task: &agman::task::Task,
+    is_selected: bool,
+    widths: TaskColumnWidths,
+) -> Line<'static> {
     const COL_GAP: &str = "    ";
     let repo_label = if task.meta.is_multi_repo() {
         format!("[M] {}", task.meta.name)
@@ -1570,8 +1595,7 @@ fn project_task_row(
     let selected_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
-    let line = Line::from(vec![
-        Span::raw("     "),
+    Line::from(vec![
         Span::styled(
             format!("{:<width$}", display_repo, width = widths.repo),
             if is_selected {
@@ -1607,14 +1631,7 @@ fn project_task_row(
             task.time_since_update(),
             Style::default().fg(Color::DarkGray),
         ),
-    ]);
-
-    let style = if is_selected {
-        Style::default().bg(Color::Rgb(40, 40, 50))
-    } else {
-        Style::default()
-    };
-    ListItem::new(line).style(style)
+    ])
 }
 
 fn agent_kind_label(kind: &AgentKind) -> &'static str {
@@ -4208,6 +4225,78 @@ mod project_count_cell_tests {
     }
 
     #[test]
+    fn project_section_headers_only_render_section_labels() {
+        let agents = project_agents_section_header();
+        let tasks = project_tasks_section_header();
+
+        assert_eq!(span_text(&agents.spans), vec!["Agents"]);
+        assert_eq!(agents.spans[0].style, project_section_style());
+        assert_eq!(span_text(&tasks.spans), vec!["Tasks"]);
+        assert_eq!(tasks.spans[0].style, project_section_style());
+    }
+
+    #[test]
+    fn project_agent_columns_header_keeps_name_gutter() {
+        let widths = AgentColumnWidths {
+            name: 12,
+            type_width: 8,
+            status: 10,
+            created: 10,
+        };
+
+        assert_eq!(
+            span_text(&project_agents_columns_header(widths).spans),
+            vec![
+                "    ",
+                "NAME        ",
+                "   ",
+                "TYPE    ",
+                "   ",
+                "STATUS    ",
+                "   ",
+                "CREATED   "
+            ]
+        );
+    }
+
+    #[test]
+    fn project_task_columns_header_starts_at_repo() {
+        let widths = TaskColumnWidths {
+            repo: 12,
+            branch: 10,
+            pr: 8,
+        };
+
+        assert_eq!(
+            span_text(&project_tasks_columns_header(widths).spans),
+            vec![
+                "REPO        ",
+                "    ",
+                "BRANCH    ",
+                "    ",
+                "PR      ",
+                "    ",
+                "UPDATED"
+            ]
+        );
+    }
+
+    #[test]
+    fn project_task_row_starts_with_repo_text() {
+        let task = task_with_repo("agman-improvements", "fix-headers");
+        let widths = TaskColumnWidths {
+            repo: 20,
+            branch: 12,
+            pr: 8,
+        };
+
+        assert_eq!(
+            span_text(&project_task_line(&task, false, widths).spans)[0],
+            "agman-improvements  "
+        );
+    }
+
+    #[test]
     fn attached_agent_header_uses_child_columns() {
         let widths = AttachedAgentColumnWidths {
             prefix: 9,
@@ -4309,6 +4398,19 @@ mod project_count_cell_tests {
                 },
             },
             dir: std::path::PathBuf::from("/tmp/agman-improvements/reviewer"),
+        }
+    }
+
+    fn task_with_repo(repo: &str, branch: &str) -> agman::task::Task {
+        let meta = agman::task::TaskMeta::new(
+            repo.to_string(),
+            branch.to_string(),
+            std::path::PathBuf::from(format!("/tmp/{repo}/{branch}")),
+            "new".to_string(),
+        );
+        agman::task::Task {
+            meta,
+            dir: std::path::PathBuf::from(format!("/tmp/{repo}/{branch}/.agman")),
         }
     }
 }
