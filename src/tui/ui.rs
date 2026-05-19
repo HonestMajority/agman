@@ -457,7 +457,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
 
     // Render header row
     let header_style = Style::default()
-        .fg(Color::White)
+        .fg(Color::LightCyan)
         .add_modifier(Modifier::BOLD);
     let header = Line::from(vec![
         Span::raw("    "),
