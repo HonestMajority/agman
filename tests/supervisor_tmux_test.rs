@@ -1,10 +1,11 @@
 mod helpers;
 
+use agman::agent_model::{AgentAttachment, AgentStatus};
 use agman::config::Config;
 use agman::supervisor;
 use agman::tmux::Tmux;
 use agman::use_cases;
-use helpers::{create_test_researcher, create_test_task, test_config};
+use helpers::{create_test_project, create_test_researcher, create_test_task, test_config};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,8 +24,169 @@ impl Drop for TmuxCleanup {
 }
 
 #[test]
+fn archive_task_kills_task_sessions_and_attached_agent_sessions() {
+    if !tmux_available() {
+        eprintln!("skipping tmux lifecycle smoke: tmux binary is unavailable");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let unique = unique_test_name();
+    let project = format!("repo-{unique}");
+    let branch = format!("branch-{unique}");
+    let mut task = create_test_task(&config, &project, &branch);
+    let task_id = task.meta.task_id();
+    let researcher = create_test_researcher(&config, &project, &format!("research-{unique}"));
+    use_cases::attach_agent_to_task(&config, &project, &researcher.meta.name, &task_id, None)
+        .unwrap();
+    let engineer = use_cases::attached_engineer_for_task(&config, &task_id).unwrap();
+    let task_session = task.meta.primary_repo().tmux_session.clone();
+    let engineer_session = Config::engineer_tmux_session(&project, &engineer.meta.name);
+    let researcher_session = Config::researcher_tmux_session(&project, &researcher.meta.name);
+    let _cleanup = TmuxCleanup {
+        sessions: vec![
+            task_session.clone(),
+            engineer_session.clone(),
+            researcher_session.clone(),
+        ],
+    };
+    create_tmux_session(&task_session, tmp.path());
+    create_tmux_session(&engineer_session, tmp.path());
+    create_tmux_session(&researcher_session, tmp.path());
+
+    use_cases::archive_task(&config, &mut task, false).unwrap();
+
+    assert!(!Tmux::session_exists(&task_session));
+    assert!(!Tmux::session_exists(&engineer_session));
+    assert!(!Tmux::session_exists(&researcher_session));
+}
+
+#[test]
+fn archive_agent_kills_canonical_session_and_unlinks_task_window() {
+    if !tmux_available() {
+        eprintln!("skipping tmux lifecycle smoke: tmux binary is unavailable");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let unique = unique_test_name();
+    let project = format!("repo-{unique}");
+    let branch = format!("branch-{unique}");
+    let task = create_test_task(&config, &project, &branch);
+    let task_id = task.meta.task_id();
+    let researcher = create_test_researcher(&config, &project, &format!("research-{unique}"));
+    use_cases::attach_agent_to_task(&config, &project, &researcher.meta.name, &task_id, None)
+        .unwrap();
+    let task_session = task.meta.primary_repo().tmux_session.clone();
+    let researcher_session = Config::researcher_tmux_session(&project, &researcher.meta.name);
+    let window_name =
+        Tmux::linked_agent_window_name("researcher", &researcher.meta.name, &researcher_session);
+    let _cleanup = TmuxCleanup {
+        sessions: vec![task_session.clone(), researcher_session.clone()],
+    };
+    create_tmux_session(&task_session, tmp.path());
+    create_tmux_session(&researcher_session, tmp.path());
+    Tmux::link_agent_window(&task_session, &researcher_session, &window_name).unwrap();
+    assert!(window_names(&task_session).contains(&window_name));
+
+    use_cases::archive_agent(&config, &project, &researcher.meta.name).unwrap();
+
+    assert!(Tmux::session_exists(&task_session));
+    assert!(!Tmux::session_exists(&researcher_session));
+    assert!(!window_names(&task_session).contains(&window_name));
+}
+
+#[test]
+fn delete_project_kills_pm_task_and_agent_sessions() {
+    if !tmux_available() {
+        eprintln!("skipping tmux lifecycle smoke: tmux binary is unavailable");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let unique = unique_test_name();
+    let project = format!("repo-{unique}");
+    let branch = format!("branch-{unique}");
+    create_test_project(&config, &project);
+    let task = create_test_task(&config, &project, &branch);
+    let task_id = task.meta.task_id();
+    let engineer = use_cases::attached_engineer_for_task(&config, &task_id).unwrap();
+    let running_agent = create_test_researcher(&config, &project, &format!("running-{unique}"));
+    let mut archived_agent =
+        create_test_researcher(&config, &project, &format!("archived-{unique}"));
+    archived_agent.meta.status = AgentStatus::Archived;
+    archived_agent.meta.attachment = AgentAttachment::Unattached;
+    archived_agent.save_meta().unwrap();
+
+    let pm_session = Config::pm_tmux_session(&project);
+    let task_session = task.meta.primary_repo().tmux_session.clone();
+    let engineer_session = Config::engineer_tmux_session(&project, &engineer.meta.name);
+    let running_session = Config::researcher_tmux_session(&project, &running_agent.meta.name);
+    let archived_session = Config::researcher_tmux_session(&project, &archived_agent.meta.name);
+    let unrelated_session = format!("agman-unrelated-{unique}");
+    let _cleanup = TmuxCleanup {
+        sessions: vec![
+            pm_session.clone(),
+            task_session.clone(),
+            engineer_session.clone(),
+            running_session.clone(),
+            archived_session.clone(),
+            unrelated_session.clone(),
+        ],
+    };
+    for session in [
+        &pm_session,
+        &task_session,
+        &engineer_session,
+        &running_session,
+        &archived_session,
+        &unrelated_session,
+    ] {
+        create_tmux_session(session, tmp.path());
+    }
+
+    use_cases::delete_project(&config, &project).unwrap();
+
+    assert!(!Tmux::session_exists(&pm_session));
+    assert!(!Tmux::session_exists(&task_session));
+    assert!(!Tmux::session_exists(&engineer_session));
+    assert!(!Tmux::session_exists(&running_session));
+    assert!(!Tmux::session_exists(&archived_session));
+    assert!(Tmux::session_exists(&unrelated_session));
+}
+
+#[test]
+fn permanently_delete_archived_task_kills_leftover_task_session() {
+    if !tmux_available() {
+        eprintln!("skipping tmux lifecycle smoke: tmux binary is unavailable");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let unique = unique_test_name();
+    let project = format!("repo-{unique}");
+    let branch = format!("branch-{unique}");
+    let mut task = create_test_task(&config, &project, &branch);
+    task.meta.archived_at = Some(chrono::Utc::now());
+    task.save_meta().unwrap();
+    let task_session = task.meta.primary_repo().tmux_session.clone();
+    let _cleanup = TmuxCleanup {
+        sessions: vec![task_session.clone()],
+    };
+    create_tmux_session(&task_session, tmp.path());
+
+    use_cases::permanently_delete_archived_task(&config, task).unwrap();
+
+    assert!(!Tmux::session_exists(&task_session));
+}
+
+#[test]
 fn ensure_task_tmux_backfills_attached_agent_windows_after_creation_and_recreation() {
-    if Command::new("tmux").arg("-V").output().is_err() {
+    if !tmux_available() {
         eprintln!("skipping tmux backfill smoke: tmux binary is unavailable");
         return;
     }
@@ -165,6 +327,10 @@ fn unique_test_name() -> String {
         .unwrap()
         .as_nanos();
     format!("{}-{nanos}", std::process::id())
+}
+
+fn tmux_available() -> bool {
+    Command::new("tmux").arg("-V").output().is_ok()
 }
 
 fn create_tmux_session(session: &str, cwd: &std::path::Path) {

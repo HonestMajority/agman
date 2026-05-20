@@ -1826,19 +1826,6 @@ impl App {
         tracing::info!(task_id = %task_id, saved, "TUI: archive task requested");
         self.log_output(format!("Archiving task {}...", task_id));
 
-        // Kill tmux sessions for all repos (side effect)
-        if task.meta.has_repos() {
-            for repo in &task.meta.repos {
-                let _ = Tmux::kill_session(&repo.tmux_session);
-            }
-        }
-        // Also kill the parent-dir session (used for repo-inspector in multi-repo tasks)
-        if task.meta.is_multi_repo() {
-            let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
-            let _ = Tmux::kill_session(&parent_session);
-        }
-        self.log_output("  Killed tmux session(s)".to_string());
-
         // Delegate business logic to use_cases
         use_cases::archive_task(&self.config, &mut task, saved)?;
         self.log_output("  Archived task".to_string());

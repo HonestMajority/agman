@@ -483,15 +483,6 @@ fn cmd_archive_task(config: &Config, task_id: &str, save: bool) -> Result<()> {
         anyhow::bail!("Task '{}' is already archived", task.meta.task_id());
     }
 
-    // Kill tmux sessions (best-effort)
-    for repo in &task.meta.repos {
-        let _ = Tmux::kill_session(&repo.tmux_session);
-    }
-    if task.meta.is_multi_repo() {
-        let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
-        let _ = Tmux::kill_session(&parent_session);
-    }
-
     let display_id = task.meta.task_id();
     use_cases::archive_task(config, &mut task, save)?;
 
