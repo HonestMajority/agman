@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -2366,6 +2368,26 @@ pub fn agent_inbox_path(config: &Config, id: &str) -> Result<PathBuf> {
 /// True if `id` resolves to an agent that exists on disk.
 pub fn agent_exists(config: &Config, id: &str) -> bool {
     parse_send_target(config, id).is_ok()
+}
+
+/// Deterministic short token for Telegram inline-keyboard switch callbacks.
+///
+/// Telegram caps `callback_data` at 64 bytes, so `/ls` buttons use this token
+/// and resolve it against the current relative agent list when tapped.
+pub fn agent_switch_token(id: &str) -> String {
+    let digest = Sha256::digest(id.as_bytes());
+    let mut token = String::with_capacity(10);
+    for byte in &digest[..5] {
+        write!(&mut token, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    token
+}
+
+pub fn resolve_agent_switch_token(config: &Config, current: &str, token: &str) -> Option<String> {
+    relative_agent_list(config, current)
+        .into_iter()
+        .find(|agent| agent_switch_token(&agent.id) == token)
+        .map(|agent| agent.id)
 }
 
 fn agent_ref_for(id: String) -> AgentRef {

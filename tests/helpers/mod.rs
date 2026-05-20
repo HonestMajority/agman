@@ -123,17 +123,26 @@ pub fn create_test_project(config: &Config, name: &str) -> Project {
 /// Create a minimal Researcher-kind AgentRecord for testing.
 #[allow(dead_code)]
 pub fn create_test_researcher(config: &Config, project: &str, name: &str) -> AgentRecord {
-    config.ensure_dirs().unwrap();
-    AgentRecord::create(
+    create_test_agent(
         config,
         project,
         name,
-        "test description",
         AgentKind::Researcher {
             repo: None,
             branch: None,
             task_id: None,
         },
     )
-    .unwrap()
+}
+
+/// Create a minimal AgentRecord of the requested kind for testing.
+#[allow(dead_code)]
+pub fn create_test_agent(
+    config: &Config,
+    project: &str,
+    name: &str,
+    kind: AgentKind,
+) -> AgentRecord {
+    config.ensure_dirs().unwrap();
+    AgentRecord::create(config, project, name, "test description", kind).unwrap()
 }
