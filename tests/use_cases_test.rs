@@ -4,6 +4,7 @@ use agman::agent_model::{AgentAttachment, AgentKind, AgentRecord};
 use agman::inbox;
 use agman::repo_stats::RepoStats;
 use agman::use_cases::{self, WorktreeSource};
+use chrono::{Duration, Utc};
 use helpers::{
     create_test_project, create_test_researcher, create_test_task, init_test_repo, test_config,
 };
@@ -46,6 +47,64 @@ fn create_task_creates_one_attached_engineer_and_initial_inbox_message() {
     let messages = inbox::read_messages(&config.agent_inbox("repo", &agents[0].meta.name)).unwrap();
     assert_eq!(messages.len(), 1);
     assert!(messages[0].message.contains("Build the widget"));
+}
+
+#[test]
+fn visible_fresh_inbox_message_is_deferred() {
+    let now = Utc::now();
+    let msg = inbox::InboxMessage {
+        seq: 1,
+        from: "pm".to_string(),
+        message: "fresh".to_string(),
+        timestamp: now - Duration::seconds(60),
+    };
+
+    assert!(use_cases::should_defer_visible_fresh_inbox_message(
+        &msg,
+        now,
+        Some(true)
+    ));
+}
+
+#[test]
+fn hidden_fresh_inbox_message_is_not_deferred() {
+    let now = Utc::now();
+    let msg = inbox::InboxMessage {
+        seq: 1,
+        from: "pm".to_string(),
+        message: "fresh".to_string(),
+        timestamp: now - Duration::seconds(60),
+    };
+
+    assert!(!use_cases::should_defer_visible_fresh_inbox_message(
+        &msg,
+        now,
+        Some(false)
+    ));
+}
+
+#[test]
+fn visibility_error_defers_fresh_but_not_old_inbox_message() {
+    let now = Utc::now();
+    let fresh = inbox::InboxMessage {
+        seq: 1,
+        from: "pm".to_string(),
+        message: "fresh".to_string(),
+        timestamp: now - Duration::seconds(60),
+    };
+    let old = inbox::InboxMessage {
+        seq: 2,
+        from: "pm".to_string(),
+        message: "old".to_string(),
+        timestamp: now - Duration::seconds(use_cases::INBOX_VISIBLE_FRESH_DEFERRAL_SECS),
+    };
+
+    assert!(use_cases::should_defer_visible_fresh_inbox_message(
+        &fresh, now, None
+    ));
+    assert!(!use_cases::should_defer_visible_fresh_inbox_message(
+        &old, now, None
+    ));
 }
 
 #[test]

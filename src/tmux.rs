@@ -369,6 +369,53 @@ impl Tmux {
         }
     }
 
+    fn required_window_id(target: &str) -> Result<String> {
+        let output = Command::new("tmux")
+            .args(["display-message", "-p", "-t", target, "#{window_id}"])
+            .output()
+            .context("failed to query tmux window id")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to query tmux window id: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if id.is_empty() {
+            anyhow::bail!("tmux target '{target}' did not report a window id");
+        }
+        Ok(id)
+    }
+
+    /// Return whether the target window is currently visible to any attached
+    /// tmux client. Linked windows share the same tmux `window_id`, so this
+    /// also treats task-session links to an agent window as visible.
+    pub fn is_window_visible_to_any_client(
+        session_name: &str,
+        window: Option<&str>,
+    ) -> Result<bool> {
+        let target = Self::tmux_target(session_name, window);
+        let target_window_id = Self::required_window_id(&target)?;
+
+        let output = Command::new("tmux")
+            .args(["list-clients", "-F", "#{window_id}"])
+            .output()
+            .context("failed to list tmux clients")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "failed to list tmux clients: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let client_window_ids = String::from_utf8_lossy(&output.stdout);
+        Ok(window_id_is_visible(
+            &target_window_id,
+            client_window_ids.lines(),
+        ))
+    }
+
     fn window_exists(session_name: &str, window_name: &str) -> Result<bool> {
         let output = Command::new("tmux")
             .args(["list-windows", "-t", session_name, "-F", "#{window_name}"])
@@ -921,9 +968,20 @@ fn sanitize_tmux_window_tokens(raw: &str) -> Vec<String> {
     tokens
 }
 
+fn window_id_is_visible<'a>(
+    target_window_id: &str,
+    client_window_ids: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    client_window_ids
+        .into_iter()
+        .any(|id| id.trim() == target_window_id)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{link_window_args, rename_window_args, unlink_window_args, Tmux};
+    use super::{
+        link_window_args, rename_window_args, unlink_window_args, window_id_is_visible, Tmux,
+    };
 
     #[test]
     fn link_window_command_targets_canonical_agent_window() {
@@ -1029,5 +1087,12 @@ mod tests {
 
         assert!(name.starts_with("Engineer-agent-"));
         assert!(name.len() <= 24);
+    }
+
+    #[test]
+    fn visible_window_id_matches_attached_client_window_ids() {
+        assert!(window_id_is_visible("@42", ["@1", "@42", "@9"]));
+        assert!(window_id_is_visible("@42", [" @42 "]));
+        assert!(!window_id_is_visible("@42", ["@1", "@9"]));
     }
 }

@@ -22,6 +22,7 @@ use crate::tmux::Tmux;
 /// it's resolved per-config via [`Config::default_harness`] and prepended
 /// dynamically by [`check_dependencies`]).
 const REQUIRED_TOOLS: &[&str] = &["tmux", "git", "nvim", "lazygit", "gh", "direnv"];
+pub const INBOX_VISIBLE_FRESH_DEFERRAL_SECS: i64 = 5 * 60;
 
 /// Check that all required external tools are present on $PATH. Includes
 /// the configured harness binary. Returns a list of
@@ -4296,6 +4297,23 @@ pub fn stalled_targets_from_counts(
         .filter(|(_, n)| **n >= threshold)
         .map(|(t, _)| t.as_str())
         .collect()
+}
+
+/// Return true when an inbox message should be deferred because its target
+/// window is visible and the message is still fresh enough that the user may
+/// be manually typing in that chat.
+pub fn should_defer_visible_fresh_inbox_message(
+    msg: &inbox::InboxMessage,
+    now: DateTime<Utc>,
+    target_visible: Option<bool>,
+) -> bool {
+    let age = now.signed_duration_since(msg.timestamp);
+    let is_fresh = age.num_seconds() < INBOX_VISIBLE_FRESH_DEFERRAL_SECS;
+    if !is_fresh {
+        return false;
+    }
+
+    target_visible.unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------

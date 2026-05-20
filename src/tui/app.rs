@@ -4884,8 +4884,43 @@ impl App {
                         }
                     }
 
+                    let visibility = match Tmux::is_window_visible_to_any_client(
+                        &session_name,
+                        window_ref,
+                    ) {
+                        Ok(visible) => Some(visible),
+                        Err(e) => {
+                            tracing::debug!(
+                                target_name = &target,
+                                session = &session_name,
+                                error = %e,
+                                "target visibility check failed; treating fresh messages as visible"
+                            );
+                            None
+                        }
+                    };
+
                     // Decision 5: already-pasted rescue (after readiness+buffer)
                     let first_msg = &undelivered[0];
+                    if use_cases::should_defer_visible_fresh_inbox_message(
+                        first_msg,
+                        chrono::Utc::now(),
+                        visibility,
+                    ) {
+                        tracing::debug!(
+                            target_name = &target,
+                            session = &session_name,
+                            seq = first_msg.seq,
+                            "target window visible and inbox message is fresh; deferring delivery"
+                        );
+                        results.push(InboxPollResult {
+                            target,
+                            delivered: 0,
+                            errors: vec![],
+                        });
+                        continue;
+                    }
+
                     let first_snippet = format!("[msg:{}:{}]", first_msg.from, first_msg.seq);
                     let already_pasted = Tmux::capture_pane_window(&session_name, window_ref)
                         .map(|content| content.contains(&first_snippet))
@@ -4922,6 +4957,20 @@ impl App {
                     }
 
                     'msg_loop: for msg in &undelivered {
+                        if use_cases::should_defer_visible_fresh_inbox_message(
+                            msg,
+                            chrono::Utc::now(),
+                            visibility,
+                        ) {
+                            tracing::debug!(
+                                target_name = &target,
+                                session = &session_name,
+                                seq = msg.seq,
+                                "target window visible and inbox message is fresh; deferring delivery"
+                            );
+                            break 'msg_loop;
+                        }
+
                         let formatted_snippet = format!("[msg:{}:{}]", msg.from, msg.seq);
 
                         for attempt in 0..MAX_RETRIES {

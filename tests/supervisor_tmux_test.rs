@@ -7,7 +7,10 @@ use agman::tmux::Tmux;
 use agman::use_cases;
 use helpers::{create_test_project, create_test_researcher, create_test_task, test_config};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct TmuxCleanup {
     sessions: Vec<String>,
@@ -326,7 +329,8 @@ fn unique_test_name() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    format!("{}-{nanos}", std::process::id())
+    let counter = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{counter}-{nanos}", std::process::id())
 }
 
 fn tmux_available() -> bool {
