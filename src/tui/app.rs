@@ -702,6 +702,13 @@ pub struct App {
     pub respawn_in_progress: Option<String>,
     respawn_tx: tokio_mpsc::UnboundedSender<Result<String, String>>,
     respawn_rx: tokio_mpsc::UnboundedReceiver<Result<String, String>>,
+    // Task archive (async). `archive_in_progress` holds task ids that the
+    // worker is currently archiving — the live task list filter consults this
+    // set so a row removed synchronously doesn't flicker back from disk
+    // between the optimistic remove and the worker rewriting `archived_at`.
+    pub archive_in_progress: HashSet<String>,
+    archive_tx: tokio_mpsc::UnboundedSender<(String, Result<bool, String>)>,
+    archive_rx: tokio_mpsc::UnboundedReceiver<(String, Result<bool, String>)>,
     // Respawn confirmation dialog
     pub respawn_confirm_target: Option<String>,
     pub respawn_confirm_index: usize,
@@ -754,6 +761,7 @@ impl App {
         let (keybase_tx, keybase_rx) = tokio_mpsc::unbounded_channel();
         let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
         let (respawn_tx, respawn_rx) = tokio_mpsc::unbounded_channel();
+        let (archive_tx, archive_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
         let mut dismissed_notifs =
             DismissedNotifications::load(&config.dismissed_notifications_path());
@@ -890,6 +898,9 @@ impl App {
             respawn_in_progress: None,
             respawn_tx,
             respawn_rx,
+            archive_in_progress: HashSet::new(),
+            archive_tx,
+            archive_rx,
             respawn_confirm_target: None,
             respawn_confirm_index: 0,
             respawn_confirm_is_chief_of_staff: false,
@@ -1194,16 +1205,22 @@ impl App {
     fn refresh_tasks_for_project(&mut self) {
         let prev_row_key = self.selected_project_detail_row_key();
         let all = Task::list_all(&self.config);
+        let in_progress = &self.archive_in_progress;
         self.tasks = match &self.current_project {
             Some(name) if name == "(unassigned)" => all
                 .into_iter()
                 .filter(|t| t.meta.project.is_none())
+                .filter(|t| !in_progress.contains(&t.meta.task_id()))
                 .collect(),
             Some(name) => all
                 .into_iter()
                 .filter(|t| t.meta.project.as_deref() == Some(name.as_str()))
+                .filter(|t| !in_progress.contains(&t.meta.task_id()))
                 .collect(),
-            None => all,
+            None => all
+                .into_iter()
+                .filter(|t| !in_progress.contains(&t.meta.task_id()))
+                .collect(),
         };
         self.refresh_attached_task_agents();
         if self.restore_project_detail_selection(prev_row_key.as_ref()) {
@@ -1820,26 +1837,46 @@ impl App {
         let Some(task_index) = self.selected_task_index() else {
             return Ok(());
         };
-        let mut task = self.tasks.remove(task_index);
+        let task = self.tasks.remove(task_index);
         let task_id = task.meta.task_id();
 
-        tracing::info!(task_id = %task_id, saved, "TUI: archive task requested");
+        tracing::info!(task_id = %task_id, saved, "TUI: archive task requested (async)");
         self.log_output(format!("Archiving task {}...", task_id));
 
-        // Delegate business logic to use_cases
-        use_cases::archive_task(&self.config, &mut task, saved)?;
-        self.log_output("  Archived task".to_string());
-
+        // Optimistic UI updates: clear attached agent cache, clamp selection,
+        // and mark the task as in-progress so refresh_tasks_for_project can
+        // suppress re-adding the task while the worker rewrites archived_at.
+        self.archive_in_progress.insert(task_id.clone());
         self.refresh_attached_task_agents();
         self.clamp_project_detail_selection_near(self.selected_index);
 
         let label = if saved {
-            "Archived & saved"
+            "Archiving & saving"
         } else {
-            "Archived"
+            "Archiving"
         };
         self.set_status(format!("{}: {}", label, task_id));
         self.view = View::TaskList;
+
+        // Offload the heavy archive work (tmux kills, worktree removal,
+        // agent archiving, meta rewrite) so the TUI event loop keeps
+        // ticking. Result is drained by `apply_archive_results`.
+        let tx = self.archive_tx.clone();
+        let config = self.config.clone();
+        let mut owned_task = task;
+        let task_id_for_send = task_id.clone();
+        self.rt.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                use_cases::archive_task(&config, &mut owned_task, saved).map(|_| saved)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("{e}")));
+            let msg = match result {
+                Ok(saved) => Ok(saved),
+                Err(e) => Err(format!("{e}")),
+            };
+            let _ = tx.send((task_id_for_send, msg));
+        });
         Ok(())
     }
 
@@ -5116,6 +5153,39 @@ impl App {
         }
     }
 
+    /// Drain any completed background archive jobs. The worker reports the
+    /// task id and either `Ok(saved)` or an error string. On success we clear
+    /// the in-progress entry so subsequent refreshes treat the task as
+    /// archived; on failure we still clear the entry (so the task can re-
+    /// appear from disk if the worker only partially completed), surface the
+    /// error to the status line, and log it.
+    fn apply_archive_results(&mut self) {
+        loop {
+            let (task_id, result) = match self.archive_rx.try_recv() {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            self.archive_in_progress.remove(&task_id);
+            match result {
+                Ok(saved) => {
+                    let label = if saved {
+                        "Archived & saved"
+                    } else {
+                        "Archived"
+                    };
+                    tracing::info!(task_id = %task_id, saved, "TUI: archive task completed");
+                    self.log_output(format!("  Archived task {task_id}"));
+                    self.set_status(format!("{label}: {task_id}"));
+                }
+                Err(e) => {
+                    tracing::error!(task_id = %task_id, error = %e, "TUI: archive task failed");
+                    self.log_output(format!("  Archive failed for {task_id}: {e}"));
+                    self.set_status(format!("archive failed: {task_id}: {e}"));
+                }
+            }
+        }
+    }
+
     /// Spawn a background task to poll GitHub notifications.
     fn start_gh_notif_poll(&mut self) {
         if self.gh_notif_poll_active {
@@ -5520,6 +5590,9 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed respawn results (non-blocking)
             app.apply_respawn_results();
+
+            // Check for completed task archive results (non-blocking)
+            app.apply_archive_results();
 
             if app.last_telegram_watchdog.elapsed() >= TELEGRAM_WATCHDOG_INTERVAL {
                 app.check_telegram_watchdog();
@@ -6035,6 +6108,99 @@ mod tests {
             }
             other => panic!("expected remaining task row, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn archive_task_marks_in_progress_and_refresh_does_not_re_add_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let unique = unique_name();
+        let project = format!("repo-{unique}");
+        let first = create_test_task(&config, &project, &format!("branch-a-{unique}"));
+        let second = create_test_task(&config, &project, &format!("branch-b-{unique}"));
+        let first_task_id = first.meta.task_id();
+        let second_task_id = second.meta.task_id();
+
+        let mut app = App::new_for_test(config).unwrap();
+        app.current_project = Some(project);
+        app.refresh_tasks_for_project();
+        app.refresh_agents();
+
+        // Directly exercise the live-list filter: the background worker may
+        // or may not have finished by the time the periodic refresh fires,
+        // so the in-progress set must keep the row suppressed independent of
+        // the on-disk `archived_at` field. Insert manually to avoid coupling
+        // the assertion to the worker's progress.
+        app.archive_in_progress.insert(second_task_id.clone());
+        app.tasks.retain(|t| t.meta.task_id() != second_task_id);
+
+        // On-disk meta for `second` still lacks `archived_at` here — without
+        // the filter the periodic refresh would resurrect the row.
+        app.refresh_tasks_for_project();
+
+        assert!(
+            !app.tasks.iter().any(|t| t.meta.task_id() == second_task_id),
+            "refresh must not re-add a task whose archive is in progress"
+        );
+        assert!(
+            app.tasks.iter().any(|t| t.meta.task_id() == first_task_id),
+            "other tasks remain visible after refresh"
+        );
+
+        // Clearing the in-progress flag (as `apply_archive_results` does on
+        // completion) lets a subsequent refresh consult disk again. With the
+        // on-disk task still un-archived, the row reappears — confirming
+        // the filter, not some unrelated path, was what suppressed it.
+        app.archive_in_progress.remove(&second_task_id);
+        app.refresh_tasks_for_project();
+        assert!(
+            app.tasks.iter().any(|t| t.meta.task_id() == second_task_id),
+            "task reappears once in-progress flag is cleared (proves the filter was the gate)"
+        );
+    }
+
+    #[test]
+    fn archive_task_inserts_task_id_into_archive_in_progress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let unique = unique_name();
+        let project = format!("repo-{unique}");
+        let first = create_test_task(&config, &project, &format!("branch-a-{unique}"));
+        let second = create_test_task(&config, &project, &format!("branch-b-{unique}"));
+        let _first_task_id = first.meta.task_id();
+        let second_task_id = second.meta.task_id();
+
+        let mut app = App::new_for_test(config).unwrap();
+        app.current_project = Some(project);
+        app.refresh_tasks_for_project();
+        app.refresh_agents();
+        app.selected_index = app
+            .project_detail_rows()
+            .iter()
+            .position(|row| {
+                matches!(
+                    row,
+                    ProjectDetailRow::Task(ProjectTaskRow::Task { task, .. })
+                        if task.meta.task_id() == second_task_id
+                )
+            })
+            .unwrap();
+
+        // `archive_task` returns immediately and spawns the heavy work. We
+        // assert only on the synchronous side-effects: the task id is
+        // tracked as in-progress and the row is gone from `self.tasks`.
+        // The background worker drains independently and is not awaited.
+        app.archive_task(false).unwrap();
+
+        assert!(
+            app.archive_in_progress.contains(&second_task_id),
+            "archived task id should be in archive_in_progress immediately, got {:?}",
+            app.archive_in_progress
+        );
+        assert!(
+            !app.tasks.iter().any(|t| t.meta.task_id() == second_task_id),
+            "archived task should be removed from in-memory tasks immediately"
+        );
     }
 
     #[test]
