@@ -1171,6 +1171,9 @@ struct AttachedAgentColumnWidths {
     created: usize,
 }
 
+const ATTACHED_AGENT_INDENT_WIDTH: usize = 4;
+const ATTACHED_AGENT_INDENT: &str = "    ";
+
 fn project_agent_column_widths(app: &App, area: Rect) -> AgentColumnWidths {
     const MIN_NAME_WIDTH: usize = 4;
     const MAX_NAME_WIDTH: usize = 56;
@@ -1240,7 +1243,6 @@ fn project_attached_agent_column_widths(app: &App, area: Rect) -> AttachedAgentC
     const PREFIX_WIDTH: usize = 9;
     const TYPE_WIDTH: usize = 10;
     const MIN_NAME_WIDTH: usize = 12;
-    const MAX_NAME_WIDTH: usize = 36;
     const STATUS_WIDTH: usize = 10;
     const CREATED_WIDTH: usize = 10;
     const COL_GAP: &str = "  ";
@@ -1252,11 +1254,15 @@ fn project_attached_agent_column_widths(app: &App, area: Rect) -> AttachedAgentC
         .map(|agent| agent.meta.name.len())
         .max()
         .unwrap_or(MIN_NAME_WIDTH);
-    let fixed_width =
-        PREFIX_WIDTH + TYPE_WIDTH + STATUS_WIDTH + CREATED_WIDTH + (COL_GAP.len() * 4);
+    let fixed_width = ATTACHED_AGENT_INDENT_WIDTH
+        + PREFIX_WIDTH
+        + TYPE_WIDTH
+        + STATUS_WIDTH
+        + CREATED_WIDTH
+        + (COL_GAP.len() * 4);
     let available_name_width = (area.width as usize)
         .saturating_sub(fixed_width)
-        .clamp(MIN_NAME_WIDTH, MAX_NAME_WIDTH);
+        .max(MIN_NAME_WIDTH);
 
     AttachedAgentColumnWidths {
         prefix: PREFIX_WIDTH,
@@ -1411,6 +1417,7 @@ fn project_attached_agents_header(widths: AttachedAgentColumnWidths) -> Line<'st
     const COL_GAP: &str = "  ";
     let header_style = Style::default().fg(Color::DarkGray);
     Line::from(vec![
+        Span::raw(ATTACHED_AGENT_INDENT),
         Span::styled(
             format!("{:<width$}", "AGENTS", width = widths.prefix),
             header_style,
@@ -1530,6 +1537,7 @@ fn project_attached_agent_line(
     };
     let display_name = truncate_to_width(&agent.meta.name, widths.name);
     Line::from(vec![
+        Span::raw(ATTACHED_AGENT_INDENT),
         Span::raw("  └ "),
         Span::styled(
             format!(
@@ -4379,6 +4387,7 @@ mod project_count_cell_tests {
         assert_eq!(
             span_text(&project_attached_agents_header(widths).spans),
             vec![
+                "    ",
                 "AGENTS   ",
                 "  ",
                 "TYPE      ",
@@ -4410,6 +4419,7 @@ mod project_count_cell_tests {
         assert_eq!(
             span_text(&project_attached_agent_line(&app, &agent, false, widths).spans),
             vec![
+                "    ",
                 "  └ ",
                 "○    ",
                 "  ",
@@ -4422,6 +4432,67 @@ mod project_count_cell_tests {
                 "just now  "
             ]
         );
+    }
+
+    #[test]
+    fn attached_agent_header_and_rows_align_after_child_indent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config =
+            agman::config::Config::new(tmp.path().join(".agman"), tmp.path().join("repos"));
+        let app = App::new(config).unwrap();
+        let agent = attached_agent("agman-improvements--reviewer");
+        let widths = AttachedAgentColumnWidths {
+            prefix: 9,
+            type_width: 10,
+            name: 24,
+            status: 10,
+            created: 10,
+        };
+
+        let header = span_text(&project_attached_agents_header(widths).spans).join("");
+        let row =
+            span_text(&project_attached_agent_line(&app, &agent, false, widths).spans).join("");
+
+        assert!(header.starts_with(ATTACHED_AGENT_INDENT));
+        assert!(row.starts_with(ATTACHED_AGENT_INDENT));
+        let column = |text: &str, needle: &str| {
+            text.find(needle)
+                .map(|index| text[..index].chars().count())
+                .unwrap()
+        };
+        assert_eq!(column(&header, "TYPE"), column(&row, "reviewer"));
+        assert_eq!(column(&header, "STATUS"), column(&row, "idle"));
+        assert_eq!(column(&header, "CREATED"), column(&row, "just now"));
+    }
+
+    #[test]
+    fn attached_agent_name_width_uses_available_wide_space() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config =
+            agman::config::Config::new(tmp.path().join(".agman"), tmp.path().join("repos"));
+        let mut app = App::new(config).unwrap();
+        let long_name = "agman-improvements--attached-agent-with-a-long-readable-name";
+        app.attached_task_agents
+            .insert("task-1".to_string(), vec![attached_agent(long_name)]);
+
+        let widths = project_attached_agent_column_widths(
+            &app,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 1,
+            },
+        );
+
+        assert!(widths.name > 36);
+        assert_eq!(widths.name, long_name.len());
+
+        let line = span_text(
+            &project_attached_agent_line(&app, &attached_agent(long_name), false, widths).spans,
+        )
+        .join("");
+        assert!(line.contains(long_name));
     }
 
     #[test]
