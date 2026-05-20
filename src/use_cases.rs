@@ -289,14 +289,14 @@ pub fn create_multi_repo_task(
 /// up when the task is permanently deleted (see `permanently_delete_archived_task`).
 ///
 /// This is the pure business logic behind archiving from the task list.
-/// It archives and stops attached agents, but does NOT kill task tmux sessions —
-/// that's a side effect handled by the caller.
+/// It archives and stops attached agents and task tmux sessions.
 /// It does NOT remove the task directory — the directory is kept as the archive.
 pub fn archive_task(config: &Config, task: &mut Task, saved: bool) -> Result<()> {
     let task_id = task.meta.task_id();
     tracing::info!(task_id = %task_id, saved, "archiving task");
 
     archive_agents_attached_to_task(config, &task_id)?;
+    kill_task_tmux_sessions(task);
 
     // Remove worktrees (branches are kept for later reference)
     let parent_dir = task.meta.parent_dir.as_deref();
@@ -311,6 +311,31 @@ pub fn archive_task(config: &Config, task: &mut Task, saved: bool) -> Result<()>
     task.save_meta()?;
 
     Ok(())
+}
+
+fn kill_task_tmux_sessions(task: &Task) {
+    for repo in &task.meta.repos {
+        if let Err(e) = Tmux::kill_session(&repo.tmux_session) {
+            tracing::warn!(
+                task_id = %task.meta.task_id(),
+                session = %repo.tmux_session,
+                error = %e,
+                "failed to kill task repo tmux session"
+            );
+        }
+    }
+
+    if task.meta.is_multi_repo() {
+        let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+        if let Err(e) = Tmux::kill_session(&parent_session) {
+            tracing::warn!(
+                task_id = %task.meta.task_id(),
+                session = %parent_session,
+                error = %e,
+                "failed to kill task parent tmux session"
+            );
+        }
+    }
 }
 
 fn archive_agents_attached_to_task(config: &Config, task_id: &str) -> Result<()> {
@@ -345,6 +370,7 @@ pub fn permanently_delete_archived_task(config: &Config, task: Task) -> Result<(
     tracing::info!(task_id = %task_id, "permanently deleting archived task");
 
     archive_agents_attached_to_task(config, &task_id)?;
+    kill_task_tmux_sessions(&task);
 
     // Delete branches for all repos (best-effort)
     let parent_dir = task.meta.parent_dir.as_deref();
@@ -360,13 +386,13 @@ pub fn permanently_delete_archived_task(config: &Config, task: Task) -> Result<(
 /// Fully delete a task: remove worktrees, delete branches, and remove the task
 /// directory. This is the "nuclear option" — everything is gone immediately.
 ///
-/// Like `archive_task`, this does NOT kill task tmux sessions — the caller handles that.
-/// Attached agents are archived and their canonical tmux sessions are stopped.
+/// Attached agents are archived and task/agent tmux sessions are stopped.
 pub fn fully_delete_task(config: &Config, task: Task) -> Result<()> {
     let task_id = task.meta.task_id();
     tracing::info!(task_id = %task_id, "fully deleting task");
 
     archive_agents_attached_to_task(config, &task_id)?;
+    kill_task_tmux_sessions(&task);
 
     // Remove worktrees (best-effort)
     let parent_dir = task.meta.parent_dir.as_deref();
@@ -1810,7 +1836,7 @@ pub fn list_unassigned_tasks(config: &Config) -> Result<Vec<Task>> {
         .collect())
 }
 
-/// Delete a project: archive all its tasks, kill PM session, remove project directory.
+/// Delete a project: archive all its tasks and agents, kill PM session, remove project directory.
 pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
     // Verify the project exists
     let _project = Project::load_by_name(config, project_name)?;
@@ -1822,26 +1848,16 @@ pub fn delete_project(config: &Config, project_name: &str) -> Result<()> {
         if task.meta.archived_at.is_some() {
             continue;
         }
-        // Kill tmux sessions for repos (best-effort)
-        if task.meta.has_repos() {
-            for repo in &task.meta.repos {
-                let _ = Tmux::kill_session(&repo.tmux_session);
-            }
-        }
-        // Kill multi-repo parent session if applicable
-        if task.meta.is_multi_repo() {
-            let parent_session = Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
-            let _ = Tmux::kill_session(&parent_session);
-        }
         archive_task(config, &mut task, false)?;
         archived_count += 1;
     }
 
-    // Archive all non-archived agents (researchers and reviewers).
+    // Archive running agents and kill any already-archived agent sessions still present.
     let agents = AgentRecord::list_for_project(config, project_name)?;
     let mut agent_archived_count = 0;
     for agent in &agents {
         if agent.meta.status == AgentStatus::Archived {
+            kill_agent_tmux_session(agent);
             continue;
         }
         if let Err(e) = archive_agent(config, &agent.meta.project, &agent.meta.name) {
@@ -3158,6 +3174,19 @@ pub(crate) fn agent_tmux_session_for_record(agent: &AgentRecord) -> String {
     agent_tmux_session(&agent.meta)
 }
 
+fn kill_agent_tmux_session(agent: &AgentRecord) {
+    let session_name = agent_tmux_session(&agent.meta);
+    if let Err(e) = Tmux::kill_session(&session_name) {
+        tracing::warn!(
+            project = %agent.meta.project,
+            agent = %agent.meta.name,
+            session = %session_name,
+            error = %e,
+            "failed to kill agent tmux session"
+        );
+    }
+}
+
 fn agent_window_kind(kind: &AgentKind) -> &'static str {
     match kind {
         AgentKind::Engineer => "engineer",
@@ -4005,11 +4034,7 @@ pub fn archive_agent(config: &Config, project: &str, name: &str) -> Result<()> {
         }
     }
 
-    let session_name = agent_tmux_session(&agent.meta);
-    if Tmux::session_exists(&session_name) {
-        tracing::info!(session = &session_name, "killing agent tmux session");
-        Tmux::kill_session(&session_name)?;
-    }
+    kill_agent_tmux_session(&agent);
 
     agent.meta.status = AgentStatus::Archived;
     agent.meta.attachment = AgentAttachment::Unattached;
@@ -4030,10 +4055,7 @@ pub fn permanently_delete_archived_agent(config: &Config, agent: AgentRecord) ->
         );
     }
 
-    let session_name = agent_tmux_session(&agent.meta);
-    if let Err(e) = Tmux::kill_session(&session_name) {
-        tracing::warn!(session = %session_name, error = %e, "failed to kill agent tmux session during permanent delete");
-    }
+    kill_agent_tmux_session(&agent);
 
     cleanup_agent_worktrees(config, &agent);
 
