@@ -41,6 +41,9 @@ uuid = { version = "1.6", features = ["v4"] }
 # HTTP client (blocking, used by Telegram bot thread)
 ureq = { version = "2", features = ["json"] }
 
+# Short deterministic Telegram callback tokens
+sha2 = "0.10"
+
 # Better panic handling
 better-panic = "0.3"
 

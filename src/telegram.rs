@@ -630,7 +630,21 @@ fn handle_callback_query(ctx: &BotCtx, cq: &Value) {
     }
 
     if let Some(data) = cq["data"].as_str() {
-        if let Some(target) = data.strip_prefix("switch:") {
+        if let Some(token) = data.strip_prefix("sw:") {
+            let current = read_current_agent(ctx);
+            if let Some(target) =
+                use_cases::resolve_agent_switch_token(&ctx.config, &current, token)
+            {
+                switch_current_agent(ctx, &target);
+            } else {
+                tracing::warn!(
+                    token = %token,
+                    current = %current,
+                    "telegram: stale or unknown switch token"
+                );
+                let _ = tg_send(ctx, "This agent list is stale. Send /ls again.");
+            }
+        } else if let Some(target) = data.strip_prefix("switch:") {
             switch_current_agent(ctx, target);
         } else {
             tracing::warn!(data = %data, "telegram: unknown callback data");
@@ -922,7 +936,12 @@ fn build_ls_reply(ctx: &BotCtx) -> (String, Vec<Vec<(String, String)>>) {
         .map(|chunk| {
             chunk
                 .iter()
-                .map(|a| (a.label.clone(), format!("switch:{}", a.id)))
+                .map(|a| {
+                    (
+                        a.label.clone(),
+                        format!("sw:{}", use_cases::agent_switch_token(&a.id)),
+                    )
+                })
                 .collect()
         })
         .collect();

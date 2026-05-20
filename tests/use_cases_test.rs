@@ -1,12 +1,13 @@
 mod helpers;
 
-use agman::agent_model::{AgentAttachment, AgentKind, AgentRecord};
+use agman::agent_model::{AgentAttachment, AgentKind, AgentRecord, AgentStatus};
 use agman::inbox;
 use agman::repo_stats::RepoStats;
 use agman::use_cases::{self, WorktreeSource};
 use chrono::{Duration, Utc};
 use helpers::{
-    create_test_project, create_test_researcher, create_test_task, init_test_repo, test_config,
+    create_test_agent, create_test_project, create_test_researcher, create_test_task,
+    init_test_repo, test_config,
 };
 
 #[test]
@@ -541,4 +542,132 @@ fn fully_delete_task_archives_and_unlinks_attached_agents() {
         assert_eq!(agent.meta.status, agman::agent_model::AgentStatus::Archived);
         assert!(matches!(agent.meta.attachment, AgentAttachment::Unattached));
     }
+}
+
+#[test]
+fn agent_switch_token_is_short_deterministic_hex() {
+    let long_id =
+        "researcher:citadel-partner-portal-deploy--drua-citadel-sales-portal-security-review";
+
+    let token = use_cases::agent_switch_token(long_id);
+
+    assert_eq!(token.len(), 10);
+    assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(token, use_cases::agent_switch_token(long_id));
+    assert_ne!(
+        token,
+        use_cases::agent_switch_token("researcher:citadel-partner-portal-deploy--other")
+    );
+}
+
+#[test]
+fn relative_agent_list_project_view_includes_running_agent_kinds_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _project = create_test_project(&config, "long-project-name");
+    let _task = create_test_task(&config, "long-project-name", "long-task-branch");
+    let _researcher = create_test_agent(
+        &config,
+        "long-project-name",
+        "research-agent",
+        AgentKind::Researcher {
+            repo: None,
+            branch: None,
+            task_id: None,
+        },
+    );
+    let _operator = create_test_agent(
+        &config,
+        "long-project-name",
+        "operator-agent",
+        AgentKind::Operator {
+            repo: None,
+            branch: None,
+            task_id: None,
+        },
+    );
+    let _reviewer = create_test_agent(
+        &config,
+        "long-project-name",
+        "reviewer-agent",
+        AgentKind::Reviewer { worktrees: vec![] },
+    );
+    let _tester = create_test_agent(
+        &config,
+        "long-project-name",
+        "tester-agent",
+        AgentKind::Tester {
+            worktrees: vec![],
+            capabilities: Default::default(),
+        },
+    );
+    let mut archived = create_test_agent(
+        &config,
+        "long-project-name",
+        "archived-agent",
+        AgentKind::Researcher {
+            repo: None,
+            branch: None,
+            task_id: None,
+        },
+    );
+    archived.meta.status = AgentStatus::Archived;
+    archived.save_meta().unwrap();
+
+    let ids: Vec<String> = use_cases::relative_agent_list(&config, "long-project-name")
+        .into_iter()
+        .map(|agent| agent.id)
+        .collect();
+
+    assert!(ids.iter().any(|id| id
+        .starts_with("engineer:long-project-name--engineer-long-project-name-long-task-branch")));
+    assert!(ids.contains(&"researcher:long-project-name--research-agent".to_string()));
+    assert!(ids.contains(&"operator:long-project-name--operator-agent".to_string()));
+    assert!(ids.contains(&"reviewer:long-project-name--reviewer-agent".to_string()));
+    assert!(ids.contains(&"tester:long-project-name--tester-agent".to_string()));
+    assert!(ids.contains(&"chief-of-staff".to_string()));
+    assert!(!ids.contains(&"researcher:long-project-name--archived-agent".to_string()));
+}
+
+#[test]
+fn resolves_long_agent_switch_token_from_current_relative_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _project = create_test_project(&config, "citadel-partner-portal-deploy");
+    let _researcher = create_test_agent(
+        &config,
+        "citadel-partner-portal-deploy",
+        "drua-citadel-sales-portal-security-review",
+        AgentKind::Researcher {
+            repo: None,
+            branch: None,
+            task_id: None,
+        },
+    );
+    let target =
+        "researcher:citadel-partner-portal-deploy--drua-citadel-sales-portal-security-review";
+    let callback_data = format!("sw:{}", use_cases::agent_switch_token(target));
+
+    assert!(callback_data.len() <= 64);
+    assert_eq!(
+        use_cases::resolve_agent_switch_token(
+            &config,
+            "citadel-partner-portal-deploy",
+            callback_data.strip_prefix("sw:").unwrap()
+        ),
+        Some(target.to_string())
+    );
+}
+
+#[test]
+fn stale_agent_switch_token_returns_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _project = create_test_project(&config, "project");
+    let stale_token = use_cases::agent_switch_token("researcher:project--deleted-agent");
+
+    assert_eq!(
+        use_cases::resolve_agent_switch_token(&config, "project", &stale_token),
+        None
+    );
 }
