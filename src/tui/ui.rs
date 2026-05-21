@@ -2203,7 +2203,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 spans.extend([
                     Span::styled("c", Style::default().fg(Color::LightYellow)),
                     Span::styled(" PM chat  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("O", Style::default().fg(Color::LightYellow)),
+                    Span::styled("o", Style::default().fg(Color::LightYellow)),
                     Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("e", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
@@ -2216,7 +2216,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                         .selected_task()
                         .is_some_and(|task| task.meta.linked_pr.is_some())
                     {
-                        spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
+                        spans.push(Span::styled("p", Style::default().fg(Color::LightYellow)));
                         spans.push(Span::styled(
                             " open pr  ",
                             Style::default().fg(Color::DarkGray),
@@ -2268,7 +2268,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 ];
                 if let Some(task) = app.selected_task() {
                     if task.meta.linked_pr.is_some() {
-                        spans.push(Span::styled("o", Style::default().fg(Color::LightYellow)));
+                        spans.push(Span::styled("p", Style::default().fg(Color::LightYellow)));
                         spans.push(Span::styled(
                             " open pr  ",
                             Style::default().fg(Color::DarkGray),

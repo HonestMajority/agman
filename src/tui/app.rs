@@ -2597,7 +2597,7 @@ impl App {
             KeyCode::Char('a') => {
                 self.start_agent_wizard();
             }
-            KeyCode::Char('o') => {
+            KeyCode::Char('p') => {
                 let pr_info = match self.selected_project_detail_row() {
                     Some(ProjectDetailRow::Task(_)) => self.selected_task().and_then(|t| {
                         t.meta
@@ -2614,7 +2614,7 @@ impl App {
                     self.set_status("No linked PR".to_string());
                 }
             }
-            KeyCode::Char('O') => {
+            KeyCode::Char('o') => {
                 let Some(project) = self.current_project.clone() else {
                     self.set_status("No project selected".to_string());
                     return Ok(false);
@@ -3790,7 +3790,7 @@ impl App {
 
             // Action keys — handled before forwarding to VimTextArea
             match key.code {
-                KeyCode::Char('o') => {
+                KeyCode::Char('p') => {
                     let pr_info = self.selected_task().and_then(|t| {
                         t.meta
                             .linked_pr
@@ -5698,7 +5698,7 @@ pub fn run_tui(config: Config) -> Result<()> {
 mod tests {
     use super::*;
     use agman::agent_model::AgentAttachment;
-    use agman::task::TaskMeta;
+    use agman::task::{LinkedPr, TaskMeta};
 
     #[test]
     fn project_list_opens_global_notes_and_returns_to_project_list() {
@@ -5756,7 +5756,7 @@ mod tests {
     }
 
     #[test]
-    fn task_list_uppercase_o_opens_project_notes_and_returns_to_task_list() {
+    fn task_list_lowercase_o_opens_project_notes_and_returns_to_task_list() {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config(tmp.path());
         Project::create(&config, "alpha", "Alpha project").unwrap();
@@ -5765,8 +5765,8 @@ mod tests {
         app.view = View::TaskList;
 
         app.handle_event(Event::Key(event::KeyEvent::new(
-            KeyCode::Char('O'),
-            KeyModifiers::SHIFT,
+            KeyCode::Char('o'),
+            KeyModifiers::NONE,
         )))
         .unwrap();
 
@@ -5785,6 +5785,41 @@ mod tests {
 
         assert_eq!(app.view, View::TaskList);
         assert!(app.notes_view.is_none());
+    }
+
+    #[test]
+    fn task_list_lowercase_o_opens_project_notes_even_when_task_has_linked_pr() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let unique = unique_name();
+        let project = format!("repo-{unique}");
+        let branch = format!("branch-{unique}");
+        let mut task = create_test_task(&config, &project, &branch);
+        task.meta.linked_pr = Some(LinkedPr {
+            number: 42,
+            url: "https://github.com/example/repo/pull/42".to_string(),
+            owned: true,
+            author: None,
+        });
+        task.save_meta().unwrap();
+
+        let mut app = App::new_for_test(config.clone()).unwrap();
+        app.current_project = Some(project.clone());
+        app.view = View::TaskList;
+        app.refresh_tasks_for_project();
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Char('o'),
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::Notes);
+        assert_eq!(app.notes_return_view, View::TaskList);
+        assert_eq!(
+            app.notes_view.as_ref().unwrap().root_dir,
+            config.project_notes_dir(&project)
+        );
     }
 
     #[test]
