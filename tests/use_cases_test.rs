@@ -460,6 +460,46 @@ fn link_task_pr_from_sidecar_reads_legacy_pr_link() {
 }
 
 #[test]
+fn project_notes_are_isolated_by_project_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    create_test_project(&config, "alpha");
+    create_test_project(&config, "beta");
+    let alpha_notes = config.project_notes_dir("alpha");
+    let beta_notes = config.project_notes_dir("beta");
+    std::fs::create_dir_all(&alpha_notes).unwrap();
+    std::fs::create_dir_all(&beta_notes).unwrap();
+
+    let alpha_note = use_cases::create_note(&alpha_notes, "plan").unwrap();
+    let beta_note = use_cases::create_note(&beta_notes, "plan").unwrap();
+    use_cases::save_note(&alpha_note, "alpha only").unwrap();
+    use_cases::save_note(&beta_note, "beta only").unwrap();
+
+    assert_eq!(use_cases::read_note(&alpha_note).unwrap(), "alpha only");
+    assert_eq!(use_cases::read_note(&beta_note).unwrap(), "beta only");
+    assert_eq!(
+        alpha_note,
+        config.project_dir("alpha").join("notes/plan.md")
+    );
+    assert_eq!(beta_note, config.project_dir("beta").join("notes/plan.md"));
+}
+
+#[test]
+fn delete_project_removes_project_notes_with_project_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    create_test_project(&config, "notes-project");
+    let notes_dir = config.project_notes_dir("notes-project");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+    std::fs::write(notes_dir.join("scratch.md"), "remove me").unwrap();
+
+    use_cases::delete_project(&config, "notes-project").unwrap();
+
+    assert!(!config.project_dir("notes-project").exists());
+    assert!(!notes_dir.exists());
+}
+
+#[test]
 fn task_with_missing_or_duplicate_engineer_is_rejected() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);

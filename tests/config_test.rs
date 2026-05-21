@@ -25,6 +25,15 @@ fn config_task_dir() {
 }
 
 #[test]
+fn config_project_notes_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+
+    let dir = config.project_notes_dir("my-project");
+    assert_eq!(dir, tmp.path().join(".agman/projects/my-project/notes"));
+}
+
+#[test]
 fn config_worktree_path() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);

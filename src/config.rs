@@ -239,6 +239,10 @@ impl Config {
         self.projects_dir().join(name)
     }
 
+    pub fn project_notes_dir(&self, name: &str) -> PathBuf {
+        self.project_dir(name).join("notes")
+    }
+
     pub fn chief_of_staff_inbox(&self) -> PathBuf {
         self.chief_of_staff_dir().join("inbox.jsonl")
     }
