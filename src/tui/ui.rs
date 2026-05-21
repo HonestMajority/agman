@@ -2158,13 +2158,13 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 spans.extend([
                     Span::styled("h", Style::default().fg(Color::LightYellow)),
                     Span::styled(hold_label, Style::default().fg(Color::DarkGray)),
+                    Span::styled("o", Style::default().fg(Color::LightYellow)),
+                    Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
             spans.extend([
                 Span::styled("e", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("o", Style::default().fg(Color::LightYellow)),
-                Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
             ]);
             let unread_count = app.notifications.iter().filter(|n| n.unread).count();
             let inbox_label = if unread_count > 0 {
@@ -2203,6 +2203,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 spans.extend([
                     Span::styled("c", Style::default().fg(Color::LightYellow)),
                     Span::styled(" PM chat  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("O", Style::default().fg(Color::LightYellow)),
+                    Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("e", Style::default().fg(Color::LightMagenta)),
                     Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
                 ]);

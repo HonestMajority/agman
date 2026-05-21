@@ -639,6 +639,7 @@ pub struct App {
     pub keybase_available: bool,
     // Notes view
     pub notes_view: Option<NotesView>,
+    pub notes_return_view: View,
     // Show PRs (GitHub Issues & PRs for current user)
     pub show_prs_data: use_cases::ShowPrsData,
     pub show_prs_selected: usize,
@@ -852,6 +853,7 @@ impl App {
             keybase_first_poll_done: false,
             keybase_available: true,
             notes_view: None,
+            notes_return_view: View::ProjectList,
             show_prs_data: Default::default(),
             show_prs_selected: 0,
             show_prs_first_poll_done: false,
@@ -1712,6 +1714,25 @@ impl App {
         }
     }
 
+    fn open_project_notes(&mut self, project: &str, return_view: View) {
+        match NotesView::new(self.config.project_notes_dir(project)) {
+            Ok(nv) => {
+                tracing::info!(project = %project, "opening project notes view");
+                self.notes_view = Some(nv);
+                self.notes_return_view = return_view;
+                self.view = View::Notes;
+            }
+            Err(e) => {
+                self.set_status(format!("Failed to open notes: {e}"));
+            }
+        }
+    }
+
+    fn close_notes(&mut self) {
+        self.notes_view = None;
+        self.view = self.notes_return_view;
+    }
+
     fn start_project_respawn_confirm(&mut self) {
         let Some(project_name) = self.current_project.clone() else {
             return;
@@ -2432,16 +2453,14 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Char('o') => match NotesView::new(self.config.notes_dir.clone()) {
-                    Ok(nv) => {
-                        tracing::info!("opening notes view");
-                        self.notes_view = Some(nv);
-                        self.view = View::Notes;
+                KeyCode::Char('o') => {
+                    if self.selected_project_index < self.projects.len() {
+                        let name = self.projects[self.selected_project_index].meta.name.clone();
+                        self.open_project_notes(&name, View::ProjectList);
+                    } else if self.unassigned_task_count > 0 {
+                        self.set_status("Unassigned tasks do not have project notes".to_string());
                     }
-                    Err(e) => {
-                        self.set_status(format!("Failed to open notes: {e}"));
-                    }
-                },
+                }
                 KeyCode::Char('i') => {
                     self.selected_notif_index = 0;
                     self.view = View::Notifications;
@@ -2584,6 +2603,17 @@ impl App {
                     self.set_status(format!("Opening PR #{}...", number));
                 } else {
                     self.set_status("No linked PR".to_string());
+                }
+            }
+            KeyCode::Char('O') => {
+                let Some(project) = self.current_project.clone() else {
+                    self.set_status("No project selected".to_string());
+                    return Ok(false);
+                };
+                if project == "(unassigned)" {
+                    self.set_status("Unassigned tasks do not have project notes".to_string());
+                } else {
+                    self.open_project_notes(&project, View::TaskList);
                 }
             }
             KeyCode::Char('r') => {
@@ -4576,14 +4606,12 @@ impl App {
                             self.set_status("Cut cancelled".to_string());
                         } else {
                             let _ = nv.save_current();
-                            self.notes_view = None;
-                            self.view = View::ProjectList;
+                            self.close_notes();
                         }
                     }
                     KeyCode::Char('q') => {
                         let _ = nv.save_current();
-                        self.notes_view = None;
-                        self.view = View::ProjectList;
+                        self.close_notes();
                     }
                     _ => {}
                 },
@@ -4599,10 +4627,9 @@ impl App {
                     {
                         let _ = nv.save_current();
                         self.set_status("Saved".to_string());
-                    } else if key.code == KeyCode::Char('q') && is_normal {
+                    } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) && is_normal {
                         let _ = nv.save_current();
-                        self.notes_view = None;
-                        self.view = View::ProjectList;
+                        self.close_notes();
                     } else {
                         let before = nv.editor.lines_joined();
                         nv.editor.input(key.into());
@@ -5663,6 +5690,101 @@ mod tests {
     use super::*;
     use agman::agent_model::AgentAttachment;
     use agman::task::TaskMeta;
+
+    #[test]
+    fn project_list_opens_selected_project_notes_and_returns_to_project_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        Project::create(&config, "alpha", "Alpha project").unwrap();
+        Project::create(&config, "beta", "Beta project").unwrap();
+        let mut app = App::new_for_test(config.clone()).unwrap();
+        app.refresh_projects();
+        app.selected_project_index = app
+            .projects
+            .iter()
+            .position(|project| project.meta.name == "beta")
+            .unwrap();
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Char('o'),
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::Notes);
+        assert_eq!(app.notes_return_view, View::ProjectList);
+        assert_eq!(
+            app.notes_view.as_ref().unwrap().root_dir,
+            config.project_notes_dir("beta")
+        );
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::ProjectList);
+        assert!(app.notes_view.is_none());
+    }
+
+    #[test]
+    fn project_list_notes_status_for_unassigned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        Project::create(&config, "alpha", "Alpha project").unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+        app.refresh_projects();
+        app.unassigned_task_count = 1;
+        app.selected_project_index = app.projects.len();
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Char('o'),
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::ProjectList);
+        assert!(app.notes_view.is_none());
+        assert_eq!(
+            app.status_message
+                .as_ref()
+                .map(|(message, _)| message.as_str()),
+            Some("Unassigned tasks do not have project notes")
+        );
+    }
+
+    #[test]
+    fn task_list_uppercase_o_opens_project_notes_and_returns_to_task_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        Project::create(&config, "alpha", "Alpha project").unwrap();
+        let mut app = App::new_for_test(config.clone()).unwrap();
+        app.current_project = Some("alpha".to_string());
+        app.view = View::TaskList;
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Char('O'),
+            KeyModifiers::SHIFT,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::Notes);
+        assert_eq!(app.notes_return_view, View::TaskList);
+        assert_eq!(
+            app.notes_view.as_ref().unwrap().root_dir,
+            config.project_notes_dir("alpha")
+        );
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::TaskList);
+        assert!(app.notes_view.is_none());
+    }
 
     #[test]
     fn refresh_tasks_for_project_preserves_attached_agent_row_selection() {
