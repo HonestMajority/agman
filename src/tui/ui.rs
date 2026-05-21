@@ -2158,11 +2158,11 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 spans.extend([
                     Span::styled("h", Style::default().fg(Color::LightYellow)),
                     Span::styled(hold_label, Style::default().fg(Color::DarkGray)),
-                    Span::styled("o", Style::default().fg(Color::LightYellow)),
-                    Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                 ]);
             }
             spans.extend([
+                Span::styled("o", Style::default().fg(Color::LightYellow)),
+                Span::styled(" notes  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("e", Style::default().fg(Color::LightMagenta)),
                 Span::styled(" respawn  ", Style::default().fg(Color::DarkGray)),
             ]);

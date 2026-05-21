@@ -1728,6 +1728,20 @@ impl App {
         }
     }
 
+    fn open_global_notes(&mut self, return_view: View) {
+        match NotesView::new(self.config.notes_dir.clone()) {
+            Ok(nv) => {
+                tracing::info!("opening global notes view");
+                self.notes_view = Some(nv);
+                self.notes_return_view = return_view;
+                self.view = View::Notes;
+            }
+            Err(e) => {
+                self.set_status(format!("Failed to open notes: {e}"));
+            }
+        }
+    }
+
     fn close_notes(&mut self) {
         self.notes_view = None;
         self.view = self.notes_return_view;
@@ -2454,12 +2468,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('o') => {
-                    if self.selected_project_index < self.projects.len() {
-                        let name = self.projects[self.selected_project_index].meta.name.clone();
-                        self.open_project_notes(&name, View::ProjectList);
-                    } else if self.unassigned_task_count > 0 {
-                        self.set_status("Unassigned tasks do not have project notes".to_string());
-                    }
+                    self.open_global_notes(View::ProjectList);
                 }
                 KeyCode::Char('i') => {
                     self.selected_notif_index = 0;
@@ -5692,7 +5701,7 @@ mod tests {
     use agman::task::TaskMeta;
 
     #[test]
-    fn project_list_opens_selected_project_notes_and_returns_to_project_list() {
+    fn project_list_opens_global_notes_and_returns_to_project_list() {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config(tmp.path());
         Project::create(&config, "alpha", "Alpha project").unwrap();
@@ -5713,10 +5722,7 @@ mod tests {
 
         assert_eq!(app.view, View::Notes);
         assert_eq!(app.notes_return_view, View::ProjectList);
-        assert_eq!(
-            app.notes_view.as_ref().unwrap().root_dir,
-            config.project_notes_dir("beta")
-        );
+        assert_eq!(app.notes_view.as_ref().unwrap().root_dir, config.notes_dir);
 
         app.handle_event(Event::Key(event::KeyEvent::new(
             KeyCode::Esc,
@@ -5729,11 +5735,11 @@ mod tests {
     }
 
     #[test]
-    fn project_list_notes_status_for_unassigned() {
+    fn project_list_opens_global_notes_for_unassigned() {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config(tmp.path());
         Project::create(&config, "alpha", "Alpha project").unwrap();
-        let mut app = App::new_for_test(config).unwrap();
+        let mut app = App::new_for_test(config.clone()).unwrap();
         app.refresh_projects();
         app.unassigned_task_count = 1;
         app.selected_project_index = app.projects.len();
@@ -5744,14 +5750,9 @@ mod tests {
         )))
         .unwrap();
 
-        assert_eq!(app.view, View::ProjectList);
-        assert!(app.notes_view.is_none());
-        assert_eq!(
-            app.status_message
-                .as_ref()
-                .map(|(message, _)| message.as_str()),
-            Some("Unassigned tasks do not have project notes")
-        );
+        assert_eq!(app.view, View::Notes);
+        assert_eq!(app.notes_return_view, View::ProjectList);
+        assert_eq!(app.notes_view.as_ref().unwrap().root_dir, config.notes_dir);
     }
 
     #[test]
