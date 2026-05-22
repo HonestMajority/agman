@@ -458,6 +458,34 @@ struct InboxPollOutput {
     first_ready_at: std::collections::HashMap<String, Instant>,
 }
 
+struct ProjectRefreshSnapshot {
+    projects: Vec<Project>,
+    project_task_counts: HashMap<String, usize>,
+    project_agent_counts: HashMap<String, usize>,
+    project_active_agent_counts: HashMap<String, usize>,
+    unassigned_task_count: usize,
+    agent_activity: HashMap<String, AgentActivitySample>,
+    project_list_error: Option<String>,
+    agent_list_error: Option<String>,
+    agent_activity_error: Option<String>,
+}
+
+impl ProjectRefreshSnapshot {
+    fn worker_failed(error: String) -> Self {
+        Self {
+            projects: Vec::new(),
+            project_task_counts: HashMap::new(),
+            project_agent_counts: HashMap::new(),
+            project_active_agent_counts: HashMap::new(),
+            unassigned_task_count: 0,
+            agent_activity: HashMap::new(),
+            project_list_error: Some(error),
+            agent_list_error: None,
+            agent_activity_error: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentActivitySample {
     pub last_tmux_activity_epoch: Option<i64>,
@@ -515,6 +543,118 @@ fn unix_epoch_secs() -> Option<i64> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|d| i64::try_from(d.as_secs()).ok())
+}
+
+fn build_agent_activity_snapshot(
+    active_sessions: &HashSet<String>,
+) -> (HashMap<String, AgentActivitySample>, Option<String>) {
+    if active_sessions.is_empty() {
+        return (HashMap::new(), None);
+    }
+
+    let windows = match Tmux::list_window_activity() {
+        Ok(windows) => windows,
+        Err(e) => return (HashMap::new(), Some(e.to_string())),
+    };
+
+    let mut by_session: HashMap<String, TmuxWindowActivity> = HashMap::new();
+    for activity in windows {
+        if !active_sessions.contains(&activity.session_name) {
+            continue;
+        }
+        let replace = by_session
+            .get(&activity.session_name)
+            .map(|current| activity.window_activity > current.window_activity)
+            .unwrap_or(true);
+        if replace {
+            by_session.insert(activity.session_name.clone(), activity);
+        }
+    }
+
+    let observed_at = Instant::now();
+    let now_epoch_secs = unix_epoch_secs();
+    let mut agent_activity = HashMap::new();
+    for session in active_sessions {
+        if let Some(activity) = by_session.get(session) {
+            agent_activity.insert(
+                session.clone(),
+                AgentActivitySample::from_tmux_window(activity, observed_at, now_epoch_secs),
+            );
+        }
+    }
+
+    (agent_activity, None)
+}
+
+fn build_project_refresh_snapshot(config: Config) -> ProjectRefreshSnapshot {
+    let mut project_list_error = None;
+    let mut projects = use_cases::list_projects(&config).unwrap_or_else(|e| {
+        project_list_error = Some(e.to_string());
+        Vec::new()
+    });
+    // Sort held projects to the bottom (stable sort preserves alphabetical order within groups)
+    projects.sort_by_key(|p| p.meta.held);
+
+    let mut project_task_counts = HashMap::new();
+    let mut unassigned_task_count = 0;
+    for task in Task::list_all(&config) {
+        if let Some(proj) = task.meta.project {
+            *project_task_counts.entry(proj).or_insert(0) += 1;
+        } else {
+            unassigned_task_count += 1;
+        }
+    }
+
+    let mut project_agent_counts = HashMap::new();
+    let mut project_active_agent_counts = HashMap::new();
+    let mut active_sessions = HashSet::new();
+    let mut project_agents = Vec::new();
+    let mut agent_list_error = None;
+
+    match use_cases::list_agents(&config, None, None) {
+        Ok(agents) => {
+            for agent in agents {
+                if agent.meta.project == "chief-of-staff"
+                    || agent.meta.status == AgentStatus::Archived
+                {
+                    continue;
+                }
+                active_sessions.insert(App::agent_session_name(&agent));
+                *project_agent_counts
+                    .entry(agent.meta.project.clone())
+                    .or_insert(0) += 1;
+                project_agents.push(agent);
+            }
+        }
+        Err(e) => {
+            agent_list_error = Some(e.to_string());
+        }
+    }
+
+    let (agent_activity, agent_activity_error) = build_agent_activity_snapshot(&active_sessions);
+    let now = Instant::now();
+    for agent in project_agents {
+        let session_name = App::agent_session_name(&agent);
+        if ui::classify_agent_status(now, agent_activity.get(&session_name))
+            == ui::WorkingIdle::Working
+        {
+            *project_active_agent_counts
+                .entry(agent.meta.project)
+                .or_insert(0) += 1;
+        }
+    }
+
+    ProjectRefreshSnapshot {
+        projects,
+        project_task_counts,
+        project_agent_counts,
+        project_active_agent_counts,
+        unassigned_task_count,
+        agent_activity,
+        project_list_error,
+        agent_list_error,
+        agent_activity_error,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -672,6 +812,10 @@ pub struct App {
     pub project_task_counts: std::collections::HashMap<String, usize>,
     pub project_agent_counts: std::collections::HashMap<String, usize>,
     pub project_active_agent_counts: std::collections::HashMap<String, usize>,
+    project_refresh_tx: tokio_mpsc::UnboundedSender<(u64, ProjectRefreshSnapshot)>,
+    project_refresh_rx: tokio_mpsc::UnboundedReceiver<(u64, ProjectRefreshSnapshot)>,
+    project_refresh_active: bool,
+    project_refresh_generation: u64,
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
     pub agent_wizard: Option<AgentWizard>,
@@ -761,6 +905,7 @@ impl App {
         let (show_prs_poll_tx, show_prs_poll_rx) = tokio_mpsc::unbounded_channel();
         let (keybase_tx, keybase_rx) = tokio_mpsc::unbounded_channel();
         let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
+        let (project_refresh_tx, project_refresh_rx) = tokio_mpsc::unbounded_channel();
         let (respawn_tx, respawn_rx) = tokio_mpsc::unbounded_channel();
         let (archive_tx, archive_rx) = tokio_mpsc::unbounded_channel();
         let rt = tokio::runtime::Runtime::new()?;
@@ -882,6 +1027,10 @@ impl App {
             project_task_counts: std::collections::HashMap::new(),
             project_agent_counts: std::collections::HashMap::new(),
             project_active_agent_counts: std::collections::HashMap::new(),
+            project_refresh_tx,
+            project_refresh_rx,
+            project_refresh_active: false,
+            project_refresh_generation: 0,
             project_wizard: None,
             agent_wizard: None,
             project_picker: None,
@@ -1036,65 +1185,73 @@ impl App {
     }
 
     pub fn refresh_projects(&mut self) {
-        self.projects = use_cases::list_projects(&self.config).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "failed to list projects");
-            Vec::new()
-        });
-        // Sort held projects to the bottom (stable sort preserves alphabetical order within groups)
-        self.projects.sort_by_key(|p| p.meta.held);
-        // Count tasks per project and unassigned
-        let all_tasks = Task::list_all(&self.config);
-        self.project_task_counts.clear();
-        self.project_agent_counts.clear();
-        self.project_active_agent_counts.clear();
-        self.unassigned_task_count = 0;
-        for task in &all_tasks {
-            if let Some(ref proj) = task.meta.project {
-                *self.project_task_counts.entry(proj.clone()).or_insert(0) += 1;
-            } else {
-                self.unassigned_task_count += 1;
-            }
+        self.project_refresh_generation = self.project_refresh_generation.wrapping_add(1);
+        let snapshot = build_project_refresh_snapshot(self.config.clone());
+        self.apply_project_refresh_snapshot(snapshot);
+    }
+
+    fn apply_project_refresh_snapshot(&mut self, snapshot: ProjectRefreshSnapshot) {
+        if let Some(error) = snapshot.project_list_error {
+            tracing::warn!(error = %error, "failed to list projects");
         }
-        match use_cases::list_agents(&self.config, None, None) {
-            Ok(agents) => {
-                let mut project_agents = Vec::new();
-                let mut active_sessions = HashSet::new();
-                for agent in agents {
-                    if agent.meta.project == "chief-of-staff"
-                        || agent.meta.status == AgentStatus::Archived
-                    {
-                        continue;
-                    }
-                    active_sessions.insert(Self::agent_session_name(&agent));
-                    *self
-                        .project_agent_counts
-                        .entry(agent.meta.project.clone())
-                        .or_insert(0) += 1;
-                    project_agents.push(agent);
-                }
-                self.refresh_agent_activity_for_sessions(active_sessions);
-                let now = Instant::now();
-                for agent in project_agents {
-                    let session_name = Self::agent_session_name(&agent);
-                    if ui::classify_agent_status(now, self.agent_activity_sample(&session_name))
-                        == ui::WorkingIdle::Working
-                    {
-                        *self
-                            .project_active_agent_counts
-                            .entry(agent.meta.project)
-                            .or_insert(0) += 1;
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to count project agents");
-            }
+        if let Some(error) = snapshot.agent_list_error {
+            tracing::warn!(error = %error, "failed to count project agents");
         }
-        // Clamp selection
+        if let Some(error) = snapshot.agent_activity_error {
+            if !self.agent_activity_query_failed_logged {
+                tracing::warn!(
+                    error = %error,
+                    "failed to query tmux activity; agent statuses will be idle"
+                );
+                self.agent_activity_query_failed_logged = true;
+            }
+        } else {
+            self.agent_activity_query_failed_logged = false;
+        }
+
+        self.projects = snapshot.projects;
+        self.project_task_counts = snapshot.project_task_counts;
+        self.project_agent_counts = snapshot.project_agent_counts;
+        self.project_active_agent_counts = snapshot.project_active_agent_counts;
+        self.unassigned_task_count = snapshot.unassigned_task_count;
+        self.agent_activity = snapshot.agent_activity;
+
         let total = self.project_list_len();
         if self.selected_project_index >= total && total > 0 {
             self.selected_project_index = total - 1;
         }
+    }
+
+    fn start_project_refresh(&mut self) {
+        if self.project_refresh_active {
+            return;
+        }
+
+        self.project_refresh_active = true;
+        self.project_refresh_generation = self.project_refresh_generation.wrapping_add(1);
+        let generation = self.project_refresh_generation;
+        let tx = self.project_refresh_tx.clone();
+        let config = self.config.clone();
+
+        self.rt.spawn(async move {
+            let snapshot =
+                tokio::task::spawn_blocking(move || build_project_refresh_snapshot(config))
+                    .await
+                    .unwrap_or_else(|e| ProjectRefreshSnapshot::worker_failed(e.to_string()));
+            let _ = tx.send((generation, snapshot));
+        });
+    }
+
+    fn apply_project_refresh_result(&mut self) {
+        let (generation, snapshot) = match self.project_refresh_rx.try_recv() {
+            Ok(result) => result,
+            Err(_) => return,
+        };
+        self.project_refresh_active = false;
+        if generation != self.project_refresh_generation {
+            return;
+        }
+        self.apply_project_refresh_snapshot(snapshot);
     }
 
     /// Refresh the agent list, filtered by `current_project` if set.
@@ -5580,13 +5737,14 @@ pub fn run_tui(config: Config) -> Result<()> {
             // Periodic refresh (drives visible project data and agent activity)
             if last_refresh.elapsed() >= refresh_interval {
                 if app.view == View::ProjectList {
-                    app.refresh_projects();
+                    app.start_project_refresh();
                 } else if app.view == View::TaskList {
                     app.refresh_tasks_for_project();
                     app.refresh_agents();
                 }
                 last_refresh = Instant::now();
             }
+            app.apply_project_refresh_result();
 
             // Poll GitHub notifications every 60 seconds (regardless of view)
             if app.last_gh_notif_poll.elapsed() >= Duration::from_secs(60) {
@@ -5699,6 +5857,105 @@ mod tests {
     use super::*;
     use agman::agent_model::AgentAttachment;
     use agman::task::{LinkedPr, TaskMeta};
+
+    #[test]
+    fn apply_project_refresh_snapshot_preserves_counts_and_clamps_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        Project::create(&config, "alpha", "Alpha project").unwrap();
+        Project::create(&config, "beta", "Beta project").unwrap();
+        let projects = use_cases::list_projects(&config).unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+        app.selected_project_index = 99;
+
+        let snapshot = ProjectRefreshSnapshot {
+            projects,
+            project_task_counts: HashMap::from([("alpha".to_string(), 3)]),
+            project_agent_counts: HashMap::from([("alpha".to_string(), 2)]),
+            project_active_agent_counts: HashMap::from([("alpha".to_string(), 1)]),
+            unassigned_task_count: 1,
+            agent_activity: HashMap::from([(
+                "agent-session".to_string(),
+                AgentActivitySample {
+                    last_tmux_activity_epoch: Some(100),
+                    last_observed_work_at: Some(Instant::now()),
+                    foreground_command: "nvim".to_string(),
+                    pane_dead: false,
+                    query_ok: true,
+                },
+            )]),
+            project_list_error: None,
+            agent_list_error: None,
+            agent_activity_error: None,
+        };
+
+        app.apply_project_refresh_snapshot(snapshot);
+
+        assert_eq!(app.selected_project_index, app.project_list_len() - 1);
+        assert_eq!(app.project_task_counts.get("alpha"), Some(&3));
+        assert_eq!(app.project_agent_counts.get("alpha"), Some(&2));
+        assert_eq!(app.project_active_agent_counts.get("alpha"), Some(&1));
+        assert_eq!(app.unassigned_task_count, 1);
+        assert!(app.agent_activity.contains_key("agent-session"));
+    }
+
+    #[test]
+    fn apply_project_refresh_snapshot_keeps_empty_selection_behavior() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let mut app = App::new_for_test(config).unwrap();
+        app.selected_project_index = 7;
+
+        app.apply_project_refresh_snapshot(ProjectRefreshSnapshot {
+            projects: Vec::new(),
+            project_task_counts: HashMap::new(),
+            project_agent_counts: HashMap::new(),
+            project_active_agent_counts: HashMap::new(),
+            unassigned_task_count: 0,
+            agent_activity: HashMap::new(),
+            project_list_error: None,
+            agent_list_error: None,
+            agent_activity_error: None,
+        });
+
+        assert_eq!(app.project_list_len(), 0);
+        assert_eq!(app.selected_project_index, 7);
+    }
+
+    #[test]
+    fn stale_project_refresh_result_does_not_overwrite_current_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        Project::create(&config, "alpha", "Alpha project").unwrap();
+        let projects = use_cases::list_projects(&config).unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+        app.project_refresh_generation = 2;
+        app.project_refresh_active = true;
+        app.project_task_counts = HashMap::from([("fresh".to_string(), 1)]);
+        app.unassigned_task_count = 4;
+
+        let stale_snapshot = ProjectRefreshSnapshot {
+            projects,
+            project_task_counts: HashMap::from([("stale".to_string(), 99)]),
+            project_agent_counts: HashMap::new(),
+            project_active_agent_counts: HashMap::new(),
+            unassigned_task_count: 99,
+            agent_activity: HashMap::new(),
+            project_list_error: None,
+            agent_list_error: None,
+            agent_activity_error: None,
+        };
+        app.project_refresh_tx.send((1, stale_snapshot)).unwrap();
+
+        app.apply_project_refresh_result();
+
+        assert!(!app.project_refresh_active);
+        assert_eq!(
+            app.project_task_counts,
+            HashMap::from([("fresh".to_string(), 1)])
+        );
+        assert_eq!(app.unassigned_task_count, 4);
+    }
 
     #[test]
     fn project_list_opens_global_notes_and_returns_to_project_list() {
