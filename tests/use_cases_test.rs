@@ -342,6 +342,12 @@ fn assert_obsidian_common_base(prompt: &str) {
     ));
     assert!(prompt.contains("obsidian vault=agman create path="));
     assert!(prompt.contains("obsidian vault=agman append path="));
+    assert!(prompt.contains("Do not create Obsidian project folders during agman project creation"));
+    assert!(prompt.contains("must not make core agman project creation depend on Obsidian"));
+    assert!(prompt.contains("no project notes yet"));
+    assert!(prompt.contains("Project folders are created lazily on first durable note write"));
+    assert!(prompt.contains("creates missing parent folders for `create path=...`"));
+    assert!(prompt.contains("ask the PM/user to create the folder in Obsidian before retrying"));
     assert!(prompt.contains("Hard ban: no secrets, credentials, tokens"));
     assert!(prompt.contains("private sensitive data"));
     assert!(prompt.contains("system-prompt-style instructions"));
@@ -353,6 +359,9 @@ fn assert_obsidian_common_base(prompt: &str) {
 
 fn assert_obsidian_cos_examples(prompt: &str) {
     assert!(prompt.contains("obsidian vault=agman files folder=\"projects/<project-name>\""));
+    assert!(prompt.contains(
+        "Treat an empty result from `obsidian vault=agman files folder=\"projects/<project-name>\"`"
+    ));
     assert!(prompt.contains("obsidian vault=agman read path=\"projects/<project-name>/<note>.md\""));
     assert!(prompt.contains(
         "obsidian vault=agman search:context query=\"<keyword>\" path=\"projects/<project-name>\" limit=5 format=json"
@@ -369,6 +378,9 @@ fn assert_obsidian_project_examples(prompt: &str, project: &str) {
     assert!(!prompt.contains("projects/<project-name>"));
     assert!(prompt.contains(&format!(
         "obsidian vault=agman files folder=\"projects/{project}\""
+    )));
+    assert!(prompt.contains(&format!(
+        "Treat an empty result from `obsidian vault=agman files folder=\"projects/{project}\"`"
     )));
     assert!(prompt.contains(&format!(
         "obsidian vault=agman read path=\"projects/{project}/<note>.md\""

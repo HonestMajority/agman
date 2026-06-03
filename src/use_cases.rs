@@ -4540,6 +4540,12 @@ Read and search selectively:
 
 Do not read all notes. Read by relevant title, or use narrow `search:context` queries before opening a note.
 
+Project folder lifecycle:
+- Do not create Obsidian project folders during agman project creation; prompt-only v1 must not make core agman project creation depend on Obsidian.
+- Treat an empty result from `obsidian vault=agman files folder="{project_folder}"` as "no project notes yet", not as a failure.
+- Project folders are created lazily on first durable note write through the normal project-scoped `create path=...` command.
+- The Obsidian CLI creates missing parent folders for `create path=...`. If a local CLI ever fails because a parent folder is missing, report that limitation and ask the PM/user to create the folder in Obsidian before retrying.
+
 All roles, including reviewers, may write concise Obsidian notes:
 {write_examples}
 
