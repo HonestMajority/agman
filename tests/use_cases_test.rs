@@ -354,7 +354,10 @@ fn assert_obsidian_common_base(prompt: &str) {
     assert!(prompt.contains(
         "current user/PM direction, repo state, live systems, CI, and agman task state override Obsidian notes"
     ));
-    assert!(prompt.contains("Do not read all notes"));
+    assert!(prompt.contains("do not read all notes"));
+    assert!(prompt.contains("title directly matches"));
+    assert!(prompt.contains("before creating or updating PR descriptions"));
+    assert!(prompt.contains("general/Write PR description.md"));
 }
 
 fn assert_obsidian_cos_examples(prompt: &str) {
