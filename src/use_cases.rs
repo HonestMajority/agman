@@ -4535,10 +4535,10 @@ Use the Obsidian CLI for compact operational memory in the `agman` vault. Always
 Start by listing notes:
 {listing_examples}
 
+After listing notes, do not read all notes. Before starting work, read any note whose title directly matches the work about to be done. Use narrow `search:context` queries only when title relevance is unclear. PR, pull request, and description titles are direct matches before creating or updating PR descriptions; for example, if `general/Write PR description.md` is listed, read it first.
+
 Read and search selectively:
 {read_search_examples}
-
-Do not read all notes. Read by relevant title, or use narrow `search:context` queries before opening a note.
 
 Project folder lifecycle:
 - Do not create Obsidian project folders during agman project creation; prompt-only v1 must not make core agman project creation depend on Obsidian.
