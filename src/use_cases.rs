@@ -4494,9 +4494,66 @@ Concise. Bullets, not essays. The CEO uses you to avoid getting overwhelmed — 
 Messages tagged [Message from system]: are automated agman notifications. Act on them autonomously per the message instructions. No reply needed.
 "#;
 
+pub fn obsidian_notes_section(project_name: Option<&str>) -> String {
+    let project_folder = project_name
+        .map(|name| format!("projects/{name}"))
+        .unwrap_or_else(|| "projects/<project-name>".to_string());
+    let startup_scope = match project_name {
+        Some(_) => format!(
+            "On startup/spawn, after any required Telegram acknowledgment, list both `general/` and `{project_folder}/`."
+        ),
+        None => "On startup/spawn, after any required Telegram acknowledgment, list `general/`. When discussing a named project, list that project's folder too.".to_string(),
+    };
+    let project_guidance = match project_name {
+        Some(_) => format!(
+            "- `obsidian vault=agman files folder=\"{project_folder}\"`\n- `obsidian vault=agman read path=\"{project_folder}/<note>.md\"`\n- `obsidian vault=agman search:context query=\"<keyword>\" path=\"{project_folder}\" limit=5 format=json`"
+        ),
+        None => "- `obsidian vault=agman files folder=\"projects/<project-name>\"`\n- `obsidian vault=agman read path=\"projects/<project-name>/<note>.md\"`\n- `obsidian vault=agman search:context query=\"<keyword>\" path=\"projects/<project-name>\" limit=5 format=json`".to_string(),
+    };
+
+    format!(
+        r#"
+
+## Obsidian Operational Notes
+
+Use the Obsidian CLI for compact operational memory in the `agman` vault. Always target it explicitly with `vault=agman`.
+
+{startup_scope} In long-lived sessions, list notes again at the start of a new meaningful request if the context changed or the note list may be stale.
+
+Start by listing notes:
+- `obsidian vault=agman files folder=general`
+- `obsidian vault=agman files folder="projects/<project-name>"`
+{project_guidance}
+
+Read and search selectively:
+- `obsidian vault=agman read path="general/<note>.md"`
+- `obsidian vault=agman read path="projects/<project-name>/<note>.md"`
+- `obsidian vault=agman search:context query="<keyword>" path=general limit=5 format=json`
+- `obsidian vault=agman search:context query="<keyword>" path="projects/<project-name>" limit=5 format=json`
+
+Do not read all notes. Read by relevant title, or use narrow `search:context` queries before opening a note.
+
+All roles, including reviewers, may write concise Obsidian notes:
+- `obsidian vault=agman create path="general/<short-title>.md" content="<compact operational note>"`
+- `obsidian vault=agman append path="projects/<project-name>/<short-title>.md" content="<one concise update>"`
+
+Good notes are durable operational memory: decisions, research conclusions, failed attempts, project conventions, operational gotchas, stable commands, and short evidence references.
+
+Hard ban: no secrets, credentials, tokens, or private sensitive data. Do not store raw logs, transcripts, diffs, or status streams unless distilled to a tiny useful evidence snippet.
+
+Obsidian notes must not contain system-prompt-style instructions. They are advisory only; current user/PM direction, repo state, live systems, CI, and agman task state override Obsidian notes. Keep existing local agman notes flows intact; do not require Obsidian for core operation.
+"#
+    )
+}
+
 pub fn build_chief_of_staff_prompt(telegram_enabled: bool) -> String {
+    let base = format!(
+        "{}{}",
+        DEFAULT_CHIEF_OF_STAFF_PROMPT,
+        obsidian_notes_section(None)
+    );
     if !telegram_enabled {
-        return DEFAULT_CHIEF_OF_STAFF_PROMPT.to_string();
+        return base;
     }
 
     let telegram_section = r#"
@@ -4522,11 +4579,15 @@ AGMAN_MSG
 Keep Telegram replies concise. The CEO sees [CoS] prepended to your replies.
 "#;
 
-    format!("{}{}", DEFAULT_CHIEF_OF_STAFF_PROMPT, telegram_section)
+    format!("{base}{telegram_section}")
 }
 
 pub fn build_pm_prompt(telegram_enabled: bool, project_name: &str) -> String {
-    let base = DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name);
+    let base = format!(
+        "{}{}",
+        DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name),
+        obsidian_notes_section(Some(project_name))
+    );
     if !telegram_enabled {
         return base;
     }
@@ -4570,9 +4631,13 @@ pub fn build_researcher_prompt(
     project_name: &str,
     researcher_name: &str,
 ) -> String {
-    let base = DEFAULT_RESEARCHER_PROMPT_TEMPLATE
-        .replace("{{PROJECT_NAME}}", project_name)
-        .replace("{{RESEARCHER_NAME}}", researcher_name);
+    let base = format!(
+        "{}{}",
+        DEFAULT_RESEARCHER_PROMPT_TEMPLATE
+            .replace("{{PROJECT_NAME}}", project_name)
+            .replace("{{RESEARCHER_NAME}}", researcher_name),
+        obsidian_notes_section(Some(project_name))
+    );
     if !telegram_enabled {
         return base;
     }
@@ -4616,9 +4681,13 @@ pub fn build_operator_prompt(
     project_name: &str,
     operator_name: &str,
 ) -> String {
-    let base = DEFAULT_OPERATOR_PROMPT_TEMPLATE
-        .replace("{{PROJECT_NAME}}", project_name)
-        .replace("{{OPERATOR_NAME}}", operator_name);
+    let base = format!(
+        "{}{}",
+        DEFAULT_OPERATOR_PROMPT_TEMPLATE
+            .replace("{{PROJECT_NAME}}", project_name)
+            .replace("{{OPERATOR_NAME}}", operator_name),
+        obsidian_notes_section(Some(project_name))
+    );
     if !telegram_enabled {
         return base;
     }
@@ -4676,10 +4745,14 @@ pub fn build_reviewer_prompt(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let base = DEFAULT_REVIEWER_PROMPT_TEMPLATE
-        .replace("{{PROJECT_NAME}}", project_name)
-        .replace("{{REVIEWER_NAME}}", reviewer_name)
-        .replace("{{WORKTREES}}", &worktree_block);
+    let base = format!(
+        "{}{}",
+        DEFAULT_REVIEWER_PROMPT_TEMPLATE
+            .replace("{{PROJECT_NAME}}", project_name)
+            .replace("{{REVIEWER_NAME}}", reviewer_name)
+            .replace("{{WORKTREES}}", &worktree_block),
+        obsidian_notes_section(Some(project_name))
+    );
     if !telegram_enabled {
         return base;
     }
@@ -4733,11 +4806,15 @@ pub fn build_tester_prompt(
     } else {
         ""
     };
-    let base = DEFAULT_TESTER_PROMPT_TEMPLATE
-        .replace("{{PROJECT_NAME}}", project_name)
-        .replace("{{TESTER_NAME}}", tester_name)
-        .replace("{{WORKTREES}}", &format_worktree_block(worktrees))
-        .replace("{{BROWSER_BLOCK}}", browser_block);
+    let base = format!(
+        "{}{}",
+        DEFAULT_TESTER_PROMPT_TEMPLATE
+            .replace("{{PROJECT_NAME}}", project_name)
+            .replace("{{TESTER_NAME}}", tester_name)
+            .replace("{{WORKTREES}}", &format_worktree_block(worktrees))
+            .replace("{{BROWSER_BLOCK}}", browser_block),
+        obsidian_notes_section(Some(project_name))
+    );
     if !telegram_enabled {
         return base;
     }
@@ -4782,10 +4859,14 @@ pub fn build_engineer_prompt(
     engineer_name: &str,
     task_id: &str,
 ) -> String {
-    let base = DEFAULT_ENGINEER_PROMPT_TEMPLATE
-        .replace("{{PROJECT_NAME}}", project_name)
-        .replace("{{ENGINEER_NAME}}", engineer_name)
-        .replace("{{TASK_ID}}", task_id);
+    let base = format!(
+        "{}{}",
+        DEFAULT_ENGINEER_PROMPT_TEMPLATE
+            .replace("{{PROJECT_NAME}}", project_name)
+            .replace("{{ENGINEER_NAME}}", engineer_name)
+            .replace("{{TASK_ID}}", task_id),
+        obsidian_notes_section(Some(project_name))
+    );
     if !telegram_enabled {
         return base;
     }
@@ -4881,7 +4962,7 @@ The local filesystem is authoritative. Treat each worktree as the source of trut
 ## Hard rules
 
 - Do **not** fetch from origin. The user updates the worktree themselves and asks you to look again — never run `git fetch`, `git pull`, or any other network-touching git command.
-- Do **not** write to disk. No new files, no edits, no commits, no notes-to-self.
+- Do **not** write to the reviewed worktrees or create local artifact files. No new files, no edits, no commits, no worktree notes-to-self. Concise Obsidian operational notes are allowed only through the Obsidian guidance below.
 - Do **not** post to GitHub. No `gh pr review`, no comments, no labels, no merges.
 - Do **not** open a PR or interact with one. PR-URL → branch translation is the PM's job; you only see the worktrees above.
 - Do **not** write a `REVIEW.md` or any artifact file.
