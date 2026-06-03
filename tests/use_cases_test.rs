@@ -1,6 +1,9 @@
 mod helpers;
 
-use agman::agent_model::{AgentAttachment, AgentKind, AgentRecord, AgentStatus};
+use agman::agent_model::{
+    AgentAttachment, AgentKind, AgentRecord, AgentStatus, TesterCapabilities,
+};
+use agman::harness::HarnessKind;
 use agman::inbox;
 use agman::repo_stats::RepoStats;
 use agman::use_cases::{self, WorktreeSource};
@@ -275,6 +278,125 @@ fn prompts_describe_inbox_based_task_agent_model() {
     assert!(engineer.contains("agman link-pr repo--branch <PR URL or number>"));
     assert!(engineer.contains("Inbox messages alone do not link PRs into the agman TUI"));
     assert!(engineer.contains("send-message"));
+}
+
+#[test]
+fn prompts_include_obsidian_operational_notes_guidance() {
+    let chief = use_cases::build_chief_of_staff_prompt(false);
+    assert_obsidian_common_base(&chief);
+    assert_obsidian_cos_examples(&chief);
+    assert!(chief.contains("When discussing a named project, list that project's folder too"));
+
+    let project_prompts = [
+        use_cases::build_pm_prompt(false, "project"),
+        use_cases::build_engineer_prompt(false, "project", "engineer-repo-branch", "repo--branch"),
+        use_cases::build_researcher_prompt(false, "project", "researcher"),
+        use_cases::build_operator_prompt(false, "project", "operator"),
+        use_cases::build_reviewer_prompt(false, "project", "reviewer", &[]),
+        use_cases::build_tester_prompt(
+            false,
+            "project",
+            "tester",
+            &[],
+            TesterCapabilities::default(),
+            HarnessKind::Codex,
+        ),
+    ];
+
+    for prompt in project_prompts {
+        assert_obsidian_common_base(&prompt);
+        assert_obsidian_project_examples(&prompt, "project");
+    }
+}
+
+#[test]
+fn reviewer_prompt_allows_only_concise_obsidian_notes_writes() {
+    let reviewer = use_cases::build_reviewer_prompt(false, "project", "reviewer", &[]);
+
+    assert!(reviewer
+        .contains("Do **not** write to the reviewed worktrees or create local artifact files"));
+    assert!(reviewer.contains(
+        "Concise Obsidian operational notes are allowed only through the Obsidian guidance below"
+    ));
+    assert!(reviewer.contains("All roles, including reviewers, may write concise Obsidian notes"));
+    assert_obsidian_project_examples(&reviewer, "project");
+}
+
+#[test]
+fn telegram_guidance_stays_after_obsidian_notes_when_enabled() {
+    let pm = use_cases::build_pm_prompt(true, "project");
+
+    let obsidian_idx = pm.find("## Obsidian Operational Notes").unwrap();
+    let telegram_idx = pm.find("## Telegram").unwrap();
+
+    assert!(telegram_idx > obsidian_idx);
+    assert!(pm[telegram_idx..].contains("IMMEDIATELY acknowledge"));
+}
+
+fn assert_obsidian_common_base(prompt: &str) {
+    assert!(prompt.contains("vault=agman"));
+    assert!(prompt.contains("obsidian vault=agman files folder=general"));
+    assert!(prompt.contains("obsidian vault=agman read path=\"general/<note>.md\""));
+    assert!(prompt.contains(
+        "obsidian vault=agman search:context query=\"<keyword>\" path=general limit=5 format=json"
+    ));
+    assert!(prompt.contains("obsidian vault=agman create path="));
+    assert!(prompt.contains("obsidian vault=agman append path="));
+    assert!(prompt.contains("Do not create Obsidian project folders during agman project creation"));
+    assert!(prompt.contains("must not make core agman project creation depend on Obsidian"));
+    assert!(prompt.contains("no project notes yet"));
+    assert!(prompt.contains("Project folders are created lazily on first durable note write"));
+    assert!(prompt.contains("creates missing parent folders for `create path=...`"));
+    assert!(prompt.contains("ask the PM/user to create the folder in Obsidian before retrying"));
+    assert!(prompt.contains("Hard ban: no secrets, credentials, tokens"));
+    assert!(prompt.contains("private sensitive data"));
+    assert!(prompt.contains("system-prompt-style instructions"));
+    assert!(prompt.contains(
+        "current user/PM direction, repo state, live systems, CI, and agman task state override Obsidian notes"
+    ));
+    assert!(prompt.contains("Do not read all notes"));
+}
+
+fn assert_obsidian_cos_examples(prompt: &str) {
+    assert!(prompt.contains("obsidian vault=agman files folder=\"projects/<project-name>\""));
+    assert!(prompt.contains(
+        "Treat an empty result from `obsidian vault=agman files folder=\"projects/<project-name>\"`"
+    ));
+    assert!(prompt.contains("obsidian vault=agman read path=\"projects/<project-name>/<note>.md\""));
+    assert!(prompt.contains(
+        "obsidian vault=agman search:context query=\"<keyword>\" path=\"projects/<project-name>\" limit=5 format=json"
+    ));
+    assert!(prompt.contains("obsidian vault=agman create path=\"general/<topic>.md\""));
+    assert!(
+        prompt.contains("obsidian vault=agman append path=\"projects/<project-name>/<topic>.md\"")
+    );
+    assert!(prompt.contains("updated: <YYYY-MM-DD>"));
+    assert!(prompt.contains("last_verified: <YYYY-MM-DD>"));
+}
+
+fn assert_obsidian_project_examples(prompt: &str, project: &str) {
+    assert!(!prompt.contains("projects/<project-name>"));
+    assert!(prompt.contains(&format!(
+        "obsidian vault=agman files folder=\"projects/{project}\""
+    )));
+    assert!(prompt.contains(&format!(
+        "Treat an empty result from `obsidian vault=agman files folder=\"projects/{project}\"`"
+    )));
+    assert!(prompt.contains(&format!(
+        "obsidian vault=agman read path=\"projects/{project}/<note>.md\""
+    )));
+    assert!(prompt.contains(&format!(
+        "obsidian vault=agman search:context query=\"<keyword>\" path=\"projects/{project}\" limit=5 format=json"
+    )));
+    assert!(prompt.contains(&format!(
+        "obsidian vault=agman create path=\"projects/{project}/<topic>.md\""
+    )));
+    assert!(prompt.contains(&format!(
+        "obsidian vault=agman append path=\"projects/{project}/<topic>.md\""
+    )));
+    assert!(prompt.contains("updated: <YYYY-MM-DD>"));
+    assert!(prompt.contains("last_verified: <YYYY-MM-DD>"));
+    assert!(prompt.contains("Use `general/` only for genuinely reusable cross-project notes"));
 }
 
 #[test]
