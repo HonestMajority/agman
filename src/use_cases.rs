@@ -4504,11 +4504,23 @@ pub fn obsidian_notes_section(project_name: Option<&str>) -> String {
         ),
         None => "On startup/spawn, after any required Telegram acknowledgment, list `general/`. When discussing a named project, list that project's folder too.".to_string(),
     };
-    let project_guidance = match project_name {
+    let listing_examples = match project_name {
         Some(_) => format!(
-            "- `obsidian vault=agman files folder=\"{project_folder}\"`\n- `obsidian vault=agman read path=\"{project_folder}/<note>.md\"`\n- `obsidian vault=agman search:context query=\"<keyword>\" path=\"{project_folder}\" limit=5 format=json`"
+            "- `obsidian vault=agman files folder=general`\n- `obsidian vault=agman files folder=\"{project_folder}\"`"
         ),
-        None => "- `obsidian vault=agman files folder=\"projects/<project-name>\"`\n- `obsidian vault=agman read path=\"projects/<project-name>/<note>.md\"`\n- `obsidian vault=agman search:context query=\"<keyword>\" path=\"projects/<project-name>\" limit=5 format=json`".to_string(),
+        None => "- `obsidian vault=agman files folder=general`\n- `obsidian vault=agman files folder=\"projects/<project-name>\"`".to_string(),
+    };
+    let read_search_examples = match project_name {
+        Some(_) => format!(
+            "- `obsidian vault=agman read path=\"general/<note>.md\"`\n- `obsidian vault=agman read path=\"{project_folder}/<note>.md\"`\n- `obsidian vault=agman search:context query=\"<keyword>\" path=general limit=5 format=json`\n- `obsidian vault=agman search:context query=\"<keyword>\" path=\"{project_folder}\" limit=5 format=json`"
+        ),
+        None => "- `obsidian vault=agman read path=\"general/<note>.md\"`\n- `obsidian vault=agman read path=\"projects/<project-name>/<note>.md\"`\n- `obsidian vault=agman search:context query=\"<keyword>\" path=general limit=5 format=json`\n- `obsidian vault=agman search:context query=\"<keyword>\" path=\"projects/<project-name>\" limit=5 format=json`".to_string(),
+    };
+    let write_examples = match project_name {
+        Some(_) => format!(
+            "Default project notes to the project folder:\n- `obsidian vault=agman create path=\"{project_folder}/<topic>.md\" content=\"updated: <YYYY-MM-DD>\\nlast_verified: <YYYY-MM-DD>\\n\\n<compact operational note>\"`\n- `obsidian vault=agman append path=\"{project_folder}/<topic>.md\" content=\"updated: <YYYY-MM-DD>\\nlast_verified: <YYYY-MM-DD>\\n\\n<one concise update>\"`\n\nUse `general/` only for genuinely reusable cross-project notes."
+        ),
+        None => "Use `general/` for reusable cross-project notes, and project folders for named projects:\n- `obsidian vault=agman create path=\"general/<topic>.md\" content=\"updated: <YYYY-MM-DD>\\nlast_verified: <YYYY-MM-DD>\\n\\n<compact operational note>\"`\n- `obsidian vault=agman append path=\"projects/<project-name>/<topic>.md\" content=\"updated: <YYYY-MM-DD>\\nlast_verified: <YYYY-MM-DD>\\n\\n<one concise update>\"`".to_string(),
     };
 
     format!(
@@ -4521,21 +4533,15 @@ Use the Obsidian CLI for compact operational memory in the `agman` vault. Always
 {startup_scope} In long-lived sessions, list notes again at the start of a new meaningful request if the context changed or the note list may be stale.
 
 Start by listing notes:
-- `obsidian vault=agman files folder=general`
-- `obsidian vault=agman files folder="projects/<project-name>"`
-{project_guidance}
+{listing_examples}
 
 Read and search selectively:
-- `obsidian vault=agman read path="general/<note>.md"`
-- `obsidian vault=agman read path="projects/<project-name>/<note>.md"`
-- `obsidian vault=agman search:context query="<keyword>" path=general limit=5 format=json`
-- `obsidian vault=agman search:context query="<keyword>" path="projects/<project-name>" limit=5 format=json`
+{read_search_examples}
 
 Do not read all notes. Read by relevant title, or use narrow `search:context` queries before opening a note.
 
 All roles, including reviewers, may write concise Obsidian notes:
-- `obsidian vault=agman create path="general/<short-title>.md" content="<compact operational note>"`
-- `obsidian vault=agman append path="projects/<project-name>/<short-title>.md" content="<one concise update>"`
+{write_examples}
 
 Good notes are durable operational memory: decisions, research conclusions, failed attempts, project conventions, operational gotchas, stable commands, and short evidence references.
 

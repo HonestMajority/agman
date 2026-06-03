@@ -283,7 +283,8 @@ fn prompts_describe_inbox_based_task_agent_model() {
 #[test]
 fn prompts_include_obsidian_operational_notes_guidance() {
     let chief = use_cases::build_chief_of_staff_prompt(false);
-    assert_obsidian_common(&chief);
+    assert_obsidian_common_base(&chief);
+    assert_obsidian_cos_examples(&chief);
     assert!(chief.contains("When discussing a named project, list that project's folder too"));
 
     let project_prompts = [
@@ -303,12 +304,8 @@ fn prompts_include_obsidian_operational_notes_guidance() {
     ];
 
     for prompt in project_prompts {
-        assert_obsidian_common(&prompt);
-        assert!(prompt.contains("obsidian vault=agman files folder=\"projects/project\""));
-        assert!(prompt.contains("obsidian vault=agman read path=\"projects/project/<note>.md\""));
-        assert!(prompt.contains(
-            "obsidian vault=agman search:context query=\"<keyword>\" path=\"projects/project\" limit=5 format=json"
-        ));
+        assert_obsidian_common_base(&prompt);
+        assert_obsidian_project_examples(&prompt, "project");
     }
 }
 
@@ -322,6 +319,7 @@ fn reviewer_prompt_allows_only_concise_obsidian_notes_writes() {
         "Concise Obsidian operational notes are allowed only through the Obsidian guidance below"
     ));
     assert!(reviewer.contains("All roles, including reviewers, may write concise Obsidian notes"));
+    assert_obsidian_project_examples(&reviewer, "project");
 }
 
 #[test]
@@ -335,17 +333,12 @@ fn telegram_guidance_stays_after_obsidian_notes_when_enabled() {
     assert!(pm[telegram_idx..].contains("IMMEDIATELY acknowledge"));
 }
 
-fn assert_obsidian_common(prompt: &str) {
+fn assert_obsidian_common_base(prompt: &str) {
     assert!(prompt.contains("vault=agman"));
     assert!(prompt.contains("obsidian vault=agman files folder=general"));
-    assert!(prompt.contains("obsidian vault=agman files folder=\"projects/<project-name>\""));
     assert!(prompt.contains("obsidian vault=agman read path=\"general/<note>.md\""));
-    assert!(prompt.contains("obsidian vault=agman read path=\"projects/<project-name>/<note>.md\""));
     assert!(prompt.contains(
         "obsidian vault=agman search:context query=\"<keyword>\" path=general limit=5 format=json"
-    ));
-    assert!(prompt.contains(
-        "obsidian vault=agman search:context query=\"<keyword>\" path=\"projects/<project-name>\" limit=5 format=json"
     ));
     assert!(prompt.contains("obsidian vault=agman create path="));
     assert!(prompt.contains("obsidian vault=agman append path="));
@@ -356,6 +349,42 @@ fn assert_obsidian_common(prompt: &str) {
         "current user/PM direction, repo state, live systems, CI, and agman task state override Obsidian notes"
     ));
     assert!(prompt.contains("Do not read all notes"));
+}
+
+fn assert_obsidian_cos_examples(prompt: &str) {
+    assert!(prompt.contains("obsidian vault=agman files folder=\"projects/<project-name>\""));
+    assert!(prompt.contains("obsidian vault=agman read path=\"projects/<project-name>/<note>.md\""));
+    assert!(prompt.contains(
+        "obsidian vault=agman search:context query=\"<keyword>\" path=\"projects/<project-name>\" limit=5 format=json"
+    ));
+    assert!(prompt.contains("obsidian vault=agman create path=\"general/<topic>.md\""));
+    assert!(
+        prompt.contains("obsidian vault=agman append path=\"projects/<project-name>/<topic>.md\"")
+    );
+    assert!(prompt.contains("updated: <YYYY-MM-DD>"));
+    assert!(prompt.contains("last_verified: <YYYY-MM-DD>"));
+}
+
+fn assert_obsidian_project_examples(prompt: &str, project: &str) {
+    assert!(!prompt.contains("projects/<project-name>"));
+    assert!(prompt.contains(&format!(
+        "obsidian vault=agman files folder=\"projects/{project}\""
+    )));
+    assert!(prompt.contains(&format!(
+        "obsidian vault=agman read path=\"projects/{project}/<note>.md\""
+    )));
+    assert!(prompt.contains(&format!(
+        "obsidian vault=agman search:context query=\"<keyword>\" path=\"projects/{project}\" limit=5 format=json"
+    )));
+    assert!(prompt.contains(&format!(
+        "obsidian vault=agman create path=\"projects/{project}/<topic>.md\""
+    )));
+    assert!(prompt.contains(&format!(
+        "obsidian vault=agman append path=\"projects/{project}/<topic>.md\""
+    )));
+    assert!(prompt.contains("updated: <YYYY-MM-DD>"));
+    assert!(prompt.contains("last_verified: <YYYY-MM-DD>"));
+    assert!(prompt.contains("Use `general/` only for genuinely reusable cross-project notes"));
 }
 
 #[test]
