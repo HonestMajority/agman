@@ -113,40 +113,12 @@ fn clock_title(app: &App) -> Line<'static> {
         vec![]
     };
 
-    let keybase_spans = if !app.keybase_first_poll_done && app.keybase_available {
-        vec![Span::styled(
-            " KEYBASE ... ",
-            Style::default().fg(Color::DarkGray),
-        )]
-    } else if app.keybase_dm_unread_count > 0 {
-        let orange = Color::Rgb(255, 140, 40);
-        vec![Span::styled(
-            format!(" KEYBASE DM {} ", app.keybase_dm_unread_count),
-            Style::default()
-                .fg(Color::Black)
-                .bg(orange)
-                .add_modifier(Modifier::BOLD),
-        )]
-    } else if app.keybase_channel_unread_count > 0 {
-        let cyan = Color::Rgb(0, 180, 216);
-        vec![Span::styled(
-            format!(" KEYBASE {} ", app.keybase_channel_unread_count),
-            Style::default()
-                .fg(Color::Black)
-                .bg(cyan)
-                .add_modifier(Modifier::BOLD),
-        )]
-    } else {
-        vec![]
-    };
-
     let clock_span = Span::styled(
         format!(" {} ", Local::now().format("%H:%M")),
         Style::default().fg(Color::DarkGray),
     );
 
     let mut spans = notif_spans;
-    spans.extend(keybase_spans);
     spans.push(clock_span);
 
     Line::from(spans).alignment(Alignment::Right)

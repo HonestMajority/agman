@@ -768,15 +768,6 @@ pub struct App {
     pub gh_notif_first_poll_done: bool,
     /// Thread IDs dismissed by the user, persisted across restarts.
     dismissed_notifs: DismissedNotifications,
-    // Keybase unread polling
-    pub keybase_dm_unread_count: usize,
-    pub keybase_channel_unread_count: usize,
-    pub last_keybase_poll: Instant,
-    keybase_tx: tokio_mpsc::UnboundedSender<use_cases::KeybasePollResult>,
-    keybase_rx: tokio_mpsc::UnboundedReceiver<use_cases::KeybasePollResult>,
-    keybase_poll_active: bool,
-    pub keybase_first_poll_done: bool,
-    pub keybase_available: bool,
     // Notes view
     pub notes_view: Option<NotesView>,
     pub notes_return_view: View,
@@ -903,7 +894,6 @@ impl App {
         logs_editor.set_read_only(true);
         let (gh_notif_tx, gh_notif_rx) = tokio_mpsc::unbounded_channel();
         let (show_prs_poll_tx, show_prs_poll_rx) = tokio_mpsc::unbounded_channel();
-        let (keybase_tx, keybase_rx) = tokio_mpsc::unbounded_channel();
         let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
         let (project_refresh_tx, project_refresh_rx) = tokio_mpsc::unbounded_channel();
         let (respawn_tx, respawn_rx) = tokio_mpsc::unbounded_channel();
@@ -989,14 +979,6 @@ impl App {
             gh_notif_poll_active: false,
             gh_notif_first_poll_done: false,
             dismissed_notifs,
-            keybase_dm_unread_count: 0,
-            keybase_channel_unread_count: 0,
-            last_keybase_poll: Instant::now() - Duration::from_secs(2),
-            keybase_tx,
-            keybase_rx,
-            keybase_poll_active: false,
-            keybase_first_poll_done: false,
-            keybase_available: true,
             notes_view: None,
             notes_return_view: View::ProjectList,
             show_prs_data: Default::default(),
@@ -5582,55 +5564,6 @@ impl App {
                 .get(idx - issues_len - my_prs_len)
         }
     }
-
-    /// Spawn a background task to poll Keybase unread conversations.
-    fn start_keybase_poll(&mut self) {
-        if self.keybase_poll_active || !self.keybase_available {
-            return;
-        }
-
-        self.keybase_poll_active = true;
-        let tx = self.keybase_tx.clone();
-
-        tracing::debug!("starting keybase unread poll");
-        self.rt.spawn(async move {
-            let result = tokio::task::spawn_blocking(use_cases::fetch_keybase_unreads)
-                .await
-                .unwrap_or(use_cases::KeybasePollResult {
-                    dm_unread_count: 0,
-                    channel_unread_count: 0,
-                    keybase_available: true,
-                });
-            let _ = tx.send(result);
-        });
-    }
-
-    /// Check for completed Keybase poll results (non-blocking) and apply.
-    fn apply_keybase_poll_results(&mut self) {
-        let result = match self.keybase_rx.try_recv() {
-            Ok(r) => r,
-            Err(_) => return,
-        };
-        self.keybase_poll_active = false;
-
-        if !self.keybase_first_poll_done {
-            self.keybase_first_poll_done = true;
-            tracing::debug!("first keybase unread poll completed");
-        }
-
-        if !result.keybase_available {
-            self.keybase_available = false;
-            tracing::warn!("keybase not available, disabling poll");
-        }
-
-        self.keybase_dm_unread_count = result.dm_unread_count;
-        self.keybase_channel_unread_count = result.channel_unread_count;
-        tracing::debug!(
-            unread_dm = result.dm_unread_count,
-            unread_channel = result.channel_unread_count,
-            "applied keybase poll results"
-        );
-    }
 }
 
 impl Drop for App {
@@ -5763,15 +5696,6 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Check for completed Show PRs poll results (non-blocking)
             app.apply_show_prs_results();
-
-            // Poll Keybase unreads every 2 seconds (local Unix socket, ~49ms per call)
-            if app.last_keybase_poll.elapsed() >= Duration::from_secs(2) {
-                app.start_keybase_poll();
-                app.last_keybase_poll = Instant::now();
-            }
-
-            // Check for completed Keybase poll results (non-blocking)
-            app.apply_keybase_poll_results();
 
             // Poll agent inboxes every 2 seconds (deliver messages via tmux send-keys)
             if app.last_inbox_poll.elapsed() >= Duration::from_secs(2) {
