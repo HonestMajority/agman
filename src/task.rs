@@ -203,7 +203,7 @@ impl Task {
         config: &Config,
         name: &str,
         branch_name: &str,
-        _description: &str,
+        _first_prompt: &str,
         launch_mode: &str,
         worktree_path: PathBuf,
     ) -> Result<Self> {
@@ -235,7 +235,7 @@ impl Task {
         config: &Config,
         name: &str,
         branch_name: &str,
-        _description: &str,
+        _first_prompt: &str,
         launch_mode: &str,
         parent_dir: PathBuf,
     ) -> Result<Self> {

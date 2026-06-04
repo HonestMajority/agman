@@ -84,7 +84,7 @@ impl Agent {
     }
 
     /// Build lightweight task context for a task-attached long-lived agent.
-    /// The actual goal is delivered as an inbox message at task creation.
+    /// A nonblank first prompt is delivered as an inbox message at task creation.
     pub fn build_inbox_message(&self, task: &Task, _command_mode: bool) -> Result<String> {
         let mut msg = String::new();
 

@@ -128,7 +128,7 @@ pub fn create_task(
     config: &Config,
     repo_name: &str,
     branch_name: &str,
-    description: &str,
+    first_prompt: Option<&str>,
     launch_mode: &str,
     worktree_source: WorktreeSource,
     parent_dir: Option<PathBuf>,
@@ -206,7 +206,7 @@ pub fn create_task(
         config,
         repo_name,
         branch_name,
-        description,
+        first_prompt.unwrap_or(""),
         launch_mode,
         worktree_path,
     )?;
@@ -226,7 +226,7 @@ pub fn create_task(
         task.save_meta()?;
     }
 
-    create_task_engineer(config, &task, description)?;
+    create_task_engineer(config, &task, first_prompt)?;
 
     // Increment repo usage stats
     let stats_path = config.repo_stats_path();
@@ -245,7 +245,7 @@ pub fn create_multi_repo_task(
     config: &Config,
     name: &str,
     branch_name: &str,
-    description: &str,
+    first_prompt: Option<&str>,
     launch_mode: &str,
     parent_dir: PathBuf,
     project: Option<String>,
@@ -266,7 +266,7 @@ pub fn create_multi_repo_task(
         config,
         name,
         branch_name,
-        description,
+        first_prompt.unwrap_or(""),
         launch_mode,
         parent_dir,
     )?;
@@ -281,7 +281,7 @@ pub fn create_multi_repo_task(
         task.save_meta()?;
     }
 
-    create_task_engineer(config, &task, description)?;
+    create_task_engineer(config, &task, first_prompt)?;
 
     Ok(task)
 }
@@ -835,7 +835,7 @@ fn ensure_migrated_task_engineer(
         ),
     };
 
-    create_task_engineer(config, &task, &goal)?;
+    create_task_engineer(config, &task, Some(&goal))?;
     tracing::info!(task_id = %dir_name, "created attached engineer during task migration");
     Ok(())
 }
@@ -1976,7 +1976,7 @@ pub fn create_pm_task(
     project: &str,
     repo_name: &str,
     branch_name: &str,
-    description: &str,
+    first_prompt: Option<&str>,
 ) -> Result<Task> {
     tracing::info!(
         project = project,
@@ -1993,7 +1993,7 @@ pub fn create_pm_task(
         config,
         repo_name,
         branch_name,
-        description,
+        first_prompt,
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
@@ -2003,7 +2003,11 @@ pub fn create_pm_task(
     Ok(task)
 }
 
-pub fn create_task_engineer(config: &Config, task: &Task, goal: &str) -> Result<AgentRecord> {
+pub fn create_task_engineer(
+    config: &Config,
+    task: &Task,
+    first_prompt: Option<&str>,
+) -> Result<AgentRecord> {
     let task_id = task.meta.task_id();
     let project = task
         .meta
@@ -2025,9 +2029,14 @@ pub fn create_task_engineer(config: &Config, task: &Task, goal: &str) -> Result<
         },
     )?;
 
-    let inbox_path = config.agent_inbox(project, &name);
-    let message = format!("Task goal for {task_id}:\n\n{}", goal.trim());
-    inbox::append_message(&inbox_path, project, &message)?;
+    if let Some(prompt) = first_prompt
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+    {
+        let inbox_path = config.agent_inbox(project, &name);
+        let message = format!("First prompt for {task_id}:\n\n{prompt}");
+        inbox::append_message(&inbox_path, project, &message)?;
+    }
 
     Ok(engineer)
 }
@@ -4298,7 +4307,7 @@ Always cross-reference your mental model against current ground truth before ans
 You CAN do anything the CEO directs you to do. Available write commands:
 - agman create-project <name> --description "<label>" [--initial-message <text|@file|->]
 - agman delete-project <name>
-- agman create-pm-task <project> <repo> <task-name> --description "..." (rare — usually PMs do this)
+- agman create-pm-task <project> <repo> <task-name> [--first-prompt "<text|@file|->"] (rare — usually PMs do this; omitting the first prompt creates an idle Engineer with no initial inbox message)
 - agman send-message <target> --from chief-of-staff
 - agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project <project> [--description "..."]
 - agman attach-agent --project <project> --name <name> --task <task-id> [--role-label "..."]
@@ -4794,6 +4803,8 @@ const DEFAULT_ENGINEER_PROMPT_TEMPLATE: &str = r#"You are an engineer agent for 
 
 You are attached to task "{{TASK_ID}}" and stay with that task as a long-lived, stateful engineering agent. The task is a project/worktree/branch/status container; your inbox conversation with the PM is the source of truth for current direction.
 
+If no PM inbox message arrived for this task, wait. A task can be created with no first prompt on purpose; do not infer work from the task name, branch, or worktree alone.
+
 ## Authority
 
 You may handle broad engineering work end to end when the PM asks:
@@ -4952,7 +4963,7 @@ const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for
 ## Available Commands (use via Bash tool)
 
 ### Task Management
-- agman create-pm-task {{PROJECT_NAME}} <repo> <task-name> --description "<description>"
+- agman create-pm-task {{PROJECT_NAME}} <repo> <task-name> [--first-prompt "<first prompt>"]
 - agman list-pm-tasks {{PROJECT_NAME}}
 - agman task-info <task-id>
 - agman task-log <task-id> --tail 100
@@ -4975,6 +4986,7 @@ AGMAN_MSG
 ## Behavior Guidelines
 
 - When given work, suggest a task plan to the requester and wait for confirmation before creating tasks.
+- Use `--first-prompt` when the attached Engineer should start immediately. Omit it only when you intentionally want an idle Engineer; no initial inbox message is sent, so follow up with `agman send-message` when work is ready.
 - Direct implementation, rebase, push, PR, CI, and review-addressing work by messaging the task's attached Engineer through the inbox.
 - When an Engineer reports a PR that is not visible in the TUI, ask them to run `agman link-pr <task-id> <PR URL or number>`; PR URLs in inbox messages alone do not update task metadata.
 - When the CEO asks a question, answer it — do not treat it as an implicit instruction to take action.

@@ -120,11 +120,11 @@ EXAMPLES:
     /// Create a task within a project
     #[command(after_help = "\
 EXAMPLES:
-  agman create-pm-task myproj myrepo fix-bug --description \"Fix the login bug\"
-  cat <<'EOF' | agman create-pm-task myproj myrepo fix-bug --description -
-  Multi-line description via stdin using the - sentinel.
+  agman create-pm-task myproj myrepo fix-bug --first-prompt \"Fix the login bug\"
+  cat <<'EOF' | agman create-pm-task myproj myrepo fix-bug --first-prompt -
+  Multi-line first prompt via stdin using the - sentinel.
   EOF
-  agman create-pm-task myproj myrepo fix-bug --description @./task-desc.md")]
+  agman create-pm-task myproj myrepo fix-bug --first-prompt @./task-prompt.md")]
     CreatePmTask {
         /// Project name
         project: String,
@@ -132,9 +132,15 @@ EXAMPLES:
         repo: String,
         /// Task name (becomes the branch name, e.g. 'fix-login-bug')
         task_name: String,
-        /// Task description sent to the attached engineer
-        #[arg(long, short, allow_hyphen_values = true)]
-        description: Option<String>,
+        /// Optional first prompt sent to the attached engineer
+        #[arg(
+            long = "first-prompt",
+            short = 'd',
+            alias = "description",
+            allow_hyphen_values = true,
+            value_name = "FIRST_PROMPT"
+        )]
+        first_prompt: Option<String>,
     },
 
     /// List tasks belonging to a project
@@ -432,4 +438,67 @@ pub enum AgentKindArg {
     Operator,
     Reviewer,
     Tester,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn create_pm_task_parses_first_prompt_short_and_description_alias() {
+        let parsed = Cli::try_parse_from([
+            "agman",
+            "create-pm-task",
+            "project",
+            "repo",
+            "branch",
+            "--first-prompt",
+            "Do the work",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::CreatePmTask {
+                first_prompt: Some(ref prompt),
+                ..
+            }) if prompt == "Do the work"
+        ));
+
+        let parsed = Cli::try_parse_from([
+            "agman",
+            "create-pm-task",
+            "project",
+            "repo",
+            "branch",
+            "-d",
+            "Short prompt",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::CreatePmTask {
+                first_prompt: Some(ref prompt),
+                ..
+            }) if prompt == "Short prompt"
+        ));
+
+        let parsed = Cli::try_parse_from([
+            "agman",
+            "create-pm-task",
+            "project",
+            "repo",
+            "branch",
+            "--description",
+            "Alias prompt",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::CreatePmTask {
+                first_prompt: Some(ref prompt),
+                ..
+            }) if prompt == "Alias prompt"
+        ));
+    }
 }

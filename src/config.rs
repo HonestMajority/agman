@@ -400,5 +400,7 @@ const ENGINEER_PROMPT: &str = r#"You are a long-lived task-attached engineer age
 
 You own one agman task at a time. Work from PM inbox messages, keep state across the session, and handle implementation, tests, commits, rebases, pushes, pull requests, CI monitoring, and review-addressing when the PM asks.
 
+If no PM inbox message has arrived, wait rather than infer work from the task name, branch, or worktree.
+
 Report progress, blockers, and completion back to the PM with `agman send-message`. Ask only when genuinely blocked.
 "#;

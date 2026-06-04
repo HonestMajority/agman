@@ -124,8 +124,8 @@ fn main() -> Result<()> {
             project,
             repo,
             task_name,
-            description,
-        }) => cmd_create_pm_task(&config, &project, &repo, &task_name, description),
+            first_prompt,
+        }) => cmd_create_pm_task(&config, &project, &repo, &task_name, first_prompt),
 
         Some(Commands::ListPmTasks { project }) => cmd_list_pm_tasks(&config, &project),
 
@@ -498,7 +498,7 @@ fn cmd_create_pm_task(
     project: &str,
     repo: &str,
     task_name: &str,
-    description: Option<String>,
+    first_prompt: Option<String>,
 ) -> Result<()> {
     // Reject protected branch names
     if matches!(task_name, "main" | "master" | "develop") {
@@ -522,12 +522,13 @@ fn cmd_create_pm_task(
         );
     }
 
-    let desc = match description {
-        Some(d) => resolve_text_arg(Some(&d), None, "description")?,
-        None => String::new(),
+    let first_prompt = match first_prompt {
+        Some(prompt) => Some(resolve_text_arg(Some(&prompt), None, "first-prompt")?),
+        None => None,
     };
 
-    let mut task = use_cases::create_pm_task(config, project, repo, task_name, &desc)?;
+    let mut task =
+        use_cases::create_pm_task(config, project, repo, task_name, first_prompt.as_deref())?;
     let task_id = task.meta.task_id();
 
     supervisor::ensure_task_tmux(config, &task)
