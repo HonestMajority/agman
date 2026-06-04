@@ -52,12 +52,14 @@ New agent state is stored under `~/.agman/agents`.
 
 ```bash
 agman create-project myproj --description "UI rewrite"
-agman create-pm-task myproj myrepo fix-bug --description "Fix the login bug"
+agman create-pm-task myproj myrepo fix-bug --first-prompt "Fix the login bug"
 agman create-agent --kind reviewer --name pr-1247 --project myproj --description "Review the PR"
 agman send-message engineer:myproj--engineer-myrepo-fix-bug "Please create the PR"
 agman send-message reviewer:myproj--pr-1247 "Please re-check the latest commit"
 agman status
 ```
+
+`create-pm-task --first-prompt` accepts inline text, `@file`, or `-` for stdin. Omitting it still creates the task, worktree, and attached Engineer, but leaves the Engineer idle with no initial inbox message.
 
 ## Harness Notes
 

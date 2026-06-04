@@ -2286,7 +2286,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                             Span::styled(" back", Style::default().fg(Color::DarkGray)),
                         ]
                     }
-                    WizardStep::EnterDescription => {
+                    WizardStep::EnterFirstPrompt => {
                         vec![
                             Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
                             Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
@@ -2566,7 +2566,7 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
         let total = 2;
         let (step_num, step_title) = match wizard.step {
             WizardStep::SelectBranch => (1, "Branch / Worktree"),
-            WizardStep::EnterDescription => (2, "Task Description"),
+            WizardStep::EnterFirstPrompt => (2, "First Prompt"),
         };
         (
             wizard.step,
@@ -2612,7 +2612,7 @@ fn draw_wizard(f: &mut Frame, app: &mut App) {
     // Draw step-specific content
     match step {
         WizardStep::SelectBranch => draw_wizard_branch(f, app, chunks[0]),
-        WizardStep::EnterDescription => draw_wizard_description(f, app, chunks[0]),
+        WizardStep::EnterFirstPrompt => draw_wizard_first_prompt(f, app, chunks[0]),
     }
 
     // Draw error message or help text
@@ -2641,13 +2641,13 @@ fn draw_wizard_branch(f: &mut Frame, app: &mut App, area: Rect) {
     );
 }
 
-fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
+fn draw_wizard_first_prompt(f: &mut Frame, app: &mut App, area: Rect) {
     let wizard = match &mut app.wizard {
         Some(w) => w,
         None => return,
     };
 
-    let mode = wizard.description_editor.mode();
+    let mode = wizard.first_prompt_editor.mode();
     let mode_color = match mode {
         VimMode::Normal => Color::LightCyan,
         VimMode::Insert => Color::LightGreen,
@@ -2656,22 +2656,22 @@ fn draw_wizard_description(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let title = format!(
-        " Describe task goal [{}] (Ctrl+S to continue) ",
+        " First prompt (optional) [{}] (Ctrl+S to create) ",
         mode.indicator(),
     );
 
-    wizard.description_editor.textarea.set_block(
+    wizard.first_prompt_editor.textarea.set_block(
         Block::default()
             .title(Span::styled(title, Style::default().fg(mode_color)))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(mode_color)),
     );
     wizard
-        .description_editor
+        .first_prompt_editor
         .textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
 
-    f.render_widget(&wizard.description_editor.textarea, area);
+    f.render_widget(&wizard.first_prompt_editor.textarea, area);
 }
 
 fn draw_wizard_footer_direct(
@@ -2689,7 +2689,7 @@ fn draw_wizard_footer_direct(
         // Show contextual help
         let help = match step {
             WizardStep::SelectBranch => "Tab: switch mode  j/k: navigate  Enter: next  Esc: back",
-            WizardStep::EnterDescription => "Ctrl+S: create task  Esc: back",
+            WizardStep::EnterFirstPrompt => "Ctrl+S: create task  Esc: back",
         };
         Line::from(Span::styled(help, Style::default().fg(Color::DarkGray)))
     };

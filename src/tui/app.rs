@@ -310,7 +310,7 @@ impl DirectoryPicker {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizardStep {
     SelectBranch,
-    EnterDescription,
+    EnterFirstPrompt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,7 +335,7 @@ pub struct NewTaskWizard {
     pub base_branch_editor: TextArea<'static>,
     /// Which field has focus in the NewBranch tab: false = branch name, true = base branch.
     pub base_branch_focus: bool,
-    pub description_editor: VimTextArea<'static>,
+    pub first_prompt_editor: VimTextArea<'static>,
     pub error_message: Option<String>,
     /// True when a multi-repo parent directory was selected (not a git repo).
     pub is_multi_repo: bool,
@@ -2103,9 +2103,9 @@ impl App {
             base_branch_editor.insert_str(&base_ref);
         }
 
-        // Description editor uses vim mode, start in insert mode
-        let mut description_editor = VimTextArea::new();
-        description_editor.set_insert_mode();
+        // First prompt editor uses vim mode, start in insert mode
+        let mut first_prompt_editor = VimTextArea::new();
+        first_prompt_editor.set_insert_mode();
 
         let (branches, worktrees) = if is_multi {
             (Vec::new(), Vec::new())
@@ -2127,7 +2127,7 @@ impl App {
             new_branch_editor,
             base_branch_editor,
             base_branch_focus: false,
-            description_editor,
+            first_prompt_editor,
             error_message: None,
             is_multi_repo: is_multi,
         });
@@ -2257,18 +2257,9 @@ impl App {
                     return Ok(());
                 }
 
-                wizard.step = WizardStep::EnterDescription;
+                wizard.step = WizardStep::EnterFirstPrompt;
             }
-            WizardStep::EnterDescription => {
-                let description = wizard.description_editor.lines_joined();
-                let description = description.trim();
-                let is_multi = wizard.is_multi_repo;
-                if description.is_empty() && is_multi {
-                    let wizard = self.wizard.as_mut().unwrap();
-                    wizard.error_message =
-                        Some("Multi-repo tasks require a description".to_string());
-                    return Ok(());
-                }
+            WizardStep::EnterFirstPrompt => {
                 // Create the task
                 return self.create_task_from_wizard();
             }
@@ -2295,7 +2286,7 @@ impl App {
                     self.view = View::TaskList;
                 }
             }
-            WizardStep::EnterDescription => {
+            WizardStep::EnterFirstPrompt => {
                 wizard.step = WizardStep::SelectBranch;
             }
         }
@@ -2334,7 +2325,8 @@ impl App {
             }
         };
 
-        let description = wizard.description_editor.lines_joined().trim().to_string();
+        let first_prompt = wizard.first_prompt_editor.lines_joined().trim().to_string();
+        let first_prompt = Some(first_prompt.as_str());
 
         // Determine project assignment from current scope
         let project = self
@@ -2353,7 +2345,7 @@ impl App {
                 &self.config,
                 &name,
                 &branch_name,
-                &description,
+                first_prompt,
                 "new-multi",
                 parent_dir.clone(),
                 project,
@@ -2405,7 +2397,7 @@ impl App {
                 &self.config,
                 &name,
                 &branch_name,
-                &description,
+                first_prompt,
                 "new",
                 worktree_source,
                 parent_dir,
@@ -3777,7 +3769,7 @@ impl App {
                                     task_id, branch_name,
                                 );
                                 if let Some(wizard) = self.wizard.as_mut() {
-                                    wizard.description_editor.textarea.insert_str(&prefill);
+                                    wizard.first_prompt_editor.textarea.insert_str(&prefill);
                                 }
                             }
                         }
@@ -4305,22 +4297,22 @@ impl App {
                         }
                     }
                 }
-                WizardStep::EnterDescription => {
+                WizardStep::EnterFirstPrompt => {
                     // Check for Ctrl+S to submit in any mode
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('s')
                     {
-                        wizard.description_editor.set_normal_mode();
+                        wizard.first_prompt_editor.set_normal_mode();
                         self.wizard_next_step()?;
                         return Ok(false);
                     }
 
                     let input = Input::from(event.clone());
-                    let was_insert = wizard.description_editor.mode() == VimMode::Insert;
+                    let was_insert = wizard.first_prompt_editor.mode() == VimMode::Insert;
 
-                    wizard.description_editor.input(input.clone());
+                    wizard.first_prompt_editor.input(input.clone());
 
-                    let is_normal_now = wizard.description_editor.mode() == VimMode::Normal;
+                    let is_normal_now = wizard.first_prompt_editor.mode() == VimMode::Normal;
 
                     // If we pressed Esc while already in normal mode, go back
                     if input.key == Key::Esc && !was_insert && is_normal_now {

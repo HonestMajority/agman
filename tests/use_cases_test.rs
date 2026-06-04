@@ -23,7 +23,7 @@ fn create_task_creates_one_attached_engineer_and_initial_inbox_message() {
         &config,
         "repo",
         "feature",
-        "Build the widget",
+        Some("Build the widget"),
         "engineer",
         WorktreeSource::NewBranch { base_branch: None },
         None,
@@ -50,7 +50,11 @@ fn create_task_creates_one_attached_engineer_and_initial_inbox_message() {
 
     let messages = inbox::read_messages(&config.agent_inbox("repo", &agents[0].meta.name)).unwrap();
     assert_eq!(messages.len(), 1);
+    assert!(messages[0]
+        .message
+        .contains("First prompt for repo--feature:"));
     assert!(messages[0].message.contains("Build the widget"));
+    assert!(!messages[0].message.contains("Task goal for"));
 }
 
 #[test]
@@ -112,7 +116,7 @@ fn visibility_error_defers_fresh_but_not_old_inbox_message() {
 }
 
 #[test]
-fn empty_description_task_still_creates_attached_engineer() {
+fn no_first_prompt_task_still_creates_attached_engineer_with_empty_inbox() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     let _repo = init_test_repo(&tmp, "repo");
@@ -120,8 +124,8 @@ fn empty_description_task_still_creates_attached_engineer() {
     use_cases::create_task(
         &config,
         "repo",
-        "empty-desc",
-        "",
+        "idle",
+        None,
         "new",
         WorktreeSource::NewBranch { base_branch: None },
         None,
@@ -129,9 +133,65 @@ fn empty_description_task_still_creates_attached_engineer() {
     )
     .unwrap();
 
-    let agents = use_cases::attached_agents_for_task(&config, "repo--empty-desc").unwrap();
+    let agents = use_cases::attached_agents_for_task(&config, "repo--idle").unwrap();
     assert_eq!(agents.len(), 1);
     assert!(agents[0].is_engineer());
+
+    let messages = inbox::read_messages(&config.agent_inbox("repo", &agents[0].meta.name)).unwrap();
+    assert!(messages.is_empty());
+}
+
+#[test]
+fn blank_first_prompt_task_still_creates_attached_engineer_with_empty_inbox() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let _repo = init_test_repo(&tmp, "repo");
+
+    use_cases::create_task(
+        &config,
+        "repo",
+        "blank-prompt",
+        Some("  \n  "),
+        "new",
+        WorktreeSource::NewBranch { base_branch: None },
+        None,
+        None,
+    )
+    .unwrap();
+
+    let agents = use_cases::attached_agents_for_task(&config, "repo--blank-prompt").unwrap();
+    assert_eq!(agents.len(), 1);
+    assert!(agents[0].is_engineer());
+
+    let messages = inbox::read_messages(&config.agent_inbox("repo", &agents[0].meta.name)).unwrap();
+    assert!(messages.is_empty());
+}
+
+#[test]
+fn multi_repo_no_first_prompt_creates_idle_engineer_with_empty_inbox() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    let parent_dir = tmp.path().join("repos");
+    std::fs::create_dir_all(&parent_dir).unwrap();
+
+    use_cases::create_multi_repo_task(
+        &config,
+        "repos",
+        "multi-idle",
+        None,
+        "new-multi",
+        parent_dir,
+        None,
+    )
+    .unwrap();
+
+    let agents = use_cases::attached_agents_for_task(&config, "repos--multi-idle").unwrap();
+    assert_eq!(agents.len(), 1);
+    assert!(agents[0].is_engineer());
+
+    let messages =
+        inbox::read_messages(&config.agent_inbox("repos", &agents[0].meta.name)).unwrap();
+    assert!(messages.is_empty());
 }
 
 #[test]
@@ -249,6 +309,8 @@ fn project_status_separates_attached_and_unattached_agents() {
 fn prompts_describe_inbox_based_task_agent_model() {
     let chief = use_cases::build_chief_of_staff_prompt(false);
     assert!(chief.contains("agman send-message <target> --from chief-of-staff"));
+    assert!(chief.contains("agman create-pm-task <project> <repo> <task-name> [--first-prompt"));
+    assert!(chief.contains("omitting the first prompt creates an idle Engineer"));
     assert!(chief.contains("agman create-agent --kind <researcher|operator|reviewer|tester>"));
     assert!(chief.contains("agman attach-agent --project <project> --name <name> --task <task-id>"));
     assert!(!chief.contains("agman message <task-id>"));
@@ -256,6 +318,8 @@ fn prompts_describe_inbox_based_task_agent_model() {
     let pm = use_cases::build_pm_prompt(false, "project");
     assert!(pm.contains("Every task owns one attached Engineer agent"));
     assert!(pm.contains("task-attached Researcher, Tester, Reviewer, and Operator agents"));
+    assert!(pm.contains("agman create-pm-task project <repo> <task-name> [--first-prompt"));
+    assert!(pm.contains("Omit it only when you intentionally want an idle Engineer"));
     assert!(pm.contains("messaging the task's attached Engineer through the inbox"));
     assert!(pm.contains(
         "agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project project"
@@ -266,11 +330,14 @@ fn prompts_describe_inbox_based_task_agent_model() {
     assert!(pm.contains("agman link-pr <task-id> <PR URL or number>"));
     assert!(pm.contains("PR URLs in inbox messages alone do not update task metadata"));
     assert!(!pm.contains("agman create-agent project <name>"));
+    assert!(!pm.contains("agman create-pm-task project <repo> <task-name> --description"));
     assert!(pm.contains("send-message"));
 
     let engineer =
         use_cases::build_engineer_prompt(false, "project", "engineer-repo-branch", "repo--branch");
     assert!(engineer.contains("attached to task \"repo--branch\""));
+    assert!(engineer.contains("If no PM inbox message arrived for this task, wait"));
+    assert!(engineer.contains("do not infer work from the task name, branch, or worktree alone"));
     assert!(engineer.contains("push branches"));
     assert!(engineer.contains("create or update pull requests"));
     assert!(engineer.contains("monitor CI"));
@@ -460,7 +527,7 @@ fn link_task_pr_number_builds_url_from_task_remote() {
         &config,
         "repo",
         "feature",
-        "Build the widget",
+        Some("Build the widget"),
         "engineer",
         WorktreeSource::NewBranch { base_branch: None },
         None,
