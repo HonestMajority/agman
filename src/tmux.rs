@@ -650,10 +650,17 @@ impl Tmux {
     }
 
     /// Like [`capture_pane`] but scoped to a specific window within the session.
+    ///
+    /// `-J` joins lines the pane soft-wrapped so a delivery tag split across
+    /// rows still matches. Note: when the foreground program runs in the
+    /// alternate screen (current Claude Code does), `-S -500` cannot reach
+    /// scrollback — only the visible viewport is captured. Verification
+    /// callers must treat a missing snippet as "possibly delivered anyway"
+    /// and bound their retries.
     pub fn capture_pane_window(session_name: &str, window: Option<&str>) -> Result<String> {
         let target = Self::tmux_target(session_name, window);
         let output = Command::new("tmux")
-            .args(["capture-pane", "-p", "-S", "-500", "-t", &target])
+            .args(["capture-pane", "-p", "-J", "-S", "-500", "-t", &target])
             .output()
             .context("failed to capture tmux pane")?;
 
