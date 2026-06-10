@@ -4200,16 +4200,20 @@ pub fn stalled_targets_from_counts(
         .collect()
 }
 
-/// True when `snippet` appears in `capture`, tolerating tmux line wrapping.
+/// True when `snippet` appears in `capture`, tolerating line wrapping.
 ///
 /// `capture-pane` output contains hard newlines wherever the pane wrapped a
 /// long line, so a delivery tag like `[msg:from:42]` can be split across two
-/// rows even with `-J`. Strip newline and carriage-return characters from
-/// both sides before matching. Keep this confined to delivery verification —
-/// pane-snippet checks are inherently fragile (alternate screens, composers
-/// that collapse pastes) and the pattern should not be extended.
+/// rows even with `-J`. Claude's own renderer additionally hard-wraps at its
+/// layout width and indents continuation lines with a leading margin, which
+/// `-J` cannot join (tmux only joins its own soft wraps). Strip ALL
+/// whitespace from both sides before matching — delivery tags contain no
+/// meaningful whitespace, so the false-positive risk is negligible. Keep
+/// this confined to delivery verification — pane-snippet checks are
+/// inherently fragile (alternate screens, composers that collapse pastes)
+/// and the pattern should not be extended.
 pub fn snippet_in_capture(capture: &str, snippet: &str) -> bool {
-    let strip = |s: &str| s.replace(['\n', '\r'], "");
+    let strip = |s: &str| s.replace([' ', '\t', '\n', '\r'], "");
     strip(capture).contains(&strip(snippet))
 }
 

@@ -5285,23 +5285,20 @@ impl App {
                             std::thread::sleep(RETRY_DELAY);
                         }
 
-                        errors.push(format!(
-                            "delivery failed after {} attempts for seq {}", MAX_RETRIES, msg.seq
-                        ));
                         // Bound the cross-cycle loop: without a terminal state
                         // an unverifiable head message would be re-attempted
                         // every poll cycle forever, blocking all later seqs.
                         // Only cycles where the message reached the pane count
                         // toward the threshold — pure inject/tmux failures must
                         // never force-advance past an undelivered message.
-                        if in_pane_this_cycle
+                        let force_advance = in_pane_this_cycle
                             && use_cases::record_inbox_verify_failure(
                                 &mut verify_fail_counts,
                                 &target,
                                 msg.seq,
                                 VERIFY_FAIL_FORCE_ADVANCE_THRESHOLD,
-                            )
-                        {
+                            );
+                        if force_advance {
                             tracing::warn!(
                                 target_name = &target,
                                 session = &session_name,
@@ -5319,6 +5316,14 @@ impl App {
                             } else {
                                 verify_fail_counts.remove(&target);
                             }
+                        } else {
+                            // Skipped on the force-advance cycle: the WARN
+                            // above already tells the whole story, and this
+                            // error would otherwise be logged after it.
+                            errors.push(format!(
+                                "delivery failed after {} attempts for seq {}",
+                                MAX_RETRIES, msg.seq
+                            ));
                         }
                         break;
                     }

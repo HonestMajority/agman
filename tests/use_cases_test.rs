@@ -127,6 +127,11 @@ fn snippet_in_capture_matches_exact_and_wrapped_captures() {
     let wrapped = "junk before [msg:reviewer:agman--c\node-review:42] [Message from...";
     assert!(use_cases::snippet_in_capture(wrapped, snippet));
 
+    // Claude's renderer hard-wraps at its layout width and indents the
+    // continuation line with a leading margin; tmux -J cannot join those.
+    let claude_wrapped = "junk before [msg:reviewer:agman--code-rev\n  iew:42] [Message from...";
+    assert!(use_cases::snippet_in_capture(claude_wrapped, snippet));
+
     // CRLF capture.
     let crlf = "line one\r\n[msg:reviewer:agman--code-review:4\r\n2] tail\r\n";
     assert!(use_cases::snippet_in_capture(crlf, snippet));
