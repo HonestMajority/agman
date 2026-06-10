@@ -456,6 +456,7 @@ struct InboxPollOutput {
     results: Vec<InboxPollResult>,
     stuck_skip_counts: std::collections::HashMap<String, u32>,
     first_ready_at: std::collections::HashMap<String, Instant>,
+    verify_fail_counts: std::collections::HashMap<String, (u64, u32)>,
 }
 
 struct ProjectRefreshSnapshot {
@@ -537,6 +538,15 @@ impl AgentActivitySample {
 /// as "stalled" and surfaces a UI indicator. At the 2s poll cadence this is
 /// ~10 seconds.
 pub const STALL_THRESHOLD: u32 = 5;
+
+/// How many consecutive delivery cycles may end with snippet verification
+/// failing before the poll worker force-advances the inbox cursor past the
+/// head message. Verification reads the visible pane only (alternate screen
+/// hides scrollback, and Claude's composer collapses long pastes), so a
+/// delivered message can be unverifiable forever; without a terminal state it
+/// would be re-delivered every cycle and block all later seqs. The
+/// inbox.jsonl row remains the durable record of a force-advanced message.
+pub const VERIFY_FAIL_FORCE_ADVANCE_THRESHOLD: u32 = 3;
 
 fn unix_epoch_secs() -> Option<i64> {
     SystemTime::now()
@@ -830,6 +840,14 @@ pub struct App {
     /// has elapsed since the readiness flip. Cleared when the target leaves
     /// the ready state (kill+relaunch re-arms the buffer).
     first_ready_at: std::collections::HashMap<String, Instant>,
+    /// Consecutive delivery cycles whose snippet verification failed, per
+    /// target, keyed by the head seq the failures were observed against:
+    /// `target -> (head_seq, failed_cycles)`. Carried across poll cycles like
+    /// `stuck_skip_counts`; the streak resets on head-seq change and the
+    /// entry is removed on successful delivery or when the inbox drains. At
+    /// `VERIFY_FAIL_FORCE_ADVANCE_THRESHOLD` the poll worker force-advances
+    /// the cursor so one unverifiable message cannot block later seqs.
+    verify_fail_counts: std::collections::HashMap<String, (u64, u32)>,
     /// Targets we've already emitted a one-shot "stalled" warning for this
     /// episode — prevents a per-cycle warn spam. Cleared when the target
     /// recovers (falls below `STALL_THRESHOLD`).
@@ -1027,6 +1045,7 @@ impl App {
             inbox_poll_active: false,
             stuck_skip_counts: std::collections::HashMap::new(),
             first_ready_at: std::collections::HashMap::new(),
+            verify_fail_counts: std::collections::HashMap::new(),
             stall_warned: std::collections::HashSet::new(),
             respawn_in_progress: None,
             respawn_tx,
@@ -4996,6 +5015,7 @@ impl App {
         let tx = self.inbox_poll_tx.clone();
         let mut stuck_skip_counts = self.stuck_skip_counts.clone();
         let mut first_ready_at = self.first_ready_at.clone();
+        let mut verify_fail_counts = self.verify_fail_counts.clone();
 
         self.rt.spawn(async move {
             let output = tokio::task::spawn_blocking(move || {
@@ -5020,6 +5040,7 @@ impl App {
 
                     if undelivered.is_empty() {
                         stuck_skip_counts.remove(&target);
+                        verify_fail_counts.remove(&target);
                         results.push(InboxPollResult {
                             target,
                             delivered: 0,
@@ -5127,7 +5148,7 @@ impl App {
 
                     let first_snippet = format!("[msg:{}:{}]", first_msg.from, first_msg.seq);
                     let already_pasted = Tmux::capture_pane_window(&session_name, window_ref)
-                        .map(|content| content.contains(&first_snippet))
+                        .map(|content| use_cases::snippet_in_capture(&content, &first_snippet))
                         .unwrap_or(false);
 
                     if already_pasted {
@@ -5140,13 +5161,37 @@ impl App {
                         let _ = Tmux::send_enter_to(&session_name, window_ref);
                         std::thread::sleep(std::time::Duration::from_millis(200));
                         let verified = Tmux::capture_pane_window(&session_name, window_ref)
-                            .map(|content| content.contains(&first_snippet))
+                            .map(|content| use_cases::snippet_in_capture(&content, &first_snippet))
                             .unwrap_or(false);
                         if verified {
                             if let Err(e) = inbox::mark_delivered(&seq_path, first_msg.seq) {
                                 errors.push(format!("mark_delivered error: {e}"));
                             } else {
                                 delivered += 1;
+                                verify_fail_counts.remove(&target);
+                            }
+                        } else if use_cases::record_inbox_verify_failure(
+                            &mut verify_fail_counts,
+                            &target,
+                            first_msg.seq,
+                            VERIFY_FAIL_FORCE_ADVANCE_THRESHOLD,
+                        ) {
+                            tracing::warn!(
+                                target_name = &target,
+                                session = &session_name,
+                                seq = first_msg.seq,
+                                threshold = VERIFY_FAIL_FORCE_ADVANCE_THRESHOLD,
+                                "snippet verification failed for {} consecutive cycles; \
+                                 force-advancing inbox cursor past seq {} (message remains \
+                                 in inbox.jsonl; it was pasted to the pane but could not \
+                                 be verified)",
+                                VERIFY_FAIL_FORCE_ADVANCE_THRESHOLD,
+                                first_msg.seq
+                            );
+                            if let Err(e) = inbox::mark_delivered(&seq_path, first_msg.seq) {
+                                errors.push(format!("mark_delivered error: {e}"));
+                            } else {
+                                verify_fail_counts.remove(&target);
                             }
                         }
                         // Even if rescue handled one message, skip to next target this cycle
@@ -5176,16 +5221,25 @@ impl App {
                         }
 
                         let formatted_snippet = format!("[msg:{}:{}]", msg.from, msg.seq);
+                        // True once the message text is known to be in the
+                        // pane this cycle: inject_message_to succeeded, or the
+                        // snippet was observed in a capture. After that, later
+                        // attempts must only nudge Enter — pasting again would
+                        // deliver duplicate copies (verification can't see a
+                        // collapsed paste or text scrolled off the alternate
+                        // screen, so its absence proves nothing).
+                        let mut in_pane_this_cycle = false;
 
                         for attempt in 0..MAX_RETRIES {
                             let already_pasted = Tmux::capture_pane_window(&session_name, window_ref)
-                                .map(|content| content.contains(&formatted_snippet))
+                                .map(|content| use_cases::snippet_in_capture(&content, &formatted_snippet))
                                 .unwrap_or(false);
 
-                            if already_pasted {
+                            if already_pasted || in_pane_this_cycle {
+                                in_pane_this_cycle = true;
                                 tracing::debug!(
                                     target = &target, seq = msg.seq, attempt = attempt,
-                                    "message text already in pane, retrying Enter"
+                                    "message already pasted (visible in pane or earlier this cycle), retrying Enter only"
                                 );
                                 if let Err(e) = Tmux::send_enter_to(&session_name, window_ref) {
                                     tracing::warn!(
@@ -5195,18 +5249,23 @@ impl App {
                                     std::thread::sleep(RETRY_DELAY);
                                     continue;
                                 }
-                            } else if let Err(e) = Tmux::inject_message_to(&session_name, window_ref, &msg.from, &msg.message, msg.seq) {
-                                tracing::warn!(
-                                    target = &target, seq = msg.seq, attempt = attempt, error = %e,
-                                    "inject_message failed"
-                                );
-                                std::thread::sleep(RETRY_DELAY);
-                                continue;
+                            } else {
+                                match Tmux::inject_message_to(&session_name, window_ref, &msg.from, &msg.message, msg.seq) {
+                                    Ok(()) => in_pane_this_cycle = true,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            target = &target, seq = msg.seq, attempt = attempt, error = %e,
+                                            "inject_message failed"
+                                        );
+                                        std::thread::sleep(RETRY_DELAY);
+                                        continue;
+                                    }
+                                }
                             }
 
                             std::thread::sleep(std::time::Duration::from_millis(200));
                             let verified = Tmux::capture_pane_window(&session_name, window_ref)
-                                .map(|content| content.contains(&formatted_snippet))
+                                .map(|content| use_cases::snippet_in_capture(&content, &formatted_snippet))
                                 .unwrap_or(false);
 
                             if verified {
@@ -5214,6 +5273,7 @@ impl App {
                                     errors.push(format!("mark_delivered error: {e}"));
                                 } else {
                                     delivered += 1;
+                                    verify_fail_counts.remove(&target);
                                 }
                                 continue 'msg_loop;
                             }
@@ -5228,6 +5288,38 @@ impl App {
                         errors.push(format!(
                             "delivery failed after {} attempts for seq {}", MAX_RETRIES, msg.seq
                         ));
+                        // Bound the cross-cycle loop: without a terminal state
+                        // an unverifiable head message would be re-attempted
+                        // every poll cycle forever, blocking all later seqs.
+                        // Only cycles where the message reached the pane count
+                        // toward the threshold — pure inject/tmux failures must
+                        // never force-advance past an undelivered message.
+                        if in_pane_this_cycle
+                            && use_cases::record_inbox_verify_failure(
+                                &mut verify_fail_counts,
+                                &target,
+                                msg.seq,
+                                VERIFY_FAIL_FORCE_ADVANCE_THRESHOLD,
+                            )
+                        {
+                            tracing::warn!(
+                                target_name = &target,
+                                session = &session_name,
+                                seq = msg.seq,
+                                threshold = VERIFY_FAIL_FORCE_ADVANCE_THRESHOLD,
+                                "snippet verification failed for {} consecutive cycles; \
+                                 force-advancing inbox cursor past seq {} (message remains \
+                                 in inbox.jsonl; it was pasted to the pane but could not \
+                                 be verified)",
+                                VERIFY_FAIL_FORCE_ADVANCE_THRESHOLD,
+                                msg.seq
+                            );
+                            if let Err(e) = inbox::mark_delivered(&seq_path, msg.seq) {
+                                errors.push(format!("mark_delivered error: {e}"));
+                            } else {
+                                verify_fail_counts.remove(&target);
+                            }
+                        }
                         break;
                     }
                     results.push(InboxPollResult {
@@ -5240,6 +5332,7 @@ impl App {
                     results,
                     stuck_skip_counts,
                     first_ready_at,
+                    verify_fail_counts,
                 }
             })
             .await
@@ -5247,6 +5340,7 @@ impl App {
                 results: Vec::new(),
                 stuck_skip_counts: std::collections::HashMap::new(),
                 first_ready_at: std::collections::HashMap::new(),
+                verify_fail_counts: std::collections::HashMap::new(),
             });
             let _ = tx.send(output);
         });
@@ -5261,6 +5355,7 @@ impl App {
 
         self.stuck_skip_counts = output.stuck_skip_counts;
         self.first_ready_at = output.first_ready_at;
+        self.verify_fail_counts = output.verify_fail_counts;
 
         // One-shot warn the first time a target crosses STALL_THRESHOLD; clear
         // the warned marker when it recovers, so a later stall episode warns again.

@@ -4200,6 +4200,42 @@ pub fn stalled_targets_from_counts(
         .collect()
 }
 
+/// True when `snippet` appears in `capture`, tolerating tmux line wrapping.
+///
+/// `capture-pane` output contains hard newlines wherever the pane wrapped a
+/// long line, so a delivery tag like `[msg:from:42]` can be split across two
+/// rows even with `-J`. Strip newline and carriage-return characters from
+/// both sides before matching. Keep this confined to delivery verification —
+/// pane-snippet checks are inherently fragile (alternate screens, composers
+/// that collapse pastes) and the pattern should not be extended.
+pub fn snippet_in_capture(capture: &str, snippet: &str) -> bool {
+    let strip = |s: &str| s.replace(['\n', '\r'], "");
+    strip(capture).contains(&strip(snippet))
+}
+
+/// Record one delivery cycle whose snippet verification failed for `target`
+/// while its inbox head was `head_seq`. Returns `true` when the consecutive
+/// failure count has reached `threshold` and the caller should force-advance
+/// the inbox cursor past `head_seq` (the inbox.jsonl row remains the durable
+/// record).
+///
+/// Counts are keyed by (target, head seq): a head-seq change resets the
+/// streak. Callers remove the target's entry on successful delivery or when
+/// the inbox drains, mirroring `stuck_skip_counts` lifecycle.
+pub fn record_inbox_verify_failure(
+    counts: &mut std::collections::HashMap<String, (u64, u32)>,
+    target: &str,
+    head_seq: u64,
+    threshold: u32,
+) -> bool {
+    let entry = counts.entry(target.to_string()).or_insert((head_seq, 0));
+    if entry.0 != head_seq {
+        *entry = (head_seq, 0);
+    }
+    entry.1 += 1;
+    entry.1 >= threshold
+}
+
 /// Return true when an inbox message should be deferred because its target
 /// window is visible and the message is still fresh enough that the user may
 /// be manually typing in that chat.

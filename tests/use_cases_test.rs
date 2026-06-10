@@ -116,6 +116,149 @@ fn visibility_error_defers_fresh_but_not_old_inbox_message() {
 }
 
 #[test]
+fn snippet_in_capture_matches_exact_and_wrapped_captures() {
+    let snippet = "[msg:reviewer:agman--code-review:42]";
+
+    // Exact, unwrapped occurrence.
+    let capture = format!("some prompt\n{snippet} [Message from reviewer]: hi\n");
+    assert!(use_cases::snippet_in_capture(&capture, snippet));
+
+    // Snippet split across a hard line break (pane wrap at arbitrary column).
+    let wrapped = "junk before [msg:reviewer:agman--c\node-review:42] [Message from...";
+    assert!(use_cases::snippet_in_capture(wrapped, snippet));
+
+    // CRLF capture.
+    let crlf = "line one\r\n[msg:reviewer:agman--code-review:4\r\n2] tail\r\n";
+    assert!(use_cases::snippet_in_capture(crlf, snippet));
+
+    // Absent snippet and wrong seq must not match.
+    assert!(!use_cases::snippet_in_capture("nothing here\n", snippet));
+    assert!(!use_cases::snippet_in_capture(
+        "[msg:reviewer:agman--code-review:43]",
+        snippet
+    ));
+    assert!(!use_cases::snippet_in_capture("", snippet));
+}
+
+#[test]
+fn record_inbox_verify_failure_hits_threshold_after_consecutive_cycles() {
+    let mut counts = std::collections::HashMap::new();
+
+    assert!(!use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        7,
+        3
+    ));
+    assert!(!use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        7,
+        3
+    ));
+    // Third consecutive failed cycle for the same head seq crosses the threshold.
+    assert!(use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        7,
+        3
+    ));
+    assert_eq!(counts.get("project-a"), Some(&(7, 3)));
+}
+
+#[test]
+fn record_inbox_verify_failure_resets_streak_on_head_seq_change() {
+    let mut counts = std::collections::HashMap::new();
+
+    assert!(!use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        7,
+        3
+    ));
+    assert!(!use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        7,
+        3
+    ));
+    // Head seq advanced (e.g. delivered out-of-band): streak restarts at 1.
+    assert!(!use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        8,
+        3
+    ));
+    assert_eq!(counts.get("project-a"), Some(&(8, 1)));
+    assert!(!use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        8,
+        3
+    ));
+    assert!(use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        8,
+        3
+    ));
+}
+
+#[test]
+fn record_inbox_verify_failure_tracks_targets_independently() {
+    let mut counts = std::collections::HashMap::new();
+
+    assert!(!use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        7,
+        3
+    ));
+    assert!(!use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-b",
+        7,
+        3
+    ));
+    assert!(!use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        7,
+        3
+    ));
+    assert_eq!(counts.get("project-a"), Some(&(7, 2)));
+    assert_eq!(counts.get("project-b"), Some(&(7, 1)));
+
+    // Successful delivery clears the target entry; a later failure starts a
+    // fresh streak (mirrors the poll worker's remove-on-success).
+    counts.remove("project-a");
+    assert!(!use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        7,
+        3
+    ));
+    assert_eq!(counts.get("project-a"), Some(&(7, 1)));
+}
+
+#[test]
+fn record_inbox_verify_failure_stays_at_or_above_threshold_until_cleared() {
+    let mut counts = std::collections::HashMap::new();
+
+    for _ in 0..3 {
+        use_cases::record_inbox_verify_failure(&mut counts, "project-a", 7, 3);
+    }
+    // If the force-advance mark_delivered write fails, the next cycle must
+    // still report threshold-reached so the force-advance is retried.
+    assert!(use_cases::record_inbox_verify_failure(
+        &mut counts,
+        "project-a",
+        7,
+        3
+    ));
+}
+
+#[test]
 fn no_first_prompt_task_still_creates_attached_engineer_with_empty_inbox() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
