@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
+use std::io::Write;
 use std::path::Path;
 
 /// A single message in an agent's inbox (one JSONL line).
@@ -12,28 +15,43 @@ pub struct InboxMessage {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Serializes the "read max seq → write next" sequence across threads so
-/// concurrent `append_message` calls can't collide on the same `seq`.
-///
-/// **In-process only.** A separate `agman` CLI invocation (a different OS
-/// process) writing to the same inbox at the same moment can still race —
-/// that scenario is out of scope for this lock. The races we observed (TUI
-/// main thread, telegram bot thread, tokio workers) are all in-process.
+/// Serializes concurrent `append_message` calls inside one process. The
+/// per-inbox lock file in `append_message` is the cross-process guard.
 static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Append a message to an inbox JSONL file. Assigns the next sequence number
 /// automatically by reading the current max seq from the file.
 ///
-/// Thread-safe within a single process (see [`APPEND_LOCK`]). Not safe against
-/// concurrent writers from separate processes.
+/// Safe across agman processes that use this function. Parse/read errors are
+/// returned to the caller and never treated as an empty inbox.
 pub fn append_message(inbox_path: &Path, from: &str, message: &str) -> Result<InboxMessage> {
+    // Ensure parent directory exists before taking the lock file.
+    if let Some(parent) = inbox_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create inbox dir {}", parent.display()))?;
+    }
+
     let _guard = APPEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    // Read existing messages to determine next seq
-    let next_seq = match read_messages(inbox_path) {
-        Ok(messages) => messages.last().map_or(1, |m| m.seq + 1),
-        Err(_) => 1,
-    };
+    let lock_path = inbox_lock_path(inbox_path);
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("failed to open inbox lock {}", lock_path.display()))?;
+    lock_file
+        .lock_exclusive()
+        .with_context(|| format!("failed to lock inbox {}", inbox_path.display()))?;
+
+    // Hold the inter-process lock across read-max-seq and append.
+    let messages = read_messages(inbox_path)?;
+    let next_seq = messages
+        .iter()
+        .map(|m| m.seq)
+        .max()
+        .map_or(1, |seq| seq + 1);
 
     let msg = InboxMessage {
         seq: next_seq,
@@ -42,24 +60,27 @@ pub fn append_message(inbox_path: &Path, from: &str, message: &str) -> Result<In
         timestamp: Utc::now(),
     };
 
-    let line = serde_json::to_string(&msg).context("failed to serialize inbox message")?;
+    let mut line = serde_json::to_vec(&msg).context("failed to serialize inbox message")?;
+    line.push(b'\n');
 
-    // Ensure parent directory exists
-    if let Some(parent) = inbox_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create inbox dir {}", parent.display()))?;
-    }
-
-    use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(inbox_path)
         .with_context(|| format!("failed to open inbox {}", inbox_path.display()))?;
-    writeln!(file, "{}", line)
+    file.write_all(&line)
         .with_context(|| format!("failed to write to inbox {}", inbox_path.display()))?;
 
     Ok(msg)
+}
+
+fn inbox_lock_path(inbox_path: &Path) -> std::path::PathBuf {
+    let mut lock_name = inbox_path
+        .file_name()
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("inbox.jsonl"));
+    lock_name.push(".lock");
+    inbox_path.with_file_name(lock_name)
 }
 
 /// Read all messages from an inbox JSONL file.
@@ -72,13 +93,19 @@ pub fn read_messages(inbox_path: &Path) -> Result<Vec<InboxMessage>> {
         .with_context(|| format!("failed to read inbox {}", inbox_path.display()))?;
 
     let mut messages = Vec::new();
-    for line in contents.lines() {
+    for (index, line) in contents.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let msg: InboxMessage = serde_json::from_str(line)
-            .with_context(|| format!("failed to parse inbox line: {}", line))?;
+        let line_number = index + 1;
+        let msg: InboxMessage = serde_json::from_str(line).with_context(|| {
+            format!(
+                "failed to parse inbox {} at line {}",
+                inbox_path.display(),
+                line_number
+            )
+        })?;
         messages.push(msg);
     }
     Ok(messages)

@@ -30,6 +30,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # File system
 dirs = "5.0"
+fs2 = "0.4"
 
 # Logging
 tracing = "0.1"
