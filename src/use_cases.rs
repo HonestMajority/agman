@@ -2504,7 +2504,13 @@ pub fn respawn_agent(config: &Config, target: &str, force: bool, timeout_secs: u
     if !force && Tmux::session_exists(&session_name) {
         tracing::info!(target = target, "requesting graceful handoff");
         request_handoff(&inbox_path, "system", &state_dir)?;
-        handoff_content = wait_for_handoff(target, &handoff_path, timeout_secs)?;
+        handoff_content =
+            require_graceful_handoff(wait_for_handoff(target, &handoff_path, timeout_secs)?)?;
+    } else if force {
+        tracing::info!(
+            target = target,
+            "forced respawn requested; skipping graceful handoff"
+        );
     }
 
     // Kill old session
@@ -2544,6 +2550,33 @@ pub fn respawn_agent(config: &Config, target: &str, force: bool, timeout_secs: u
 
     tracing::info!(target = target, "agent respawned successfully");
     Ok(())
+}
+
+fn require_graceful_handoff(handoff_content: Option<String>) -> Result<Option<String>> {
+    if handoff_content.is_none() {
+        bail!(
+            "handoff timed out; no handoff.md written; rerun with --force to respawn without handoff"
+        );
+    }
+    Ok(handoff_content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_graceful_handoff;
+
+    #[test]
+    fn graceful_respawn_requires_handoff_content() {
+        let err = require_graceful_handoff(None).unwrap_err().to_string();
+        assert!(err.contains("handoff timed out; no handoff.md written"));
+        assert!(err.contains("rerun with --force"));
+    }
+
+    #[test]
+    fn graceful_respawn_accepts_handoff_content() {
+        let content = require_graceful_handoff(Some("handoff summary".to_string())).unwrap();
+        assert_eq!(content.as_deref(), Some("handoff summary"));
+    }
 }
 
 // ---------------------------------------------------------------------------

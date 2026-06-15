@@ -937,11 +937,12 @@ fn cmd_detach_agent(config: &Config, project: &str, name: &str) -> Result<()> {
 }
 
 fn cmd_respawn_agent(config: &Config, target: &str, force: bool, timeout: u64) -> Result<()> {
-    println!(
-        "Respawning agent '{}'{}...",
-        target,
-        if force { " (force)" } else { "" }
-    );
+    let mode = if force {
+        " (force; skipping graceful handoff)"
+    } else {
+        ""
+    };
+    println!("Respawning agent '{target}'{mode}...");
     use_cases::respawn_agent(config, target, force, timeout)?;
     println!("Agent '{}' respawned successfully.", target);
     Ok(())
