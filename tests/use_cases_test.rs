@@ -343,6 +343,67 @@ fn multi_repo_no_first_prompt_creates_idle_engineer_with_empty_inbox() {
 }
 
 #[test]
+fn create_researcher_with_first_prompt_seeds_one_inbox_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    create_test_project(&config, "project");
+
+    let agent = use_cases::create_researcher(
+        &config,
+        "project",
+        "researcher",
+        Some("  Investigate the API latency  \n"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(agent.meta.description, "Investigate the API latency");
+    let messages = inbox::read_messages(&config.agent_inbox("project", "researcher")).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "user");
+    assert_eq!(messages[0].message, "Investigate the API latency");
+}
+
+#[test]
+fn create_researcher_without_first_prompt_creates_idle_agent_with_empty_metadata_description() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    create_test_project(&config, "project");
+
+    let agent =
+        use_cases::create_researcher(&config, "project", "researcher", None, None, None, None)
+            .unwrap();
+
+    assert_eq!(agent.meta.description, "");
+    let messages = inbox::read_messages(&config.agent_inbox("project", "researcher")).unwrap();
+    assert!(messages.is_empty());
+}
+
+#[test]
+fn create_researcher_with_blank_first_prompt_creates_idle_agent_with_empty_metadata_description() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    create_test_project(&config, "project");
+
+    let agent = use_cases::create_researcher(
+        &config,
+        "project",
+        "researcher",
+        Some("  \n  "),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(agent.meta.description, "");
+    let messages = inbox::read_messages(&config.agent_inbox("project", "researcher")).unwrap();
+    assert!(messages.is_empty());
+}
+
+#[test]
 fn send_message_targets_specific_attached_engineer() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
@@ -460,6 +521,8 @@ fn prompts_describe_inbox_based_task_agent_model() {
     assert!(chief.contains("agman create-pm-task <project> <repo> <task-name> [--first-prompt"));
     assert!(chief.contains("omitting the first prompt creates an idle Engineer"));
     assert!(chief.contains("agman create-agent --kind <researcher|operator|reviewer|tester>"));
+    assert!(chief.contains("[--first-prompt"));
+    assert!(chief.contains("creates an idle project-scoped agent"));
     assert!(chief.contains("agman attach-agent --project <project> --name <name> --task <task-id>"));
     assert!(!chief.contains("agman message <task-id>"));
 
@@ -467,11 +530,11 @@ fn prompts_describe_inbox_based_task_agent_model() {
     assert!(pm.contains("Every task owns one attached Engineer agent"));
     assert!(pm.contains("task-attached Researcher, Tester, Reviewer, and Operator agents"));
     assert!(pm.contains("agman create-pm-task project <repo> <task-name> [--first-prompt"));
-    assert!(pm.contains("Omit it only when you intentionally want an idle Engineer"));
     assert!(pm.contains("messaging the task's attached Engineer through the inbox"));
     assert!(pm.contains(
-        "agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project project"
+        "agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project project [--first-prompt"
     ));
+    assert!(pm.contains("Omit it only when you intentionally want an idle agent"));
     assert!(pm.contains("agman attach-agent --project project --name <name> --task <task-id>"));
     assert!(pm.contains("agman move-agent --project project --name <name> --task <task-id>"));
     assert!(pm.contains("agman detach-agent --project project --name <name>"));
@@ -479,6 +542,7 @@ fn prompts_describe_inbox_based_task_agent_model() {
     assert!(pm.contains("PR URLs in inbox messages alone do not update task metadata"));
     assert!(!pm.contains("agman create-agent project <name>"));
     assert!(!pm.contains("agman create-pm-task project <repo> <task-name> --description"));
+    assert!(!pm.contains("agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project project --description"));
     assert!(pm.contains("send-message"));
 
     let engineer =

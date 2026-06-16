@@ -157,7 +157,7 @@ fn main() -> Result<()> {
             kind,
             name,
             project,
-            description,
+            first_prompt,
             repo,
             branch_for_researcher,
             task,
@@ -183,7 +183,7 @@ fn main() -> Result<()> {
                         repo,
                         branch_for_researcher,
                         task,
-                        description,
+                        first_prompt,
                     )
                 }
                 AgentKindArg::Operator => {
@@ -203,7 +203,7 @@ fn main() -> Result<()> {
                         repo,
                         branch_for_researcher,
                         task,
-                        description,
+                        first_prompt,
                     )
                 }
                 AgentKindArg::Reviewer => {
@@ -216,7 +216,7 @@ fn main() -> Result<()> {
                              reviewers use --branch <repo>:<branch> (repeatable)"
                         );
                     }
-                    cmd_create_reviewer(&config, project, &name, branch_pair, description)
+                    cmd_create_reviewer(&config, project, &name, branch_pair, first_prompt)
                 }
                 AgentKindArg::Tester => {
                     if repo.is_some() || branch_for_researcher.is_some() || task.is_some() {
@@ -225,7 +225,7 @@ fn main() -> Result<()> {
                              testers use --branch <repo>:<branch> (repeatable)"
                         );
                     }
-                    cmd_create_tester(&config, project, &name, branch_pair, browser, description)
+                    cmd_create_tester(&config, project, &name, branch_pair, browser, first_prompt)
                 }
             }
         }
@@ -260,8 +260,8 @@ fn main() -> Result<()> {
             repo,
             branch,
             task,
-            description,
-        }) => cmd_create_researcher(&config, &project, &name, repo, branch, task, description),
+            first_prompt,
+        }) => cmd_create_researcher(&config, &project, &name, repo, branch, task, first_prompt),
 
         Some(Commands::CreateOperator {
             name,
@@ -269,23 +269,23 @@ fn main() -> Result<()> {
             repo,
             branch,
             task,
-            description,
-        }) => cmd_create_operator(&config, &project, &name, repo, branch, task, description),
+            first_prompt,
+        }) => cmd_create_operator(&config, &project, &name, repo, branch, task, first_prompt),
 
         Some(Commands::CreateReviewer {
             name,
             project,
             branch_pair,
-            description,
-        }) => cmd_create_reviewer(&config, &project, &name, branch_pair, description),
+            first_prompt,
+        }) => cmd_create_reviewer(&config, &project, &name, branch_pair, first_prompt),
 
         Some(Commands::CreateTester {
             name,
             project,
             branch_pair,
             browser,
-            description,
-        }) => cmd_create_tester(&config, &project, &name, branch_pair, browser, description),
+            first_prompt,
+        }) => cmd_create_tester(&config, &project, &name, branch_pair, browser, first_prompt),
 
         Some(Commands::ListResearchers { project }) => cmd_list_agents(
             &config,
@@ -720,13 +720,21 @@ fn cmd_create_researcher(
     repo: Option<String>,
     branch: Option<String>,
     task: Option<String>,
-    description: Option<String>,
+    first_prompt: Option<String>,
 ) -> Result<()> {
-    let desc = match description {
-        Some(d) => resolve_text_arg(Some(&d), None, "description")?,
-        None => String::new(),
+    let first_prompt = match first_prompt {
+        Some(prompt) => Some(resolve_text_arg(Some(&prompt), None, "first-prompt")?),
+        None => None,
     };
-    let agent = use_cases::create_researcher(config, project, name, &desc, repo, branch, task)?;
+    let agent = use_cases::create_researcher(
+        config,
+        project,
+        name,
+        first_prompt.as_deref(),
+        repo,
+        branch,
+        task,
+    )?;
     use_cases::start_agent_session(config, project, name, false)?;
     println!(
         "Researcher '{}' created for project '{}' (tmux: {})",
@@ -744,13 +752,21 @@ fn cmd_create_operator(
     repo: Option<String>,
     branch: Option<String>,
     task: Option<String>,
-    description: Option<String>,
+    first_prompt: Option<String>,
 ) -> Result<()> {
-    let desc = match description {
-        Some(d) => resolve_text_arg(Some(&d), None, "description")?,
-        None => String::new(),
+    let first_prompt = match first_prompt {
+        Some(prompt) => Some(resolve_text_arg(Some(&prompt), None, "first-prompt")?),
+        None => None,
     };
-    let agent = use_cases::create_operator(config, project, name, &desc, repo, branch, task)?;
+    let agent = use_cases::create_operator(
+        config,
+        project,
+        name,
+        first_prompt.as_deref(),
+        repo,
+        branch,
+        task,
+    )?;
     use_cases::start_agent_session(config, project, name, false)?;
     println!(
         "Operator '{}' created for project '{}' (tmux: {})",
@@ -766,18 +782,18 @@ fn cmd_create_reviewer(
     project: &str,
     name: &str,
     branch_pairs: Vec<String>,
-    description: Option<String>,
+    first_prompt: Option<String>,
 ) -> Result<()> {
-    let desc = match description {
-        Some(d) => resolve_text_arg(Some(&d), None, "description")?,
-        None => String::new(),
+    let first_prompt = match first_prompt {
+        Some(prompt) => Some(resolve_text_arg(Some(&prompt), None, "first-prompt")?),
+        None => None,
     };
     let branches = parse_branch_pairs(&branch_pairs)?;
     let spec = use_cases::WorktreeSpec {
         branches,
         parent_dir: None,
     };
-    let agent = use_cases::create_reviewer(config, project, name, &desc, spec)?;
+    let agent = use_cases::create_reviewer(config, project, name, first_prompt.as_deref(), spec)?;
     use_cases::start_agent_session(config, project, name, false)?;
     println!(
         "Reviewer '{}' created for project '{}' (tmux: {})",
@@ -794,11 +810,11 @@ fn cmd_create_tester(
     name: &str,
     branch_pairs: Vec<String>,
     browser: bool,
-    description: Option<String>,
+    first_prompt: Option<String>,
 ) -> Result<()> {
-    let desc = match description {
-        Some(d) => resolve_text_arg(Some(&d), None, "description")?,
-        None => String::new(),
+    let first_prompt = match first_prompt {
+        Some(prompt) => Some(resolve_text_arg(Some(&prompt), None, "first-prompt")?),
+        None => None,
     };
     let branches = parse_branch_pairs(&branch_pairs)?;
     let spec = use_cases::WorktreeSpec {
@@ -806,7 +822,14 @@ fn cmd_create_tester(
         parent_dir: None,
     };
     let capabilities = TesterCapabilities { browser };
-    let agent = use_cases::create_tester(config, project, name, &desc, spec, capabilities)?;
+    let agent = use_cases::create_tester(
+        config,
+        project,
+        name,
+        first_prompt.as_deref(),
+        spec,
+        capabilities,
+    )?;
     use_cases::start_agent_session(config, project, name, false)?;
     println!(
         "Tester '{}' created for project '{}' (tmux: {})",
@@ -849,7 +872,7 @@ fn cmd_list_agents(
     }
 
     println!(
-        "{:<20} {:<10} {:<20} {:<10} {:<24} DESCRIPTION",
+        "{:<20} {:<10} {:<20} {:<10} {:<24} FIRST PROMPT",
         "NAME", "KIND", "PROJECT", "STATUS", "CREATED"
     );
     println!("{}", "-".repeat(110));

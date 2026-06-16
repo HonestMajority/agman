@@ -66,3 +66,49 @@ fn cli_create_pm_task_help_exposes_first_prompt_not_description() {
     assert!(stdout.contains("agman create-pm-task myproj myrepo fix-bug --first-prompt"));
     assert!(!stdout.contains("--description"));
 }
+
+#[test]
+fn cli_create_agent_help_exposes_first_prompt_not_description() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_agman"))
+        .args(["create-agent", "--help"])
+        .output()
+        .expect("failed to run agman create-agent --help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("help output should be utf8");
+
+    assert!(stdout.contains("--first-prompt <FIRST_PROMPT>"));
+    assert!(stdout.contains("-d"));
+    assert!(stdout.contains("Optional first prompt sent to the agent inbox"));
+    assert!(stdout.contains("agman create-agent --kind researcher"));
+    assert!(stdout.contains("--first-prompt"));
+    assert!(!stdout.contains("--description"));
+}
+
+#[test]
+fn cli_role_agent_help_exposes_first_prompt_not_description() {
+    for command in [
+        "create-researcher",
+        "create-operator",
+        "create-reviewer",
+        "create-tester",
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_agman"))
+            .args([command, "--help"])
+            .output()
+            .unwrap_or_else(|_| panic!("failed to run agman {command} --help"));
+
+        assert!(output.status.success(), "{command} --help failed");
+        let stdout = String::from_utf8(output.stdout).expect("help output should be utf8");
+
+        assert!(
+            stdout.contains("--first-prompt <FIRST_PROMPT>"),
+            "{command} help did not expose --first-prompt"
+        );
+        assert!(stdout.contains("-d"), "{command} help did not expose -d");
+        assert!(
+            !stdout.contains("--description"),
+            "{command} help exposed hidden --description alias"
+        );
+    }
+}
