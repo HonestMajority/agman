@@ -198,15 +198,15 @@ EXAMPLES:
     /// Create a project-scoped agent (researcher, operator, reviewer, or tester).
     #[command(after_help = "\
 EXAMPLES:
-  agman create-agent --kind researcher --name api-investigator --project backend --description \"Investigate the API latency\"
-  agman create-agent --kind operator --name docs-updater --project docs --description \"Update the launch notes\"
+  agman create-agent --kind researcher --name api-investigator --project backend --first-prompt \"Investigate the API latency\"
+  agman create-agent --kind operator --name docs-updater --project docs --first-prompt \"Update the launch notes\"
   agman create-agent --kind reviewer --name pr-1247 --project reviews \\
     --branch galoy:fix-deposit-path \\
     --branch lana-dashboard:fix-deposit-path \\
-    --description \"Review the cross-repo deposit fix\"
+    --first-prompt \"Review the cross-repo deposit fix\"
   agman create-agent --kind tester --name browser-pass --project reviews \\
     --branch galoy:fix-deposit-path --browser \\
-    --description \"Exercise the deposit path in browser\"")]
+    --first-prompt \"Exercise the deposit path in browser\"")]
     CreateAgent {
         /// Agent kind: researcher, operator, reviewer, or tester
         #[arg(long, value_enum)]
@@ -217,9 +217,15 @@ EXAMPLES:
         /// Project name
         #[arg(long)]
         project: String,
-        /// Description/initial question
-        #[arg(long, short, allow_hyphen_values = true)]
-        description: Option<String>,
+        /// Optional first prompt sent to the agent inbox
+        #[arg(
+            long = "first-prompt",
+            short = 'd',
+            alias = "description",
+            allow_hyphen_values = true,
+            value_name = "FIRST_PROMPT"
+        )]
+        first_prompt: Option<String>,
         // --- Repo-hint flags (researcher/operator only; rejected for reviewer/tester) ---
         /// Repository name (researcher/operator only — for working directory context)
         #[arg(long)]
@@ -315,11 +321,11 @@ EXAMPLES:
     /// Create a researcher agent.
     #[command(after_help = "\
 EXAMPLES:
-  agman create-researcher my-research --project backend --description \"Investigate the API latency\"
-  cat <<'EOF' | agman create-researcher my-research --project backend --description -
-  Multi-line description via stdin using the - sentinel.
+  agman create-researcher my-research --project backend --first-prompt \"Investigate the API latency\"
+  cat <<'EOF' | agman create-researcher my-research --project backend --first-prompt -
+  Multi-line first prompt via stdin using the - sentinel.
   EOF
-  agman create-researcher my-research --project backend --description @./research-desc.md")]
+  agman create-researcher my-research --project backend --first-prompt @./research-prompt.md")]
     CreateResearcher {
         /// Researcher name (alphanumeric + hyphens)
         name: String,
@@ -335,24 +341,49 @@ EXAMPLES:
         /// Task ID to inherit working directory from
         #[arg(long)]
         task: Option<String>,
-        /// Research description/question
-        #[arg(long, short, allow_hyphen_values = true)]
-        description: Option<String>,
+        /// Optional first prompt sent to the researcher inbox
+        #[arg(
+            long = "first-prompt",
+            short = 'd',
+            alias = "description",
+            allow_hyphen_values = true,
+            value_name = "FIRST_PROMPT"
+        )]
+        first_prompt: Option<String>,
     },
 
     /// Create an operator agent.
+    #[command(after_help = "\
+EXAMPLES:
+  agman create-operator docs-updater --project docs --first-prompt \"Update the launch notes\"
+  cat <<'EOF' | agman create-operator docs-updater --project docs --first-prompt -
+  Multi-line first prompt via stdin using the - sentinel.
+  EOF
+  agman create-operator docs-updater --project docs --first-prompt @./operator-prompt.md")]
     CreateOperator {
+        /// Operator name (alphanumeric + hyphens)
         name: String,
+        /// Project name
         #[arg(long)]
         project: String,
+        /// Repository name (for working directory context)
         #[arg(long)]
         repo: Option<String>,
+        /// Branch name (used with --repo for worktree resolution)
         #[arg(long)]
         branch: Option<String>,
+        /// Task ID to inherit working directory from
         #[arg(long)]
         task: Option<String>,
-        #[arg(long, short, allow_hyphen_values = true)]
-        description: Option<String>,
+        /// Optional first prompt sent to the operator inbox
+        #[arg(
+            long = "first-prompt",
+            short = 'd',
+            alias = "description",
+            allow_hyphen_values = true,
+            value_name = "FIRST_PROMPT"
+        )]
+        first_prompt: Option<String>,
     },
 
     /// Create a reviewer agent.
@@ -361,7 +392,7 @@ EXAMPLES:
   agman create-reviewer --name pr-1247 --project reviews \\
     --branch galoy:fix-deposit-path \\
     --branch lana-dashboard:fix-deposit-path \\
-    --description \"Review the cross-repo deposit fix\"")]
+    --first-prompt \"Review the cross-repo deposit fix\"")]
     CreateReviewer {
         /// Reviewer name (alphanumeric + hyphens)
         #[arg(long, short)]
@@ -372,9 +403,15 @@ EXAMPLES:
         /// `<repo>:<branch>` pair (repeatable, required at least once)
         #[arg(long = "branch", value_name = "REPO:BRANCH", required = true)]
         branch_pair: Vec<String>,
-        /// Description
-        #[arg(long, short, allow_hyphen_values = true)]
-        description: Option<String>,
+        /// Optional first prompt sent to the reviewer inbox
+        #[arg(
+            long = "first-prompt",
+            short = 'd',
+            alias = "description",
+            allow_hyphen_values = true,
+            value_name = "FIRST_PROMPT"
+        )]
+        first_prompt: Option<String>,
     },
 
     /// Create a tester agent.
@@ -382,7 +419,7 @@ EXAMPLES:
 EXAMPLES:
   agman create-tester --name browser-pass --project reviews \\
     --branch galoy:fix-deposit-path --browser \\
-    --description \"Exercise the deposit path\"")]
+    --first-prompt \"Exercise the deposit path\"")]
     CreateTester {
         /// Tester name (alphanumeric + hyphens)
         #[arg(long, short)]
@@ -396,9 +433,15 @@ EXAMPLES:
         /// Request browser automation tools
         #[arg(long, default_value_t = false)]
         browser: bool,
-        /// Description
-        #[arg(long, short, allow_hyphen_values = true)]
-        description: Option<String>,
+        /// Optional first prompt sent to the tester inbox
+        #[arg(
+            long = "first-prompt",
+            short = 'd',
+            alias = "description",
+            allow_hyphen_values = true,
+            value_name = "FIRST_PROMPT"
+        )]
+        first_prompt: Option<String>,
     },
 
     /// List researcher agents.
@@ -499,6 +542,131 @@ mod tests {
                 first_prompt: Some(ref prompt),
                 ..
             }) if prompt == "Alias prompt"
+        ));
+    }
+
+    #[test]
+    fn agent_commands_parse_first_prompt_short_and_description_alias() {
+        let parsed = Cli::try_parse_from([
+            "agman",
+            "create-agent",
+            "--kind",
+            "researcher",
+            "--name",
+            "investigate",
+            "--project",
+            "project",
+            "--first-prompt",
+            "Research this",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::CreateAgent {
+                first_prompt: Some(ref prompt),
+                ..
+            }) if prompt == "Research this"
+        ));
+
+        let parsed = Cli::try_parse_from([
+            "agman",
+            "create-agent",
+            "--kind",
+            "reviewer",
+            "--name",
+            "review",
+            "--project",
+            "project",
+            "--branch",
+            "repo:branch",
+            "--description",
+            "Alias prompt",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::CreateAgent {
+                first_prompt: Some(ref prompt),
+                ..
+            }) if prompt == "Alias prompt"
+        ));
+
+        let parsed = Cli::try_parse_from([
+            "agman",
+            "create-researcher",
+            "investigate",
+            "--project",
+            "project",
+            "-d",
+            "Short prompt",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::CreateResearcher {
+                first_prompt: Some(ref prompt),
+                ..
+            }) if prompt == "Short prompt"
+        ));
+
+        let parsed = Cli::try_parse_from([
+            "agman",
+            "create-operator",
+            "operate",
+            "--project",
+            "project",
+            "--first-prompt",
+            "Do the thing",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::CreateOperator {
+                first_prompt: Some(ref prompt),
+                ..
+            }) if prompt == "Do the thing"
+        ));
+
+        let parsed = Cli::try_parse_from([
+            "agman",
+            "create-reviewer",
+            "--name",
+            "review",
+            "--project",
+            "project",
+            "--branch",
+            "repo:branch",
+            "--description",
+            "Review this",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::CreateReviewer {
+                first_prompt: Some(ref prompt),
+                ..
+            }) if prompt == "Review this"
+        ));
+
+        let parsed = Cli::try_parse_from([
+            "agman",
+            "create-tester",
+            "--name",
+            "test",
+            "--project",
+            "project",
+            "--branch",
+            "repo:branch",
+            "--description",
+            "Test this",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(Commands::CreateTester {
+                first_prompt: Some(ref prompt),
+                ..
+            }) if prompt == "Test this"
         ));
     }
 }

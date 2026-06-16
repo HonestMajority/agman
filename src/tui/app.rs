@@ -371,9 +371,9 @@ pub struct ProjectWizard {
 
 /// Steps in the create-agent wizard.
 ///
-/// Researchers go directly from `Name` → `Description` (matching the legacy
+/// Researchers go directly from `Name` → `FirstPrompt` (matching the legacy
 /// agent). Worktree-backed agents insert a `Worktrees` step; testers add
-/// an optional capabilities step before description.
+/// an optional capabilities step before first prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentWizardStep {
     /// Step 0: pick the kind (Researcher | Reviewer | Tester | Operator).
@@ -384,8 +384,8 @@ pub enum AgentWizardStep {
     Worktrees,
     /// Step 3 (Tester only): optional capability toggles.
     Capabilities,
-    /// Final step: enter the description.
-    Description,
+    /// Final step: enter the first prompt.
+    FirstPrompt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -430,7 +430,7 @@ pub struct AgentWizard {
     pub kind: AgentWizardKind,
     pub step: AgentWizardStep,
     pub name_editor: TextArea<'static>,
-    pub description_editor: VimTextArea<'static>,
+    pub first_prompt_editor: VimTextArea<'static>,
     /// Reviewer/Tester-only: editable `(repo, branch)` rows. The `selected_row` is
     /// the row currently focused for j/k navigation in the worktrees step.
     pub worktree_rows: Vec<ReviewerWorktreeRow>,
@@ -1826,7 +1826,7 @@ impl App {
             kind: AgentWizardKind::Researcher,
             step: AgentWizardStep::Kind,
             name_editor,
-            description_editor: VimTextArea::new(),
+            first_prompt_editor: VimTextArea::new(),
             worktree_rows: vec![ReviewerWorktreeRow::new()],
             selected_row: 0,
             browser_capability: false,
@@ -3166,17 +3166,17 @@ impl App {
                     }
                     if key.code == KeyCode::Enter {
                         // Advance: reviewers go to worktrees, researchers
-                        // skip straight to description.
+                        // skip straight to first prompt.
                         wizard.step = match wizard.kind {
                             AgentWizardKind::Researcher | AgentWizardKind::Operator => {
-                                AgentWizardStep::Description
+                                AgentWizardStep::FirstPrompt
                             }
                             AgentWizardKind::Reviewer | AgentWizardKind::Tester => {
                                 AgentWizardStep::Worktrees
                             }
                         };
-                        if matches!(wizard.step, AgentWizardStep::Description) {
-                            wizard.description_editor.set_insert_mode();
+                        if matches!(wizard.step, AgentWizardStep::FirstPrompt) {
+                            wizard.first_prompt_editor.set_insert_mode();
                         }
                         return Ok(false);
                     }
@@ -3206,8 +3206,8 @@ impl App {
                                     AgentWizardKind::Researcher
                                     | AgentWizardKind::Operator
                                     | AgentWizardKind::Reviewer => {
-                                        wizard.description_editor.set_insert_mode();
-                                        AgentWizardStep::Description
+                                        wizard.first_prompt_editor.set_insert_mode();
+                                        AgentWizardStep::FirstPrompt
                                     }
                                 };
                             }
@@ -3254,8 +3254,8 @@ impl App {
                                     AgentWizardKind::Researcher
                                     | AgentWizardKind::Operator
                                     | AgentWizardKind::Reviewer => {
-                                        wizard.description_editor.set_insert_mode();
-                                        AgentWizardStep::Description
+                                        wizard.first_prompt_editor.set_insert_mode();
+                                        AgentWizardStep::FirstPrompt
                                     }
                                 };
                             }
@@ -3276,8 +3276,8 @@ impl App {
                         wizard.step = AgentWizardStep::Worktrees;
                     }
                     KeyCode::Enter | KeyCode::Tab => {
-                        wizard.step = AgentWizardStep::Description;
-                        wizard.description_editor.set_insert_mode();
+                        wizard.step = AgentWizardStep::FirstPrompt;
+                        wizard.first_prompt_editor.set_insert_mode();
                     }
                     KeyCode::Char(' ')
                     | KeyCode::Char('h')
@@ -3293,11 +3293,11 @@ impl App {
                     }
                     _ => {}
                 },
-                AgentWizardStep::Description => {
+                AgentWizardStep::FirstPrompt => {
                     let input = Input::from(event.clone());
-                    let was_insert = wizard.description_editor.mode() == VimMode::Insert;
-                    wizard.description_editor.input(input.clone());
-                    let is_normal_now = wizard.description_editor.mode() == VimMode::Normal;
+                    let was_insert = wizard.first_prompt_editor.mode() == VimMode::Insert;
+                    wizard.first_prompt_editor.input(input.clone());
+                    let is_normal_now = wizard.first_prompt_editor.mode() == VimMode::Normal;
                     // Esc in normal mode steps back to the previous step.
                     if input.key == Key::Esc && !was_insert && is_normal_now {
                         wizard.step = match wizard.kind {
@@ -3324,7 +3324,13 @@ impl App {
         let kind = wizard.kind;
         let project = wizard.project.clone();
         let name = wizard.name_editor.lines().join("").trim().to_string();
-        let desc = wizard.description_editor.lines_joined().trim().to_string();
+        let first_prompt_text = wizard.first_prompt_editor.lines_joined();
+        let first_prompt = first_prompt_text.trim();
+        let first_prompt = if first_prompt.is_empty() {
+            None
+        } else {
+            Some(first_prompt)
+        };
         let browser_capability = wizard.browser_capability;
 
         if name.is_empty() {
@@ -3344,7 +3350,7 @@ impl App {
                             &self.config,
                             &project,
                             &name,
-                            &desc,
+                            first_prompt,
                             None,
                             None,
                             None,
@@ -3356,7 +3362,7 @@ impl App {
                             &self.config,
                             &project,
                             &name,
-                            &desc,
+                            first_prompt,
                             None,
                             None,
                             None,
@@ -3421,7 +3427,8 @@ impl App {
                     branches,
                     parent_dir: None,
                 };
-                match use_cases::create_reviewer(&self.config, &project, &name, &desc, spec) {
+                match use_cases::create_reviewer(&self.config, &project, &name, first_prompt, spec)
+                {
                     Ok(_agent) => {
                         tracing::info!(project = %project, name = %name, "created reviewer via wizard");
                         if let Err(e) =
@@ -3488,7 +3495,7 @@ impl App {
                     &self.config,
                     &project,
                     &name,
-                    &desc,
+                    first_prompt,
                     spec,
                     capabilities,
                 ) {

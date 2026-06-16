@@ -687,7 +687,7 @@ fn draw_agent_wizard(f: &mut Frame, app: &mut App) {
         AgentWizardStep::Capabilities => {
             draw_agent_wizard_capabilities(f, harness_kind, wizard, chunks[0])
         }
-        AgentWizardStep::Description => draw_agent_wizard_description(f, wizard, chunks[0]),
+        AgentWizardStep::FirstPrompt => draw_agent_wizard_first_prompt(f, wizard, chunks[0]),
     }
 
     let footer_spans: Vec<Span> = if let Some(ref err) = wizard.error_message {
@@ -735,7 +735,7 @@ fn draw_agent_wizard(f: &mut Frame, app: &mut App) {
                 Span::styled("Esc", Style::default().fg(Color::LightCyan)),
                 Span::styled(" back", Style::default().fg(Color::DarkGray)),
             ],
-            AgentWizardStep::Description => vec![
+            AgentWizardStep::FirstPrompt => vec![
                 Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
                 Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc Esc", Style::default().fg(Color::LightCyan)),
@@ -997,23 +997,23 @@ fn draw_agent_wizard_capabilities(
     f.render_widget(paragraph, area);
 }
 
-fn draw_agent_wizard_description(f: &mut Frame, wizard: &mut super::app::AgentWizard, area: Rect) {
-    let mode = wizard.description_editor.mode();
+fn draw_agent_wizard_first_prompt(f: &mut Frame, wizard: &mut super::app::AgentWizard, area: Rect) {
+    let mode = wizard.first_prompt_editor.mode();
     let mode_indicator = format!(" [{}] ", mode.indicator());
-    wizard.description_editor.textarea.set_block(
+    wizard.first_prompt_editor.textarea.set_block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::LightCyan))
             .title(Span::styled(
-                format!(" Description{mode_indicator}"),
+                format!(" First Prompt{mode_indicator}"),
                 Style::default().fg(Color::LightCyan),
             )),
     );
     wizard
-        .description_editor
+        .first_prompt_editor
         .textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
-    f.render_widget(&wizard.description_editor.textarea, area);
+    f.render_widget(&wizard.first_prompt_editor.textarea, area);
 }
 
 fn draw_project_picker(f: &mut Frame, app: &mut App) {

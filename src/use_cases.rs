@@ -3308,7 +3308,7 @@ pub fn create_researcher(
     config: &Config,
     project: &str,
     name: &str,
-    description: &str,
+    first_prompt: Option<&str>,
     repo: Option<String>,
     branch: Option<String>,
     task_id: Option<String>,
@@ -3318,14 +3318,14 @@ pub fn create_researcher(
         branch,
         task_id,
     };
-    create_agent(config, project, name, description, kind)
+    create_agent(config, project, name, first_prompt, kind)
 }
 
 pub fn create_operator(
     config: &Config,
     project: &str,
     name: &str,
-    description: &str,
+    first_prompt: Option<&str>,
     repo: Option<String>,
     branch: Option<String>,
     task_id: Option<String>,
@@ -3335,7 +3335,7 @@ pub fn create_operator(
         branch,
         task_id,
     };
-    create_agent(config, project, name, description, kind)
+    create_agent(config, project, name, first_prompt, kind)
 }
 
 /// Resolved (`(repo, branch)`, worktree path, `agman_created`) for a reviewer
@@ -3368,7 +3368,7 @@ pub fn create_reviewer(
     config: &Config,
     project: &str,
     name: &str,
-    description: &str,
+    first_prompt: Option<&str>,
     spec: WorktreeSpec,
 ) -> Result<AgentRecord> {
     if spec.branches.is_empty() {
@@ -3376,14 +3376,14 @@ pub fn create_reviewer(
     }
     let worktrees = resolve_agent_worktrees(config, &spec)?;
     let kind = AgentKind::Reviewer { worktrees };
-    create_agent(config, project, name, description, kind)
+    create_agent(config, project, name, first_prompt, kind)
 }
 
 pub fn create_tester(
     config: &Config,
     project: &str,
     name: &str,
-    description: &str,
+    first_prompt: Option<&str>,
     spec: WorktreeSpec,
     capabilities: TesterCapabilities,
 ) -> Result<AgentRecord> {
@@ -3404,7 +3404,7 @@ pub fn create_tester(
         worktrees,
         capabilities,
     };
-    create_agent(config, project, name, description, kind)
+    create_agent(config, project, name, first_prompt, kind)
 }
 
 /// Walk the `(repo, branch)` list applying the three-step decision tree.
@@ -3474,13 +3474,13 @@ fn resolve_agent_worktrees(config: &Config, spec: &WorktreeSpec) -> Result<Agent
 }
 
 /// Shared agent-creation backbone. Validates the project, persists the
-/// meta, and sends the description into the agent's inbox so the TUI
-/// poller delivers it once the harness is ready.
+/// meta, and optionally sends the first prompt into the agent's inbox so the
+/// TUI poller delivers it once the harness is ready.
 fn create_agent(
     config: &Config,
     project: &str,
     name: &str,
-    description: &str,
+    first_prompt: Option<&str>,
     kind: AgentKind,
 ) -> Result<AgentRecord> {
     if project == "chief-of-staff" {
@@ -3504,17 +3504,21 @@ fn create_agent(
         },
         "creating agent"
     );
-    let agent = AgentRecord::create(config, project, name, description, kind)?;
+    let first_prompt = first_prompt
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty());
+    let metadata_description = first_prompt.unwrap_or("");
+    let agent = AgentRecord::create(config, project, name, metadata_description, kind)?;
 
-    // Queue the description as the first inbox message so the TUI poller
+    // Queue the first prompt as the first inbox message so the TUI poller
     // delivers it to the tmux session once the harness is ready.
-    if !description.is_empty() {
+    if let Some(prompt) = first_prompt {
         let inbox_path = config.agent_inbox(project, name);
-        crate::inbox::append_message(&inbox_path, "user", description)?;
+        crate::inbox::append_message(&inbox_path, "user", prompt)?;
         tracing::debug!(
             project = project,
             name = name,
-            "sent agent description to inbox"
+            "sent agent first prompt to inbox"
         );
     }
 
@@ -3912,7 +3916,7 @@ fn agent_kind_name(kind: &AgentKind) -> &'static str {
 
 fn archived_agent_content(agent: &AgentRecord) -> String {
     let mut out = format!(
-        "Name: {}\nType: {}\nProject: {}\nStatus: {:?}\nCreated: {}\nUpdated: {}\n\nDescription:\n{}\n",
+        "Name: {}\nType: {}\nProject: {}\nStatus: {:?}\nCreated: {}\nUpdated: {}\n\nFirst Prompt:\n{}\n",
         agent.meta.name,
         agent_kind_name(&agent.meta.kind),
         agent.meta.project,
@@ -4382,7 +4386,7 @@ You CAN do anything the CEO directs you to do. Available write commands:
 - agman delete-project <name>
 - agman create-pm-task <project> <repo> <task-name> [--first-prompt "<text|@file|->"] (rare — usually PMs do this; omitting the first prompt creates an idle Engineer with no initial inbox message)
 - agman send-message <target> --from chief-of-staff
-- agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project <project> [--description "..."]
+- agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project <project> [--first-prompt "..."] (omitting the first prompt creates an idle project-scoped agent with no initial inbox message until send-message)
 - agman attach-agent --project <project> --name <name> --task <task-id> [--role-label "..."]
 - agman move-agent --project <project> --name <name> --task <task-id> [--role-label "..."]
 - agman detach-agent --project <project> --name <name>
@@ -5043,7 +5047,7 @@ const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for
 - agman link-pr <task-id> <PR URL or number>
 
 ### Agent Management
-- agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project {{PROJECT_NAME}} --description "<description>"
+- agman create-agent --kind <researcher|operator|reviewer|tester> --name <name> --project {{PROJECT_NAME}} [--first-prompt "<first prompt>"]
 - agman attach-agent --project {{PROJECT_NAME}} --name <name> --task <task-id> [--role-label "..."]
 - agman move-agent --project {{PROJECT_NAME}} --name <name> --task <task-id> [--role-label "..."]
 - agman detach-agent --project {{PROJECT_NAME}} --name <name>
@@ -5059,7 +5063,7 @@ AGMAN_MSG
 ## Behavior Guidelines
 
 - When given work, suggest a task plan to the requester and wait for confirmation before creating tasks.
-- Use `--first-prompt` when the attached Engineer should start immediately. Omit it only when you intentionally want an idle Engineer; no initial inbox message is sent, so follow up with `agman send-message` when work is ready.
+- Use `--first-prompt` when the attached Engineer or project-scoped agent should start immediately. Omit it only when you intentionally want an idle agent; no initial inbox message is sent, so follow up with `agman send-message` when work is ready.
 - Direct implementation, rebase, push, PR, CI, and review-addressing work by messaging the task's attached Engineer through the inbox.
 - When an Engineer reports a PR that is not visible in the TUI, ask them to run `agman link-pr <task-id> <PR URL or number>`; PR URLs in inbox messages alone do not update task metadata.
 - When the CEO asks a question, answer it — do not treat it as an implicit instruction to take action.
