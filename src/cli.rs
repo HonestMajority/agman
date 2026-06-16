@@ -221,7 +221,6 @@ EXAMPLES:
         #[arg(
             long = "first-prompt",
             short = 'd',
-            alias = "description",
             allow_hyphen_values = true,
             value_name = "FIRST_PROMPT"
         )]
@@ -345,7 +344,6 @@ EXAMPLES:
         #[arg(
             long = "first-prompt",
             short = 'd',
-            alias = "description",
             allow_hyphen_values = true,
             value_name = "FIRST_PROMPT"
         )]
@@ -379,7 +377,6 @@ EXAMPLES:
         #[arg(
             long = "first-prompt",
             short = 'd',
-            alias = "description",
             allow_hyphen_values = true,
             value_name = "FIRST_PROMPT"
         )]
@@ -407,7 +404,6 @@ EXAMPLES:
         #[arg(
             long = "first-prompt",
             short = 'd',
-            alias = "description",
             allow_hyphen_values = true,
             value_name = "FIRST_PROMPT"
         )]
@@ -437,7 +433,6 @@ EXAMPLES:
         #[arg(
             long = "first-prompt",
             short = 'd',
-            alias = "description",
             allow_hyphen_values = true,
             value_name = "FIRST_PROMPT"
         )]
@@ -486,7 +481,7 @@ pub enum AgentKindArg {
 #[cfg(test)]
 mod tests {
     use super::{Cli, Commands};
-    use clap::Parser;
+    use clap::{error::ErrorKind, Parser};
 
     #[test]
     fn create_pm_task_parses_first_prompt_short_and_description_alias() {
@@ -546,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_commands_parse_first_prompt_short_and_description_alias() {
+    fn agent_commands_parse_first_prompt_short_and_reject_description_alias() {
         let parsed = Cli::try_parse_from([
             "agman",
             "create-agent",
@@ -566,29 +561,6 @@ mod tests {
                 first_prompt: Some(ref prompt),
                 ..
             }) if prompt == "Research this"
-        ));
-
-        let parsed = Cli::try_parse_from([
-            "agman",
-            "create-agent",
-            "--kind",
-            "reviewer",
-            "--name",
-            "review",
-            "--project",
-            "project",
-            "--branch",
-            "repo:branch",
-            "--description",
-            "Alias prompt",
-        ])
-        .unwrap();
-        assert!(matches!(
-            parsed.command,
-            Some(Commands::CreateAgent {
-                first_prompt: Some(ref prompt),
-                ..
-            }) if prompt == "Alias prompt"
         ));
 
         let parsed = Cli::try_parse_from([
@@ -636,7 +608,7 @@ mod tests {
             "project",
             "--branch",
             "repo:branch",
-            "--description",
+            "--first-prompt",
             "Review this",
         ])
         .unwrap();
@@ -657,7 +629,7 @@ mod tests {
             "project",
             "--branch",
             "repo:branch",
-            "--description",
+            "-d",
             "Test this",
         ])
         .unwrap();
@@ -668,5 +640,75 @@ mod tests {
                 ..
             }) if prompt == "Test this"
         ));
+    }
+
+    #[test]
+    fn agent_commands_reject_description_alias() {
+        let cases: &[&[&str]] = &[
+            &[
+                "agman",
+                "create-agent",
+                "--kind",
+                "reviewer",
+                "--name",
+                "review",
+                "--project",
+                "project",
+                "--branch",
+                "repo:branch",
+                "--description",
+                "Alias prompt",
+            ],
+            &[
+                "agman",
+                "create-researcher",
+                "investigate",
+                "--project",
+                "project",
+                "--description",
+                "Research this",
+            ],
+            &[
+                "agman",
+                "create-operator",
+                "operate",
+                "--project",
+                "project",
+                "--description",
+                "Do the thing",
+            ],
+            &[
+                "agman",
+                "create-reviewer",
+                "--name",
+                "review",
+                "--project",
+                "project",
+                "--branch",
+                "repo:branch",
+                "--description",
+                "Review this",
+            ],
+            &[
+                "agman",
+                "create-tester",
+                "--name",
+                "test",
+                "--project",
+                "project",
+                "--branch",
+                "repo:branch",
+                "--description",
+                "Test this",
+            ],
+        ];
+
+        for args in cases {
+            let err = match Cli::try_parse_from(*args) {
+                Ok(_) => panic!("{args:?} unexpectedly parsed"),
+                Err(err) => err,
+            };
+            assert_eq!(err.kind(), ErrorKind::UnknownArgument, "{args:?}");
+        }
     }
 }

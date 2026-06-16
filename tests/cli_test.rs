@@ -108,7 +108,7 @@ fn cli_role_agent_help_exposes_first_prompt_not_description() {
         assert!(stdout.contains("-d"), "{command} help did not expose -d");
         assert!(
             !stdout.contains("--description"),
-            "{command} help exposed hidden --description alias"
+            "{command} help exposed --description"
         );
     }
 }
