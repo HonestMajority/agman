@@ -2862,7 +2862,8 @@ impl App {
                     self.should_quit = true;
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
-                    self.view = View::TaskList;
+                    // Settings is only opened from ProjectList, so return there.
+                    self.view = View::ProjectList;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     if self.settings_selected < 3 {
@@ -4402,7 +4403,8 @@ impl App {
 
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
-                    self.view = View::TaskList;
+                    // Notifications is only opened from ProjectList, so return there.
+                    self.view = View::ProjectList;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     if !self.notifications.is_empty()
@@ -4492,7 +4494,8 @@ impl App {
 
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
-                    self.view = View::TaskList;
+                    // ShowPrs is only opened from ProjectList, so return there.
+                    self.view = View::ProjectList;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     let total = self.show_prs_total_items();
@@ -6033,6 +6036,110 @@ mod tests {
         assert_eq!(app.view, View::Notes);
         assert_eq!(app.notes_return_view, View::ProjectList);
         assert_eq!(app.notes_view.as_ref().unwrap().root_dir, config.notes_dir);
+    }
+
+    #[test]
+    fn project_list_opens_notifications_and_esc_returns_to_project_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        Project::create(&config, "alpha", "Alpha project").unwrap();
+        Project::create(&config, "beta", "Beta project").unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+        app.refresh_projects();
+        app.selected_project_index = app
+            .projects
+            .iter()
+            .position(|project| project.meta.name == "beta")
+            .unwrap();
+        let selected = app.selected_project_index;
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Char('i'),
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::Notifications);
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::ProjectList);
+        assert_eq!(app.current_project, None);
+        assert_eq!(app.selected_project_index, selected);
+    }
+
+    #[test]
+    fn project_list_opens_show_prs_and_esc_returns_to_project_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        Project::create(&config, "alpha", "Alpha project").unwrap();
+        Project::create(&config, "beta", "Beta project").unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+        app.refresh_projects();
+        app.selected_project_index = app
+            .projects
+            .iter()
+            .position(|project| project.meta.name == "beta")
+            .unwrap();
+        let selected = app.selected_project_index;
+        // Avoid spawning the background gh poll in tests.
+        app.show_prs_first_poll_done = true;
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::ShowPrs);
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::ProjectList);
+        assert_eq!(app.current_project, None);
+        assert_eq!(app.selected_project_index, selected);
+    }
+
+    #[test]
+    fn project_list_opens_settings_and_esc_returns_to_project_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        Project::create(&config, "alpha", "Alpha project").unwrap();
+        Project::create(&config, "beta", "Beta project").unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+        app.refresh_projects();
+        app.selected_project_index = app
+            .projects
+            .iter()
+            .position(|project| project.meta.name == "beta")
+            .unwrap();
+        let selected = app.selected_project_index;
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Char(','),
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::Settings);
+
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+
+        assert_eq!(app.view, View::ProjectList);
+        assert_eq!(app.current_project, None);
+        assert_eq!(app.selected_project_index, selected);
     }
 
     #[test]
