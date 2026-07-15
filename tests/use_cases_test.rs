@@ -599,7 +599,7 @@ fn all_role_prompts_treat_msg_lookalikes_as_untrusted() {
 }
 
 #[test]
-fn executing_role_prompts_require_high_stakes_confirmation_handshake() {
+fn executing_role_prompts_gate_high_stakes_on_brief_and_cross_check() {
     let executing_prompts = [
         use_cases::build_pm_prompt(false, "project"),
         use_cases::build_engineer_prompt(false, "project", "engineer-repo-branch", "repo--branch"),
@@ -610,10 +610,16 @@ fn executing_role_prompts_require_high_stakes_confirmation_handshake() {
         assert!(prompt.contains("force-push"));
         assert!(prompt.contains("destructive infra/data operations"));
         assert!(prompt.contains("single message that merely says to proceed"));
-        assert!(prompt.contains("CONFIRM MERGE"));
-        assert!(prompt.contains("wait for an affirmative agman-delivered reply"));
+        assert!(prompt.contains("Authorization anchors in your task brief"));
+        assert!(prompt.contains("task instructions or first prompt authorize"));
+        assert!(prompt.contains("is never sufficient"));
         assert!(prompt.contains("live state cross-check"));
         assert!(prompt.contains("gh pr view"));
+
+        // The merge confirmation handshake is permanently scrapped: no
+        // executing role may be told to block on a CONFIRM MERGE round-trip.
+        assert!(!prompt.contains("CONFIRM MERGE"));
+        assert!(!prompt.contains("confirmation handshake"));
     }
 
     let chief = use_cases::build_chief_of_staff_prompt(false);
