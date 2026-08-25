@@ -21,18 +21,6 @@ pub struct DismissedNotifications {
     pub ids: HashMap<String, DismissedEntry>,
 }
 
-/// Legacy format v1: `{ "ids": ["id1", "id2", ...] }` (HashSet<String>).
-#[derive(serde::Deserialize)]
-struct LegacyVecFormat {
-    ids: Vec<String>,
-}
-
-/// Legacy format v2: `{ "ids": { "id1": "dismissed_at", ... } }` (HashMap<String, String>).
-#[derive(serde::Deserialize)]
-struct LegacyMapFormat {
-    ids: HashMap<String, String>,
-}
-
 impl DismissedNotifications {
     pub fn load(path: &Path) -> Self {
         let data = match std::fs::read_to_string(path) {
@@ -40,45 +28,10 @@ impl DismissedNotifications {
             Err(_) => return Self::empty(),
         };
 
-        // Try current DismissedEntry format first
-        if let Ok(dn) = serde_json::from_str::<Self>(&data) {
-            return dn;
+        match serde_json::from_str::<Self>(&data) {
+            Ok(dn) => dn,
+            Err(_) => Self::empty(),
         }
-
-        // Fall back to v2 HashMap<String, String> format — migrate using dismissed_at as updated_at
-        if let Ok(legacy) = serde_json::from_str::<LegacyMapFormat>(&data) {
-            let ids = legacy
-                .ids
-                .into_iter()
-                .map(|(id, dismissed_at)| {
-                    let entry = DismissedEntry {
-                        updated_at: dismissed_at.clone(),
-                        dismissed_at,
-                    };
-                    (id, entry)
-                })
-                .collect();
-            return Self { ids };
-        }
-
-        // Fall back to v1 Vec format — migrate with current timestamp
-        if let Ok(legacy) = serde_json::from_str::<LegacyVecFormat>(&data) {
-            let now = Utc::now().to_rfc3339();
-            let ids = legacy
-                .ids
-                .into_iter()
-                .map(|id| {
-                    let entry = DismissedEntry {
-                        dismissed_at: now.clone(),
-                        updated_at: now.clone(),
-                    };
-                    (id, entry)
-                })
-                .collect();
-            return Self { ids };
-        }
-
-        Self::empty()
     }
 
     pub fn save(&self, path: &Path) {

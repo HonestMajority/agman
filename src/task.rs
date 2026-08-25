@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::config::Config;
-use crate::harness::HarnessKind;
 
 #[derive(Debug, Clone, Copy)]
 enum SectionKind {
@@ -23,36 +22,6 @@ pub struct RepoEntry {
     pub repo_name: String,
     pub worktree_path: PathBuf,
     pub tmux_session: String,
-}
-
-/// A legacy interactive session record retained for older task metadata.
-///
-/// Records the deterministic session name passed to the harness at launch
-/// (`claude --name <name>`, `codex` post-launch `/rename <name>`,
-/// `goose --name <name>`, or `pi` post-launch `/name <name>`) so the user can
-/// manually reattach from a shell where the harness supports it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionEntry {
-    pub agent: String,
-    /// Deterministic session name (e.g. `agman-task-<task-id>-step-<n>`).
-    /// Renamed from `session_id` when agman dropped programmatic resume.
-    #[serde(alias = "session_id")]
-    pub name: String,
-    pub started_at: DateTime<Utc>,
-    #[serde(default)]
-    pub stopped_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub condition: Option<String>,
-    /// Which harness was used to spawn this session. Used by the kill path
-    /// to dispatch the right slash command (`/exit` for claude/goose, `/quit`
-    /// for codex/pi). `#[serde(default)]` so legacy `SessionEntry` records without
-    /// this field deserialize to `HarnessKind::default() = Claude`. Risk: a
-    /// stale unstopped codex session entry from before the upgrade defaults
-    /// to Claude and the kill path dispatches the wrong slash command, which
-    /// then falls through to the Ctrl-C × N fallback. Acceptable — not worth
-    /// a migration.
-    #[serde(default)]
-    pub harness: HarnessKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,10 +59,6 @@ pub struct TaskMeta {
     /// The project this task belongs to (None for unassigned/legacy tasks).
     #[serde(default)]
     pub project: Option<String>,
-    /// Legacy session history is retained only for deserializing older task
-    /// metadata; new task-attached agents own their canonical sessions.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub session_history: Vec<SessionEntry>,
 }
 
 fn default_true() -> bool {
@@ -136,7 +101,6 @@ impl TaskMeta {
             archived_at: None,
             saved: false,
             project: None,
-            session_history: Vec::new(),
         }
     }
 
@@ -160,7 +124,6 @@ impl TaskMeta {
             archived_at: None,
             saved: false,
             project: None,
-            session_history: Vec::new(),
         }
     }
 
@@ -407,16 +370,6 @@ impl Task {
         Ok(())
     }
 
-    /// Re-read meta.json from disk, picking up changes made by other processes (e.g. TUI)
-    pub fn reload_meta(&mut self) -> Result<()> {
-        let meta_path = self.dir.join("meta.json");
-        let meta_content =
-            std::fs::read_to_string(&meta_path).context("Failed to read task meta.json")?;
-        self.meta =
-            serde_json::from_str(&meta_content).context("Failed to parse task meta.json")?;
-        Ok(())
-    }
-
     fn init_files(&self) -> Result<()> {
         // Create empty files that will be populated later
         let files = ["notes.md", "agent.log"];
@@ -573,17 +526,6 @@ impl Task {
         Ok(result_lines.join("\n"))
     }
 
-    pub fn append_agent_log(&self, content: &str) -> Result<()> {
-        use std::io::Write;
-        let path = self.dir.join("agent.log");
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        writeln!(file, "{}", content)?;
-        Ok(())
-    }
-
     pub fn delete(self, config: &Config) -> Result<()> {
         tracing::info!(task_id = %self.meta.task_id(), "deleting task");
         let dir = config.task_dir(&self.meta.name, &self.meta.branch_name);
@@ -633,100 +575,5 @@ impl Task {
         });
         self.meta.updated_at = Utc::now();
         self.save_meta()
-    }
-
-    /// Get the git diff for the worktree(s).
-    /// For multi-repo tasks, concatenates diffs from all repos with headers.
-    pub fn get_git_diff(&self) -> Result<String> {
-        use std::process::Command;
-
-        if self.meta.repos.is_empty() {
-            return Ok(String::new());
-        }
-
-        if self.meta.repos.len() == 1 {
-            let output = Command::new("git")
-                .args(["diff", "HEAD"])
-                .current_dir(&self.meta.repos[0].worktree_path)
-                .output()
-                .context("Failed to run git diff")?;
-            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
-        }
-
-        let mut result = String::new();
-        for repo in &self.meta.repos {
-            if !repo.worktree_path.exists() {
-                continue;
-            }
-            let output = Command::new("git")
-                .args(["diff", "HEAD"])
-                .current_dir(&repo.worktree_path)
-                .output()
-                .context("Failed to run git diff")?;
-            let diff = String::from_utf8_lossy(&output.stdout);
-            if !diff.is_empty() {
-                result.push_str(&format!("## {}\n", repo.repo_name));
-                result.push_str(&diff);
-                result.push('\n');
-            }
-        }
-        Ok(result)
-    }
-
-    /// Get a summary of commits on this branch.
-    /// For multi-repo tasks, concatenates logs from all repos with headers.
-    pub fn get_git_log_summary(&self) -> Result<String> {
-        use std::process::Command;
-
-        if self.meta.repos.is_empty() {
-            return Ok(String::new());
-        }
-
-        if self.meta.repos.len() == 1 {
-            let output = Command::new("git")
-                .args(["log", "--oneline", "-20"])
-                .current_dir(&self.meta.repos[0].worktree_path)
-                .output()
-                .context("Failed to run git log")?;
-            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
-        }
-
-        let mut result = String::new();
-        for repo in &self.meta.repos {
-            if !repo.worktree_path.exists() {
-                continue;
-            }
-            let output = Command::new("git")
-                .args(["log", "--oneline", "-20"])
-                .current_dir(&repo.worktree_path)
-                .output()
-                .context("Failed to run git log")?;
-            let log = String::from_utf8_lossy(&output.stdout);
-            if !log.is_empty() {
-                result.push_str(&format!("## {}\n", repo.repo_name));
-                result.push_str(&log);
-                result.push('\n');
-            }
-        }
-        Ok(result)
-    }
-
-    /// Append a session record to `meta.session_history` and persist.
-    pub fn push_session(&mut self, entry: SessionEntry) -> Result<()> {
-        self.meta.session_history.push(entry);
-        self.meta.updated_at = Utc::now();
-        self.save_meta()
-    }
-
-    /// Update the most recent session entry in-place (stopped_at + condition)
-    /// and persist. No-op if `session_history` is empty.
-    pub fn finish_last_session(&mut self, condition: Option<String>) -> Result<()> {
-        if let Some(last) = self.meta.session_history.last_mut() {
-            last.stopped_at = Some(Utc::now());
-            last.condition = condition;
-            self.meta.updated_at = Utc::now();
-            self.save_meta()?;
-        }
-        Ok(())
     }
 }

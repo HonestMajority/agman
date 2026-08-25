@@ -235,18 +235,6 @@ fn json_contains_name(v: &serde_json::Value, name: &str) -> bool {
     }
 }
 
-/// Check whether `~/.codex/session_index.jsonl` already contains a thread
-/// named `name`. Used to decide between a fresh codex launch and `codex
-/// resume <name>` for long-lived agents. Reuses the same walker as the
-/// post-`/rename` poll, so a fix to one benefits both paths.
-pub fn codex_has_session(harness_home: &Path, name: &str) -> bool {
-    let index_path = harness_home.join("session_index.jsonl");
-    let Ok(content) = std::fs::read_to_string(&index_path) else {
-        return false;
-    };
-    content.lines().any(|line| line_names_match(line, name))
-}
-
 /// Paste `text` into a tmux target as a single block followed by Enter,
 /// using load-buffer + paste-buffer (bracket paste mode) so newlines and
 /// shell metacharacters survive.

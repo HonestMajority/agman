@@ -2360,7 +2360,7 @@ impl App {
         if is_multi {
             // Multi-repo path: use the path directly from the directory picker
             let parent_dir = repo_path;
-            let mut task = match use_cases::create_multi_repo_task(
+            let task = match use_cases::create_multi_repo_task(
                 &self.config,
                 &name,
                 &branch_name,
@@ -2383,7 +2383,7 @@ impl App {
             let task_id = task.meta.task_id();
             self.log_output("  Launching engineer via supervisor...".to_string());
             if let Err(e) = supervisor::ensure_task_tmux(&self.config, &task)
-                .and_then(|_| supervisor::launch_next_step(&self.config, &mut task).map(|_| ()))
+                .and_then(|_| supervisor::launch_task_engineer(&self.config, &task).map(|_| ()))
             {
                 tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch multi-repo task engineer");
                 self.log_output(format!("  Error: {}", e));
@@ -2412,7 +2412,7 @@ impl App {
                 }
             });
 
-            let mut task = match use_cases::create_task(
+            let task = match use_cases::create_task(
                 &self.config,
                 &name,
                 &branch_name,
@@ -2436,7 +2436,7 @@ impl App {
             let task_id = task.meta.task_id();
             self.log_output("  Launching engineer via supervisor...".to_string());
             if let Err(e) = supervisor::ensure_task_tmux(&self.config, &task)
-                .and_then(|_| supervisor::launch_next_step(&self.config, &mut task).map(|_| ()))
+                .and_then(|_| supervisor::launch_task_engineer(&self.config, &task).map(|_| ()))
             {
                 tracing::error!(repo = %name, branch = %branch_name, error = %e, "failed to launch task engineer");
                 self.log_output(format!("  Error: {}", e));
@@ -4838,7 +4838,7 @@ impl App {
         };
         let launch_error = supervisor::ensure_task_tmux(&self.config, &self.tasks[task_idx])
             .and_then(|_| {
-                supervisor::launch_next_step(&self.config, &mut self.tasks[task_idx]).map(|_| ())
+                supervisor::launch_task_engineer(&self.config, &self.tasks[task_idx]).map(|_| ())
             })
             .err();
         match launch_error {

@@ -1,8 +1,7 @@
 //! Task agent session helpers.
 //!
-//! Tasks now own long-lived attached agents. This module keeps the tmux and
-//! harness launch glue that task creation and the TUI need, but it no longer
-//! does not implement staged task progression or sentinel polling.
+//! Tasks own long-lived attached agents. This module keeps the tmux and
+//! harness launch glue that task creation and the TUI need.
 
 use anyhow::{Context, Result};
 
@@ -10,26 +9,6 @@ use crate::agent_model::{AgentAttachment, AgentRecord, AgentStatus};
 use crate::config::Config;
 use crate::task::Task;
 use crate::tmux::Tmux;
-
-/// Legacy window name retained only for killing pre-redesign task panes during
-/// migration/stop. New task sessions link canonical agent windows instead.
-pub const AGMAN_WINDOW: &str = "agman";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PollOutcome {
-    Idle,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PollTarget {
-    Skip,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AdvanceOutcome {
-    Launched { session_name: String },
-    Stopped,
-}
 
 pub fn supervisor_session(task: &Task) -> Result<String> {
     if task.meta.is_multi_repo() {
@@ -101,18 +80,6 @@ pub fn ensure_task_tmux(config: &Config, task: &Task) -> Result<String> {
     supervisor_session(task)
 }
 
-pub fn classify(_task: &Task) -> PollTarget {
-    PollTarget::Skip
-}
-
-pub fn poll(_task: &Task) -> Result<PollOutcome> {
-    Ok(PollOutcome::Idle)
-}
-
-pub fn kill_current_agent(harness: &dyn crate::harness::Harness, session_name: &str) -> Result<()> {
-    harness.kill_pane(session_name, None)
-}
-
 pub fn launch_agent(config: &Config, task: &Task, agent: &AgentRecord) -> Result<String> {
     if agent.meta.status != AgentStatus::Running {
         anyhow::bail!("agent '{}' is archived", agent.meta.name);
@@ -144,28 +111,4 @@ pub fn launch_agent(config: &Config, task: &Task, agent: &AgentRecord) -> Result
 pub fn launch_task_engineer(config: &Config, task: &Task) -> Result<String> {
     let engineer = crate::use_cases::attached_engineer_for_task(config, &task.meta.task_id())?;
     launch_agent(config, task, &engineer)
-}
-
-pub fn launch_next_step(config: &Config, task: &mut Task) -> Result<AdvanceOutcome> {
-    let session_name = launch_task_engineer(config, task)?;
-    Ok(AdvanceOutcome::Launched { session_name })
-}
-
-pub fn honor_stop(config: &Config, task: &mut Task) -> Result<()> {
-    if let Ok(engineer) = crate::use_cases::attached_engineer_for_task(config, &task.meta.task_id())
-    {
-        let session_name =
-            Config::engineer_tmux_session(&engineer.meta.project, &engineer.meta.name);
-        let harness = config.harness_kind().select();
-        let _ = kill_current_agent(harness.as_ref(), &session_name);
-    }
-    Ok(())
-}
-
-pub fn wake_if_idle(config: &Config, task: &mut Task) -> Result<Option<AdvanceOutcome>> {
-    Ok(Some(launch_next_step(config, task)?))
-}
-
-pub fn advance(_config: &Config, _task: &mut Task, _condition: ()) -> Result<AdvanceOutcome> {
-    Ok(AdvanceOutcome::Stopped)
 }

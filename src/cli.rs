@@ -159,13 +159,12 @@ EXAMPLES:
     #[command(after_help = "\
 EXAMPLES:
   agman link-pr backend--fix-login https://github.com/acme/backend/pull/42
-  agman link-pr backend--fix-login 42 --author alice
-  agman link-pr backend--fix-login --from-sidecar")]
+  agman link-pr backend--fix-login 42 --author alice")]
     LinkPr {
         /// Task identifier (repo--branch format, or just branch if unambiguous)
         task_id: String,
         /// PR number or URL. A number is resolved through the task repo's origin remote.
-        pr: Option<String>,
+        pr: String,
         /// Mark this PR as owned by the task engineer (default)
         #[arg(long, default_value_t = true, conflicts_with = "not_owned")]
         owned: bool,
@@ -178,9 +177,6 @@ EXAMPLES:
         /// Overwrite a different existing linked PR
         #[arg(long, default_value_t = false)]
         force: bool,
-        /// Read the PR reference from a legacy .pr-link sidecar
-        #[arg(long, default_value_t = false)]
-        from_sidecar: bool,
     },
 
     /// Read the agent log for a task
@@ -437,22 +433,6 @@ EXAMPLES:
             value_name = "FIRST_PROMPT"
         )]
         first_prompt: Option<String>,
-    },
-
-    /// List researcher agents.
-    ListResearchers {
-        /// Project name
-        #[arg(long)]
-        project: String,
-    },
-
-    /// Archive a researcher agent.
-    ArchiveResearcher {
-        /// Researcher name
-        name: String,
-        /// Project name
-        #[arg(long)]
-        project: String,
     },
 
     /// Respawn an agent with a fresh session (Chief of Staff or PM)

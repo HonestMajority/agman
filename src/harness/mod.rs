@@ -8,11 +8,10 @@
 //!
 //! The user picks one in the TUI settings view; the choice is persisted as
 //! `harness = "..."` in `~/.agman/config.toml` and applies to every newly
-//! spawned agent (CEO, PM, researcher, task agents).
+//! spawned agent (Chief of Staff, PM, and project/task agents).
 //!
-//! Long-lived agents (CEO/PM/researcher) stamp `<state_dir>/harness` on first
-//! spawn so a global flip doesn't break in-flight agents. Task agents capture
-//! their spawn-time `harness` on `SessionEntry`.
+//! Long-lived agents stamp `<state_dir>/harness` on first spawn so a global
+//! flip doesn't break in-flight agents.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -75,14 +74,6 @@ pub fn ensure_workspace_trusted_for_test(
         HarnessKind::Goose => Ok(()),
         HarnessKind::Pi => Ok(()),
     }
-}
-
-/// Test-only entrypoint for codex browser MCP configuration. Production uses
-/// `CodexHarness::ensure_capabilities_configured`, which resolves the config
-/// path from `harness_home(Codex)`.
-#[doc(hidden)]
-pub fn ensure_browser_mcp_for_test(config_toml_path: &Path) -> Result<()> {
-    codex::ensure_browser_mcp_in(config_toml_path)
 }
 
 /// Identifies which harness to use. Persisted in config + per-agent stamps.
