@@ -476,7 +476,6 @@ pub fn toggle_project_hold(config: &Config, project_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// List all tasks, sorted by status then by updated_at desc.
 /// Save notes for a task.
 pub fn save_notes(task: &Task, notes: &str) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), "saving notes");
