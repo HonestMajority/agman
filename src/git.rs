@@ -117,17 +117,6 @@ impl Git {
         "HEAD".to_string()
     }
 
-    /// Create a new worktree with a new branch
-    /// Tries to base on origin/main if available, falls back to local main or HEAD
-    pub fn create_worktree(
-        config: &Config,
-        repo_name: &str,
-        branch_name: &str,
-        base_ref: Option<&str>,
-    ) -> Result<PathBuf> {
-        Self::create_worktree_impl(config, repo_name, branch_name, base_ref, None, false)
-    }
-
     /// Create a new worktree with a new branch (quiet mode for TUI)
     /// When `parent_dir` is `Some`, paths are resolved relative to that directory
     /// instead of `config.repos_dir` (used for multi-repo tasks).

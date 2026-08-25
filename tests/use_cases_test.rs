@@ -943,24 +943,6 @@ fn link_task_pr_rejects_same_number_different_repo_without_force() {
 }
 
 #[test]
-fn link_task_pr_from_sidecar_reads_legacy_pr_link() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    let task = create_test_task(&config, "repo", "branch");
-    std::fs::write(
-        task.dir.join(".pr-link"),
-        "42\nhttps://github.com/acme/repo/pull/42\n",
-    )
-    .unwrap();
-
-    let linked =
-        use_cases::link_task_pr_from_sidecar(&config, "repo--branch", true, None, false).unwrap();
-
-    assert_eq!(linked.number, 42);
-    assert_eq!(linked.url, "https://github.com/acme/repo/pull/42");
-}
-
-#[test]
 fn project_notes_are_isolated_by_project_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);

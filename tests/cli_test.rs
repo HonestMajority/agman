@@ -45,7 +45,6 @@ fn cli_link_pr_help_exposes_task_pr_linking_syntax() {
     let stdout = String::from_utf8(output.stdout).expect("help output should be utf8");
 
     assert!(stdout.contains("agman link-pr backend--fix-login"));
-    assert!(stdout.contains("--from-sidecar"));
     assert!(stdout.contains("--force"));
     assert!(stdout.contains("--not-owned"));
 }

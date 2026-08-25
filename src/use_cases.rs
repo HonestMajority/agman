@@ -477,10 +477,6 @@ pub fn toggle_project_hold(config: &Config, project_name: &str) -> Result<()> {
 }
 
 /// List all tasks, sorted by status then by updated_at desc.
-pub fn list_tasks(config: &Config) -> Vec<Task> {
-    Task::list_all(config)
-}
-
 /// Save notes for a task.
 pub fn save_notes(task: &Task, notes: &str) -> Result<()> {
     tracing::info!(task_id = %task.meta.task_id(), "saving notes");
@@ -568,18 +564,6 @@ pub fn link_task_pr(
     link_task_pr_reference(&mut task, reference, owned, author, force)
 }
 
-pub fn link_task_pr_from_sidecar(
-    config: &Config,
-    task_id: &str,
-    owned: bool,
-    author: Option<String>,
-    force: bool,
-) -> Result<LinkedPr> {
-    let mut task = Task::load_by_id(config, task_id)?;
-    let reference = parse_pr_reference(&read_pr_reference_sidecar(&task)?)?;
-    link_task_pr_reference(&mut task, reference, owned, author, force)
-}
-
 fn link_task_pr_reference(
     task: &mut Task,
     reference: PrReference,
@@ -626,47 +610,6 @@ fn link_task_pr_reference(
         .linked_pr
         .clone()
         .expect("linked_pr should be set after save"))
-}
-
-fn read_pr_reference_sidecar(task: &Task) -> Result<String> {
-    let mut candidates = vec![task.dir.join(".pr-link")];
-    if let Some(repo) = task.meta.repos.first() {
-        candidates.push(repo.worktree_path.join(".pr-link"));
-    }
-
-    for path in candidates {
-        if !path.exists() {
-            continue;
-        }
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let mut first_valid = None;
-        for line in content
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-        {
-            match parse_pr_reference(line) {
-                Ok(PrReference::Url { .. }) => return Ok(line.to_string()),
-                Ok(PrReference::Number(_)) if first_valid.is_none() => {
-                    first_valid = Some(line.to_string());
-                }
-                Ok(PrReference::Number(_)) | Err(_) => {}
-            }
-        }
-        if let Some(line) = first_valid {
-            return Ok(line);
-        }
-        bail!(
-            "{} does not contain a valid PR number or URL",
-            path.display()
-        );
-    }
-
-    bail!(
-        "no .pr-link sidecar found for task '{}' (checked task dir and primary worktree)",
-        task.meta.task_id()
-    )
 }
 
 /// Migrate old-format `meta.json` files in-place to the new multi-repo format.
@@ -2151,10 +2094,6 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     if target == "chief-of-staff" {
         return Ok(SendTarget::ChiefOfStaff);
     }
-    // TODO: drop after one release — transitional error to surface the rename.
-    if target == "ceo" {
-        anyhow::bail!("ceo has been renamed to chief-of-staff");
-    }
     if target == "telegram" {
         return Ok(SendTarget::Telegram);
     }
@@ -2600,49 +2539,6 @@ pub fn wipe_long_lived_session_handles(state_dir: &Path) {
     }
 }
 
-/// Test-only view of a `LongLivedLaunch`. Exposes just enough internal
-/// shape for integration tests to verify resume vs. fresh decisions
-/// without spawning tmux. Stable by construction — the underlying
-/// struct's only consumers are inside this module.
-#[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct LongLivedLaunchForTest {
-    pub mode: &'static str, // "auto" | "pin" | "resume"
-    pub handle: Option<String>,
-    pub session_name: String,
-    pub cwd: PathBuf,
-    pub session_dir: Option<PathBuf>,
-    pub is_first_launch: bool,
-}
-
-/// Test-only entrypoint mirroring `prepare_long_lived_launch`. The final
-/// argument is retained for compatibility with older tests and ignored.
-/// See `LongLivedLaunchForTest`.
-#[doc(hidden)]
-pub fn prepare_long_lived_launch_for_test(
-    state_dir: &Path,
-    base_name: &str,
-    cwd: &Path,
-    kind: HarnessKind,
-    force_fresh: bool,
-    _codex_home_override: Option<&Path>,
-) -> Result<LongLivedLaunchForTest> {
-    let prep = prepare_long_lived_launch_inner(state_dir, base_name, cwd, kind, force_fresh)?;
-    let (mode, handle) = match &prep.mode {
-        LaunchMode::Auto => ("auto", None),
-        LaunchMode::Pin(h) => ("pin", Some(h.clone())),
-        LaunchMode::Resume(h) => ("resume", Some(h.clone())),
-    };
-    Ok(LongLivedLaunchForTest {
-        mode,
-        handle,
-        session_name: prep.session_name,
-        cwd: prep.cwd,
-        session_dir: prep.session_dir,
-        is_first_launch: prep.is_first_launch,
-    })
-}
-
 /// Result of preparing a long-lived agent launch — what to feed into
 /// `Harness::build_session_command` and whether to run the post-launch
 /// registration step (`/rename` for codex, `/name` for pi; no-op for
@@ -2900,17 +2796,6 @@ fn prepare_session_dir_for_harness(
     }
 }
 
-#[doc(hidden)]
-pub fn prepare_identity_file_for_harness_for_test(
-    kind: HarnessKind,
-    state_dir: &Path,
-    session_name: &str,
-    identity: &str,
-    rewrite: bool,
-) -> Result<Option<PathBuf>> {
-    prepare_identity_file_for_harness(kind, state_dir, session_name, identity, rewrite)
-}
-
 /// Start the Chief of Staff agent session.
 ///
 /// When `force_fresh` is true (e.g. from `respawn_agent`), any stamped
@@ -3081,11 +2966,6 @@ pub fn open_pm_popup(config: &Config, project_name: &str) -> Result<std::process
     let session_name = Config::pm_tmux_session(project_name);
     tracing::info!(project = project_name, "opening PM popup");
     Tmux::popup_attach(&session_name)
-}
-
-/// Check if an agent's tmux session is running.
-pub fn agent_session_running(session_name: &str) -> bool {
-    Tmux::session_exists(session_name)
 }
 
 // ---------------------------------------------------------------------------
@@ -3899,11 +3779,6 @@ pub fn detach_agent_from_task(config: &Config, project: &str, name: &str) -> Res
     Ok(agent)
 }
 
-/// Backwards-compatible researcher list (filters to the Researcher kind).
-pub fn list_researchers(config: &Config, project: Option<&str>) -> Result<Vec<AgentRecord>> {
-    list_agents(config, project, Some(AgentKindLabel::Researcher))
-}
-
 fn agent_kind_name(kind: &AgentKind) -> &'static str {
     match kind {
         AgentKind::Engineer => "engineer",
@@ -4091,11 +3966,6 @@ pub fn purge_chief_of_staff_agents(config: &Config) {
     }
 }
 
-/// Backwards-compatible researcher archive — delegates to `archive_agent`.
-pub fn archive_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
-    archive_agent(config, project, name)
-}
-
 /// Resume an archived agent: start a new tmux session and flip status to
 /// Running. `start_agent_session` will pick up any stamped session-id
 /// (claude) or session-name (codex/goose/pi) and resume the underlying
@@ -4110,23 +3980,6 @@ pub fn resume_agent(config: &Config, project: &str, name: &str) -> Result<()> {
 
     tracing::info!(project = project, name = name, "agent resumed");
     Ok(())
-}
-
-/// Backwards-compat alias used by callers that haven't migrated to the new
-/// name yet. Identical to `start_agent_session`.
-pub fn start_researcher_session(
-    config: &Config,
-    project: &str,
-    name: &str,
-    force_fresh: bool,
-) -> Result<()> {
-    start_agent_session(config, project, name, force_fresh)
-}
-
-/// Backwards-compat alias used by callers that haven't migrated to the new
-/// name yet. Identical to `resume_agent`.
-pub fn resume_researcher(config: &Config, project: &str, name: &str) -> Result<()> {
-    resume_agent(config, project, name)
 }
 
 // ---------------------------------------------------------------------------

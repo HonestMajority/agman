@@ -140,16 +140,7 @@ fn main() -> Result<()> {
             not_owned,
             author,
             force,
-            from_sidecar,
-        }) => cmd_link_pr(
-            &config,
-            &task_id,
-            pr.as_deref(),
-            owned && !not_owned,
-            author,
-            force,
-            from_sidecar,
-        ),
+        }) => cmd_link_pr(&config, &task_id, &pr, owned && !not_owned, author, force),
 
         Some(Commands::TaskLog { task_id, tail }) => cmd_task_log(&config, &task_id, tail),
 
@@ -286,16 +277,6 @@ fn main() -> Result<()> {
             browser,
             first_prompt,
         }) => cmd_create_tester(&config, &project, &name, branch_pair, browser, first_prompt),
-
-        Some(Commands::ListResearchers { project }) => cmd_list_agents(
-            &config,
-            Some(project.as_str()),
-            Some(AgentKindArg::Researcher),
-        ),
-
-        Some(Commands::ArchiveResearcher { name, project }) => {
-            cmd_archive_agent(&config, &project, &name)
-        }
 
         Some(Commands::RespawnAgent {
             target,
@@ -527,13 +508,13 @@ fn cmd_create_pm_task(
         None => None,
     };
 
-    let mut task =
+    let task =
         use_cases::create_pm_task(config, project, repo, task_name, first_prompt.as_deref())?;
     let task_id = task.meta.task_id();
 
     supervisor::ensure_task_tmux(config, &task)
         .with_context(|| format!("failed to prepare tmux for PM task '{}'", task_id))?;
-    supervisor::launch_next_step(config, &mut task)
+    supervisor::launch_task_engineer(config, &task)
         .with_context(|| format!("failed to launch agent for PM task '{}'", task_id))?;
 
     println!("Task '{}' created in project '{}'", task_id, project);
@@ -578,23 +559,12 @@ fn cmd_task_info(config: &Config, task_id: &str) -> Result<()> {
 fn cmd_link_pr(
     config: &Config,
     task_id: &str,
-    pr: Option<&str>,
+    pr: &str,
     owned: bool,
     author: Option<String>,
     force: bool,
-    from_sidecar: bool,
 ) -> Result<()> {
-    let linked = if from_sidecar {
-        if pr.is_some() {
-            anyhow::bail!("pass either a PR reference or --from-sidecar, not both");
-        }
-        use_cases::link_task_pr_from_sidecar(config, task_id, owned, author, force)?
-    } else {
-        let pr = pr.ok_or_else(|| {
-            anyhow::anyhow!("missing PR reference; pass a PR number, PR URL, or --from-sidecar")
-        })?;
-        use_cases::link_task_pr(config, task_id, pr, owned, author, force)?
-    };
+    let linked = use_cases::link_task_pr(config, task_id, pr, owned, author, force)?;
 
     println!(
         "Task '{}' linked to PR #{}: {}",

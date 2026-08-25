@@ -82,35 +82,4 @@ impl Agent {
 
         Ok(prompt)
     }
-
-    /// Build lightweight task context for a task-attached long-lived agent.
-    /// A nonblank first prompt is delivered as an inbox message at task creation.
-    pub fn build_inbox_message(&self, task: &Task, _command_mode: bool) -> Result<String> {
-        let mut msg = String::new();
-
-        if let Ok(diff) = task.get_git_diff() {
-            if !diff.is_empty() {
-                msg.push_str("# Current Git Diff\n");
-                msg.push_str("```diff\n");
-                if diff.len() > 10000 {
-                    msg.push_str(&diff[..10000]);
-                    msg.push_str("\n... (truncated)\n");
-                } else {
-                    msg.push_str(&diff);
-                }
-                msg.push_str("```\n\n");
-            }
-        }
-
-        if let Ok(log) = task.get_git_log_summary() {
-            if !log.is_empty() {
-                msg.push_str("# Recent Commits\n");
-                msg.push_str("```\n");
-                msg.push_str(&log);
-                msg.push_str("```\n");
-            }
-        }
-
-        Ok(msg)
-    }
 }

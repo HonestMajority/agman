@@ -50,40 +50,6 @@ fn remove_and_contains() {
 }
 
 #[test]
-fn backwards_compatible_load_from_legacy_vec_format() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("dismissed.json");
-
-    // Write the old HashSet format: { "ids": ["id1", "id2"] }
-    let legacy_json = r#"{"ids":["thread-old-1","thread-old-2"]}"#;
-    std::fs::write(&path, legacy_json).unwrap();
-
-    let loaded = DismissedNotifications::load(&path);
-    assert_eq!(loaded.ids.len(), 2);
-    assert!(loaded.contains("thread-old-1"));
-    assert!(loaded.contains("thread-old-2"));
-}
-
-#[test]
-fn backwards_compatible_load_from_legacy_map_format() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("dismissed.json");
-
-    // Write the v2 HashMap<String, String> format: { "ids": { "id": "dismissed_at" } }
-    let legacy_json =
-        r#"{"ids":{"thread-1":"2025-06-01T00:00:00Z","thread-2":"2025-06-02T00:00:00Z"}}"#;
-    std::fs::write(&path, legacy_json).unwrap();
-
-    let loaded = DismissedNotifications::load(&path);
-    assert_eq!(loaded.ids.len(), 2);
-    assert!(loaded.contains("thread-1"));
-    assert!(loaded.contains("thread-2"));
-    // Legacy map entries use dismissed_at as updated_at
-    assert_eq!(loaded.ids["thread-1"].dismissed_at, "2025-06-01T00:00:00Z");
-    assert_eq!(loaded.ids["thread-1"].updated_at, "2025-06-01T00:00:00Z");
-}
-
-#[test]
 fn prune_older_than_removes_old_entries() {
     let mut dn = DismissedNotifications {
         ids: std::collections::HashMap::new(),

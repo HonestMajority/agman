@@ -213,26 +213,6 @@ impl AgentRecord {
             .collect())
     }
 
-    /// True if this agent is a Researcher.
-    pub fn is_researcher(&self) -> bool {
-        matches!(self.meta.kind, AgentKind::Researcher { .. })
-    }
-
-    /// True if this agent is an Operator.
-    pub fn is_operator(&self) -> bool {
-        matches!(self.meta.kind, AgentKind::Operator { .. })
-    }
-
-    /// True if this agent is a Reviewer.
-    pub fn is_reviewer(&self) -> bool {
-        matches!(self.meta.kind, AgentKind::Reviewer { .. })
-    }
-
-    /// True if this agent is a Tester.
-    pub fn is_tester(&self) -> bool {
-        matches!(self.meta.kind, AgentKind::Tester { .. })
-    }
-
     /// True if this agent is the task-owned Engineer.
     pub fn is_engineer(&self) -> bool {
         matches!(self.meta.kind, AgentKind::Engineer)

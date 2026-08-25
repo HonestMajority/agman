@@ -95,15 +95,8 @@ impl Config {
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
-        // Run any legacy CEO → Chief of Staff migrations BEFORE creating
-        // the new directory layout. Idempotent and best-effort: see
-        // `crate::migration` for details.
         std::fs::create_dir_all(&self.base_dir)
             .with_context(|| format!("Failed to create {}", self.base_dir.display()))?;
-        if let Err(e) = crate::migration::run(self) {
-            tracing::warn!(error = %e, "migration step failed; continuing");
-        }
-
         std::fs::create_dir_all(&self.tasks_dir).context("Failed to create tasks directory")?;
         std::fs::create_dir_all(&self.prompts_dir).context("Failed to create prompts directory")?;
         std::fs::create_dir_all(&self.notes_dir).context("Failed to create notes directory")?;
@@ -114,20 +107,6 @@ impl Config {
     /// Get task directory: ~/.agman/tasks/<repo>--<branch>/
     pub fn task_dir(&self, repo_name: &str, branch_name: &str) -> PathBuf {
         self.tasks_dir.join(Self::task_id(repo_name, branch_name))
-    }
-
-    pub fn task_dir_from_id(&self, task_id: &str) -> PathBuf {
-        self.tasks_dir.join(task_id)
-    }
-
-    /// Get task inbox path: ~/.agman/tasks/<id>/inbox.jsonl
-    pub fn task_inbox(&self, task_id: &str) -> PathBuf {
-        self.tasks_dir.join(task_id).join("inbox.jsonl")
-    }
-
-    /// Get task inbox seq path: ~/.agman/tasks/<id>/inbox.seq
-    pub fn task_inbox_seq(&self, task_id: &str) -> PathBuf {
-        self.tasks_dir.join(task_id).join("inbox.seq")
     }
 
     /// Get task ID from repo and branch names.
@@ -251,24 +230,12 @@ impl Config {
         self.chief_of_staff_dir().join("inbox.seq")
     }
 
-    /// Pinned claude session UUID for the Chief of Staff. Written on first
-    /// launch and re-read on subsequent launches so `--resume <uuid>` lands
-    /// the user directly back in the prior conversation.
-    pub fn chief_of_staff_session_id(&self) -> PathBuf {
-        self.chief_of_staff_dir().join("session-id")
-    }
-
     pub fn project_inbox(&self, name: &str) -> PathBuf {
         self.project_dir(name).join("inbox.jsonl")
     }
 
     pub fn project_seq(&self, name: &str) -> PathBuf {
         self.project_dir(name).join("inbox.seq")
-    }
-
-    /// Pinned claude session UUID for a project's PM agent.
-    pub fn project_session_id(&self, name: &str) -> PathBuf {
-        self.project_dir(name).join("session-id")
     }
 
     /// Stamped working directory for a long-lived codex/goose/pi session,
@@ -335,11 +302,6 @@ impl Config {
 
     pub fn agent_seq(&self, project: &str, name: &str) -> PathBuf {
         self.agent_dir(project, name).join("inbox.seq")
-    }
-
-    /// Pinned harness session UUID for an agent.
-    pub fn agent_session_id(&self, project: &str, name: &str) -> PathBuf {
-        self.agent_dir(project, name).join("session-id")
     }
 
     /// Tmux session name for a researcher. Preserved as-is so existing
