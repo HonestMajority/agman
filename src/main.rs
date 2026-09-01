@@ -69,11 +69,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     tracing::debug!(command = ?cli.command, "dispatching command");
-    use_cases::purge_chief_of_staff_agents(&config);
 
     match cli.command {
-        Some(Commands::Init { force }) => {
-            config.init_default_files(force)?;
+        Some(Commands::Init) => {
+            config.ensure_dirs()?;
             println!("agman initialized at {}", config.base_dir.display());
             Ok(())
         }
@@ -141,8 +140,6 @@ fn main() -> Result<()> {
             author,
             force,
         }) => cmd_link_pr(&config, &task_id, &pr, owned && !not_owned, author, force),
-
-        Some(Commands::TaskLog { task_id, tail }) => cmd_task_log(&config, &task_id, tail),
 
         Some(Commands::CreateAgent {
             kind,
@@ -244,39 +241,6 @@ fn main() -> Result<()> {
         }) => cmd_move_agent(&config, &project, &name, &task, role_label),
 
         Some(Commands::DetachAgent { project, name }) => cmd_detach_agent(&config, &project, &name),
-
-        Some(Commands::CreateResearcher {
-            name,
-            project,
-            repo,
-            branch,
-            task,
-            first_prompt,
-        }) => cmd_create_researcher(&config, &project, &name, repo, branch, task, first_prompt),
-
-        Some(Commands::CreateOperator {
-            name,
-            project,
-            repo,
-            branch,
-            task,
-            first_prompt,
-        }) => cmd_create_operator(&config, &project, &name, repo, branch, task, first_prompt),
-
-        Some(Commands::CreateReviewer {
-            name,
-            project,
-            branch_pair,
-            first_prompt,
-        }) => cmd_create_reviewer(&config, &project, &name, branch_pair, first_prompt),
-
-        Some(Commands::CreateTester {
-            name,
-            project,
-            branch_pair,
-            browser,
-            first_prompt,
-        }) => cmd_create_tester(&config, &project, &name, branch_pair, browser, first_prompt),
 
         Some(Commands::RespawnAgent {
             target,
@@ -570,16 +534,6 @@ fn cmd_link_pr(
         "Task '{}' linked to PR #{}: {}",
         task_id, linked.number, linked.url
     );
-    Ok(())
-}
-
-fn cmd_task_log(config: &Config, task_id: &str, tail: usize) -> Result<()> {
-    let text = use_cases::get_task_log_tail(config, task_id, tail)?;
-    if text.is_empty() {
-        println!("(no log output)");
-    } else {
-        println!("{}", text);
-    }
     Ok(())
 }
 

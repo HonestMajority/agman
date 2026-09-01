@@ -14,7 +14,7 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc as tokio_mpsc;
-use tui_textarea::{CursorMove, Input, Key, TextArea};
+use tui_textarea::{Input, Key, TextArea};
 
 use agman::agent_model::{AgentAttachment, AgentKind, AgentRecord, AgentStatus};
 use agman::config::Config;
@@ -55,7 +55,6 @@ fn open_url(url: &str) {
 pub enum View {
     ProjectList,
     TaskList,
-    Preview,
     DeleteConfirm,
     NewTaskWizard,
     DirectoryPicker,
@@ -66,7 +65,6 @@ pub enum View {
     Settings,
     Archive,
     ProjectWizard,
-    ProjectPicker,
     ProjectDeleteConfirm,
     AgentWizard,
     RespawnConfirm,
@@ -348,19 +346,6 @@ impl NewTaskWizard {
     }
 }
 
-/// What triggered the project picker modal.
-#[derive(Debug, Clone)]
-pub enum ProjectPickerAction {
-    /// Migrate all unassigned tasks to the selected project.
-    MigrateAllUnassigned,
-}
-
-pub struct ProjectPicker {
-    pub projects: Vec<String>,
-    pub selected: usize,
-    pub action: ProjectPickerAction,
-}
-
 pub struct ProjectWizard {
     pub name_editor: TextArea<'static>,
     pub description_editor: VimTextArea<'static>,
@@ -438,12 +423,6 @@ pub struct AgentWizard {
     pub browser_capability: bool,
     pub error_message: Option<String>,
     pub project: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreviewPane {
-    Logs,
-    Notes,
 }
 
 struct InboxPollResult {
@@ -747,12 +726,6 @@ pub struct App {
     pub tasks: Vec<Task>,
     pub selected_index: usize,
     pub view: View,
-    pub preview_content: String,
-    pub logs_editor: VimTextArea<'static>,
-    pub notes_content: String,
-    pub notes_editor: VimTextArea<'static>,
-    pub notes_editing: bool,
-    pub preview_pane: PreviewPane,
     pub should_quit: bool,
     pub status_message: Option<(String, Instant)>,
     pub wizard: Option<NewTaskWizard>,
@@ -820,8 +793,6 @@ pub struct App {
     // Project wizard
     pub project_wizard: Option<ProjectWizard>,
     pub agent_wizard: Option<AgentWizard>,
-    // Project picker (for task migration/move)
-    pub project_picker: Option<ProjectPicker>,
     // Project deletion
     pub project_to_delete: Option<String>,
     // Unattached project agents plus task-attached child rows.
@@ -896,7 +867,6 @@ impl App {
     }
 
     fn new_with_options(config: Config, autostart_sessions: bool) -> Result<Self> {
-        use_cases::migrate_old_tasks(&config);
         match use_cases::purge_old_archives(&config) {
             Ok(count) if count > 0 => {
                 tracing::info!(purged = count, "purged expired archived tasks on startup");
@@ -907,9 +877,6 @@ impl App {
             }
         }
         let tasks = Task::list_all(&config);
-        let notes_editor = VimTextArea::new();
-        let mut logs_editor = VimTextArea::new();
-        logs_editor.set_read_only(true);
         let (gh_notif_tx, gh_notif_rx) = tokio_mpsc::unbounded_channel();
         let (show_prs_poll_tx, show_prs_poll_rx) = tokio_mpsc::unbounded_channel();
         let (inbox_poll_tx, inbox_poll_rx) = tokio_mpsc::unbounded_channel();
@@ -971,12 +938,6 @@ impl App {
             tasks,
             selected_index: 0,
             view: View::ProjectList,
-            preview_content: String::new(),
-            logs_editor,
-            notes_content: String::new(),
-            notes_editor,
-            notes_editing: false,
-            preview_pane: PreviewPane::Logs,
             should_quit: false,
             status_message: None,
             wizard: None,
@@ -1033,7 +994,6 @@ impl App {
             project_refresh_generation: 0,
             project_wizard: None,
             agent_wizard: None,
-            project_picker: None,
             project_to_delete: None,
             agents: Vec::new(),
             attached_task_agents: HashMap::new(),
@@ -1983,43 +1943,52 @@ impl App {
         self.view = View::TaskList;
     }
 
-    fn load_preview(&mut self) {
-        let (preview_content, notes_content) = if let Some(task) = self.selected_task() {
-            let preview = task
-                .read_agent_log_structured_tail(500)
-                .unwrap_or_else(|_| "No agent log available".to_string());
-            let notes = task.read_notes().unwrap_or_default();
-            (preview, notes)
-        } else {
-            return;
-        };
-
-        self.preview_content = preview_content.clone();
-
-        // Setup logs editor (read-only VimTextArea)
-        self.logs_editor = VimTextArea::from_lines(preview_content.lines());
-        self.logs_editor.set_read_only(true);
-        self.logs_editor.set_normal_mode();
-        self.logs_editor.move_cursor(CursorMove::Bottom);
-
-        // Setup notes editor with vim mode (read-only until user starts editing)
-        self.notes_content = notes_content.clone();
-        self.notes_editor = VimTextArea::from_lines(notes_content.lines());
-        self.notes_editor.set_read_only(true);
-        self.notes_editor.set_normal_mode();
-        self.notes_editor.move_cursor(CursorMove::Bottom);
-        self.notes_editor.move_cursor(CursorMove::End);
-        self.notes_editing = false;
-    }
-
-    fn save_notes(&mut self) -> Result<()> {
+    /// Attach to the selected task's tmux session(s).
+    ///
+    /// Single-repo tasks (and multi-repo tasks with exactly one repo) ensure
+    /// the session exists and return `Ok(true)` so the main loop attaches.
+    /// Multi-repo tasks with several repos open the session picker instead.
+    fn attach_selected_task(&mut self) -> Result<bool> {
         if let Some(task) = self.selected_task() {
-            let notes = self.notes_editor.lines_joined();
-            use_cases::save_notes(task, &notes)?;
-            self.notes_content = notes;
-            self.set_status("Notes saved".to_string());
+            if task.meta.is_multi_repo() && task.meta.repos.len() > 1 {
+                // Ensure all repo sessions exist before showing picker
+                for repo in &task.meta.repos {
+                    let _ = Tmux::ensure_session(&repo.tmux_session, &repo.worktree_path);
+                }
+                let sessions: Vec<(String, String)> = task
+                    .meta
+                    .repos
+                    .iter()
+                    .filter(|r| Tmux::session_exists(&r.tmux_session))
+                    .map(|r| (r.repo_name.clone(), r.tmux_session.clone()))
+                    .collect();
+                if !sessions.is_empty() {
+                    self.session_picker_sessions = sessions;
+                    self.selected_session_index = 0;
+                    self.view = View::SessionPicker;
+                }
+            } else if task.meta.has_repos() {
+                let _ = Tmux::ensure_session(
+                    &task.meta.primary_repo().tmux_session,
+                    &task.meta.primary_repo().worktree_path,
+                );
+                if Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
+                    return Ok(true);
+                }
+            } else if task.meta.is_multi_repo() {
+                let parent_session =
+                    Config::tmux_session_name(&task.meta.name, &task.meta.branch_name);
+                if let Some(ref parent_dir) = task.meta.parent_dir {
+                    if !Tmux::session_exists(&parent_session) {
+                        let _ = Tmux::create_session_with_windows(&parent_session, parent_dir);
+                    }
+                }
+                if Tmux::session_exists(&parent_session) {
+                    return Ok(true);
+                }
+            }
         }
-        Ok(())
+        Ok(false)
     }
 
     fn archive_task(&mut self, saved: bool) -> Result<()> {
@@ -2466,7 +2435,6 @@ impl App {
         match self.view {
             View::ProjectList => self.handle_project_list_event(event),
             View::TaskList => self.handle_task_list_event(event),
-            View::Preview => self.handle_preview_event(event),
             View::DeleteConfirm => self.handle_delete_confirm_event(event),
             View::NewTaskWizard => self.handle_wizard_event(event),
             View::DirectoryPicker => self.handle_directory_picker_event(event),
@@ -2477,7 +2445,6 @@ impl App {
             View::Settings => self.handle_settings_event(event),
             View::Archive => self.handle_archive_event(event),
             View::ProjectWizard => self.handle_project_wizard_event(event),
-            View::ProjectPicker => self.handle_project_picker_event(event),
             View::ProjectDeleteConfirm => self.handle_project_delete_confirm_event(event),
             View::AgentWizard => self.handle_agent_wizard_event(event),
             View::RespawnConfirm => self.handle_respawn_confirm_event(event),
@@ -2565,25 +2532,6 @@ impl App {
                         error_message: None,
                     });
                     self.view = View::ProjectWizard;
-                }
-                KeyCode::Char('m') => {
-                    // Migrate all unassigned tasks — only available when (unassigned) is selected
-                    let is_unassigned = self.selected_project_index >= self.projects.len()
-                        && self.unassigned_task_count > 0;
-                    if is_unassigned {
-                        let project_names: Vec<String> =
-                            self.projects.iter().map(|p| p.meta.name.clone()).collect();
-                        if project_names.is_empty() {
-                            self.set_status("Create a project first with 'n'".to_string());
-                        } else {
-                            self.project_picker = Some(ProjectPicker {
-                                projects: project_names,
-                                selected: 0,
-                                action: ProjectPickerAction::MigrateAllUnassigned,
-                            });
-                            self.view = View::ProjectPicker;
-                        }
-                    }
                 }
                 KeyCode::Char('d') => {
                     // Delete project — only for real projects, not "(unassigned)"
@@ -2696,7 +2644,7 @@ impl App {
                     self.should_quit = true;
                 }
                 _ => {
-                    self.handle_project_detail_key(key)?;
+                    return self.handle_project_detail_key(key);
                 }
             }
         }
@@ -2719,9 +2667,7 @@ impl App {
             }
             KeyCode::Enter => match self.selected_project_detail_row() {
                 Some(ProjectDetailRow::Task(_)) => {
-                    self.load_preview();
-                    self.preview_pane = PreviewPane::Logs;
-                    self.view = View::Preview;
+                    return self.attach_selected_task();
                 }
                 Some(ProjectDetailRow::UnattachedAgent { .. })
                 | Some(ProjectDetailRow::AttachedAgent(_)) => {
@@ -3285,10 +3231,7 @@ impl App {
                     | KeyCode::Char('l')
                     | KeyCode::Left
                     | KeyCode::Right => {
-                        if !matches!(
-                            global_harness,
-                            agman::harness::HarnessKind::Goose | agman::harness::HarnessKind::Pi
-                        ) {
+                        if !matches!(global_harness, agman::harness::HarnessKind::Pi) {
                             wizard.browser_capability = !wizard.browser_capability;
                         }
                     }
@@ -3525,84 +3468,6 @@ impl App {
         }
     }
 
-    fn handle_project_picker_event(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.should_quit = true;
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    let was_migrate_all = self.project_picker.as_ref().is_some_and(|p| {
-                        matches!(p.action, ProjectPickerAction::MigrateAllUnassigned)
-                    });
-                    self.project_picker = None;
-                    self.view = if was_migrate_all {
-                        View::ProjectList
-                    } else {
-                        View::TaskList
-                    };
-                }
-                KeyCode::Char('j') => {
-                    if let Some(picker) = &mut self.project_picker {
-                        if !picker.projects.is_empty() {
-                            picker.selected = (picker.selected + 1) % picker.projects.len();
-                        }
-                    }
-                }
-                KeyCode::Char('k') => {
-                    if let Some(picker) = &mut self.project_picker {
-                        if !picker.projects.is_empty() {
-                            picker.selected = if picker.selected == 0 {
-                                picker.projects.len() - 1
-                            } else {
-                                picker.selected - 1
-                            };
-                        }
-                    }
-                }
-                KeyCode::Enter => {
-                    if let Some(picker) = self.project_picker.take() {
-                        if let Some(project_name) = picker.projects.get(picker.selected) {
-                            let project_name = project_name.clone();
-                            match &picker.action {
-                                ProjectPickerAction::MigrateAllUnassigned => {
-                                    let unassigned = use_cases::list_unassigned_tasks(&self.config)
-                                        .unwrap_or_default();
-                                    let task_ids: Vec<String> =
-                                        unassigned.iter().map(|t| t.meta.task_id()).collect();
-                                    match use_cases::migrate_tasks_to_project(
-                                        &self.config,
-                                        &project_name,
-                                        &task_ids,
-                                    ) {
-                                        Ok(count) => {
-                                            tracing::info!(
-                                                project = %project_name,
-                                                count,
-                                                "migrated unassigned tasks"
-                                            );
-                                            self.set_status(format!(
-                                                "Migrated {count} tasks to {project_name}"
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(error = %e, "failed to migrate tasks");
-                                            self.set_status(format!("Migration failed: {e}"));
-                                        }
-                                    }
-                                    self.refresh_projects();
-                                    self.view = View::ProjectList;
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok(false)
-    }
-
     fn handle_archive_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -3827,215 +3692,6 @@ impl App {
                 }
             }
             _ => {}
-        }
-        Ok(false)
-    }
-
-    fn handle_preview_event(&mut self, event: Event) -> Result<bool> {
-        // If editing notes, handle vim-style input with auto-wrap and save logic
-        if self.notes_editing && self.preview_pane == PreviewPane::Notes {
-            return self.handle_notes_editing(event);
-        }
-
-        if let Event::Key(key) = event {
-            // Ctrl+C to quit
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                self.should_quit = true;
-                return Ok(false);
-            }
-
-            // Tab/BackTab to switch preview panes
-            if key.code == KeyCode::Tab || key.code == KeyCode::BackTab {
-                self.preview_pane = match self.preview_pane {
-                    PreviewPane::Logs => PreviewPane::Notes,
-                    PreviewPane::Notes => PreviewPane::Logs,
-                };
-                return Ok(false);
-            }
-
-            // Esc: forward to VimTextArea first (cancels Visual/Operator), then exit if already Normal
-            if key.code == KeyCode::Esc {
-                let editor = match self.preview_pane {
-                    PreviewPane::Logs => &self.logs_editor,
-                    PreviewPane::Notes => &self.notes_editor,
-                };
-                let was_normal = editor.mode() == VimMode::Normal;
-
-                let input = Input::from(event.clone());
-                match self.preview_pane {
-                    PreviewPane::Logs => self.logs_editor.input(input),
-                    PreviewPane::Notes => self.notes_editor.input(input),
-                }
-
-                if was_normal {
-                    self.view = View::TaskList;
-                }
-                return Ok(false);
-            }
-
-            // q: exit preview if in Normal mode, otherwise forward to editor
-            if key.code == KeyCode::Char('q') && !key.modifiers.contains(KeyModifiers::CONTROL) {
-                let editor = match self.preview_pane {
-                    PreviewPane::Logs => &self.logs_editor,
-                    PreviewPane::Notes => &self.notes_editor,
-                };
-                if editor.mode() == VimMode::Normal {
-                    self.view = View::TaskList;
-                    return Ok(false);
-                }
-                // Otherwise fall through to forward to editor
-            }
-
-            // Enter: Logs → attach tmux; Notes → start editing
-            if key.code == KeyCode::Enter {
-                match self.preview_pane {
-                    PreviewPane::Logs => {
-                        if let Some(task) = self.selected_task() {
-                            if task.meta.is_multi_repo() && task.meta.repos.len() > 1 {
-                                // Ensure all repo sessions exist before showing picker
-                                for repo in &task.meta.repos {
-                                    let _ = Tmux::ensure_session(
-                                        &repo.tmux_session,
-                                        &repo.worktree_path,
-                                    );
-                                }
-                                let sessions: Vec<(String, String)> = task
-                                    .meta
-                                    .repos
-                                    .iter()
-                                    .filter(|r| Tmux::session_exists(&r.tmux_session))
-                                    .map(|r| (r.repo_name.clone(), r.tmux_session.clone()))
-                                    .collect();
-                                if !sessions.is_empty() {
-                                    self.session_picker_sessions = sessions;
-                                    self.selected_session_index = 0;
-                                    self.view = View::SessionPicker;
-                                }
-                            } else if task.meta.has_repos() {
-                                let _ = Tmux::ensure_session(
-                                    &task.meta.primary_repo().tmux_session,
-                                    &task.meta.primary_repo().worktree_path,
-                                );
-                                if Tmux::session_exists(&task.meta.primary_repo().tmux_session) {
-                                    return Ok(true);
-                                }
-                            } else if task.meta.is_multi_repo() {
-                                let parent_session = Config::tmux_session_name(
-                                    &task.meta.name,
-                                    &task.meta.branch_name,
-                                );
-                                if let Some(ref parent_dir) = task.meta.parent_dir {
-                                    if !Tmux::session_exists(&parent_session) {
-                                        let _ = Tmux::create_session_with_windows(
-                                            &parent_session,
-                                            parent_dir,
-                                        );
-                                    }
-                                }
-                                if Tmux::session_exists(&parent_session) {
-                                    return Ok(true);
-                                }
-                            }
-                        }
-                        return Ok(false);
-                    }
-                    PreviewPane::Notes => {
-                        self.start_notes_editing();
-                        return Ok(false);
-                    }
-                }
-            }
-
-            // Action keys — handled before forwarding to VimTextArea
-            match key.code {
-                KeyCode::Char('p') => {
-                    let pr_info = self.selected_task().and_then(|t| {
-                        t.meta
-                            .linked_pr
-                            .as_ref()
-                            .map(|pr| (pr.number, pr.url.clone()))
-                    });
-                    if let Some((number, url)) = pr_info {
-                        open_url(&url);
-                        self.set_status(format!("Opening PR #{}...", number));
-                    } else {
-                        self.set_status("No linked PR".to_string());
-                    }
-                    return Ok(false);
-                }
-                KeyCode::Char('r') => {
-                    self.restart_selected_task()?;
-                    return Ok(false);
-                }
-                _ => {}
-            }
-
-            // Insert-mode-entry keys in Notes pane start editing
-            if self.preview_pane == PreviewPane::Notes {
-                match key.code {
-                    KeyCode::Char('i')
-                    | KeyCode::Char('I')
-                    | KeyCode::Char('o')
-                    | KeyCode::Char('O') => {
-                        self.start_notes_editing();
-                        return Ok(false);
-                    }
-                    KeyCode::Char('a') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.start_notes_editing();
-                        return Ok(false);
-                    }
-                    KeyCode::Char('A') => {
-                        self.start_notes_editing();
-                        return Ok(false);
-                    }
-                    _ => {}
-                }
-            }
-
-            // Forward all remaining keys to the focused VimTextArea
-            let input = Input::from(event.clone());
-            match self.preview_pane {
-                PreviewPane::Logs => self.logs_editor.input(input),
-                PreviewPane::Notes => self.notes_editor.input(input),
-            }
-        }
-        Ok(false)
-    }
-
-    fn start_notes_editing(&mut self) {
-        self.notes_editing = true;
-        self.notes_editor.set_read_only(false);
-        self.notes_editor.set_insert_mode();
-        self.set_status("Editing notes (vim mode, Ctrl+S or Esc twice to save)".to_string());
-    }
-
-    fn handle_notes_editing(&mut self, event: Event) -> Result<bool> {
-        if let Event::Key(key) = event {
-            // Check for Ctrl+S to save in any mode
-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-                self.notes_editing = false;
-                self.notes_editor.set_normal_mode();
-                self.notes_editor.set_read_only(true);
-                self.save_notes()?;
-                return Ok(false);
-            }
-
-            // In Normal mode, Esc exits editing; in Insert mode, Esc goes to Normal
-            let input = Input::from(event.clone());
-            let was_insert = self.notes_editor.mode() == VimMode::Insert;
-
-            self.notes_editor.input(input.clone());
-
-            // If we were in insert mode and now in normal, or got Esc in normal, might exit
-            let is_normal_now = self.notes_editor.mode() == VimMode::Normal;
-
-            // If we pressed Esc and are now in normal mode after being in normal, exit editing
-            if input.key == Key::Esc && !was_insert && is_normal_now {
-                self.notes_editing = false;
-                self.notes_editor.set_read_only(true);
-                self.save_notes()?;
-                return Ok(false);
-            }
         }
         Ok(false)
     }
@@ -4361,7 +4017,7 @@ impl App {
 
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
-                    self.view = View::Preview;
+                    self.view = View::TaskList;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     if !self.session_picker_sessions.is_empty() {
@@ -4384,7 +4040,7 @@ impl App {
                         .get(self.selected_session_index)
                     {
                         self.attach_session_name = Some(session.clone());
-                        self.view = View::Preview;
+                        self.view = View::TaskList;
                         return Ok(true);
                     }
                 }
@@ -5882,7 +5538,7 @@ pub fn run_tui(config: Config) -> Result<()> {
 mod tests {
     use super::*;
     use agman::agent_model::AgentAttachment;
-    use agman::task::{LinkedPr, TaskMeta};
+    use agman::task::{LinkedPr, RepoEntry, TaskMeta};
 
     #[test]
     fn apply_project_refresh_snapshot_preserves_counts_and_clamps_selection() {
@@ -6800,6 +6456,139 @@ mod tests {
             Some(ProjectDetailRow::Task(ProjectTaskRow::Task { task, .. }))
                 if task.meta.task_id() == task_id
         ));
+    }
+
+    #[test]
+    fn task_row_enter_attaches_single_repo_task_session_directly() {
+        if !tmux_available() {
+            eprintln!("skipping task attach smoke: tmux binary is unavailable");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let unique = unique_name();
+        let project = format!("repo-{unique}");
+        let branch = format!("branch-{unique}");
+        let task = create_test_task(&config, &project, &branch);
+        let session = task.meta.primary_repo().tmux_session.clone();
+        let _cleanup = TmuxSessionCleanup(vec![session.clone()]);
+
+        let mut app = App::new_for_test(config).unwrap();
+        app.current_project = Some(project);
+        app.view = View::TaskList;
+        app.refresh_tasks_for_project();
+        app.selected_index = app
+            .project_detail_rows()
+            .iter()
+            .position(|row| matches!(row, ProjectDetailRow::Task(_)))
+            .expect("task row exists");
+
+        let should_attach = app
+            .handle_event(Event::Key(event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )))
+            .unwrap();
+
+        assert!(
+            should_attach,
+            "Enter on a single-repo task row should trigger direct attach"
+        );
+        assert!(Tmux::session_exists(&session));
+        assert_eq!(app.view, View::TaskList);
+    }
+
+    #[test]
+    fn task_row_enter_opens_session_picker_for_multi_repo_task() {
+        if !tmux_available() {
+            eprintln!("skipping task attach smoke: tmux binary is unavailable");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        config.ensure_dirs().unwrap();
+        let unique = unique_name();
+        let project = format!("repos-{unique}");
+        let branch = format!("branch-{unique}");
+        let parent_dir = tmp.path().join("multi");
+
+        let mut meta = TaskMeta::new_multi(
+            project.clone(),
+            branch.clone(),
+            parent_dir.clone(),
+            "new".to_string(),
+        );
+        let mut sessions = Vec::new();
+        for repo in ["alpha", "beta"] {
+            let repo_name = format!("{repo}-{unique}");
+            let worktree = parent_dir.join(format!("{repo_name}-wt")).join(&branch);
+            std::fs::create_dir_all(&worktree).unwrap();
+            let tmux_session = Config::tmux_session_name(&repo_name, &branch);
+            sessions.push(tmux_session.clone());
+            meta.repos.push(RepoEntry {
+                repo_name,
+                worktree_path: worktree,
+                tmux_session,
+            });
+        }
+        meta.project = Some(project.clone());
+        let dir = config.task_dir(&project, &branch);
+        std::fs::create_dir_all(&dir).unwrap();
+        let task = Task { meta, dir };
+        task.save_meta().unwrap();
+        let _cleanup = TmuxSessionCleanup(sessions);
+
+        let mut app = App::new_for_test(config).unwrap();
+        app.current_project = Some(project);
+        app.view = View::TaskList;
+        app.refresh_tasks_for_project();
+        app.selected_index = app
+            .project_detail_rows()
+            .iter()
+            .position(|row| matches!(row, ProjectDetailRow::Task(_)))
+            .expect("task row exists");
+
+        let should_attach = app
+            .handle_event(Event::Key(event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )))
+            .unwrap();
+
+        assert!(
+            !should_attach,
+            "multi-repo Enter should open the session picker, not attach directly"
+        );
+        assert_eq!(app.view, View::SessionPicker);
+        assert_eq!(app.session_picker_sessions.len(), 2);
+
+        // Esc returns to the task list now that Preview is gone.
+        app.handle_event(Event::Key(event::KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+        assert_eq!(app.view, View::TaskList);
+    }
+
+    fn tmux_available() -> bool {
+        Command::new("tmux")
+            .arg("-V")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    struct TmuxSessionCleanup(Vec<String>);
+
+    impl Drop for TmuxSessionCleanup {
+        fn drop(&mut self) {
+            for session in &self.0 {
+                let _ = Command::new("tmux")
+                    .args(["kill-session", "-t", session])
+                    .output();
+            }
+        }
     }
 
     fn test_config(root: &Path) -> Config {

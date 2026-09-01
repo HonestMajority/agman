@@ -11,7 +11,6 @@ fn config_new_sets_paths() {
 
     assert_eq!(config.base_dir, tmp.path().join(".agman"));
     assert_eq!(config.tasks_dir, tmp.path().join(".agman/tasks"));
-    assert_eq!(config.prompts_dir, tmp.path().join(".agman/prompts"));
     assert_eq!(config.repos_dir, tmp.path().join("repos"));
 }
 
@@ -114,21 +113,20 @@ fn config_ensure_dirs() {
     config.ensure_dirs().unwrap();
 
     assert!(config.tasks_dir.exists());
-    assert!(config.prompts_dir.exists());
     assert!(config.agents_dir().exists());
+    // The prompts dir is no longer part of the state layout.
+    assert!(!config.base_dir.join("prompts").exists());
 }
 
 #[test]
-fn config_accepts_and_persists_goose_harness() {
+fn config_with_removed_goose_harness_falls_back_to_claude() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
     config.ensure_dirs().unwrap();
 
-    agman::use_cases::save_harness(&config, HarnessKind::Goose).unwrap();
+    std::fs::write(config.base_dir.join("config.toml"), "harness = \"goose\"\n").unwrap();
 
-    assert_eq!(config.harness_kind(), HarnessKind::Goose);
-    let raw = std::fs::read_to_string(config.base_dir.join("config.toml")).unwrap();
-    assert!(raw.contains("harness = \"goose\""));
+    assert_eq!(config.harness_kind(), HarnessKind::Claude);
 }
 
 #[test]
@@ -151,18 +149,4 @@ fn config_telegram_current_agent_path() {
 
     let path = config.telegram_current_agent_path();
     assert_eq!(path, tmp.path().join(".agman/telegram/current-agent"));
-}
-
-#[test]
-fn config_init_default_files() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-
-    config.init_default_files(false).unwrap();
-
-    let engineer = config.prompt_path("engineer");
-    assert!(engineer.exists());
-    assert!(std::fs::read_to_string(&engineer)
-        .unwrap()
-        .contains("long-lived task-attached engineer"));
 }

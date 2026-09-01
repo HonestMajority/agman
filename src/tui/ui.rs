@@ -15,22 +15,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::app::{
     AgentActivitySample, App, ArchiveKind, BranchSource, DirKind, DirPickerOrigin, NotesFocus,
-    PreviewPane, ProjectDetailRow, ProjectTaskRow, View, WizardStep,
+    ProjectDetailRow, ProjectTaskRow, View, WizardStep,
 };
 use super::vim::VimMode;
 
 const PROJECT_TASK_COUNT_WIDTH: usize = 8;
 const PROJECT_ASSISTANT_COUNT_WIDTH: usize = 10;
 const PROJECT_COL_GAP: &str = "    ";
-
-fn vim_mode_color(mode: VimMode) -> Color {
-    match mode {
-        VimMode::Normal => Color::LightCyan,
-        VimMode::Insert => Color::LightGreen,
-        VimMode::Visual => Color::LightYellow,
-        VimMode::Operator(_) => Color::LightMagenta,
-    }
-}
 
 fn dim_count_style() -> Style {
     Style::default().fg(Color::DarkGray)
@@ -133,7 +124,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             | View::DirectoryPicker
             | View::SessionPicker
             | View::ProjectWizard
-            | View::ProjectPicker
             | View::ProjectDeleteConfirm
             | View::AgentWizard
             | View::RespawnConfirm
@@ -158,7 +148,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.view {
         View::ProjectList => draw_project_list(f, app, chunks[0]),
         View::TaskList => draw_project_detail(f, app, chunks[0]),
-        View::Preview => draw_preview(f, app, chunks[0]),
         View::DeleteConfirm => {
             draw_project_detail(f, app, chunks[0]);
             draw_delete_confirm(f, app);
@@ -172,7 +161,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_directory_picker(f, app);
         }
         View::SessionPicker => {
-            draw_preview(f, app, chunks[0]);
+            draw_project_detail(f, app, chunks[0]);
             draw_session_picker(f, app);
         }
         View::Notifications => draw_notifications(f, app, chunks[0]),
@@ -188,20 +177,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         View::ProjectWizard => {
             draw_project_list(f, app, chunks[0]);
             draw_project_wizard(f, app);
-        }
-        View::ProjectPicker => {
-            // Draw the underlying view behind the modal
-            if app.project_picker.as_ref().is_some_and(|p| {
-                matches!(
-                    p.action,
-                    super::app::ProjectPickerAction::MigrateAllUnassigned
-                )
-            }) {
-                draw_project_list(f, app, chunks[0]);
-            } else {
-                draw_project_detail(f, app, chunks[0]);
-            }
-            draw_project_picker(f, app);
         }
         View::ProjectDeleteConfirm => {
             draw_project_list(f, app, chunks[0]);
@@ -954,10 +929,7 @@ fn draw_agent_wizard_capabilities(
     wizard: &super::app::AgentWizard,
     area: Rect,
 ) {
-    let unsupported = matches!(
-        harness_kind,
-        agman::harness::HarnessKind::Goose | agman::harness::HarnessKind::Pi
-    );
+    let unsupported = matches!(harness_kind, agman::harness::HarnessKind::Pi);
     let label = if wizard.browser_capability {
         " Browser: on "
     } else {
@@ -1014,52 +986,6 @@ fn draw_agent_wizard_first_prompt(f: &mut Frame, wizard: &mut super::app::AgentW
         .textarea
         .set_cursor_style(Style::default().bg(Color::White).fg(Color::Black));
     f.render_widget(&wizard.first_prompt_editor.textarea, area);
-}
-
-fn draw_project_picker(f: &mut Frame, app: &mut App) {
-    let Some(picker) = &app.project_picker else {
-        return;
-    };
-
-    let title = match &picker.action {
-        super::app::ProjectPickerAction::MigrateAllUnassigned => "Migrate All Unassigned Tasks To",
-    };
-
-    let area = centered_rect(40, 50, f.area());
-    f.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default()
-                .fg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightBlue));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let items: Vec<ListItem> = picker
-        .projects
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let style = if i == picker.selected {
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::Rgb(40, 40, 60))
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-            ListItem::new(Span::styled(format!("  {name}"), style))
-        })
-        .collect();
-
-    let list = List::new(items);
-    f.render_widget(list, inner);
 }
 
 fn draw_project_detail(f: &mut Frame, app: &App, area: Rect) {
@@ -1737,116 +1663,6 @@ fn truncate_to_width(value: &str, width: usize) -> String {
     }
 }
 
-fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-
-    // Task info header
-    if let Some(task) = app.selected_task() {
-        let header_spans = vec![
-            Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                task.meta.task_id(),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ];
-
-        let header = Paragraph::new(Line::from(header_spans)).block(
-            Block::default()
-                .title(Span::styled(
-                    " Task Info ",
-                    Style::default()
-                        .fg(Color::LightCyan)
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .title(clock_title(app))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::LightCyan)),
-        );
-        f.render_widget(header, chunks[0]);
-    }
-
-    // Split the remaining area into logs and notes panels (60/40)
-    let panels = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(chunks[1]);
-
-    draw_logs_panel(f, app, panels[0]);
-    draw_notes_panel(f, app, panels[1]);
-}
-
-fn draw_logs_panel(f: &mut Frame, app: &mut App, area: Rect) {
-    let is_focused = app.preview_pane == PreviewPane::Logs;
-
-    let (title, title_style, border_color) = if is_focused {
-        let mode = app.logs_editor.mode();
-        let color = vim_mode_color(mode);
-        (
-            format!(" Logs [{}] ", mode.indicator()),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-            color,
-        )
-    } else {
-        (
-            " Logs ".to_string(),
-            Style::default().fg(Color::DarkGray),
-            Color::DarkGray,
-        )
-    };
-
-    app.logs_editor.textarea.set_block(
-        Block::default()
-            .title(Span::styled(title, title_style))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color)),
-    );
-    app.logs_editor
-        .textarea
-        .set_cursor_style(Style::default().bg(Color::DarkGray).fg(Color::White));
-    f.render_widget(&app.logs_editor.textarea, area);
-}
-
-fn draw_notes_panel(f: &mut Frame, app: &mut App, area: Rect) {
-    let is_focused = app.preview_pane == PreviewPane::Notes;
-
-    let (title, title_style, border_color) = if is_focused {
-        let mode = app.notes_editor.mode();
-        let color = vim_mode_color(mode);
-        (
-            format!(" Notes [{}] ", mode.indicator()),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-            color,
-        )
-    } else {
-        (
-            " Notes ".to_string(),
-            Style::default().fg(Color::DarkGray),
-            Color::DarkGray,
-        )
-    };
-
-    app.notes_editor.textarea.set_block(
-        Block::default()
-            .title(Span::styled(title, title_style))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color)),
-    );
-
-    let cursor_style = if app.notes_editing {
-        Style::default().bg(Color::White).fg(Color::Black)
-    } else {
-        Style::default().bg(Color::DarkGray).fg(Color::White)
-    };
-    app.notes_editor.textarea.set_cursor_style(cursor_style);
-
-    f.render_widget(&app.notes_editor.textarea, area);
-}
-
 fn draw_delete_confirm(f: &mut Frame, app: &App) {
     let area = centered_rect(52, 28, f.area());
 
@@ -2107,15 +1923,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("c", Style::default().fg(Color::LightYellow)),
                 Span::styled(" CoS chat  ", Style::default().fg(Color::DarkGray)),
             ];
-            // Show migrate hint when (unassigned) is selected
-            let is_unassigned =
-                app.selected_project_index >= app.projects.len() && app.unassigned_task_count > 0;
-            if is_unassigned {
-                spans.extend([
-                    Span::styled("m", Style::default().fg(Color::LightMagenta)),
-                    Span::styled(" migrate  ", Style::default().fg(Color::DarkGray)),
-                ]);
-            }
             // Show delete and hold hints when a real project is selected
             if app.selected_project_index < app.projects.len() {
                 spans.extend([
@@ -2196,7 +2003,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                     }
                     spans.extend([
                         Span::styled("enter", Style::default().fg(Color::LightGreen)),
-                        Span::styled(" preview  ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
                         Span::styled("r", Style::default().fg(Color::LightMagenta)),
                         Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
                         Span::styled("d", Style::default().fg(Color::LightRed)),
@@ -2226,42 +2033,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 ]);
             }
             spans
-        }
-        View::Preview => {
-            if app.notes_editing {
-                vec![
-                    Span::styled("Esc", Style::default().fg(Color::LightGreen)),
-                    Span::styled(" save & exit editing", Style::default().fg(Color::DarkGray)),
-                ]
-            } else {
-                let mut spans = vec![
-                    Span::styled("Tab", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" pane  ", Style::default().fg(Color::DarkGray)),
-                ];
-                if let Some(task) = app.selected_task() {
-                    if task.meta.linked_pr.is_some() {
-                        spans.push(Span::styled("p", Style::default().fg(Color::LightYellow)));
-                        spans.push(Span::styled(
-                            " open pr  ",
-                            Style::default().fg(Color::DarkGray),
-                        ));
-                    }
-                    // Task-selected hints (always shown when a task is selected)
-                    spans.extend([
-                        Span::styled("r", Style::default().fg(Color::LightMagenta)),
-                        Span::styled(" rerun  ", Style::default().fg(Color::DarkGray)),
-                    ]);
-                }
-                spans.extend([
-                    Span::styled("Enter", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" attach  ", Style::default().fg(Color::DarkGray)),
-                ]);
-                spans.extend([
-                    Span::styled("q", Style::default().fg(Color::LightCyan)),
-                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
-                ]);
-                spans
-            }
         }
         View::DeleteConfirm => {
             vec![
@@ -2486,16 +2257,6 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" switch field  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Ctrl+S", Style::default().fg(Color::LightGreen)),
                 Span::styled(" create  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Esc", Style::default().fg(Color::LightCyan)),
-                Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
-            ]
-        }
-        View::ProjectPicker => {
-            vec![
-                Span::styled("j/k", Style::default().fg(Color::LightCyan)),
-                Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("Enter", Style::default().fg(Color::LightGreen)),
-                Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc", Style::default().fg(Color::LightCyan)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
             ]

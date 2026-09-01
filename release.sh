@@ -35,9 +35,9 @@ fi
 # if init fails (the restarted TUI will run its own init anyway).
 touch "$HOME/.agman/.agman-restart"
 
-# Reinitialize agman config files
-echo "Running agman init --force..."
-agman init --force
+# Ensure agman state directories exist
+echo "Running agman init..."
+agman init
 
 # Check if the default install dir is in $PATH (only for default dir)
 if [[ -z "${1:-}" ]] && [[ ":$PATH:" != *":$OUTPUT_DIR:"* ]]; then

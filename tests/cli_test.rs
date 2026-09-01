@@ -16,6 +16,13 @@ fn cli_help_exposes_agent_commands() {
     assert!(stdout.contains("detach-agent"));
     assert!(stdout.contains("send-message"));
     assert!(stdout.contains("link-pr"));
+
+    // Removed surfaces must stay out of the help output.
+    assert!(!stdout.contains("create-researcher"));
+    assert!(!stdout.contains("create-operator"));
+    assert!(!stdout.contains("create-reviewer"));
+    assert!(!stdout.contains("create-tester"));
+    assert!(!stdout.contains("task-log"));
 }
 
 #[test]
@@ -82,32 +89,4 @@ fn cli_create_agent_help_exposes_first_prompt_not_description() {
     assert!(stdout.contains("agman create-agent --kind researcher"));
     assert!(stdout.contains("--first-prompt"));
     assert!(!stdout.contains("--description"));
-}
-
-#[test]
-fn cli_role_agent_help_exposes_first_prompt_not_description() {
-    for command in [
-        "create-researcher",
-        "create-operator",
-        "create-reviewer",
-        "create-tester",
-    ] {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_agman"))
-            .args([command, "--help"])
-            .output()
-            .unwrap_or_else(|_| panic!("failed to run agman {command} --help"));
-
-        assert!(output.status.success(), "{command} --help failed");
-        let stdout = String::from_utf8(output.stdout).expect("help output should be utf8");
-
-        assert!(
-            stdout.contains("--first-prompt <FIRST_PROMPT>"),
-            "{command} help did not expose --first-prompt"
-        );
-        assert!(stdout.contains("-d"), "{command} help did not expose -d");
-        assert!(
-            !stdout.contains("--description"),
-            "{command} help exposed --description"
-        );
-    }
 }

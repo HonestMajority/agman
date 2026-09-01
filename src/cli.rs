@@ -12,11 +12,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Initialize agman configuration
-    Init {
-        /// Overwrite existing files with defaults
-        #[arg(long, default_value_t = false)]
-        force: bool,
-    },
+    Init,
 
     /// Send a message to an agent's inbox
     #[command(after_help = "\
@@ -149,7 +145,7 @@ EXAMPLES:
         project: String,
     },
 
-    /// Show task metadata and recent log
+    /// Show task metadata
     TaskInfo {
         /// Task identifier (repo--branch format)
         task_id: String,
@@ -177,15 +173,6 @@ EXAMPLES:
         /// Overwrite a different existing linked PR
         #[arg(long, default_value_t = false)]
         force: bool,
-    },
-
-    /// Read the agent log for a task
-    TaskLog {
-        /// Task identifier (repo--branch format)
-        task_id: String,
-        /// Number of lines from the end to show
-        #[arg(long, default_value = "50")]
-        tail: usize,
     },
 
     /// Show aggregated status across all projects and tasks
@@ -313,128 +300,6 @@ EXAMPLES:
         name: String,
     },
 
-    /// Create a researcher agent.
-    #[command(after_help = "\
-EXAMPLES:
-  agman create-researcher my-research --project backend --first-prompt \"Investigate the API latency\"
-  cat <<'EOF' | agman create-researcher my-research --project backend --first-prompt -
-  Multi-line first prompt via stdin using the - sentinel.
-  EOF
-  agman create-researcher my-research --project backend --first-prompt @./research-prompt.md")]
-    CreateResearcher {
-        /// Researcher name (alphanumeric + hyphens)
-        name: String,
-        /// Project name
-        #[arg(long)]
-        project: String,
-        /// Repository name (for working directory context)
-        #[arg(long)]
-        repo: Option<String>,
-        /// Branch name (used with --repo for worktree resolution)
-        #[arg(long)]
-        branch: Option<String>,
-        /// Task ID to inherit working directory from
-        #[arg(long)]
-        task: Option<String>,
-        /// Optional first prompt sent to the researcher inbox
-        #[arg(
-            long = "first-prompt",
-            short = 'd',
-            allow_hyphen_values = true,
-            value_name = "FIRST_PROMPT"
-        )]
-        first_prompt: Option<String>,
-    },
-
-    /// Create an operator agent.
-    #[command(after_help = "\
-EXAMPLES:
-  agman create-operator docs-updater --project docs --first-prompt \"Update the launch notes\"
-  cat <<'EOF' | agman create-operator docs-updater --project docs --first-prompt -
-  Multi-line first prompt via stdin using the - sentinel.
-  EOF
-  agman create-operator docs-updater --project docs --first-prompt @./operator-prompt.md")]
-    CreateOperator {
-        /// Operator name (alphanumeric + hyphens)
-        name: String,
-        /// Project name
-        #[arg(long)]
-        project: String,
-        /// Repository name (for working directory context)
-        #[arg(long)]
-        repo: Option<String>,
-        /// Branch name (used with --repo for worktree resolution)
-        #[arg(long)]
-        branch: Option<String>,
-        /// Task ID to inherit working directory from
-        #[arg(long)]
-        task: Option<String>,
-        /// Optional first prompt sent to the operator inbox
-        #[arg(
-            long = "first-prompt",
-            short = 'd',
-            allow_hyphen_values = true,
-            value_name = "FIRST_PROMPT"
-        )]
-        first_prompt: Option<String>,
-    },
-
-    /// Create a reviewer agent.
-    #[command(after_help = "\
-EXAMPLES:
-  agman create-reviewer --name pr-1247 --project reviews \\
-    --branch galoy:fix-deposit-path \\
-    --branch lana-dashboard:fix-deposit-path \\
-    --first-prompt \"Review the cross-repo deposit fix\"")]
-    CreateReviewer {
-        /// Reviewer name (alphanumeric + hyphens)
-        #[arg(long, short)]
-        name: String,
-        /// Project name
-        #[arg(long)]
-        project: String,
-        /// `<repo>:<branch>` pair (repeatable, required at least once)
-        #[arg(long = "branch", value_name = "REPO:BRANCH", required = true)]
-        branch_pair: Vec<String>,
-        /// Optional first prompt sent to the reviewer inbox
-        #[arg(
-            long = "first-prompt",
-            short = 'd',
-            allow_hyphen_values = true,
-            value_name = "FIRST_PROMPT"
-        )]
-        first_prompt: Option<String>,
-    },
-
-    /// Create a tester agent.
-    #[command(after_help = "\
-EXAMPLES:
-  agman create-tester --name browser-pass --project reviews \\
-    --branch galoy:fix-deposit-path --browser \\
-    --first-prompt \"Exercise the deposit path\"")]
-    CreateTester {
-        /// Tester name (alphanumeric + hyphens)
-        #[arg(long, short)]
-        name: String,
-        /// Project name
-        #[arg(long)]
-        project: String,
-        /// `<repo>:<branch>` pair (repeatable, required at least once)
-        #[arg(long = "branch", value_name = "REPO:BRANCH", required = true)]
-        branch_pair: Vec<String>,
-        /// Request browser automation tools
-        #[arg(long, default_value_t = false)]
-        browser: bool,
-        /// Optional first prompt sent to the tester inbox
-        #[arg(
-            long = "first-prompt",
-            short = 'd',
-            allow_hyphen_values = true,
-            value_name = "FIRST_PROMPT"
-        )]
-        first_prompt: Option<String>,
-    },
-
     /// Respawn an agent with a fresh session (Chief of Staff or PM)
     RespawnAgent {
         /// Target: "chief-of-staff" or a project name (for the PM)
@@ -521,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_commands_parse_first_prompt_short_and_reject_description_alias() {
+    fn create_agent_parses_first_prompt_long_and_short() {
         let parsed = Cli::try_parse_from([
             "agman",
             "create-agent",
@@ -545,8 +410,11 @@ mod tests {
 
         let parsed = Cli::try_parse_from([
             "agman",
-            "create-researcher",
-            "investigate",
+            "create-agent",
+            "--kind",
+            "operator",
+            "--name",
+            "operate",
             "--project",
             "project",
             "-d",
@@ -555,140 +423,49 @@ mod tests {
         .unwrap();
         assert!(matches!(
             parsed.command,
-            Some(Commands::CreateResearcher {
+            Some(Commands::CreateAgent {
                 first_prompt: Some(ref prompt),
                 ..
             }) if prompt == "Short prompt"
         ));
+    }
 
-        let parsed = Cli::try_parse_from([
+    #[test]
+    fn create_agent_rejects_description_alias() {
+        let err = match Cli::try_parse_from([
             "agman",
-            "create-operator",
-            "operate",
-            "--project",
-            "project",
-            "--first-prompt",
-            "Do the thing",
-        ])
-        .unwrap();
-        assert!(matches!(
-            parsed.command,
-            Some(Commands::CreateOperator {
-                first_prompt: Some(ref prompt),
-                ..
-            }) if prompt == "Do the thing"
-        ));
-
-        let parsed = Cli::try_parse_from([
-            "agman",
-            "create-reviewer",
+            "create-agent",
+            "--kind",
+            "reviewer",
             "--name",
             "review",
             "--project",
             "project",
             "--branch",
             "repo:branch",
-            "--first-prompt",
-            "Review this",
-        ])
-        .unwrap();
-        assert!(matches!(
-            parsed.command,
-            Some(Commands::CreateReviewer {
-                first_prompt: Some(ref prompt),
-                ..
-            }) if prompt == "Review this"
-        ));
-
-        let parsed = Cli::try_parse_from([
-            "agman",
-            "create-tester",
-            "--name",
-            "test",
-            "--project",
-            "project",
-            "--branch",
-            "repo:branch",
-            "-d",
-            "Test this",
-        ])
-        .unwrap();
-        assert!(matches!(
-            parsed.command,
-            Some(Commands::CreateTester {
-                first_prompt: Some(ref prompt),
-                ..
-            }) if prompt == "Test this"
-        ));
+            "--description",
+            "Alias prompt",
+        ]) {
+            Ok(_) => panic!("--description unexpectedly parsed"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]
-    fn agent_commands_reject_description_alias() {
-        let cases: &[&[&str]] = &[
-            &[
-                "agman",
-                "create-agent",
-                "--kind",
-                "reviewer",
-                "--name",
-                "review",
-                "--project",
-                "project",
-                "--branch",
-                "repo:branch",
-                "--description",
-                "Alias prompt",
-            ],
-            &[
-                "agman",
-                "create-researcher",
-                "investigate",
-                "--project",
-                "project",
-                "--description",
-                "Research this",
-            ],
-            &[
-                "agman",
-                "create-operator",
-                "operate",
-                "--project",
-                "project",
-                "--description",
-                "Do the thing",
-            ],
-            &[
-                "agman",
-                "create-reviewer",
-                "--name",
-                "review",
-                "--project",
-                "project",
-                "--branch",
-                "repo:branch",
-                "--description",
-                "Review this",
-            ],
-            &[
-                "agman",
-                "create-tester",
-                "--name",
-                "test",
-                "--project",
-                "project",
-                "--branch",
-                "repo:branch",
-                "--description",
-                "Test this",
-            ],
-        ];
-
-        for args in cases {
-            let err = match Cli::try_parse_from(*args) {
-                Ok(_) => panic!("{args:?} unexpectedly parsed"),
+    fn per_kind_create_commands_are_removed() {
+        for command in [
+            "create-researcher",
+            "create-operator",
+            "create-reviewer",
+            "create-tester",
+            "task-log",
+        ] {
+            let err = match Cli::try_parse_from(["agman", command]) {
+                Ok(_) => panic!("{command} unexpectedly parsed"),
                 Err(err) => err,
             };
-            assert_eq!(err.kind(), ErrorKind::UnknownArgument, "{args:?}");
+            assert_eq!(err.kind(), ErrorKind::InvalidSubcommand, "{command}");
         }
     }
 }

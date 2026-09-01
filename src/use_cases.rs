@@ -142,8 +142,8 @@ pub fn create_task(
     );
     let parent_dir_ref = parent_dir.as_deref();
 
-    // Initialize default files.
-    config.init_default_files(false)?;
+    // Ensure state directories exist.
+    config.ensure_dirs()?;
 
     // Set up or reuse worktree
     let worktree_path = match worktree_source {
@@ -258,8 +258,8 @@ pub fn create_multi_repo_task(
         "creating multi-repo task"
     );
 
-    // Initialize default files.
-    config.init_default_files(false)?;
+    // Ensure state directories exist.
+    config.ensure_dirs()?;
 
     // Create task files (no worktrees — repos not yet determined)
     let mut task = Task::create_multi(
@@ -476,12 +476,6 @@ pub fn toggle_project_hold(config: &Config, project_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Save notes for a task.
-pub fn save_notes(task: &Task, notes: &str) -> Result<()> {
-    tracing::info!(task_id = %task.meta.task_id(), "saving notes");
-    task.write_notes(notes)
-}
-
 /// Set the linked PR for a task by constructing the URL from the worktree's origin remote.
 pub fn set_linked_pr(
     task: &mut Task,
@@ -609,177 +603,6 @@ fn link_task_pr_reference(
         .linked_pr
         .clone()
         .expect("linked_pr should be set after save"))
-}
-
-/// Migrate old-format `meta.json` files in-place to the new multi-repo format.
-///
-/// Old format had `repo_name`, `tmux_session`, `worktree_path` at the top level.
-/// New format renames `repo_name` to `name` and nests per-repo fields inside `repos`.
-///
-/// Also salvages legacy task text into metadata when found.
-///
-/// This runs at TUI startup and is a one-time migration — once files are rewritten,
-/// they stay in the new format.
-pub fn migrate_old_tasks(config: &Config) {
-    if !config.tasks_dir.exists() {
-        return;
-    }
-
-    let read_dir = match std::fs::read_dir(&config.tasks_dir) {
-        Ok(rd) => rd,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to read tasks dir for migration");
-            return;
-        }
-    };
-
-    for entry in read_dir {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-        if !is_dir {
-            continue;
-        }
-
-        let dir_name = entry.file_name().to_string_lossy().to_string();
-        let task_dir = entry.path();
-
-        if let Err(e) = migrate_single_task(config, &task_dir, &dir_name) {
-            tracing::warn!(task_id = %dir_name, error = %e, "failed to migrate old task");
-        }
-    }
-}
-
-fn migrate_single_task(
-    config: &Config,
-    task_dir: &std::path::Path,
-    dir_name: &str,
-) -> anyhow::Result<()> {
-    let meta_path = task_dir.join("meta.json");
-    if !meta_path.exists() {
-        return Ok(());
-    }
-
-    let content = std::fs::read_to_string(&meta_path)?;
-    let mut val: serde_json::Value = serde_json::from_str(&content)?;
-
-    let obj = match val.as_object_mut() {
-        Some(o) => o,
-        None => return Ok(()),
-    };
-
-    // Detect old format: has "repo_name" at top level AND does NOT have "repos"
-    let has_repo_name = obj.contains_key("repo_name");
-    let has_repos = obj.contains_key("repos");
-
-    if !has_repo_name || has_repos {
-        tracing::debug!(task_id = %dir_name, "skipping task (already new format or unrecognized)");
-        return ensure_migrated_task_engineer(config, task_dir, dir_name);
-    }
-
-    // Extract old values before mutation
-    let repo_name = obj
-        .get("repo_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let worktree_path = obj
-        .get("worktree_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let tmux_session = obj
-        .get("tmux_session")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    // Transform: rename repo_name → name
-    obj.insert(
-        "name".to_string(),
-        serde_json::Value::String(repo_name.clone()),
-    );
-    obj.remove("repo_name");
-
-    // Transform: create repos array from old top-level fields
-    let repo_entry = serde_json::json!({
-        "repo_name": repo_name,
-        "worktree_path": worktree_path,
-        "tmux_session": tmux_session,
-    });
-    obj.insert(
-        "repos".to_string(),
-        serde_json::Value::Array(vec![repo_entry]),
-    );
-    obj.remove("tmux_session");
-    obj.remove("worktree_path");
-
-    // Add parent_dir: null if missing
-    if !obj.contains_key("parent_dir") {
-        obj.insert("parent_dir".to_string(), serde_json::Value::Null);
-    }
-
-    let new_content = serde_json::to_string_pretty(&val)?;
-    std::fs::write(&meta_path, new_content)?;
-    tracing::info!(task_id = %dir_name, "migrated old-format meta.json");
-
-    ensure_migrated_task_engineer(config, task_dir, dir_name)?;
-
-    Ok(())
-}
-
-fn ensure_migrated_task_engineer(
-    config: &Config,
-    task_dir: &std::path::Path,
-    dir_name: &str,
-) -> anyhow::Result<()> {
-    let meta_path = task_dir.join("meta.json");
-    let content = std::fs::read_to_string(&meta_path)
-        .with_context(|| format!("failed to read {}", meta_path.display()))?;
-    let meta: crate::task::TaskMeta = serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse {}", meta_path.display()))?;
-    if meta.archived_at.is_some() {
-        return Ok(());
-    }
-
-    let task = Task {
-        meta,
-        dir: task_dir.to_path_buf(),
-    };
-    let task_id = task.meta.task_id();
-    let running_engineers = AgentRecord::list_all(config)?
-        .into_iter()
-        .filter(|agent| {
-            agent.is_engineer()
-                && agent.meta.status == AgentStatus::Running
-                && matches!(
-                    &agent.meta.attachment,
-                    AgentAttachment::Task { task_id: attached, .. } if attached == &task_id
-                )
-        })
-        .count();
-    if running_engineers > 0 {
-        return Ok(());
-    }
-
-    let legacy_brief = std::fs::read_to_string(task_dir.join("TASK.md"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let goal = match legacy_brief {
-        Some(brief) => format!(
-            "Migration note: this long-lived Engineer agent was created while upgrading task state from the old task model. The legacy TASK.md text below is included only as recovered background.\n\nLegacy brief:\n\n{brief}"
-        ),
-        None => format!(
-            "Migration note: this long-lived Engineer agent was created while upgrading task state from the old task model. No legacy TASK.md brief was found for task {task_id}."
-        ),
-    };
-
-    create_task_engineer(config, &task, Some(&goal))?;
-    tracing::info!(task_id = %dir_name, "created attached engineer during task migration");
-    Ok(())
 }
 
 /// Classify a directory path as a git repo, multi-repo parent, or plain directory.
@@ -1860,55 +1683,6 @@ pub fn aggregated_status(config: &Config) -> Result<AggregatedStatus> {
 }
 
 // ---------------------------------------------------------------------------
-// Task migration
-// ---------------------------------------------------------------------------
-
-/// Migrate tasks to a project by setting their `project` field.
-/// The target project must already exist. Returns the number of tasks migrated.
-pub fn migrate_tasks_to_project(
-    config: &Config,
-    project_name: &str,
-    task_ids: &[String],
-) -> Result<usize> {
-    // Verify the target project exists
-    let _project = Project::load_by_name(config, project_name)
-        .with_context(|| format!("target project '{}' does not exist", project_name))?;
-
-    let mut migrated = 0;
-    for task_id in task_ids {
-        let task_dir = config.tasks_dir.join(task_id);
-        if !task_dir.exists() {
-            tracing::warn!(task_id = %task_id, "task not found, skipping");
-            continue;
-        }
-        let meta_path = task_dir.join("meta.json");
-        let load_result: Result<Task> = (|| {
-            let content =
-                std::fs::read_to_string(&meta_path).context("failed to read meta.json")?;
-            let meta: crate::task::TaskMeta =
-                serde_json::from_str(&content).context("failed to parse meta.json")?;
-            Ok(Task {
-                meta,
-                dir: task_dir.clone(),
-            })
-        })();
-        match load_result {
-            Ok(mut task) => {
-                task.meta.project = Some(project_name.to_string());
-                task.save_meta()?;
-                tracing::info!(task_id = %task_id, project = project_name, "migrated task to project");
-                migrated += 1;
-            }
-            Err(e) => {
-                tracing::warn!(task_id = %task_id, error = %e, "failed to load task, skipping");
-            }
-        }
-    }
-
-    Ok(migrated)
-}
-
-// ---------------------------------------------------------------------------
 // Task creation with project
 // ---------------------------------------------------------------------------
 
@@ -2541,21 +2315,21 @@ pub fn wipe_long_lived_session_handles(state_dir: &Path) {
 /// Result of preparing a long-lived agent launch — what to feed into
 /// `Harness::build_session_command` and whether to run the post-launch
 /// registration step (`/rename` for codex, `/name` for pi; no-op for
-/// claude/goose).
+/// claude).
 struct LongLivedLaunch {
     /// Mode + the owned UUID/name backing the borrowed `SessionKey` returned
     /// by `session_key`. The handle lives inside the variant, so a `Pin` /
     /// `Resume` without a handle is unrepresentable.
     mode: LaunchMode,
     /// Working directory to actually launch in. Equals the stamped
-    /// `<state_dir>/launch-cwd` when codex/goose/pi are resuming; otherwise the
+    /// `<state_dir>/launch-cwd` when codex/pi are resuming; otherwise the
     /// caller-supplied cwd.
     cwd: PathBuf,
     /// Private session dir for harnesses that require one. Pi resumes with
     /// `--continue` inside this directory; other harnesses leave it unset.
     session_dir: Option<PathBuf>,
     /// Stamped unique generation name. Passed as the harness session name
-    /// for fresh launches, as the resume key for codex/goose, and as the
+    /// for fresh launches, as the resume key for codex, and as the
     /// human-visible `/name` value for pi.
     session_name: String,
     /// First time we've launched this long-lived agent (or `force_fresh`
@@ -2586,7 +2360,7 @@ impl LongLivedLaunch {
 /// launch we mint one and write it; on subsequent launches we read it
 /// back and use `Resume(uuid)`.
 ///
-/// Codex/goose/pi path: keyed off `<state_dir>/session-name`. On first launch
+/// Codex/pi path: keyed off `<state_dir>/session-name`. On first launch
 /// we mint a unique generation name and stamp `<state_dir>/launch-cwd`;
 /// on subsequent launches we resume that exact stamped name from the
 /// stamped cwd. Pi also receives a private `<state_dir>/pi-sessions` dir
@@ -2644,7 +2418,7 @@ fn prepare_long_lived_launch_inner(
                 is_first_launch: true,
             })
         }
-        HarnessKind::Codex | HarnessKind::Goose | HarnessKind::Pi => {
+        HarnessKind::Codex | HarnessKind::Pi => {
             let cwd_path = Config::launch_cwd_path(state_dir);
             let session_dir =
                 prepare_session_dir_for_harness(kind, state_dir, &session_name, true)?;
@@ -2744,7 +2518,6 @@ fn prepare_identity_file_for_harness(
     rewrite: bool,
 ) -> Result<Option<PathBuf>> {
     let path = match kind {
-        HarnessKind::Goose => harness::goose::identity_file_path(state_dir, session_name),
         HarnessKind::Pi => harness::pi::identity_file_path(state_dir, session_name),
         _ => return Ok(None),
     };
@@ -3271,7 +3044,7 @@ pub fn create_tester(
     }
     let worktrees = resolve_agent_worktrees(config, &spec)?;
     let harness_kind = config.harness_kind();
-    if capabilities.browser && matches!(harness_kind, HarnessKind::Goose | HarnessKind::Pi) {
+    if capabilities.browser && matches!(harness_kind, HarnessKind::Pi) {
         let note = format!(
             "note: browser capability not available on harness {}; tester spawned without it",
             harness_kind
@@ -3904,70 +3677,9 @@ pub fn list_archived_agents(config: &Config, project: &str) -> Vec<(AgentRecord,
         .collect()
 }
 
-pub fn purge_chief_of_staff_agents(config: &Config) {
-    let agents_dir = config.agents_dir();
-    if !agents_dir.exists() {
-        return;
-    }
-
-    let entries = match std::fs::read_dir(&agents_dir) {
-        Ok(entries) => entries,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to scan agents for chief-of-staff purge");
-            return;
-        }
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(dir_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let (project, name) = if let Some(name) = dir_name.strip_prefix("chief-of-staff--") {
-            ("chief-of-staff", name)
-        } else if let Some(name) = dir_name.strip_prefix("ceo--") {
-            ("ceo", name)
-        } else {
-            continue;
-        };
-
-        match AgentRecord::load(path.clone()) {
-            Ok(agent) => {
-                let session = agent_tmux_session(&agent.meta);
-                if let Err(e) = Tmux::kill_session(&session) {
-                    tracing::warn!(session = %session, error = %e, "failed to kill global agent session");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to load global agent before purge");
-                for session in [
-                    Config::researcher_tmux_session(project, name),
-                    Config::operator_tmux_session(project, name),
-                    Config::reviewer_tmux_session(project, name),
-                    Config::tester_tmux_session(project, name),
-                ] {
-                    let _ = Tmux::kill_session(&session);
-                }
-            }
-        }
-
-        match std::fs::remove_dir_all(&path) {
-            Ok(()) => {
-                tracing::info!(project = %project, name = %name, path = %path.display(), "removed global agent");
-            }
-            Err(e) => {
-                tracing::warn!(project = %project, name = %name, path = %path.display(), error = %e, "failed to remove global agent");
-            }
-        }
-    }
-}
-
 /// Resume an archived agent: start a new tmux session and flip status to
 /// Running. `start_agent_session` will pick up any stamped session-id
-/// (claude) or session-name (codex/goose/pi) and resume the underlying
+/// (claude) or session-name (codex/pi) and resume the underlying
 /// conversation if available; archive does not delete those handles.
 pub fn resume_agent(config: &Config, project: &str, name: &str) -> Result<()> {
     start_agent_session(config, project, name, false)?;
@@ -4176,33 +3888,7 @@ pub fn get_task_info_text(config: &Config, task_id: &str) -> Result<String> {
     out.push_str(&format!("Created: {}\n", task.meta.created_at));
     out.push_str(&format!("Updated: {}\n", task.meta.updated_at));
 
-    // Append last few lines of agent log
-    let log_tail = get_task_log_tail(config, task_id, 10)?;
-    if !log_tail.is_empty() {
-        out.push_str("\n--- Recent log ---\n");
-        out.push_str(&log_tail);
-    }
-
     Ok(out)
-}
-
-/// Read the last N lines of a task's agent.log.
-pub fn get_task_log_tail(config: &Config, task_id: &str, n: usize) -> Result<String> {
-    let (repo, branch) =
-        Config::parse_task_id(task_id).context(format!("invalid task ID: {}", task_id))?;
-    let task = Task::load(config, &repo, &branch)?;
-    let log_path = task.dir.join("agent.log");
-
-    if !log_path.exists() {
-        return Ok(String::new());
-    }
-
-    let contents = std::fs::read_to_string(&log_path)
-        .with_context(|| format!("failed to read {}", log_path.display()))?;
-
-    let lines: Vec<&str> = contents.lines().collect();
-    let start = lines.len().saturating_sub(n);
-    Ok(lines[start..].join("\n"))
 }
 
 /// Persist the chosen harness as the global default for newly-spawned agents.
@@ -4229,7 +3915,6 @@ Always cross-reference your mental model against current ground truth before ans
 - agman project-status <name> — single-project deep view
 - agman list-pm-tasks <project> — task list for a project
 - agman task-info <task-id> — task detail
-- agman task-log <task-id> --tail 100 — recent task log
 
 ## Authority
 
@@ -4959,7 +4644,6 @@ const DEFAULT_PM_PROMPT_TEMPLATE: &str = r#"You are the Project Manager (PM) for
 - agman create-pm-task {{PROJECT_NAME}} <repo> <task-name> [--first-prompt "<first prompt>"]
 - agman list-pm-tasks {{PROJECT_NAME}}
 - agman task-info <task-id>
-- agman task-log <task-id> --tail 100
 - agman link-pr <task-id> <PR URL or number>
 
 ### Agent Management

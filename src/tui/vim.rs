@@ -589,7 +589,8 @@ impl<'a> VimTextArea<'a> {
         self.textarea.lines().join("\n")
     }
 
-    /// Move cursor
+    /// Move cursor (test-only since the Preview logs/notes panes were removed)
+    #[cfg(test)]
     pub fn move_cursor(&mut self, cursor_move: CursorMove) {
         self.textarea.move_cursor(cursor_move);
     }
@@ -611,7 +612,9 @@ impl<'a> VimTextArea<'a> {
         self.textarea.cancel_selection();
     }
 
-    /// Set read-only mode
+    /// Set read-only mode (test-only since the Preview logs/notes panes were
+    /// removed; the read-only vim machinery stays covered by the tests below)
+    #[cfg(test)]
     pub fn set_read_only(&mut self, read_only: bool) {
         self.vim.read_only = read_only;
     }

@@ -22,7 +22,7 @@ Tasks do not run staged agent pipelines. A task-attached Engineer is a normal lo
 | Rust | Building from source |
 | `git` | Version control and worktrees |
 | `tmux` | Agent sessions and popups |
-| Claude Code CLI, Codex CLI, Goose CLI, or Pi | Agent execution |
+| Claude Code CLI, Codex CLI, or Pi | Agent execution |
 | `nvim` | Optional editor windows |
 | `lazygit` | Optional git TUI windows |
 | GitHub CLI (`gh`) | PR operations |
@@ -43,7 +43,7 @@ State lives in `~/.agman/`.
 
 ```toml
 repos_dir = "~/repos/"
-harness = "claude" # claude, codex, goose, or pi
+harness = "claude" # claude, codex, or pi
 ```
 
 New agent state is stored under `~/.agman/agents`.
@@ -64,7 +64,7 @@ agman status
 
 ## Harness Notes
 
-Set `harness = "claude"`, `"codex"`, `"goose"`, or `"pi"` in config or via TUI settings. Long-lived agents stamp their launch harness in their state directory so existing conversations resume with the same runtime.
+Set `harness = "claude"`, `"codex"`, or `"pi"` in config or via TUI settings. Long-lived agents stamp their launch harness in their state directory so existing conversations resume with the same runtime.
 
 ## Tech Stack
 
