@@ -8,21 +8,15 @@ fn cwd() -> std::path::PathBuf {
 fn harness_kind_round_trips_through_strings() {
     assert_eq!("claude".parse::<HarnessKind>(), Ok(HarnessKind::Claude));
     assert_eq!("codex".parse::<HarnessKind>(), Ok(HarnessKind::Codex));
-    assert_eq!("goose".parse::<HarnessKind>(), Ok(HarnessKind::Goose));
     assert_eq!("pi".parse::<HarnessKind>(), Ok(HarnessKind::Pi));
+    assert_eq!("goose".parse::<HarnessKind>(), Err(()));
     assert_eq!("nope".parse::<HarnessKind>(), Err(()));
     assert_eq!(HarnessKind::Claude.as_str(), "claude");
     assert_eq!(HarnessKind::Codex.as_str(), "codex");
-    assert_eq!(HarnessKind::Goose.as_str(), "goose");
     assert_eq!(HarnessKind::Pi.as_str(), "pi");
     assert_eq!(
         HarnessKind::ALL,
-        &[
-            HarnessKind::Claude,
-            HarnessKind::Codex,
-            HarnessKind::Goose,
-            HarnessKind::Pi,
-        ]
+        &[HarnessKind::Claude, HarnessKind::Codex, HarnessKind::Pi,]
     );
 }
 
@@ -263,50 +257,6 @@ fn codex_build_session_command_escapes_triple_quotes_in_body() {
 }
 
 #[test]
-fn goose_build_session_command_emits_auto_mode_moim_and_name() {
-    let h = HarnessKind::Goose.select();
-    let tmp = tempfile::tempdir().unwrap();
-    let identity_file = tmp.path().join("identity").join("agman goose's name.md");
-    let cmd = h.build_session_command(&LaunchContext {
-        identity: "Identity body",
-        name: "agman-goose's-name",
-        identity_file: Some(&identity_file),
-        session_dir: None,
-        cwd: &cwd(),
-        no_alt_screen: false,
-        capabilities: Default::default(),
-        session_key: SessionKey::Auto,
-    });
-    assert!(cmd.starts_with("GOOSE_MODE=auto "));
-    assert!(cmd.contains("GOOSE_MOIM_MESSAGE_FILE="));
-    assert!(cmd.contains("goose session"));
-    assert!(cmd.contains("--with-builtin developer,tom"));
-    assert!(cmd.contains("--name 'agman-goose'\\''s-name'"));
-    assert!(cmd.contains("agman goose'\\''s name.md"));
-    assert!(!cmd.contains("--resume"));
-}
-
-#[test]
-fn goose_build_session_command_resumes_by_name() {
-    let h = HarnessKind::Goose.select();
-    let tmp = tempfile::tempdir().unwrap();
-    let identity_file = tmp.path().join("identity").join("agman-goose.md");
-    let cmd = h.build_session_command(&LaunchContext {
-        identity: "Identity body",
-        name: "agman-goose",
-        identity_file: Some(&identity_file),
-        session_dir: None,
-        cwd: &cwd(),
-        no_alt_screen: false,
-        capabilities: Default::default(),
-        session_key: SessionKey::Resume("agman-goose"),
-    });
-    assert!(cmd.contains("goose session"));
-    assert!(cmd.contains("--resume --name 'agman-goose'"));
-    assert!(!cmd.contains("Identity body"));
-}
-
-#[test]
 fn pi_build_session_command_emits_offline_identity_session_dir_and_tools() {
     let h = HarnessKind::Pi.select();
     let tmp = tempfile::tempdir().unwrap();
@@ -394,7 +344,6 @@ fn claude_skill_hint_mentions_dot_claude() {
 fn codex_skill_hint_is_empty() {
     let h = HarnessKind::Codex.select();
     assert_eq!(h.skill_hint(), "");
-    assert_eq!(HarnessKind::Goose.select().skill_hint(), "");
     assert_eq!(HarnessKind::Pi.select().skill_hint(), "");
 }
 
@@ -406,7 +355,6 @@ fn install_hints_match_documented_text() {
         .contains("@anthropic-ai/claude-code"));
     let codex_hint = HarnessKind::Codex.select().install_hint();
     assert!(codex_hint.contains("codex") && codex_hint.contains("brew"));
-    assert!(HarnessKind::Goose.select().install_hint().contains("Goose"));
     assert!(HarnessKind::Pi
         .select()
         .install_hint()
@@ -417,7 +365,6 @@ fn install_hints_match_documented_text() {
 fn cli_binaries_match_kinds() {
     assert_eq!(HarnessKind::Claude.select().cli_binary(), "claude");
     assert_eq!(HarnessKind::Codex.select().cli_binary(), "codex");
-    assert_eq!(HarnessKind::Goose.select().cli_binary(), "goose");
     assert_eq!(HarnessKind::Pi.select().cli_binary(), "pi");
 }
 

@@ -22,7 +22,6 @@ fn sanitize_for_tmux(branch: &str) -> String {
 pub struct Config {
     pub base_dir: PathBuf,
     pub tasks_dir: PathBuf,
-    pub prompts_dir: PathBuf,
     pub repos_dir: PathBuf,
     pub notes_dir: PathBuf,
 }
@@ -35,7 +34,7 @@ pub struct ConfigFile {
     pub telegram_bot_token: Option<String>,
     pub telegram_chat_id: Option<String>,
     /// Which agent harness to use for newly-spawned agents. `"claude"`,
-    /// `"codex"`, `"goose"`, or `"pi"`. Defaults to `"claude"` when absent.
+    /// `"codex"`, or `"pi"`. Defaults to `"claude"` when absent.
     pub harness: Option<String>,
 }
 
@@ -67,13 +66,11 @@ pub fn save_config_file(base_dir: &Path, config_file: &ConfigFile) -> Result<()>
 impl Config {
     pub fn new(base_dir: PathBuf, repos_dir: PathBuf) -> Self {
         let tasks_dir = base_dir.join("tasks");
-        let prompts_dir = base_dir.join("prompts");
         let notes_dir = base_dir.join("notes");
 
         Self {
             base_dir,
             tasks_dir,
-            prompts_dir,
             repos_dir,
             notes_dir,
         }
@@ -98,7 +95,6 @@ impl Config {
         std::fs::create_dir_all(&self.base_dir)
             .with_context(|| format!("Failed to create {}", self.base_dir.display()))?;
         std::fs::create_dir_all(&self.tasks_dir).context("Failed to create tasks directory")?;
-        std::fs::create_dir_all(&self.prompts_dir).context("Failed to create prompts directory")?;
         std::fs::create_dir_all(&self.notes_dir).context("Failed to create notes directory")?;
         std::fs::create_dir_all(self.agents_dir()).context("Failed to create agents directory")?;
         Ok(())
@@ -176,10 +172,6 @@ impl Config {
         format!("({})__{}", repo_name, sanitize_for_tmux(branch_name))
     }
 
-    pub fn prompt_path(&self, agent_name: &str) -> PathBuf {
-        self.prompts_dir.join(format!("{}.md", agent_name))
-    }
-
     pub fn repo_stats_path(&self) -> PathBuf {
         self.base_dir.join("repo_stats.json")
     }
@@ -238,7 +230,7 @@ impl Config {
         self.project_dir(name).join("inbox.seq")
     }
 
-    /// Stamped working directory for a long-lived codex/goose/pi session,
+    /// Stamped working directory for a long-lived codex/pi session,
     /// captured on first launch. Reused on resume so the harness restarts
     /// from the original generation cwd.
     pub fn launch_cwd_path(state_dir: &Path) -> PathBuf {
@@ -341,28 +333,4 @@ impl Config {
     pub fn template_path(&self, name: &str) -> PathBuf {
         self.templates_dir().join(format!("{name}.md"))
     }
-
-    pub fn init_default_files(&self, force: bool) -> Result<()> {
-        self.ensure_dirs()?;
-
-        let prompts = [("engineer", ENGINEER_PROMPT)];
-
-        for (name, content) in prompts {
-            let path = self.prompt_path(name);
-            if force || !path.exists() {
-                std::fs::write(&path, content)?;
-            }
-        }
-
-        Ok(())
-    }
 }
-
-const ENGINEER_PROMPT: &str = r#"You are a long-lived task-attached engineer agent.
-
-You own one agman task at a time. Work from PM inbox messages, keep state across the session, and handle implementation, tests, commits, rebases, pushes, pull requests, CI monitoring, and review-addressing when the PM asks.
-
-If no PM inbox message has arrived, wait rather than infer work from the task name, branch, or worktree.
-
-Report progress, blockers, and completion back to the PM with `agman send-message`. Ask only when genuinely blocked.
-"#;

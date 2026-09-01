@@ -5,16 +5,6 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 
-#[derive(Debug, Clone, Copy)]
-enum SectionKind {
-    AgentOutput,
-}
-
-struct LogSection<'a> {
-    kind: SectionKind,
-    lines: Vec<&'a str>,
-}
-
 /// A single repo entry within a task. For single-repo tasks there is exactly one;
 /// for multi-repo tasks there is one per repo.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,7 +178,6 @@ impl Task {
 
         let task = Self { meta, dir };
         task.save_meta()?;
-        task.init_files()?;
 
         Ok(task)
     }
@@ -220,7 +209,6 @@ impl Task {
 
         let task = Self { meta, dir };
         task.save_meta()?;
-        task.init_files()?;
 
         Ok(task)
     }
@@ -368,162 +356,6 @@ impl Task {
         let content = serde_json::to_string_pretty(&self.meta)?;
         std::fs::write(&meta_path, content)?;
         Ok(())
-    }
-
-    fn init_files(&self) -> Result<()> {
-        // Create empty files that will be populated later
-        let files = ["notes.md", "agent.log"];
-
-        for file in files {
-            let path = self.dir.join(file);
-            if !path.exists() {
-                std::fs::write(&path, "")?;
-            }
-        }
-
-        Ok(())
-    }
-
-    pub fn read_notes(&self) -> Result<String> {
-        let path = self.dir.join("notes.md");
-        std::fs::read_to_string(&path).context("Failed to read notes.md")
-    }
-
-    pub fn write_notes(&self, notes: &str) -> Result<()> {
-        let path = self.dir.join("notes.md");
-        std::fs::write(&path, notes)?;
-        Ok(())
-    }
-
-    pub fn read_agent_log(&self) -> Result<String> {
-        let path = self.dir.join("agent.log");
-        std::fs::read_to_string(&path).context("Failed to read agent.log")
-    }
-
-    /// Read a structured tail of agent.log that preserves section boundaries.
-    ///
-    /// Instead of a flat tail of N lines, this parses the log into sections
-    /// (agent runs and transitions) and returns a condensed view:
-    /// - All agent start/finish markers are kept
-    /// - All stop condition lines are kept
-    /// - For each agent's output, only the last `per_agent_tail` lines are kept
-    /// - Oldest agent sections are truncated first if total exceeds `max_lines`
-    pub fn read_agent_log_structured_tail(&self, max_lines: usize) -> Result<String> {
-        let content = self.read_agent_log()?;
-        if content.is_empty() {
-            return Ok(content);
-        }
-
-        let all_lines: Vec<&str> = content.lines().collect();
-
-        // Parse into sections
-        let mut sections: Vec<LogSection> = Vec::new();
-        let mut current_lines: Vec<&str> = Vec::new();
-        let mut current_kind = SectionKind::AgentOutput;
-
-        for line in &all_lines {
-            let trimmed = line.trim();
-
-            if trimmed.starts_with("--- Agent:")
-                && trimmed.ends_with("---")
-                && trimmed.contains("started at")
-            {
-                // Flush previous section
-                if !current_lines.is_empty() {
-                    sections.push(LogSection {
-                        kind: current_kind,
-                        lines: std::mem::take(&mut current_lines),
-                    });
-                }
-                current_kind = SectionKind::AgentOutput;
-                current_lines.push(line);
-            } else if trimmed.starts_with("--- Agent:")
-                && trimmed.ends_with("---")
-                && trimmed.contains("finished at")
-            {
-                current_lines.push(line);
-                sections.push(LogSection {
-                    kind: current_kind,
-                    lines: std::mem::take(&mut current_lines),
-                });
-                current_kind = SectionKind::AgentOutput;
-            } else {
-                current_lines.push(line);
-            }
-        }
-        // Flush last section
-        if !current_lines.is_empty() {
-            sections.push(LogSection {
-                kind: current_kind,
-                lines: current_lines,
-            });
-        }
-
-        // Now condense: keep structural lines and tail of agent output
-        let per_agent_tail = 30;
-        let mut result_lines: Vec<String> = Vec::new();
-
-        for section in &sections {
-            match section.kind {
-                SectionKind::AgentOutput => {
-                    // Separate structural lines (markers, stop conditions) from normal output
-                    let mut structural_head: Vec<&str> = Vec::new();
-                    let mut output: Vec<&str> = Vec::new();
-                    let mut structural_tail: Vec<&str> = Vec::new();
-
-                    // The first line might be an agent start marker
-                    let mut in_body = false;
-                    for line in &section.lines {
-                        let trimmed = line.trim();
-                        let is_marker = (trimmed.starts_with("--- Agent:")
-                            && trimmed.ends_with("---"))
-                            || trimmed.contains("AGENT_DONE")
-                            || trimmed.contains("TASK_COMPLETE")
-                            || trimmed.contains("INPUT_NEEDED");
-
-                        if is_marker && !in_body {
-                            structural_head.push(line);
-                        } else if is_marker && in_body {
-                            structural_tail.push(line);
-                        } else {
-                            in_body = true;
-                            output.push(line);
-                        }
-                    }
-
-                    // Always keep structural head
-                    for line in &structural_head {
-                        result_lines.push(line.to_string());
-                    }
-
-                    // Trim output if needed
-                    if output.len() > per_agent_tail {
-                        let trimmed_count = output.len() - per_agent_tail;
-                        result_lines.push(format!("[... {} lines trimmed ...]", trimmed_count));
-                        for line in &output[output.len() - per_agent_tail..] {
-                            result_lines.push(line.to_string());
-                        }
-                    } else {
-                        for line in &output {
-                            result_lines.push(line.to_string());
-                        }
-                    }
-
-                    // Always keep structural tail
-                    for line in &structural_tail {
-                        result_lines.push(line.to_string());
-                    }
-                }
-            }
-        }
-
-        // Final truncation if still over max_lines: take the tail
-        if result_lines.len() > max_lines {
-            let start = result_lines.len() - max_lines;
-            result_lines = result_lines.into_iter().skip(start).collect();
-        }
-
-        Ok(result_lines.join("\n"))
     }
 
     pub fn delete(self, config: &Config) -> Result<()> {

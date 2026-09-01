@@ -88,13 +88,6 @@ pub fn create_test_task(config: &Config, repo_name: &str, branch_name: &str) -> 
     let mut task = Task { meta, dir };
     task.meta.project = Some(repo_name.to_string());
     task.save_meta().unwrap();
-    // Create the same init files that Task::create() makes
-    for file in ["notes.md", "agent.log"] {
-        let path = task.dir.join(file);
-        if !path.exists() {
-            std::fs::write(&path, "").unwrap();
-        }
-    }
 
     let task_id = task.meta.task_id();
     let engineer_name = format!("engineer-{}", task_id.replace("--", "-"));
