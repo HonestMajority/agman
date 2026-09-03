@@ -82,13 +82,7 @@ fn main() -> Result<()> {
             message,
             file,
             from,
-        }) => cmd_send_message(
-            &config,
-            &target,
-            message.as_deref(),
-            file.as_deref(),
-            from.as_deref(),
-        ),
+        }) => cmd_send_message(&config, &target, message.as_deref(), file.as_deref(), &from),
 
         Some(Commands::CreateProject {
             name,
@@ -283,11 +277,10 @@ fn cmd_send_message(
     target: &str,
     message: Option<&str>,
     file: Option<&std::path::Path>,
-    from: Option<&str>,
+    from: &str,
 ) -> Result<()> {
     let resolved = resolve_text_arg(message, file, "message")?;
-    let sender = from.unwrap_or("unknown");
-    use_cases::send_message(config, target, sender, resolved.trim_end())?;
+    use_cases::send_message(config, target, from, resolved.trim_end())?;
     println!("Message sent to '{}'", target);
     Ok(())
 }

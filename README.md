@@ -11,7 +11,7 @@ agman organizes engineering work around:
 - Projects with a long-lived PM agent.
 - Tasks that own branch/worktree/status metadata and exactly one attached Engineer agent.
 - Additional Researcher, Tester, Reviewer, and Operator agents that can be unattached project agents or attached to tasks.
-- Inbox messages as the coordination primitive. Use `agman send-message <agent-target> ...` to communicate with PMs and agents.
+- Inbox messages as the coordination primitive. Use `agman send-message <target> --from <sender> ...` to communicate with PMs and agents.
 
 Tasks do not run staged agent pipelines. A task-attached Engineer is a normal long-lived agent with broad authority to implement, test, rebase, push, create or update PRs, monitor CI, and address review requests when the PM asks.
 
@@ -54,13 +54,16 @@ New agent state is stored under `~/.agman/agents`.
 agman create-project myproj --description "UI rewrite"
 agman create-pm-task myproj myrepo fix-bug --first-prompt "Fix the login bug"
 agman create-agent --kind reviewer --name pr-1247 --project myproj --first-prompt "Review the PR"
-agman send-message engineer:myproj--engineer-myrepo-fix-bug "Please create the PR"
-agman send-message reviewer:myproj--pr-1247 "Please re-check the latest commit"
+agman send-message engineer:myproj--engineer-myrepo-fix-bug --from myproj "Please create the PR"
+agman send-message reviewer:myproj--pr-1247 --from myproj "Please re-check the latest commit"
 agman status
 ```
 
 `create-pm-task --first-prompt` accepts inline text, `@file`, or `-` for stdin. Omitting it still creates the task, worktree, and attached Engineer, but leaves the Engineer idle with no initial inbox message.
 `create-agent --first-prompt` behaves the same for project-scoped Researcher, Operator, Reviewer, and Tester agents. Omitting it creates and starts an idle agent with no initial inbox message until you use `agman send-message`.
+First prompts are delivered from the project (PM) identity.
+
+`send-message --from` is required and must be a replyable sender: `chief-of-staff`, a project name (the PM), or `<kind>:<project>--<name>` for an existing agent. `telegram` and `system` are reserved senders. Anything else (for example `user`, `codex`, or `unknown`) is rejected.
 
 ## Harness Notes
 

@@ -17,11 +17,12 @@ pub enum Commands {
     /// Send a message to an agent's inbox
     #[command(after_help = "\
 EXAMPLES:
-  agman send-message chief-of-staff \"Check the deploy status\"
-  cat <<'EOF' | agman send-message chief-of-staff -
+  agman send-message myproj --from chief-of-staff \"Check the deploy status\"
+  agman send-message engineer:myproj--engineer-myrepo-fix-bug --from myproj \"Please create the PR\"
+  cat <<'EOF' | agman send-message myproj --from chief-of-staff -
   Multi-line message via stdin using the - sentinel.
   EOF
-  agman send-message chief-of-staff @./message.md")]
+  agman send-message myproj --from chief-of-staff @./message.md")]
     SendMessage {
         /// Target: "chief-of-staff", "telegram", a project name (for the PM),
         /// or "<kind>:<project>--<name>" for engineer/researcher/operator/reviewer/tester
@@ -32,9 +33,10 @@ EXAMPLES:
         /// Read message from a file
         #[arg(short = 'F', long)]
         file: Option<std::path::PathBuf>,
-        /// Sender name
+        /// Sender identity (required): "chief-of-staff", "telegram", "system",
+        /// a project name (the PM), or "<kind>:<project>--<name>"
         #[arg(long)]
-        from: Option<String>,
+        from: String,
     },
 
     /// Create a new project with a PM

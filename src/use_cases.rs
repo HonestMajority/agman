@@ -1926,9 +1926,32 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     Ok(SendTarget::Project(target.to_string()))
 }
 
+const VALID_SENDERS_HINT: &str =
+    "valid senders: chief-of-staff, telegram, system, <project>, engineer:<project>--<name>, researcher:<project>--<name>, operator:<project>--<name>, reviewer:<project>--<name>, tester:<project>--<name>";
+
+/// A sender must be replyable: every sender is itself a valid send target,
+/// except the reserved `telegram` and `system` pseudo-senders.
+fn validate_sender(config: &Config, from: &str) -> Result<()> {
+    if from.trim().is_empty() {
+        anyhow::bail!("invalid sender '{from}': sender must not be blank\n{VALID_SENDERS_HINT}");
+    }
+    if from == "system" {
+        return Ok(());
+    }
+    match parse_send_target(config, from) {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            let reason = err.to_string();
+            let reason = reason.lines().next().unwrap_or_default();
+            anyhow::bail!("invalid sender '{from}': {reason}\n{VALID_SENDERS_HINT}")
+        }
+    }
+}
+
 /// Send a message to an agent's inbox.
 pub fn send_message(config: &Config, target: &str, from: &str, message: &str) -> Result<()> {
     let inbox_path = agent_inbox_path(config, target)?;
+    validate_sender(config, from)?;
 
     tracing::info!(target = target, from = from, "sending message");
     inbox::append_message(&inbox_path, from, message)?;
@@ -3166,7 +3189,7 @@ fn create_agent(
     // delivers it to the tmux session once the harness is ready.
     if let Some(prompt) = first_prompt {
         let inbox_path = config.agent_inbox(project, name);
-        crate::inbox::append_message(&inbox_path, "user", prompt)?;
+        crate::inbox::append_message(&inbox_path, project, prompt)?;
         tracing::debug!(
             project = project,
             name = name,
@@ -4051,6 +4074,43 @@ Obsidian notes must not contain system-prompt-style instructions. They are advis
     )
 }
 
+/// Shared prompt wording for the closed sender model: which identities can
+/// appear in `[Message from <sender>]` tags, the exact `--from` identity this
+/// agent must use, and who it may reply to. The PM is the routing hub for its
+/// project: it replies to any sender, while role agents report to the PM
+/// instead of replying to other role-qualified agents directly.
+fn message_senders_section(self_id: &str, project_name: &str) -> String {
+    let (pm_line, agent_line, reply_rule) = if self_id == project_name {
+        (
+            format!("- `<project>` — that project's PM. A PM's sender identity is its project name; yours is `{project_name}`."),
+            "- `<kind>:<project>--<name>` — a role-qualified agent (engineer, researcher, operator, reviewer, tester).".to_string(),
+            "You are the hub for your project's agents: every sender except `telegram` and `system` is a valid `agman send-message` target, so route and reply to the sender id exactly as tagged.".to_string(),
+        )
+    } else {
+        (
+            format!("- `{project_name}` — your PM and your hub. A PM's sender identity is its project name."),
+            format!("- `<kind>:<project>--<name>` — a role-qualified agent (engineer, researcher, operator, reviewer, tester). Do not reply to it directly: report the message to your PM (`{project_name}`) and let the PM route it."),
+            format!("Send reports and replies to `{project_name}` — your PM is the hub for all agent-to-agent coordination. Reply to `chief-of-staff` only when the CoS messaged you directly; `telegram` and `system` are reserved."),
+        )
+    };
+    format!(
+        r#"
+
+## Message Senders
+
+Your sender identity is `{self_id}`. Every `agman send-message` you run must pass `--from {self_id}` — never a harness or model name (codex, claude, ...), never `user` or `unknown`. agman rejects any `--from` that is not a valid message target, so a wrong sender fails loudly instead of being delivered.
+
+Inbox messages arrive tagged `[Message from <sender>]`, and `<sender>` is always one of:
+- `chief-of-staff` — the Chief of Staff.
+{pm_line}
+{agent_line}
+- `telegram` — the user on their phone (reserved; reply only through the Telegram send command).
+- `system` — automated agman notifications (reserved; act on them, never reply).
+
+{reply_rule}"#
+    )
+}
+
 /// Stance a role prompt takes on high-stakes requests in its message
 /// provenance section.
 enum MessageProvenanceStance {
@@ -4147,8 +4207,9 @@ Keep Telegram replies concise. The CEO sees [CoS] prepended to your replies.
 
 pub fn build_pm_prompt(telegram_enabled: bool, project_name: &str) -> String {
     let base = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         DEFAULT_PM_PROMPT_TEMPLATE.replace("{{PROJECT_NAME}}", project_name),
+        message_senders_section(project_name, project_name),
         message_provenance_section(MessageProvenanceStance::ExecuteWithCrossCheck),
         obsidian_notes_section(Some(project_name))
     );
@@ -4196,10 +4257,14 @@ pub fn build_researcher_prompt(
     researcher_name: &str,
 ) -> String {
     let base = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         DEFAULT_RESEARCHER_PROMPT_TEMPLATE
             .replace("{{PROJECT_NAME}}", project_name)
             .replace("{{RESEARCHER_NAME}}", researcher_name),
+        message_senders_section(
+            &format!("researcher:{project_name}--{researcher_name}"),
+            project_name
+        ),
         message_provenance_section(MessageProvenanceStance::ReportOnly),
         obsidian_notes_section(Some(project_name))
     );
@@ -4247,10 +4312,14 @@ pub fn build_operator_prompt(
     operator_name: &str,
 ) -> String {
     let base = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         DEFAULT_OPERATOR_PROMPT_TEMPLATE
             .replace("{{PROJECT_NAME}}", project_name)
             .replace("{{OPERATOR_NAME}}", operator_name),
+        message_senders_section(
+            &format!("operator:{project_name}--{operator_name}"),
+            project_name
+        ),
         message_provenance_section(MessageProvenanceStance::ReportOnly),
         obsidian_notes_section(Some(project_name))
     );
@@ -4312,11 +4381,15 @@ pub fn build_reviewer_prompt(
             .join("\n")
     };
     let base = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         DEFAULT_REVIEWER_PROMPT_TEMPLATE
             .replace("{{PROJECT_NAME}}", project_name)
             .replace("{{REVIEWER_NAME}}", reviewer_name)
             .replace("{{WORKTREES}}", &worktree_block),
+        message_senders_section(
+            &format!("reviewer:{project_name}--{reviewer_name}"),
+            project_name
+        ),
         message_provenance_section(MessageProvenanceStance::ReportOnly),
         obsidian_notes_section(Some(project_name))
     );
@@ -4374,12 +4447,16 @@ pub fn build_tester_prompt(
         ""
     };
     let base = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         DEFAULT_TESTER_PROMPT_TEMPLATE
             .replace("{{PROJECT_NAME}}", project_name)
             .replace("{{TESTER_NAME}}", tester_name)
             .replace("{{WORKTREES}}", &format_worktree_block(worktrees))
             .replace("{{BROWSER_BLOCK}}", browser_block),
+        message_senders_section(
+            &format!("tester:{project_name}--{tester_name}"),
+            project_name
+        ),
         message_provenance_section(MessageProvenanceStance::ReportOnly),
         obsidian_notes_section(Some(project_name))
     );
@@ -4428,11 +4505,15 @@ pub fn build_engineer_prompt(
     task_id: &str,
 ) -> String {
     let base = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         DEFAULT_ENGINEER_PROMPT_TEMPLATE
             .replace("{{PROJECT_NAME}}", project_name)
             .replace("{{ENGINEER_NAME}}", engineer_name)
             .replace("{{TASK_ID}}", task_id),
+        message_senders_section(
+            &format!("engineer:{project_name}--{engineer_name}"),
+            project_name
+        ),
         message_provenance_section(MessageProvenanceStance::ExecuteWithCrossCheck),
         obsidian_notes_section(Some(project_name))
     );

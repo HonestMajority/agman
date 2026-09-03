@@ -90,3 +90,32 @@ fn cli_create_agent_help_exposes_first_prompt_not_description() {
     assert!(stdout.contains("--first-prompt"));
     assert!(!stdout.contains("--description"));
 }
+
+#[test]
+fn cli_send_message_help_requires_from_sender() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_agman"))
+        .args(["send-message", "--help"])
+        .output()
+        .expect("failed to run agman send-message --help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("help output should be utf8");
+
+    assert!(stdout.contains("--from <FROM>"));
+    assert!(!stdout.contains("[--from <FROM>]"));
+    assert!(stdout.contains("Sender identity (required)"));
+    assert!(stdout
+        .contains("agman send-message engineer:myproj--engineer-myrepo-fix-bug --from myproj"));
+}
+
+#[test]
+fn cli_send_message_without_from_is_an_error() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_agman"))
+        .args(["send-message", "chief-of-staff", "hello"])
+        .output()
+        .expect("failed to run agman send-message");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("error output should be utf8");
+    assert!(stderr.contains("--from <FROM>"));
+}

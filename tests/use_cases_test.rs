@@ -50,6 +50,7 @@ fn create_task_creates_one_attached_engineer_and_initial_inbox_message() {
 
     let messages = inbox::read_messages(&config.agent_inbox("repo", &agents[0].meta.name)).unwrap();
     assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].from, "repo");
     assert!(messages[0]
         .message
         .contains("First prompt for repo--feature:"));
@@ -362,7 +363,7 @@ fn create_researcher_with_first_prompt_seeds_one_inbox_message() {
     assert_eq!(agent.meta.description, "Investigate the API latency");
     let messages = inbox::read_messages(&config.agent_inbox("project", "researcher")).unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].from, "user");
+    assert_eq!(messages[0].from, "project");
     assert_eq!(messages[0].message, "Investigate the API latency");
 }
 
@@ -407,6 +408,7 @@ fn create_researcher_with_blank_first_prompt_creates_idle_agent_with_empty_metad
 fn send_message_targets_specific_attached_engineer() {
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
+    create_test_project(&config, "repo");
     let _task = create_test_task(&config, "repo", "branch");
     let engineer = use_cases::attached_engineer_for_task(&config, "repo--branch").unwrap();
 
@@ -427,6 +429,58 @@ fn send_message_targets_specific_attached_engineer() {
         .unwrap_err()
         .to_string();
     assert!(task_target_err.contains("unknown target"));
+}
+
+#[test]
+fn send_message_accepts_replyable_and_reserved_senders() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    create_test_project(&config, "repo");
+    let _task = create_test_task(&config, "repo", "branch");
+    let engineer = use_cases::attached_engineer_for_task(&config, "repo--branch").unwrap();
+    let engineer_id = format!("engineer:repo--{}", engineer.meta.name);
+
+    let senders = [
+        "repo",
+        engineer_id.as_str(),
+        "chief-of-staff",
+        "telegram",
+        "system",
+    ];
+    for sender in senders {
+        use_cases::send_message(&config, "repo", sender, "hello").unwrap();
+    }
+
+    let recorded: Vec<String> = inbox::read_messages(&config.project_inbox("repo"))
+        .unwrap()
+        .into_iter()
+        .map(|message| message.from)
+        .collect();
+    assert_eq!(recorded, senders);
+}
+
+#[test]
+fn send_message_rejects_unroutable_senders() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = test_config(&tmp);
+    create_test_project(&config, "repo");
+    let _task = create_test_task(&config, "repo", "branch");
+    let engineer = use_cases::attached_engineer_for_task(&config, "repo--branch").unwrap();
+    let target = format!("engineer:repo--{}", engineer.meta.name);
+
+    for sender in ["user", "codex", "unknown", "", "engineer:repo--missing"] {
+        let err = use_cases::send_message(&config, &target, sender, "nope")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(&format!("invalid sender '{sender}'")), "{err}");
+        assert!(
+            err.contains("valid senders: chief-of-staff, telegram, system, <project>"),
+            "{err}"
+        );
+    }
+
+    let messages = inbox::read_messages(&config.agent_inbox("repo", &engineer.meta.name)).unwrap();
+    assert!(messages.iter().all(|message| message.message != "nope"));
 }
 
 #[test]
@@ -512,6 +566,97 @@ fn project_status_separates_attached_and_unattached_agents() {
     );
     assert_eq!(repo.agents.len(), 1);
     assert_eq!(repo.agents[0].name, "research");
+}
+
+#[test]
+fn prompts_describe_closed_sender_model() {
+    let pm = use_cases::build_pm_prompt(false, "project");
+    assert!(pm.contains("## Message Senders"));
+    assert!(pm.contains("Your sender identity is `project`"));
+    assert!(pm.contains("must pass `--from project`"));
+    assert!(pm.contains("never a harness or model name"));
+    assert!(pm.contains("`telegram` — the user on their phone (reserved"));
+    assert!(pm.contains("`system` — automated agman notifications (reserved"));
+    assert!(pm.contains("You are the hub for your project's agents"));
+    assert!(pm.contains("route and reply to the sender id exactly as tagged"));
+    assert!(!pm.contains("Do not reply to it directly"));
+
+    let engineer =
+        use_cases::build_engineer_prompt(false, "project", "engineer-repo-branch", "repo--branch");
+    let researcher = use_cases::build_researcher_prompt(false, "project", "scout");
+    let operator = use_cases::build_operator_prompt(false, "project", "ops");
+    let reviewer = use_cases::build_reviewer_prompt(false, "project", "pr-1", &[]);
+    let tester = use_cases::build_tester_prompt(
+        false,
+        "project",
+        "qa",
+        &[],
+        TesterCapabilities::default(),
+        HarnessKind::Claude,
+    );
+
+    for (prompt, self_id) in [
+        (&engineer, "engineer:project--engineer-repo-branch"),
+        (&researcher, "researcher:project--scout"),
+        (&operator, "operator:project--ops"),
+        (&reviewer, "reviewer:project--pr-1"),
+        (&tester, "tester:project--qa"),
+    ] {
+        assert!(prompt.contains("## Message Senders"), "{self_id}");
+        assert!(
+            prompt.contains(&format!("Your sender identity is `{self_id}`")),
+            "{self_id}"
+        );
+        assert!(
+            prompt.contains(&format!("must pass `--from {self_id}`")),
+            "{self_id}"
+        );
+        assert!(
+            prompt.contains("- `project` — your PM and your hub"),
+            "{self_id}"
+        );
+        assert!(
+            prompt.contains("`chief-of-staff` — the Chief of Staff"),
+            "{self_id}"
+        );
+        assert!(
+            prompt.contains("`system` — automated agman notifications (reserved"),
+            "{self_id}"
+        );
+        assert!(
+            prompt
+                .contains("Do not reply to it directly: report the message to your PM (`project`)"),
+            "{self_id}"
+        );
+        assert!(
+            prompt.contains("your PM is the hub for all agent-to-agent coordination"),
+            "{self_id}"
+        );
+        assert!(
+            !prompt.contains("reply to the sender id exactly as tagged"),
+            "{self_id}"
+        );
+    }
+
+    let chief = use_cases::build_chief_of_staff_prompt(false);
+    for prompt in [
+        &pm,
+        &engineer,
+        &researcher,
+        &operator,
+        &reviewer,
+        &tester,
+        &chief,
+    ] {
+        for stale in [
+            "--from codex",
+            "--from claude",
+            "--from user",
+            "--from unknown",
+        ] {
+            assert!(!prompt.contains(stale), "{stale}");
+        }
+    }
 }
 
 #[test]

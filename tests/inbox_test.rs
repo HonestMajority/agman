@@ -79,7 +79,7 @@ fn concurrent_send_message_processes_assign_unique_monotonic_seq_without_framing
                 "race",
                 &format!("message-{i}"),
                 "--from",
-                &format!("sender-{i}"),
+                "chief-of-staff",
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
