@@ -1641,9 +1641,9 @@ fn agent_runtime_status(
 }
 
 /// Output newer than the last-viewed stamp by less than this is ignored:
-/// popup attach/detach redraws bump `window_activity` without new content.
-/// Also bounds how long after a popup closes its viewer-caused activity is
-/// rewound before real output is trusted again.
+/// a popup's attach resize repaint and key echo bump `window_activity`
+/// without new content. Also bounds how long after a popup closes its
+/// viewer-caused activity is rewound before real output is trusted again.
 pub(super) const UNSEEN_GRACE_SECS: i64 = 5;
 
 /// Panel row status, highest priority first. `Unseen` is a needs-attention
