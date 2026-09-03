@@ -1822,6 +1822,7 @@ fn panel_label(target: &PanelTarget, with_project: bool, width: usize) -> String
         project,
         name,
         kind_tag,
+        ..
     } = target
     else {
         return truncate_with_ellipsis(&target.label(with_project), width);
@@ -4716,6 +4717,7 @@ mod agent_status_tests {
         let engineer = PanelTarget::Agent {
             project: "agman-improvements".to_string(),
             name: "engineer-agman-agent-status-panel".to_string(),
+            kind: "engineer",
             kind_tag: "eng",
         };
         assert_eq!(
@@ -4736,12 +4738,14 @@ mod agent_status_tests {
         let researcher = PanelTarget::Agent {
             project: "p".to_string(),
             name: "res-one".to_string(),
+            kind: "researcher",
             kind_tag: "res",
         };
         assert_eq!(panel_label(&researcher, true, 10), "p/res-one");
         let bare = PanelTarget::Agent {
             project: "p".to_string(),
             name: "engineer-".to_string(),
+            kind: "engineer",
             kind_tag: "eng",
         };
         assert_eq!(panel_label(&bare, false, 20), "engineer-");

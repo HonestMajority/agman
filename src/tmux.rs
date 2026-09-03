@@ -499,20 +499,15 @@ impl Tmux {
     ///
     /// Returns the spawned `Child` so callers can poll it with `try_wait`
     /// and keep the agman main loop ticking while the popup is open.
-    pub fn popup_attach(session_name: &str) -> Result<std::process::Child> {
-        tracing::info!(session = session_name, "opening popup attached to session");
+    pub fn popup_attach(session_name: &str, title: &str) -> Result<std::process::Child> {
+        tracing::info!(
+            session = session_name,
+            title,
+            "opening popup attached to session"
+        );
 
-        let attach_cmd = format!("tmux attach-session -t {}", session_name);
         Command::new("tmux")
-            .args([
-                "display-popup",
-                "-E", // close popup when attach detaches
-                "-w",
-                "90%",
-                "-h",
-                "90%",
-                &attach_cmd,
-            ])
+            .args(popup_attach_args(session_name, title))
             .spawn()
             .context("failed to spawn tmux popup")
     }
@@ -814,6 +809,26 @@ impl Tmux {
     }
 }
 
+pub fn popup_attach_args(session_name: &str, title: &str) -> Vec<String> {
+    vec![
+        "display-popup".to_string(),
+        "-E".to_string(), // close popup when attach detaches
+        "-w".to_string(),
+        "90%".to_string(),
+        "-h".to_string(),
+        "90%".to_string(),
+        "-T".to_string(),
+        tmux_format_literal(title),
+        format!("tmux attach-session -t {session_name}"),
+    ]
+}
+
+/// `#` introduces tmux format expansions (`#S`, `#{...}`, `#[...]`); doubling
+/// it makes the text render literally.
+fn tmux_format_literal(raw: &str) -> String {
+    raw.replace('#', "##")
+}
+
 pub fn link_window_args(
     task_session: &str,
     canonical_session: &str,
@@ -1011,9 +1026,33 @@ fn parse_window_activity_line(line: &str) -> Option<TmuxWindowActivity> {
 #[cfg(test)]
 mod tests {
     use super::{
-        link_window_args, parse_client_window_ids, parse_window_activity_line, rename_window_args,
-        unlink_window_args, window_id_is_visible, Tmux, TmuxWindowActivity,
+        link_window_args, parse_client_window_ids, parse_window_activity_line, popup_attach_args,
+        rename_window_args, unlink_window_args, window_id_is_visible, Tmux, TmuxWindowActivity,
     };
+
+    #[test]
+    fn popup_attach_command_sets_border_title_and_nested_attach() {
+        assert_eq!(
+            popup_attach_args("agman-pm-alpha", "PM - alpha"),
+            vec![
+                "display-popup",
+                "-E",
+                "-w",
+                "90%",
+                "-h",
+                "90%",
+                "-T",
+                "PM - alpha",
+                "tmux attach-session -t agman-pm-alpha",
+            ]
+        );
+    }
+
+    #[test]
+    fn popup_attach_title_escapes_tmux_format_hash() {
+        let args = popup_attach_args("agman-pm-alpha", "engineer - fix #12 - alpha");
+        assert_eq!(args[7], "engineer - fix ##12 - alpha");
+    }
 
     #[test]
     fn link_window_command_targets_canonical_agent_window() {

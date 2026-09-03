@@ -2692,7 +2692,7 @@ fn register_long_lived_session(
 pub fn open_chief_of_staff_popup(config: &Config) -> Result<std::process::Child> {
     start_chief_of_staff_session(config, false)?;
     tracing::info!("opening Chief of Staff popup");
-    Tmux::popup_attach(Config::chief_of_staff_tmux_session())
+    Tmux::popup_attach(Config::chief_of_staff_tmux_session(), "Chief of Staff")
 }
 
 /// Start a PM agent session for a project. See `start_chief_of_staff_session` for the
@@ -2760,7 +2760,7 @@ pub fn open_pm_popup(config: &Config, project_name: &str) -> Result<std::process
     start_pm_session(config, project_name, false)?;
     let session_name = Config::pm_tmux_session(project_name);
     tracing::info!(project = project_name, "opening PM popup");
-    Tmux::popup_attach(&session_name)
+    Tmux::popup_attach(&session_name, &format!("PM - {project_name}"))
 }
 
 // ---------------------------------------------------------------------------
