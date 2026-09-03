@@ -136,6 +136,19 @@ enum ProjectDetailRowKey {
 struct ActivePopup {
     child: std::process::Child,
     session: String,
+    /// The target's `window_activity` before the popup attached, so activity
+    /// the popup itself caused (resize repaint, key echo) can be rewound.
+    activity_before: Option<i64>,
+}
+
+/// Viewer-caused activity to hide after a popup closes. Fresh samples whose
+/// activity is not newer than `ended_at + UNSEEN_GRACE_SECS` are rewound to
+/// `activity_before`; the first sample past that boundary is real output and
+/// ends the suppression.
+#[derive(Debug, Clone, Copy)]
+struct PopupActivitySuppression {
+    activity_before: i64,
+    ended_at: i64,
 }
 
 /// Which wizard requested the directory picker.
@@ -608,6 +621,21 @@ impl AgentActivitySample {
             .map(|at| now.saturating_duration_since(at))
             .unwrap_or(Duration::MAX)
     }
+
+    /// Move the last-activity fields back to `epoch` when they are newer.
+    fn rewind_activity_to(&mut self, epoch: i64) {
+        let Some(current) = self.last_tmux_activity_epoch else {
+            return;
+        };
+        if current <= epoch {
+            return;
+        }
+        let delta = Duration::from_secs((current - epoch) as u64);
+        self.last_tmux_activity_epoch = Some(epoch);
+        self.last_observed_work_at = self
+            .last_observed_work_at
+            .and_then(|at| at.checked_sub(delta));
+    }
 }
 
 /// How many consecutive "skipped" poll cycles (readiness gate refused to
@@ -930,6 +958,7 @@ pub struct App {
     last_viewed: LastViewed,
     last_viewed_dirty: bool,
     last_viewed_saved_at: Instant,
+    popup_activity_suppression: HashMap<String, PopupActivitySuppression>,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
@@ -1139,6 +1168,7 @@ impl App {
             last_viewed,
             last_viewed_dirty: false,
             last_viewed_saved_at: Instant::now(),
+            popup_activity_suppression: HashMap::new(),
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -1192,9 +1222,52 @@ impl App {
             tracing::info!(session = %popup.session, "popup closed");
             if let Some(now) = unix_epoch_secs() {
                 self.last_viewed_dirty |= self.last_viewed.stamp(&popup.session, now);
+                if let Some(activity_before) = popup.activity_before {
+                    self.popup_activity_suppression.insert(
+                        popup.session,
+                        PopupActivitySuppression {
+                            activity_before,
+                            ended_at: now,
+                        },
+                    );
+                }
             }
             self.flush_last_viewed(true);
+            self.suppress_popup_activity();
         }
+    }
+
+    fn open_popup(&mut self, child: std::process::Child, session: String) {
+        let activity_before = self
+            .agent_activity
+            .get(&session)
+            .and_then(|sample| sample.last_tmux_activity_epoch);
+        self.popup = Some(ActivePopup {
+            child,
+            session,
+            activity_before,
+        });
+    }
+
+    /// Rewind samples still carrying popup-caused activity; drop each
+    /// suppression once real output lands past its grace boundary.
+    fn suppress_popup_activity(&mut self) {
+        let samples = &mut self.agent_activity;
+        self.popup_activity_suppression
+            .retain(|session, suppression| {
+                let Some(sample) = samples.get_mut(session) else {
+                    return true;
+                };
+                let boundary = suppression.ended_at + ui::UNSEEN_GRACE_SECS;
+                if sample
+                    .last_tmux_activity_epoch
+                    .is_some_and(|activity| activity > boundary)
+                {
+                    return false;
+                }
+                sample.rewind_activity_to(suppression.activity_before);
+                true
+            });
     }
 
     fn stamp_visible_sessions(&mut self) {
@@ -1371,7 +1444,10 @@ impl App {
                 .map(|entry| entry.session.clone())
                 .collect();
             self.last_viewed_dirty |= self.last_viewed.retain_sessions(&roster) > 0;
+            self.popup_activity_suppression
+                .retain(|session, _| roster.contains(session));
         }
+        self.suppress_popup_activity();
         self.stamp_visible_sessions();
 
         let total = self.project_list_len();
@@ -1454,6 +1530,7 @@ impl App {
         let (agent_activity, error) = build_agent_activity_snapshot(&active_sessions);
         self.note_agent_activity_error(error);
         self.agent_activity = agent_activity;
+        self.suppress_popup_activity();
         self.stamp_visible_sessions();
     }
 
@@ -2098,10 +2175,7 @@ impl App {
         match Tmux::popup_attach(session_name) {
             Ok(child) => {
                 tracing::info!(session = session_name, "attached to agent session");
-                self.popup = Some(ActivePopup {
-                    child,
-                    session: session_name.to_string(),
-                });
+                self.open_popup(child, session_name.to_string());
             }
             Err(e) => {
                 self.set_status(format!("Failed to attach: {e}"));
@@ -2116,10 +2190,7 @@ impl App {
         match use_cases::open_chief_of_staff_popup(&self.config) {
             Ok(child) => {
                 tracing::info!("opened Chief of Staff popup");
-                self.popup = Some(ActivePopup {
-                    child,
-                    session: Config::chief_of_staff_tmux_session().to_string(),
-                });
+                self.open_popup(child, Config::chief_of_staff_tmux_session().to_string());
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to open Chief of Staff popup");
@@ -2188,10 +2259,7 @@ impl App {
         match use_cases::open_pm_popup(&self.config, project_name) {
             Ok(child) => {
                 tracing::info!(project = %project_name, "opened PM popup");
-                self.popup = Some(ActivePopup {
-                    child,
-                    session: Config::pm_tmux_session(project_name),
-                });
+                self.open_popup(child, Config::pm_tmux_session(project_name));
             }
             Err(e) => {
                 tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
@@ -7267,14 +7335,157 @@ mod tests {
         app.popup = Some(ActivePopup {
             child: Command::new("true").spawn().unwrap(),
             session: other.to_string(),
+            activity_before: None,
         });
         app.on_popup_closed();
         assert!(app.popup.is_none());
         assert!(!app.last_viewed_dirty);
+        assert!(app.popup_activity_suppression.is_empty());
         assert_eq!(app.panel_entries()[1].status, PanelStatus::Idle);
         let persisted = LastViewed::load(&config.last_viewed_path(), 0);
         assert_eq!(persisted, app.last_viewed);
         assert!(persisted.epoch_for(other) > 1_000);
+    }
+
+    fn activity_snapshot(
+        roster: &[&str],
+        agent_activity: HashMap<String, AgentActivitySample>,
+    ) -> ProjectRefreshSnapshot {
+        ProjectRefreshSnapshot {
+            projects: Vec::new(),
+            project_task_counts: HashMap::new(),
+            project_agent_counts: HashMap::new(),
+            project_active_agent_counts: HashMap::new(),
+            unassigned_task_count: 0,
+            agent_activity,
+            home_panel_roster: roster.iter().map(|s| pm_roster_entry(s)).collect(),
+            project_list_error: None,
+            agent_list_error: None,
+            agent_activity_error: None,
+        }
+    }
+
+    fn open_and_close_popup(app: &mut App, session: &str) -> PopupActivitySuppression {
+        app.open_popup(Command::new("true").spawn().unwrap(), session.to_string());
+        app.on_popup_closed();
+        app.popup_activity_suppression[session]
+    }
+
+    #[test]
+    fn popup_close_rewinds_popup_caused_activity_until_real_output_passes_grace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        config.ensure_dirs().unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+        let now = unix_epoch_secs().unwrap();
+        let before = now - 600;
+        let other = idle_sample(now - 300);
+        app.last_viewed = LastViewed {
+            tracking_since: now - 100,
+            sessions: HashMap::new(),
+        };
+        app.apply_project_refresh_snapshot(activity_snapshot(
+            &["a", "b"],
+            HashMap::from([
+                ("a".to_string(), idle_sample(before)),
+                ("b".to_string(), other.clone()),
+            ]),
+        ));
+        assert_eq!(panel_sessions(&app), vec!["b", "a"]);
+
+        let suppression = open_and_close_popup(&mut app, "a");
+        assert_eq!(suppression.activity_before, before);
+        let boundary = suppression.ended_at + ui::UNSEEN_GRACE_SECS;
+
+        // The popup's own resize repaint / key echo bumped the window.
+        app.apply_project_refresh_snapshot(activity_snapshot(
+            &["a", "b"],
+            HashMap::from([
+                (
+                    "a".to_string(),
+                    activity_sample(boundary, Duration::ZERO, "node"),
+                ),
+                ("b".to_string(), other.clone()),
+            ]),
+        ));
+        let entries = app.panel_entries();
+        assert_eq!(panel_sessions(&app), vec!["b", "a"]);
+        assert_eq!(entries[1].status, PanelStatus::Idle);
+        assert_eq!(entries[1].last_activity_epoch, Some(before));
+        assert_eq!(
+            ui::classify_agent_status(Instant::now(), app.agent_activity_sample("a")),
+            ui::WorkingIdle::Idle
+        );
+
+        // Reopening the rewound row chains from the original epoch.
+        let chained = open_and_close_popup(&mut app, "a");
+        assert_eq!(chained.activity_before, before);
+        assert!(chained.ended_at >= suppression.ended_at);
+        let boundary = chained.ended_at + ui::UNSEEN_GRACE_SECS;
+
+        // Real output past the boundary supersedes the suppression.
+        app.apply_project_refresh_snapshot(activity_snapshot(
+            &["a", "b"],
+            HashMap::from([
+                (
+                    "a".to_string(),
+                    activity_sample(boundary + 1, Duration::from_secs(120), "node"),
+                ),
+                ("b".to_string(), other.clone()),
+            ]),
+        ));
+        assert!(app.popup_activity_suppression.is_empty());
+        let entries = app.panel_entries();
+        assert_eq!(panel_sessions(&app), vec!["a", "b"]);
+        assert_eq!(entries[0].status, PanelStatus::Unseen);
+        assert_eq!(entries[0].last_activity_epoch, Some(boundary + 1));
+
+        app.apply_project_refresh_snapshot(activity_snapshot(
+            &["a", "b"],
+            HashMap::from([
+                (
+                    "a".to_string(),
+                    activity_sample(boundary + 1, Duration::ZERO, "node"),
+                ),
+                ("b".to_string(), other),
+            ]),
+        ));
+        assert_eq!(app.panel_entries()[0].status, PanelStatus::Working);
+    }
+
+    #[test]
+    fn popup_without_prior_sample_registers_no_suppression() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        config.ensure_dirs().unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+
+        app.open_popup(Command::new("true").spawn().unwrap(), "ghost".to_string());
+        assert_eq!(app.popup.as_ref().unwrap().activity_before, None);
+        app.on_popup_closed();
+        assert!(app.popup_activity_suppression.is_empty());
+    }
+
+    #[test]
+    fn popup_suppression_is_pruned_with_a_complete_roster_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        config.ensure_dirs().unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+        let now = unix_epoch_secs().unwrap();
+        app.apply_project_refresh_snapshot(activity_snapshot(
+            &["a"],
+            HashMap::from([("a".to_string(), idle_sample(now - 600))]),
+        ));
+        open_and_close_popup(&mut app, "a");
+
+        let mut partial = activity_snapshot(&[], HashMap::new());
+        partial.agent_list_error = Some("boom".to_string());
+        app.apply_project_refresh_snapshot(partial);
+        assert!(app.popup_activity_suppression.contains_key("a"));
+
+        app.apply_project_refresh_snapshot(activity_snapshot(&[], HashMap::new()));
+        assert!(app.popup_activity_suppression.is_empty());
     }
 
     #[test]

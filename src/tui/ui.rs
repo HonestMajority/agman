@@ -1642,7 +1642,9 @@ fn agent_runtime_status(
 
 /// Output newer than the last-viewed stamp by less than this is ignored:
 /// popup attach/detach redraws bump `window_activity` without new content.
-const UNSEEN_GRACE_SECS: i64 = 5;
+/// Also bounds how long after a popup closes its viewer-caused activity is
+/// rewound before real output is trusted again.
+pub(super) const UNSEEN_GRACE_SECS: i64 = 5;
 
 /// Panel row status, highest priority first. `Unseen` is a needs-attention
 /// hint, not a completion signal: the agent is idle and its window produced
@@ -1704,12 +1706,17 @@ pub(super) fn classify_panel_status(
     if sample.visible {
         return PanelStatus::Viewing;
     }
-    if classify_agent_status(now, Some(sample)) == WorkingIdle::Working {
-        return PanelStatus::Working;
+    // Working and Unseen both mean unseen output; only its recency differs.
+    let unseen = sample
+        .last_tmux_activity_epoch
+        .is_some_and(|activity| activity > last_viewed_epoch + UNSEEN_GRACE_SECS);
+    if !unseen {
+        return PanelStatus::Idle;
     }
-    match sample.last_tmux_activity_epoch {
-        Some(activity) if activity > last_viewed_epoch + UNSEEN_GRACE_SECS => PanelStatus::Unseen,
-        _ => PanelStatus::Idle,
+    if classify_agent_status(now, Some(sample)) == WorkingIdle::Working {
+        PanelStatus::Working
+    } else {
+        PanelStatus::Unseen
     }
 }
 
@@ -4610,12 +4617,18 @@ mod agent_status_tests {
         );
     }
 
+    fn working_at(now: Instant, epoch: i64) -> AgentActivitySample {
+        let mut sample = sample(now, Duration::from_secs(1), "node");
+        sample.last_tmux_activity_epoch = Some(epoch);
+        sample
+    }
+
     #[test]
     fn panel_status_viewing_beats_working_beats_unseen() {
         let now = Instant::now();
-        let mut viewing = sample(now, Duration::from_secs(1), "node");
+        let mut viewing = working_at(now, 1_000);
         viewing.visible = true;
-        let working = sample(now, Duration::from_secs(1), "node");
+        let working = working_at(now, 1_000);
 
         assert_eq!(
             classify_panel_status(now, Some(&viewing), 0),
@@ -4625,6 +4638,30 @@ mod agent_status_tests {
         assert_eq!(
             classify_panel_status(now, Some(&working), 0),
             PanelStatus::Working
+        );
+    }
+
+    #[test]
+    fn panel_status_recent_output_already_viewed_is_idle_not_working() {
+        let now = Instant::now();
+        let working = working_at(now, 1_000);
+
+        assert_eq!(
+            classify_panel_status(now, Some(&working), 1_000 - UNSEEN_GRACE_SECS - 1),
+            PanelStatus::Working
+        );
+        // A popup close stamps last_viewed at or after the redraw it caused.
+        assert_eq!(
+            classify_panel_status(now, Some(&working), 1_000 - UNSEEN_GRACE_SECS),
+            PanelStatus::Idle
+        );
+        assert_eq!(
+            classify_panel_status(now, Some(&working), 1_000),
+            PanelStatus::Idle
+        );
+        assert_eq!(
+            classify_panel_status(now, Some(&working), 1_005),
+            PanelStatus::Idle
         );
     }
 
