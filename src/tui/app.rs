@@ -1096,6 +1096,17 @@ impl App {
         self.last_telegram_respawn_at = Some(Instant::now());
     }
 
+    /// Task attach (`switch-client`) leaves the inner loop too; the bot must
+    /// only be cancelled when the process is actually quitting or restarting.
+    fn stop_telegram_if_exiting(&self) {
+        if !(self.should_quit || self.should_restart) {
+            return;
+        }
+        if let Some(ref h) = self.telegram {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
     fn restart_telegram_bot(&mut self) {
         // Stop existing bot if running
         if let Some(ref h) = self.telegram {
@@ -1117,6 +1128,20 @@ impl App {
             _ => {
                 tracing::info!("telegram bot disabled (token or chat_id not set)");
             }
+        }
+    }
+
+    /// Refresh the data behind the current view after a task tmux attach.
+    /// The `App` outlives the attach cycle, so `view`, `current_project`
+    /// and `selected_index` still hold the pre-attach state; only the
+    /// lists behind them are reloaded (selection is restored by row key).
+    fn on_return_from_attach(&mut self) {
+        match self.view {
+            View::TaskList => {
+                self.refresh_tasks_for_project();
+                self.refresh_agents();
+            }
+            _ => self.refresh_projects(),
         }
     }
 
@@ -5347,6 +5372,8 @@ pub fn run_tui(config: Config) -> Result<()> {
 
     // Create app once (persists across attach/return cycles)
     let mut app = App::new(config)?;
+    app.refresh_projects();
+    app.refresh_tasks();
 
     loop {
         // Setup terminal
@@ -5355,13 +5382,6 @@ pub fn run_tui(config: Config) -> Result<()> {
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
-
-        // Reset view state when returning from attach
-        app.current_project = None;
-        app.view = View::ProjectList;
-        app.should_quit = false;
-        app.refresh_projects();
-        app.refresh_tasks();
 
         // Main loop
         let mut attach_session: Option<String> = None;
@@ -5503,10 +5523,7 @@ pub fn run_tui(config: Config) -> Result<()> {
         )?;
         terminal.show_cursor()?;
 
-        // Signal Telegram bot to stop
-        if let Some(ref h) = app.telegram {
-            h.cancel.store(true, Ordering::Relaxed);
-        }
+        app.stop_telegram_if_exiting();
 
         // If user confirmed restart, exec the new binary
         #[cfg(unix)]
@@ -5524,10 +5541,11 @@ pub fn run_tui(config: Config) -> Result<()> {
             break;
         }
 
-        // Attach to tmux if requested, then loop back to restart TUI
+        // Attach to tmux if requested, then loop back to restart the TUI on
+        // the same view/project/row the user left from.
         if let Some(session) = attach_session {
             Tmux::attach_session(&session)?;
-            // After detaching or switching back, the loop continues and TUI restarts
+            app.on_return_from_attach();
         }
     }
 
@@ -6470,11 +6488,12 @@ mod tests {
         let project = format!("repo-{unique}");
         let branch = format!("branch-{unique}");
         let task = create_test_task(&config, &project, &branch);
+        let task_id = task.meta.task_id();
         let session = task.meta.primary_repo().tmux_session.clone();
         let _cleanup = TmuxSessionCleanup(vec![session.clone()]);
 
         let mut app = App::new_for_test(config).unwrap();
-        app.current_project = Some(project);
+        app.current_project = Some(project.clone());
         app.view = View::TaskList;
         app.refresh_tasks_for_project();
         app.selected_index = app
@@ -6496,6 +6515,9 @@ mod tests {
         );
         assert!(Tmux::session_exists(&session));
         assert_eq!(app.view, View::TaskList);
+        assert_eq!(app.current_project.as_deref(), Some(project.as_str()));
+        assert_eq!(app.attach_session_name, None);
+        assert_eq!(selected_task_id(&app).as_deref(), Some(task_id.as_str()));
     }
 
     #[test]
@@ -6536,10 +6558,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let task = Task { meta, dir };
         task.save_meta().unwrap();
-        let _cleanup = TmuxSessionCleanup(sessions);
+        let task_id = task.meta.task_id();
+        let _cleanup = TmuxSessionCleanup(sessions.clone());
 
         let mut app = App::new_for_test(config).unwrap();
-        app.current_project = Some(project);
+        app.current_project = Some(project.clone());
         app.view = View::TaskList;
         app.refresh_tasks_for_project();
         app.selected_index = app
@@ -6569,6 +6592,108 @@ mod tests {
         )))
         .unwrap();
         assert_eq!(app.view, View::TaskList);
+
+        // Reopen the picker and choose the first repo: the picker hands the
+        // session to the main loop and lands back on the same task row.
+        let enter = Event::Key(event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.handle_event(enter.clone()).unwrap());
+        assert_eq!(app.view, View::SessionPicker);
+        assert!(app.handle_event(enter).unwrap());
+        assert_eq!(app.view, View::TaskList);
+        assert_eq!(app.current_project.as_deref(), Some(project.as_str()));
+        assert_eq!(
+            app.attach_session_name.as_deref(),
+            Some(sessions[0].as_str())
+        );
+        assert_eq!(selected_task_id(&app).as_deref(), Some(task_id.as_str()));
+    }
+
+    #[test]
+    fn on_return_from_attach_reloads_tasks_and_keeps_task_list_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let project = "alpha".to_string();
+        let first = create_test_task(&config, &project, "first").meta.task_id();
+
+        let mut app = App::new_for_test(config.clone()).unwrap();
+        app.current_project = Some(project.clone());
+        app.view = View::TaskList;
+        app.refresh_tasks_for_project();
+        app.refresh_agents();
+        app.selected_index = app
+            .project_detail_rows()
+            .iter()
+            .position(|row| {
+                matches!(
+                    row,
+                    ProjectDetailRow::Task(ProjectTaskRow::Task { task, .. })
+                        if task.meta.task_id() == first
+                )
+            })
+            .expect("task row exists");
+        assert_eq!(app.tasks.len(), 1);
+
+        // A task created while the user was inside tmux must show up on return.
+        create_test_task(&config, &project, "second");
+
+        app.on_return_from_attach();
+
+        assert_eq!(app.view, View::TaskList);
+        assert_eq!(app.current_project.as_deref(), Some(project.as_str()));
+        assert_eq!(app.tasks.len(), 2);
+        assert_eq!(selected_task_id(&app).as_deref(), Some(first.as_str()));
+    }
+
+    #[test]
+    fn on_return_from_attach_reloads_projects_on_project_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let mut app = App::new_for_test(config.clone()).unwrap();
+        assert_eq!(app.view, View::ProjectList);
+        assert!(app.projects.is_empty());
+
+        Project::create(&config, "alpha", "Alpha project").unwrap();
+
+        app.on_return_from_attach();
+
+        assert_eq!(app.view, View::ProjectList);
+        assert_eq!(app.current_project, None);
+        assert!(app.projects.iter().any(|p| p.meta.name == "alpha"));
+    }
+
+    #[test]
+    fn stop_telegram_if_exiting_only_cancels_on_quit_or_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(test_config(tmp.path())).unwrap();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        app.telegram = Some(agman::telegram::TelegramHandle {
+            cancel: cancel.clone(),
+            heartbeat: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            join: std::thread::spawn(|| {}),
+        });
+
+        // Task attach breaks the inner loop without quitting: bot keeps running.
+        app.stop_telegram_if_exiting();
+        assert!(!cancel.load(Ordering::Relaxed));
+
+        app.should_restart = true;
+        app.stop_telegram_if_exiting();
+        assert!(cancel.load(Ordering::Relaxed));
+
+        cancel.store(false, Ordering::Relaxed);
+        app.should_restart = false;
+        app.should_quit = true;
+        app.stop_telegram_if_exiting();
+        assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    fn selected_task_id(app: &App) -> Option<String> {
+        match app.selected_project_detail_row() {
+            Some(ProjectDetailRow::Task(ProjectTaskRow::Task { task, .. })) => {
+                Some(task.meta.task_id())
+            }
+            _ => None,
+        }
     }
 
     fn tmux_available() -> bool {
