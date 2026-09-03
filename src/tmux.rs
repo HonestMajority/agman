@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -13,6 +14,7 @@ pub struct TmuxWindowActivity {
     pub window_activity: Option<i64>,
     pub pane_current_command: String,
     pub pane_dead: bool,
+    pub window_id: String,
 }
 
 impl Tmux {
@@ -396,7 +398,16 @@ impl Tmux {
     ) -> Result<bool> {
         let target = Self::tmux_target(session_name, window);
         let target_window_id = Self::required_window_id(&target)?;
+        let client_window_ids = Self::list_client_window_ids()?;
+        Ok(window_id_is_visible(
+            &target_window_id,
+            client_window_ids.iter().map(String::as_str),
+        ))
+    }
 
+    /// Window ids currently on screen for every attached tmux client, in one
+    /// `list-clients` call.
+    pub fn list_client_window_ids() -> Result<HashSet<String>> {
         let output = Command::new("tmux")
             .args(["list-clients", "-F", "#{window_id}"])
             .output()
@@ -409,11 +420,9 @@ impl Tmux {
             );
         }
 
-        let client_window_ids = String::from_utf8_lossy(&output.stdout);
-        Ok(window_id_is_visible(
-            &target_window_id,
-            client_window_ids.lines(),
-        ))
+        Ok(parse_client_window_ids(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     fn window_exists(session_name: &str, window_name: &str) -> Result<bool> {
@@ -681,7 +690,7 @@ impl Tmux {
                 "list-windows",
                 "-a",
                 "-F",
-                "#{session_name}\t#{window_activity}\t#{pane_current_command}\t#{pane_dead}",
+                "#{session_name}\t#{window_activity}\t#{pane_current_command}\t#{pane_dead}\t#{window_id}",
             ])
             .output()
             .context("failed to query tmux window activity")?;
@@ -694,32 +703,10 @@ impl Tmux {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut windows = Vec::new();
-        for line in stdout.lines() {
-            let mut parts = line.splitn(4, '\t');
-            let session_name = parts.next().unwrap_or_default().to_string();
-            if session_name.is_empty() {
-                continue;
-            }
-            let window_activity = parts.next().and_then(|s| {
-                let trimmed = s.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    trimmed.parse::<i64>().ok()
-                }
-            });
-            let pane_current_command = parts.next().unwrap_or_default().trim().to_string();
-            let pane_dead = matches!(parts.next().unwrap_or_default().trim(), "1" | "true");
-            windows.push(TmuxWindowActivity {
-                session_name,
-                window_activity,
-                pane_current_command,
-                pane_dead,
-            });
-        }
-
-        Ok(windows)
+        Ok(stdout
+            .lines()
+            .filter_map(parse_window_activity_line)
+            .collect())
     }
 
     /// Send just an Enter key press to a session (for retry when text was pasted
@@ -984,10 +971,48 @@ fn window_id_is_visible<'a>(
         .any(|id| id.trim() == target_window_id)
 }
 
+fn parse_client_window_ids(stdout: &str) -> HashSet<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Parse one `list-windows` line in the `list_window_activity` format:
+/// `session\tactivity\tcommand\tdead\twindow_id`.
+fn parse_window_activity_line(line: &str) -> Option<TmuxWindowActivity> {
+    let mut parts = line.splitn(5, '\t');
+    let session_name = parts.next().unwrap_or_default().to_string();
+    if session_name.is_empty() {
+        return None;
+    }
+    let window_activity = parts.next().and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            trimmed.parse::<i64>().ok()
+        }
+    });
+    let pane_current_command = parts.next().unwrap_or_default().trim().to_string();
+    let pane_dead = matches!(parts.next().unwrap_or_default().trim(), "1" | "true");
+    let window_id = parts.next().unwrap_or_default().trim().to_string();
+    Some(TmuxWindowActivity {
+        session_name,
+        window_activity,
+        pane_current_command,
+        pane_dead,
+        window_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        link_window_args, rename_window_args, unlink_window_args, window_id_is_visible, Tmux,
+        link_window_args, parse_client_window_ids, parse_window_activity_line, rename_window_args,
+        unlink_window_args, window_id_is_visible, Tmux, TmuxWindowActivity,
     };
 
     #[test]
@@ -1101,5 +1126,42 @@ mod tests {
         assert!(window_id_is_visible("@42", ["@1", "@42", "@9"]));
         assert!(window_id_is_visible("@42", [" @42 "]));
         assert!(!window_id_is_visible("@42", ["@1", "@9"]));
+    }
+
+    #[test]
+    fn client_window_ids_are_trimmed_and_deduplicated() {
+        let ids = parse_client_window_ids("@1\n @42 \n\n@42\n");
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("@1"));
+        assert!(ids.contains("@42"));
+    }
+
+    #[test]
+    fn window_activity_line_parses_all_fields() {
+        assert_eq!(
+            parse_window_activity_line("agman-pm-alpha\t1788263374\tnode\t0\t@84"),
+            Some(TmuxWindowActivity {
+                session_name: "agman-pm-alpha".to_string(),
+                window_activity: Some(1788263374),
+                pane_current_command: "node".to_string(),
+                pane_dead: false,
+                window_id: "@84".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn window_activity_line_tolerates_missing_fields() {
+        assert_eq!(parse_window_activity_line(""), None);
+        assert_eq!(
+            parse_window_activity_line("s\t\tzsh\t1"),
+            Some(TmuxWindowActivity {
+                session_name: "s".to_string(),
+                window_activity: None,
+                pane_current_command: "zsh".to_string(),
+                pane_dead: true,
+                window_id: String::new(),
+            })
+        );
     }
 }

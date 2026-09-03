@@ -180,6 +180,10 @@ impl Config {
         self.base_dir.join("dismissed_notifications.json")
     }
 
+    pub fn last_viewed_path(&self) -> PathBuf {
+        self.base_dir.join("last_viewed.json")
+    }
+
     /// Resolve the configured harness kind. Falls back to `Claude` when the
     /// `harness` config key is absent or unparseable.
     pub fn harness_kind(&self) -> HarnessKind {
