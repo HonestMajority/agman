@@ -10,7 +10,7 @@ agman is a Rust CLI/TUI for coordinating long-lived AI agents. It manages projec
 - A task owns branch/worktree/status metadata and exactly one attached Engineer agent.
 - Researcher, Tester, Reviewer, and Operator agents use the same persisted agent model as Engineers.
 - Non-engineer agents can be unattached project agents or attached to tasks.
-- Communication is inbox-based. Use `agman send-message <target> ...`.
+- Communication is inbox-based. Use `agman send-message <target> --from <sender> ...`. `--from` is required and must itself be a valid target (or the reserved `telegram`/`system`); PMs send as their project name, first prompts are seeded from the project name.
 - Message targets are concrete agents or PMs, not task IDs. Examples:
   - `engineer:<project>--<name>`
   - `reviewer:<project>--<name>`
