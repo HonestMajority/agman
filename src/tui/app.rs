@@ -500,6 +500,7 @@ pub enum PanelTarget {
     Agent {
         project: String,
         name: String,
+        kind: &'static str,
         kind_tag: &'static str,
     },
 }
@@ -521,6 +522,18 @@ impl PanelTarget {
             Self::Agent { name, .. } => name.clone(),
         }
     }
+}
+
+/// Border title for an agent popup: the kind already leads, so a name that
+/// repeats it as a prefix drops the prefix to keep the distinguishing part
+/// visible on narrow popups.
+fn agent_popup_title(kind: &str, name: &str, project: &str) -> String {
+    let short_name = name
+        .strip_prefix(kind)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(name);
+    format!("{kind} - {short_name} - {project}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -558,6 +571,7 @@ impl PanelRosterEntry {
             target: PanelTarget::Agent {
                 project: record.meta.project.clone(),
                 name: record.meta.name.clone(),
+                kind: App::agent_kind_label(&record.meta.kind),
                 kind_tag,
             },
             session: App::agent_session_name(record),
@@ -1688,9 +1702,12 @@ impl App {
         match entry.target {
             PanelTarget::ChiefOfStaff => self.open_chief_of_staff_chat(),
             PanelTarget::Pm { project } => self.open_pm_chat(&project),
-            PanelTarget::Agent { project, name, .. } => {
-                self.open_agent_session(&project, &name, &entry.session)
-            }
+            PanelTarget::Agent {
+                project,
+                name,
+                kind,
+                ..
+            } => self.open_agent_session(&project, &name, kind, &entry.session),
         }
     }
 
@@ -2151,10 +2168,15 @@ impl App {
 
     fn open_agent(&mut self, agent: &AgentRecord) {
         let session_name = Self::agent_session_name(agent);
-        self.open_agent_session(&agent.meta.project, &agent.meta.name, &session_name);
+        self.open_agent_session(
+            &agent.meta.project,
+            &agent.meta.name,
+            Self::agent_kind_label(&agent.meta.kind),
+            &session_name,
+        );
     }
 
-    fn open_agent_session(&mut self, project: &str, name: &str, session_name: &str) {
+    fn open_agent_session(&mut self, project: &str, name: &str, kind: &str, session_name: &str) {
         if self.popup.is_some() {
             return;
         }
@@ -2172,7 +2194,7 @@ impl App {
             }
         }
 
-        match Tmux::popup_attach(session_name) {
+        match Tmux::popup_attach(session_name, &agent_popup_title(kind, name, project)) {
             Ok(child) => {
                 tracing::info!(session = session_name, "attached to agent session");
                 self.open_popup(child, session_name.to_string());
@@ -5984,6 +6006,26 @@ mod tests {
     use agman::task::{LinkedPr, RepoEntry, TaskMeta};
 
     #[test]
+    fn agent_popup_title_leads_with_kind_and_drops_repeated_prefix() {
+        assert_eq!(
+            agent_popup_title(
+                "engineer",
+                "engineer-agman-tmux-popup-title-labels",
+                "agman-improvements"
+            ),
+            "engineer - agman-tmux-popup-title-labels - agman-improvements"
+        );
+        assert_eq!(
+            agent_popup_title("researcher", "res-one", "alpha"),
+            "researcher - res-one - alpha"
+        );
+        assert_eq!(
+            agent_popup_title("engineer", "engineer-", "alpha"),
+            "engineer - engineer- - alpha"
+        );
+    }
+
+    #[test]
     fn apply_project_refresh_snapshot_preserves_counts_and_clamps_selection() {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config(tmp.path());
@@ -7699,6 +7741,7 @@ mod tests {
             PanelTarget::Agent {
                 project: "alpha".to_string(),
                 name: "res-one".to_string(),
+                kind: "researcher",
                 kind_tag: "res",
             }
         );
