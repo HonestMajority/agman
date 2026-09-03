@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::app::{
     AgentActivitySample, App, ArchiveKind, BranchSource, DirKind, DirPickerOrigin, NotesFocus,
-    PanelEntry, ProjectDetailRow, ProjectTaskRow, View, WizardStep, PANEL_WIDTH,
+    PanelEntry, PanelTarget, ProjectDetailRow, ProjectTaskRow, View, WizardStep, PANEL_WIDTH,
 };
 use super::vim::VimMode;
 
@@ -1793,13 +1793,13 @@ fn panel_row(
     with_project: bool,
     now_epoch: Option<i64>,
 ) -> ListItem<'static> {
-    let age = panel_age(entry.last_activity_epoch, now_epoch);
+    let age = format!("{:>4}", panel_age(entry.last_activity_epoch, now_epoch));
     let tag = format!("{:<3}", entry.target.kind_tag());
     // "<glyph> <tag> <label> <age>"
-    let label_width = width.saturating_sub(1 + 1 + tag.len() + 1 + 1 + age.len());
+    let label_width = width.saturating_sub(1 + 1 + 3 + 1 + 1 + 4);
     let label = format!(
         "{:<width$}",
-        truncate_with_ellipsis(&entry.target.label(with_project), label_width),
+        panel_label(&entry.target, with_project, label_width),
         width = label_width
     );
     ListItem::new(Line::from(vec![
@@ -1813,9 +1813,45 @@ fn panel_row(
     ]))
 }
 
+/// Keep the distinguishing agent name visible: drop the kind prefix the tag
+/// column already shows, then shrink the project segment before the name.
+fn panel_label(target: &PanelTarget, with_project: bool, width: usize) -> String {
+    let PanelTarget::Agent {
+        project,
+        name,
+        kind_tag,
+    } = target
+    else {
+        return truncate_with_ellipsis(&target.label(with_project), width);
+    };
+    let name = truncate_with_ellipsis(strip_kind_prefix(name, kind_tag), width);
+    if !with_project {
+        return name;
+    }
+    let project_room = width.saturating_sub(name.chars().count() + 1);
+    if project_room == 0 {
+        return name;
+    }
+    format!("{}/{name}", truncate_with_ellipsis(project, project_room))
+}
+
+fn strip_kind_prefix<'a>(name: &'a str, kind_tag: &str) -> &'a str {
+    let prefix = match kind_tag {
+        "eng" => "engineer-",
+        "res" => "researcher-",
+        "rev" => "reviewer-",
+        "tst" => "tester-",
+        "op" => "operator-",
+        _ => return name,
+    };
+    name.strip_prefix(prefix)
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(name)
+}
+
 fn panel_age(activity_epoch: Option<i64>, now_epoch: Option<i64>) -> String {
     let (Some(activity), Some(now)) = (activity_epoch, now_epoch) else {
-        return "—".to_string();
+        return "-".to_string();
     };
     let secs = now.saturating_sub(activity).max(0);
     if secs < 60 {
@@ -2483,6 +2519,9 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     } else {
         let mut spans = help_text;
         if app.panel_visible && matches!(app.view, View::ProjectList | View::TaskList) {
+            if !spans.last().is_some_and(|span| span.content.ends_with(' ')) {
+                spans.push(Span::raw("  "));
+            }
             spans.extend([
                 Span::styled("→", Style::default().fg(Color::LightCyan)),
                 Span::styled(" agents  ", Style::default().fg(Color::DarkGray)),
@@ -4625,9 +4664,49 @@ mod agent_status_tests {
     }
 
     #[test]
+    fn panel_label_keeps_agent_name_and_shrinks_project_first() {
+        let engineer = PanelTarget::Agent {
+            project: "agman-improvements".to_string(),
+            name: "engineer-agman-agent-status-panel".to_string(),
+            kind_tag: "eng",
+        };
+        assert_eq!(
+            panel_label(&engineer, true, 60),
+            "agman-improvements/agman-agent-status-panel"
+        );
+        assert_eq!(
+            panel_label(&engineer, true, 30),
+            "agma…/agman-agent-status-panel"
+        );
+        assert_eq!(panel_label(&engineer, true, 25), "agman-agent-status-panel");
+        assert_eq!(panel_label(&engineer, true, 23), "agman-agent-status-pan…");
+        assert_eq!(
+            panel_label(&engineer, false, 60),
+            "agman-agent-status-panel"
+        );
+
+        let researcher = PanelTarget::Agent {
+            project: "p".to_string(),
+            name: "res-one".to_string(),
+            kind_tag: "res",
+        };
+        assert_eq!(panel_label(&researcher, true, 10), "p/res-one");
+        let bare = PanelTarget::Agent {
+            project: "p".to_string(),
+            name: "engineer-".to_string(),
+            kind_tag: "eng",
+        };
+        assert_eq!(panel_label(&bare, false, 20), "engineer-");
+        let pm = PanelTarget::Pm {
+            project: "agman-improvements".to_string(),
+        };
+        assert_eq!(panel_label(&pm, true, 8), "agman-i…");
+    }
+
+    #[test]
     fn panel_age_is_compact() {
-        assert_eq!(panel_age(None, Some(100)), "—");
-        assert_eq!(panel_age(Some(100), None), "—");
+        assert_eq!(panel_age(None, Some(100)), "-");
+        assert_eq!(panel_age(Some(100), None), "-");
         assert_eq!(panel_age(Some(100), Some(130)), "now");
         assert_eq!(panel_age(Some(100), Some(100 + 5 * 60)), "5m");
         assert_eq!(panel_age(Some(100), Some(100 + 3 * 3_600)), "3h");

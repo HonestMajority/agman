@@ -1580,8 +1580,22 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.move_panel_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_panel_selection(-1),
             KeyCode::Enter => self.open_panel_entry(),
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Left | KeyCode::Tab | KeyCode::BackTab => {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Left => {
                 self.panel_focus = false;
+            }
+            // Continue the section cycle: forward lands on agents, backward
+            // on tasks. The project list has no sections, so just blur.
+            KeyCode::Tab => {
+                self.panel_focus = false;
+                if self.view == View::TaskList {
+                    self.select_first_project_detail_row();
+                }
+            }
+            KeyCode::BackTab => {
+                self.panel_focus = false;
+                if self.view == View::TaskList {
+                    self.select_first_project_detail_task_row();
+                }
             }
             // Swallow everything else so main-view actions (archive, delete,
             // respawn, ...) cannot fire while the panel has focus.
@@ -1871,6 +1885,22 @@ impl App {
         }
     }
 
+    /// First actionable row of the tasks section, else the first actionable
+    /// row overall.
+    fn select_first_project_detail_task_row(&mut self) {
+        let rows = self.project_detail_rows();
+        let tasks_start = rows
+            .iter()
+            .position(|row| matches!(row, ProjectDetailRow::TasksSectionHeader))
+            .unwrap_or(0);
+        match (tasks_start..rows.len())
+            .find(|idx| Self::project_detail_row_is_actionable(&rows[*idx]))
+        {
+            Some(idx) => self.selected_index = idx,
+            None => self.select_first_project_detail_row(),
+        }
+    }
+
     fn project_detail_selection_in_agents_section(&self) -> bool {
         let rows = self.project_detail_rows();
         let tasks_start = rows
@@ -1880,7 +1910,9 @@ impl App {
         self.selected_index < tasks_start
     }
 
-    fn jump_to_next_project_detail_section(&mut self) {
+    /// Returns whether the selection moved (false when the other section
+    /// has no actionable row).
+    fn jump_to_next_project_detail_section(&mut self) -> bool {
         let rows = self.project_detail_rows();
         let tasks_start = rows
             .iter()
@@ -1892,15 +1924,19 @@ impl App {
         } else {
             1..tasks_start
         };
-        if let Some(idx) = search_range.find(|idx| {
+        match search_range.find(|idx| {
             rows.get(*idx)
                 .is_some_and(Self::project_detail_row_is_actionable)
         }) {
-            self.selected_index = idx;
+            Some(idx) => {
+                self.selected_index = idx;
+                true
+            }
+            None => false,
         }
     }
 
-    fn jump_to_previous_project_detail_section(&mut self) {
+    fn jump_to_previous_project_detail_section(&mut self) -> bool {
         let rows = self.project_detail_rows();
         let tasks_start = rows
             .iter()
@@ -1912,11 +1948,15 @@ impl App {
         } else {
             tasks_start.saturating_add(1)..rows.len()
         };
-        if let Some(idx) = search_range.find(|idx| {
+        match search_range.find(|idx| {
             rows.get(*idx)
                 .is_some_and(Self::project_detail_row_is_actionable)
         }) {
-            self.selected_index = idx;
+            Some(idx) => {
+                self.selected_index = idx;
+                true
+            }
+            None => false,
         }
     }
 
@@ -2983,19 +3023,22 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.next_project_detail_row();
             }
-            // Tab cycles agents -> tasks -> panel (when shown) -> agents.
+            // Tab cycles agents -> tasks -> panel (when shown) -> agents; a
+            // section with nothing to land on is skipped.
             KeyCode::Tab => {
-                if self.panel_visible && !self.project_detail_selection_in_agents_section() {
+                let in_agents = self.project_detail_selection_in_agents_section();
+                let moved = (!self.panel_visible || in_agents)
+                    && self.jump_to_next_project_detail_section();
+                if !moved && self.panel_visible {
                     self.focus_panel();
-                } else {
-                    self.jump_to_next_project_detail_section();
                 }
             }
             KeyCode::BackTab => {
-                if self.panel_visible && self.project_detail_selection_in_agents_section() {
+                let in_agents = self.project_detail_selection_in_agents_section();
+                let moved = (!self.panel_visible || !in_agents)
+                    && self.jump_to_previous_project_detail_section();
+                if !moved && self.panel_visible {
                     self.focus_panel();
-                } else {
-                    self.jump_to_previous_project_detail_section();
                 }
             }
             KeyCode::Right => {
@@ -7366,16 +7409,60 @@ mod tests {
         app.handle_event(key(KeyCode::Esc)).unwrap();
         assert!(!app.panel_focus);
 
-        // Hidden panel keeps the pre-existing two-section wrap.
+        // From the panel, Tab continues to the agents section and BackTab
+        // goes back to the tasks section.
+        app.handle_event(key(KeyCode::Right)).unwrap();
+        assert!(app.panel_focus);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(!app.panel_focus);
+        assert!(app.project_detail_selection_in_agents_section());
+        app.handle_event(key(KeyCode::Right)).unwrap();
+        app.handle_event(key(KeyCode::BackTab)).unwrap();
+        assert!(!app.panel_focus);
+        assert!(!app.project_detail_selection_in_agents_section());
+        assert_eq!(app.selected_index, tasks_selection);
+
+        // Hidden panel keeps the pre-existing two-section wrap (selection is
+        // in the tasks section here).
         app.update_panel_visibility(80);
         app.handle_event(key(KeyCode::Tab)).unwrap();
-        assert!(!app.project_detail_selection_in_agents_section());
-        app.handle_event(key(KeyCode::Tab)).unwrap();
         assert!(app.project_detail_selection_in_agents_section());
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(!app.project_detail_selection_in_agents_section());
         assert!(!app.panel_focus);
 
         app.handle_event(key(KeyCode::Char('q'))).unwrap();
         assert_eq!(app.view, View::ProjectList);
+    }
+
+    #[test]
+    fn task_list_tab_reaches_panel_when_the_other_section_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        config.ensure_dirs().unwrap();
+        AgentRecord::create(&config, "alpha", "res-one", "r", researcher_kind()).unwrap();
+
+        let mut app = App::new_for_test(config).unwrap();
+        app.current_project = Some("alpha".to_string());
+        app.refresh_tasks_for_project();
+        app.refresh_agents();
+        app.view = View::TaskList;
+        app.select_first_project_detail_row();
+        assert!(app.tasks.is_empty());
+        assert!(app.project_detail_selection_in_agents_section());
+
+        // Hidden panel: nothing to jump to, selection stays put.
+        app.update_panel_visibility(80);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(app.project_detail_selection_in_agents_section());
+        assert!(!app.panel_focus);
+
+        app.update_panel_visibility(120);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(app.panel_focus);
+        app.handle_event(key(KeyCode::Esc)).unwrap();
+        app.handle_event(key(KeyCode::BackTab)).unwrap();
+        assert!(app.panel_focus);
     }
 
     #[test]
