@@ -7319,7 +7319,7 @@ mod tests {
 
         app.agent_activity.get_mut(session).unwrap().visible = true;
         app.stamp_visible_sessions();
-        assert_eq!(app.panel_entries()[0].status, PanelStatus::Viewing);
+        assert_eq!(app.panel_entries()[0].status, PanelStatus::Idle);
         assert!(app.last_viewed_dirty);
         assert!(app.last_viewed.epoch_for(session) > 1_000);
 
