@@ -151,6 +151,23 @@ struct PopupActivitySuppression {
     ended_at: i64,
 }
 
+/// Samples arrive about once a second while the TUI runs; a larger gap
+/// between two unconfirmed epochs means the earlier burst has ended.
+const ACTIVITY_BURST_GAP_SECS: i64 = 10;
+
+/// Output-burst confirmation for one tmux session. A newer `window_activity`
+/// epoch counts as real agent activity only once output has spanned two
+/// distinct seconds: an idle harness writes invisible single-second
+/// housekeeping updates (Claude Code does so hourly, in launch-time batches),
+/// whereas a real turn repaints across many seconds. Until then samples are
+/// rewound to `confirmed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActivityBurst {
+    confirmed: i64,
+    /// `(first, last)` epochs of an unconfirmed burst newer than `confirmed`.
+    pending: Option<(i64, i64)>,
+}
+
 /// Which wizard requested the directory picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirPickerOrigin {
@@ -973,6 +990,7 @@ pub struct App {
     last_viewed_dirty: bool,
     last_viewed_saved_at: Instant,
     popup_activity_suppression: HashMap<String, PopupActivitySuppression>,
+    activity_bursts: HashMap<String, ActivityBurst>,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
@@ -1183,6 +1201,7 @@ impl App {
             last_viewed_dirty: false,
             last_viewed_saved_at: Instant::now(),
             popup_activity_suppression: HashMap::new(),
+            activity_bursts: HashMap::new(),
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -1261,6 +1280,44 @@ impl App {
             session,
             activity_before,
         });
+    }
+
+    /// Rewind samples whose newest `window_activity` has not yet spanned two
+    /// distinct seconds. A session's first sample is trusted as-is, so a TUI
+    /// restart keeps its conservative behaviour.
+    fn confirm_activity_bursts(&mut self) {
+        for (session, sample) in &mut self.agent_activity {
+            let Some(activity) = sample.last_tmux_activity_epoch else {
+                continue;
+            };
+            let Some(burst) = self.activity_bursts.get_mut(session) else {
+                self.activity_bursts.insert(
+                    session.clone(),
+                    ActivityBurst {
+                        confirmed: activity,
+                        pending: None,
+                    },
+                );
+                continue;
+            };
+            if activity <= burst.confirmed {
+                burst.pending = None;
+                continue;
+            }
+            let (first, last) = match burst.pending {
+                Some((first, last)) if activity - last <= ACTIVITY_BURST_GAP_SECS => {
+                    (first, activity)
+                }
+                _ => (activity, activity),
+            };
+            if last > first {
+                burst.confirmed = activity;
+                burst.pending = None;
+            } else {
+                burst.pending = Some((first, last));
+                sample.rewind_activity_to(burst.confirmed);
+            }
+        }
     }
 
     /// Rewind samples still carrying popup-caused activity; drop each
@@ -1391,6 +1448,8 @@ impl App {
     /// lists behind them are reloaded (selection is restored by row key).
     fn on_return_from_attach(&mut self) {
         self.panel_focus = false;
+        // The TUI was blind while attached, so burst continuity is unknown.
+        self.activity_bursts.clear();
         match self.view {
             View::TaskList => {
                 self.refresh_tasks_for_project();
@@ -1460,7 +1519,10 @@ impl App {
             self.last_viewed_dirty |= self.last_viewed.retain_sessions(&roster) > 0;
             self.popup_activity_suppression
                 .retain(|session, _| roster.contains(session));
+            self.activity_bursts
+                .retain(|session, _| roster.contains(session));
         }
+        self.confirm_activity_bursts();
         self.suppress_popup_activity();
         self.stamp_visible_sessions();
 
@@ -1544,6 +1606,7 @@ impl App {
         let (agent_activity, error) = build_agent_activity_snapshot(&active_sessions);
         self.note_agent_activity_error(error);
         self.agent_activity = agent_activity;
+        self.confirm_activity_bursts();
         self.suppress_popup_activity();
         self.stamp_visible_sessions();
     }
@@ -7528,6 +7591,254 @@ mod tests {
 
         app.apply_project_refresh_snapshot(activity_snapshot(&[], HashMap::new()));
         assert!(app.popup_activity_suppression.is_empty());
+    }
+
+    fn burst_app(now: i64, sessions: &[(&str, i64)]) -> (tempfile::TempDir, App) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        config.ensure_dirs().unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+        app.last_viewed = LastViewed {
+            tracking_since: now - 7000,
+            sessions: HashMap::new(),
+        };
+        let roster: Vec<&str> = sessions.iter().map(|(s, _)| *s).collect();
+        app.apply_project_refresh_snapshot(activity_snapshot(
+            &roster,
+            sessions
+                .iter()
+                .map(|(s, epoch)| (s.to_string(), idle_sample(*epoch)))
+                .collect(),
+        ));
+        (tmp, app)
+    }
+
+    fn apply_activity(app: &mut App, roster: &[&str], session: &str, epoch: i64, age: u64) {
+        let mut activity = app.agent_activity.clone();
+        activity.insert(
+            session.to_string(),
+            activity_sample(epoch, Duration::from_secs(age), "node"),
+        );
+        app.apply_project_refresh_snapshot(activity_snapshot(roster, activity));
+    }
+
+    fn panel_entry(app: &App, session: &str) -> PanelEntry {
+        app.panel_entries()
+            .into_iter()
+            .find(|entry| entry.session == session)
+            .unwrap()
+    }
+
+    #[test]
+    fn first_activity_sample_is_trusted_without_confirmation() {
+        let now = unix_epoch_secs().unwrap();
+        let (_tmp, app) = burst_app(now, &[("a", now - 60), ("b", now - 7100)]);
+
+        assert_eq!(panel_sessions(&app), vec!["a", "b"]);
+        assert_eq!(panel_entry(&app, "a").status, PanelStatus::Unseen);
+        assert_eq!(
+            app.activity_bursts["a"],
+            ActivityBurst {
+                confirmed: now - 60,
+                pending: None,
+            }
+        );
+    }
+
+    #[test]
+    fn single_second_activity_bump_is_ignored_until_output_spans_two_seconds() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let roster = ["a", "b"];
+        let (_tmp, mut app) = burst_app(now, &[("a", old), ("b", now - 7100)]);
+        assert_eq!(panel_sessions(&app), vec!["b", "a"]);
+
+        let bump = now - 60;
+        for _ in 0..3 {
+            apply_activity(&mut app, &roster, "a", bump, 60);
+            let entry = panel_entry(&app, "a");
+            assert_eq!(panel_sessions(&app), vec!["b", "a"]);
+            assert_eq!(entry.status, PanelStatus::Idle);
+            assert_eq!(entry.last_activity_epoch, Some(old));
+            assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+        }
+
+        apply_activity(&mut app, &roster, "a", bump + 1, 59);
+        let entry = panel_entry(&app, "a");
+        assert_eq!(panel_sessions(&app), vec!["a", "b"]);
+        assert_eq!(entry.status, PanelStatus::Unseen);
+        assert_eq!(entry.last_activity_epoch, Some(bump + 1));
+        assert_eq!(
+            app.activity_bursts["a"],
+            ActivityBurst {
+                confirmed: bump + 1,
+                pending: None,
+            }
+        );
+    }
+
+    #[test]
+    fn confirmed_burst_reports_working_to_panel_and_task_list_together() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let roster = ["a"];
+        let (_tmp, mut app) = burst_app(now, &[("a", old)]);
+
+        apply_activity(&mut app, &roster, "a", now - 1, 1);
+        assert_eq!(panel_entry(&app, "a").status, PanelStatus::Idle);
+        assert_eq!(
+            ui::classify_agent_status(Instant::now(), app.agent_activity_sample("a")),
+            ui::WorkingIdle::Idle
+        );
+
+        apply_activity(&mut app, &roster, "a", now, 0);
+        assert_eq!(panel_entry(&app, "a").status, PanelStatus::Working);
+        assert_eq!(
+            ui::classify_agent_status(Instant::now(), app.agent_activity_sample("a")),
+            ui::WorkingIdle::Working
+        );
+    }
+
+    #[test]
+    fn identical_single_second_bumps_keep_every_idle_session_in_place() {
+        let now = unix_epoch_secs().unwrap();
+        let names: Vec<String> = (0..8).map(|i| format!("agman-pm-p{i}")).collect();
+        let roster: Vec<&str> = names.iter().map(String::as_str).collect();
+        let sessions: Vec<(&str, i64)> = roster
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (*s, now - 7200 - 10 * i as i64))
+            .collect();
+        let (_tmp, mut app) = burst_app(now, &sessions);
+        assert_eq!(panel_sessions(&app), roster);
+
+        let bump = now - 60;
+        for _ in 0..3 {
+            let bumped = roster
+                .iter()
+                .map(|s| {
+                    (
+                        s.to_string(),
+                        activity_sample(bump, Duration::from_secs(60), "node"),
+                    )
+                })
+                .collect();
+            app.apply_project_refresh_snapshot(activity_snapshot(&roster, bumped));
+            assert_eq!(panel_sessions(&app), roster);
+            for (entry, (_, old)) in app.panel_entries().iter().zip(&sessions) {
+                assert_eq!(entry.status, PanelStatus::Idle);
+                assert_eq!(entry.last_activity_epoch, Some(*old));
+            }
+        }
+    }
+
+    #[test]
+    fn isolated_single_second_bumps_never_confirm() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let roster = ["a", "b"];
+        let (_tmp, mut app) = burst_app(now, &[("a", old), ("b", now - 7100)]);
+
+        let first = now - 3600;
+        apply_activity(&mut app, &roster, "a", first, 3600);
+        let second = first + ACTIVITY_BURST_GAP_SECS + 1;
+        apply_activity(
+            &mut app,
+            &roster,
+            "a",
+            second,
+            3600 - ACTIVITY_BURST_GAP_SECS as u64 - 1,
+        );
+        let entry = panel_entry(&app, "a");
+        assert_eq!(panel_sessions(&app), vec!["b", "a"]);
+        assert_eq!(entry.status, PanelStatus::Idle);
+        assert_eq!(entry.last_activity_epoch, Some(old));
+        assert_eq!(
+            app.activity_bursts["a"],
+            ActivityBurst {
+                confirmed: old,
+                pending: Some((second, second)),
+            }
+        );
+
+        // A follow-up inside the continuity gap chains and confirms.
+        let third = second + ACTIVITY_BURST_GAP_SECS;
+        apply_activity(
+            &mut app,
+            &roster,
+            "a",
+            third,
+            3600 - 2 * ACTIVITY_BURST_GAP_SECS as u64 - 1,
+        );
+        let entry = panel_entry(&app, "a");
+        assert_eq!(panel_sessions(&app), vec!["a", "b"]);
+        assert_eq!(entry.status, PanelStatus::Unseen);
+        assert_eq!(entry.last_activity_epoch, Some(third));
+    }
+
+    #[test]
+    fn return_from_attach_trusts_the_next_activity_sample() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let roster = ["a"];
+        let (_tmp, mut app) = burst_app(now, &[("a", old)]);
+        let bump = now - 60;
+        apply_activity(&mut app, &roster, "a", bump, 60);
+        assert_eq!(panel_entry(&app, "a").status, PanelStatus::Idle);
+
+        app.view = View::TaskList;
+        app.current_project = Some("(unassigned)".to_string());
+        app.on_return_from_attach();
+        assert!(app.activity_bursts.is_empty());
+
+        app.view = View::ProjectList;
+        app.current_project = None;
+        app.apply_project_refresh_snapshot(activity_snapshot(
+            &roster,
+            HashMap::from([(
+                "a".to_string(),
+                activity_sample(bump, Duration::from_secs(60), "node"),
+            )]),
+        ));
+        let entry = panel_entry(&app, "a");
+        assert_eq!(entry.status, PanelStatus::Unseen);
+        assert_eq!(entry.last_activity_epoch, Some(bump));
+    }
+
+    #[test]
+    fn popup_suppression_still_hides_a_confirmed_popup_burst() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let roster = ["a", "b"];
+        let (_tmp, mut app) = burst_app(now, &[("a", old), ("b", now - 7100)]);
+
+        let suppression = open_and_close_popup(&mut app, "a");
+        assert_eq!(suppression.activity_before, old);
+        let boundary = suppression.ended_at + ui::UNSEEN_GRACE_SECS;
+
+        // Key echo inside the popup spans two seconds: confirmed as a burst,
+        // then rewound because it is viewer-caused.
+        apply_activity(&mut app, &roster, "a", suppression.ended_at - 1, 1);
+        apply_activity(&mut app, &roster, "a", suppression.ended_at, 0);
+        assert_eq!(app.activity_bursts["a"].confirmed, suppression.ended_at);
+        let entry = panel_entry(&app, "a");
+        assert_eq!(panel_sessions(&app), vec!["b", "a"]);
+        assert_eq!(entry.status, PanelStatus::Idle);
+        assert_eq!(entry.last_activity_epoch, Some(old));
+
+        // A lone housekeeping write after the popup is still not real output.
+        apply_activity(&mut app, &roster, "a", boundary + 1, 0);
+        let entry = panel_entry(&app, "a");
+        assert!(app.popup_activity_suppression.contains_key("a"));
+        assert_eq!(entry.status, PanelStatus::Idle);
+        assert_eq!(entry.last_activity_epoch, Some(old));
+
+        apply_activity(&mut app, &roster, "a", boundary + 2, 0);
+        let entry = panel_entry(&app, "a");
+        assert!(app.popup_activity_suppression.is_empty());
+        assert_eq!(panel_sessions(&app), vec!["a", "b"]);
+        assert_eq!(entry.status, PanelStatus::Working);
+        assert_eq!(entry.last_activity_epoch, Some(boundary + 2));
     }
 
     #[test]
