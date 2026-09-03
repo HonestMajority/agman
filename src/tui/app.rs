@@ -151,9 +151,13 @@ struct PopupActivitySuppression {
     ended_at: i64,
 }
 
-/// Samples arrive about once a second while the TUI runs; a larger gap
-/// between two unconfirmed epochs means the earlier burst has ended.
+/// Samples arrive about once a second while a session is on a refreshing
+/// view; a larger gap between two unconfirmed epochs means the earlier burst
+/// has ended. A session unsampled for longer than this (another project's
+/// task list, a non-refreshing view, a blocking attach) may have completed a
+/// whole turn unobserved, so its next sample is trusted like a first one.
 const ACTIVITY_BURST_GAP_SECS: i64 = 10;
+const ACTIVITY_BURST_GAP: Duration = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64);
 
 /// Output-burst confirmation for one tmux session. A newer `window_activity`
 /// epoch counts as real agent activity only once output has spanned two
@@ -161,11 +165,12 @@ const ACTIVITY_BURST_GAP_SECS: i64 = 10;
 /// housekeeping updates (Claude Code does so hourly, in launch-time batches),
 /// whereas a real turn repaints across many seconds. Until then samples are
 /// rewound to `confirmed`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 struct ActivityBurst {
     confirmed: i64,
     /// `(first, last)` epochs of an unconfirmed burst newer than `confirmed`.
     pending: Option<(i64, i64)>,
+    sampled_at: Instant,
 }
 
 /// Which wizard requested the directory picker.
@@ -1286,6 +1291,7 @@ impl App {
     /// distinct seconds. A session's first sample is trusted as-is, so a TUI
     /// restart keeps its conservative behaviour.
     fn confirm_activity_bursts(&mut self) {
+        let now = Instant::now();
         for (session, sample) in &mut self.agent_activity {
             let Some(activity) = sample.last_tmux_activity_epoch else {
                 continue;
@@ -1296,11 +1302,15 @@ impl App {
                     ActivityBurst {
                         confirmed: activity,
                         pending: None,
+                        sampled_at: now,
                     },
                 );
                 continue;
             };
-            if activity <= burst.confirmed {
+            let unobserved = now.duration_since(burst.sampled_at) > ACTIVITY_BURST_GAP;
+            burst.sampled_at = now;
+            if unobserved || activity <= burst.confirmed {
+                burst.confirmed = burst.confirmed.max(activity);
                 burst.pending = None;
                 continue;
             }
@@ -7636,13 +7646,8 @@ mod tests {
 
         assert_eq!(panel_sessions(&app), vec!["a", "b"]);
         assert_eq!(panel_entry(&app, "a").status, PanelStatus::Unseen);
-        assert_eq!(
-            app.activity_bursts["a"],
-            ActivityBurst {
-                confirmed: now - 60,
-                pending: None,
-            }
-        );
+        assert_eq!(app.activity_bursts["a"].confirmed, now - 60);
+        assert_eq!(app.activity_bursts["a"].pending, None);
     }
 
     #[test]
@@ -7668,13 +7673,8 @@ mod tests {
         assert_eq!(panel_sessions(&app), vec!["a", "b"]);
         assert_eq!(entry.status, PanelStatus::Unseen);
         assert_eq!(entry.last_activity_epoch, Some(bump + 1));
-        assert_eq!(
-            app.activity_bursts["a"],
-            ActivityBurst {
-                confirmed: bump + 1,
-                pending: None,
-            }
-        );
+        assert_eq!(app.activity_bursts["a"].confirmed, bump + 1);
+        assert_eq!(app.activity_bursts["a"].pending, None);
     }
 
     #[test]
@@ -7753,13 +7753,8 @@ mod tests {
         assert_eq!(panel_sessions(&app), vec!["b", "a"]);
         assert_eq!(entry.status, PanelStatus::Idle);
         assert_eq!(entry.last_activity_epoch, Some(old));
-        assert_eq!(
-            app.activity_bursts["a"],
-            ActivityBurst {
-                confirmed: old,
-                pending: Some((second, second)),
-            }
-        );
+        assert_eq!(app.activity_bursts["a"].confirmed, old);
+        assert_eq!(app.activity_bursts["a"].pending, Some((second, second)));
 
         // A follow-up inside the continuity gap chains and confirms.
         let third = second + ACTIVITY_BURST_GAP_SECS;
@@ -7774,6 +7769,37 @@ mod tests {
         assert_eq!(panel_sessions(&app), vec!["a", "b"]);
         assert_eq!(entry.status, PanelStatus::Unseen);
         assert_eq!(entry.last_activity_epoch, Some(third));
+    }
+
+    #[test]
+    fn unsampled_session_trusts_its_next_activity_sample() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let roster = ["a", "b"];
+        let (_tmp, mut app) = burst_app(now, &[("a", old), ("b", now - 7100)]);
+        assert_eq!(panel_sessions(&app), vec!["b", "a"]);
+
+        // A whole turn ran while "a" was off every refreshing view; the only
+        // sample the TUI ever gets for it is the turn's final epoch.
+        let blind = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64 + 1);
+        app.activity_bursts.get_mut("a").unwrap().sampled_at =
+            Instant::now().checked_sub(blind).unwrap();
+        let finished = now - 60;
+        for _ in 0..3 {
+            apply_activity(&mut app, &roster, "a", finished, 60);
+            let entry = panel_entry(&app, "a");
+            assert_eq!(panel_sessions(&app), vec!["a", "b"]);
+            assert_eq!(entry.status, PanelStatus::Unseen);
+            assert_eq!(entry.last_activity_epoch, Some(finished));
+            assert_eq!(app.activity_bursts["a"].confirmed, finished);
+            assert_eq!(app.activity_bursts["a"].pending, None);
+        }
+
+        // Continuously sampled again, a lone later write is filtered as before.
+        apply_activity(&mut app, &roster, "a", now - 30, 30);
+        let entry = panel_entry(&app, "a");
+        assert_eq!(entry.last_activity_epoch, Some(finished));
+        assert_eq!(app.activity_bursts["a"].pending, Some((now - 30, now - 30)));
     }
 
     #[test]
