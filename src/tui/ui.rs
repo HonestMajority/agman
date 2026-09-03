@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::app::{
     AgentActivitySample, App, ArchiveKind, BranchSource, DirKind, DirPickerOrigin, NotesFocus,
-    ProjectDetailRow, ProjectTaskRow, View, WizardStep,
+    PanelEntry, PanelTarget, ProjectDetailRow, ProjectTaskRow, View, WizardStep, PANEL_WIDTH,
 };
 use super::vim::VimMode;
 
@@ -116,6 +116,8 @@ fn clock_title(app: &App) -> Line<'static> {
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    app.update_panel_visibility(f.area().width);
+
     // Check if we're showing a modal that should hide the output pane
     let is_modal_view = matches!(
         app.view,
@@ -145,25 +147,41 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
+    // Views that sit on top of the project list / project detail draw that
+    // base view (plus the agent panel) first, then their modal.
+    let base_view = match app.view {
+        View::ProjectList | View::ProjectWizard | View::ProjectDeleteConfirm => {
+            Some(View::ProjectList)
+        }
+        View::TaskList
+        | View::DeleteConfirm
+        | View::NewTaskWizard
+        | View::DirectoryPicker
+        | View::SessionPicker
+        | View::AgentWizard => Some(View::TaskList),
+        View::RespawnConfirm => Some(match app.respawn_confirm_return_view {
+            View::ProjectList => View::ProjectList,
+            _ => View::TaskList,
+        }),
+        View::Notifications | View::Notes | View::ShowPrs | View::Settings | View::Archive => None,
+    };
+    if let Some(base_view) = base_view {
+        let (main_area, panel_area) = split_for_agent_panel(app, chunks[0]);
+        match base_view {
+            View::ProjectList => draw_project_list(f, app, main_area),
+            _ => draw_project_detail(f, app, main_area),
+        }
+        if let Some(panel_area) = panel_area {
+            draw_agent_panel(f, app, panel_area);
+        }
+    }
+
     match app.view {
-        View::ProjectList => draw_project_list(f, app, chunks[0]),
-        View::TaskList => draw_project_detail(f, app, chunks[0]),
-        View::DeleteConfirm => {
-            draw_project_detail(f, app, chunks[0]);
-            draw_delete_confirm(f, app);
-        }
-        View::NewTaskWizard => {
-            draw_project_detail(f, app, chunks[0]);
-            draw_wizard(f, app);
-        }
-        View::DirectoryPicker => {
-            draw_project_detail(f, app, chunks[0]);
-            draw_directory_picker(f, app);
-        }
-        View::SessionPicker => {
-            draw_project_detail(f, app, chunks[0]);
-            draw_session_picker(f, app);
-        }
+        View::ProjectList | View::TaskList => {}
+        View::DeleteConfirm => draw_delete_confirm(f, app),
+        View::NewTaskWizard => draw_wizard(f, app),
+        View::DirectoryPicker => draw_directory_picker(f, app),
+        View::SessionPicker => draw_session_picker(f, app),
         View::Notifications => draw_notifications(f, app, chunks[0]),
         View::Notes => draw_notes(f, app, chunks[0]),
         View::ShowPrs => draw_show_prs(f, app, chunks[0]),
@@ -174,26 +192,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 draw_archive_preview(f, app);
             }
         }
-        View::ProjectWizard => {
-            draw_project_list(f, app, chunks[0]);
-            draw_project_wizard(f, app);
-        }
-        View::ProjectDeleteConfirm => {
-            draw_project_list(f, app, chunks[0]);
-            draw_project_delete_confirm(f, app);
-        }
-        View::AgentWizard => {
-            draw_project_detail(f, app, chunks[0]);
-            draw_agent_wizard(f, app);
-        }
-        View::RespawnConfirm => {
-            // Draw the underlying view behind the modal
-            match app.respawn_confirm_return_view {
-                View::ProjectList => draw_project_list(f, app, chunks[0]),
-                _ => draw_project_detail(f, app, chunks[0]),
-            }
-            draw_respawn_confirm(f, app);
-        }
+        View::ProjectWizard => draw_project_wizard(f, app),
+        View::ProjectDeleteConfirm => draw_project_delete_confirm(f, app),
+        View::AgentWizard => draw_agent_wizard(f, app),
+        View::RespawnConfirm => draw_respawn_confirm(f, app),
     }
 
     if output_height > 0 {
@@ -1638,6 +1640,231 @@ fn agent_runtime_status(
     }
 }
 
+/// Output newer than the last-viewed stamp by less than this is ignored:
+/// popup attach/detach redraws bump `window_activity` without new content.
+const UNSEEN_GRACE_SECS: i64 = 5;
+
+/// Panel row status, highest priority first. `Unseen` is a needs-attention
+/// hint, not a completion signal: the agent is idle and its window produced
+/// output after a tmux client last had it on screen. It cannot distinguish
+/// "finished" from "waiting at a prompt"; both deserve a look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelStatus {
+    Viewing,
+    Working,
+    Unseen,
+    Idle,
+    Offline,
+}
+
+impl PanelStatus {
+    fn glyph(self) -> &'static str {
+        match self {
+            Self::Viewing => "▶",
+            Self::Working => "●",
+            Self::Unseen => "◆",
+            Self::Idle => "○",
+            Self::Offline => "✕",
+        }
+    }
+
+    fn glyph_style(self) -> Style {
+        match self {
+            Self::Viewing => Style::default().fg(Color::LightCyan),
+            Self::Working => Style::default().fg(Color::LightGreen),
+            Self::Unseen => Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
+            Self::Idle => Style::default().fg(Color::DarkGray),
+            Self::Offline => Style::default().fg(Color::Red),
+        }
+    }
+
+    fn label_style(self) -> Style {
+        match self {
+            Self::Viewing => Style::default().fg(Color::LightCyan),
+            Self::Working => Style::default(),
+            Self::Unseen => Style::default().fg(Color::LightYellow),
+            Self::Idle | Self::Offline => Style::default().fg(Color::DarkGray),
+        }
+    }
+}
+
+pub(super) fn classify_panel_status(
+    now: Instant,
+    sample: Option<&AgentActivitySample>,
+    last_viewed_epoch: i64,
+) -> PanelStatus {
+    let Some(sample) = sample else {
+        return PanelStatus::Offline;
+    };
+    if !sample.query_ok || sample.pane_dead || sample.foreground_command_is_shell() {
+        return PanelStatus::Offline;
+    }
+    if sample.visible {
+        return PanelStatus::Viewing;
+    }
+    if classify_agent_status(now, Some(sample)) == WorkingIdle::Working {
+        return PanelStatus::Working;
+    }
+    match sample.last_tmux_activity_epoch {
+        Some(activity) if activity > last_viewed_epoch + UNSEEN_GRACE_SECS => PanelStatus::Unseen,
+        _ => PanelStatus::Idle,
+    }
+}
+
+fn split_for_agent_panel(app: &App, area: Rect) -> (Rect, Option<Rect>) {
+    if !app.panel_visible {
+        return (area, None);
+    }
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(PANEL_WIDTH)])
+        .split(area);
+    (chunks[0], Some(chunks[1]))
+}
+
+fn draw_agent_panel(f: &mut Frame, app: &mut App, area: Rect) {
+    let entries = app.panel_entries();
+    let selected = app.panel_selected_index(&entries);
+    let focused = app.panel_focus;
+    let with_project = app.current_project.is_none();
+
+    let border_color = if focused {
+        Color::LightCyan
+    } else {
+        Color::DarkGray
+    };
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(
+                " agents ",
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({}) ", entries.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if entries.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                " no agents",
+                Style::default().fg(Color::DarkGray),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let now_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok());
+    let items: Vec<ListItem> = entries
+        .iter()
+        .map(|entry| panel_row(entry, inner.width as usize, with_project, now_epoch))
+        .collect();
+    let highlight = if focused {
+        Style::default()
+            .bg(Color::Rgb(40, 40, 60))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    app.panel_list_state.select(selected);
+    f.render_stateful_widget(
+        List::new(items).highlight_style(highlight),
+        inner,
+        &mut app.panel_list_state,
+    );
+}
+
+fn panel_row(
+    entry: &PanelEntry,
+    width: usize,
+    with_project: bool,
+    now_epoch: Option<i64>,
+) -> ListItem<'static> {
+    let age = format!("{:>4}", panel_age(entry.last_activity_epoch, now_epoch));
+    let tag = format!("{:<3}", entry.target.kind_tag());
+    // "<glyph> <tag> <label> <age>"
+    let label_width = width.saturating_sub(1 + 1 + 3 + 1 + 1 + 4);
+    let label = format!(
+        "{:<width$}",
+        panel_label(&entry.target, with_project, label_width),
+        width = label_width
+    );
+    ListItem::new(Line::from(vec![
+        Span::styled(entry.status.glyph(), entry.status.glyph_style()),
+        Span::raw(" "),
+        Span::styled(tag, Style::default().fg(Color::DarkGray)),
+        Span::raw(" "),
+        Span::styled(label, entry.status.label_style()),
+        Span::raw(" "),
+        Span::styled(age, Style::default().fg(Color::DarkGray)),
+    ]))
+}
+
+/// Keep the distinguishing agent name visible: drop the kind prefix the tag
+/// column already shows, then shrink the project segment before the name.
+fn panel_label(target: &PanelTarget, with_project: bool, width: usize) -> String {
+    let PanelTarget::Agent {
+        project,
+        name,
+        kind_tag,
+    } = target
+    else {
+        return truncate_with_ellipsis(&target.label(with_project), width);
+    };
+    let name = truncate_with_ellipsis(strip_kind_prefix(name, kind_tag), width);
+    if !with_project {
+        return name;
+    }
+    let project_room = width.saturating_sub(name.chars().count() + 1);
+    if project_room == 0 {
+        return name;
+    }
+    format!("{}/{name}", truncate_with_ellipsis(project, project_room))
+}
+
+fn strip_kind_prefix<'a>(name: &'a str, kind_tag: &str) -> &'a str {
+    let prefix = match kind_tag {
+        "eng" => "engineer-",
+        "res" => "researcher-",
+        "rev" => "reviewer-",
+        "tst" => "tester-",
+        "op" => "operator-",
+        _ => return name,
+    };
+    name.strip_prefix(prefix)
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(name)
+}
+
+fn panel_age(activity_epoch: Option<i64>, now_epoch: Option<i64>) -> String {
+    let (Some(activity), Some(now)) = (activity_epoch, now_epoch) else {
+        return "-".to_string();
+    };
+    let secs = now.saturating_sub(activity).max(0);
+    if secs < 60 {
+        "now".to_string()
+    } else if secs < 3_600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3_600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
+}
+
 fn time_since_datetime(timestamp: &chrono::DateTime<Utc>) -> String {
     let duration = Utc::now().signed_duration_since(*timestamp);
 
@@ -2280,7 +2507,28 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         ],
     };
 
-    let mut line_spans = help_text;
+    let mut line_spans = if app.panel_focus {
+        vec![
+            Span::styled("j/k", Style::default().fg(Color::LightCyan)),
+            Span::styled(" nav  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("enter", Style::default().fg(Color::LightGreen)),
+            Span::styled(" open chat  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("esc", Style::default().fg(Color::LightCyan)),
+            Span::styled(" back  ", Style::default().fg(Color::DarkGray)),
+        ]
+    } else {
+        let mut spans = help_text;
+        if app.panel_visible && matches!(app.view, View::ProjectList | View::TaskList) {
+            if !spans.last().is_some_and(|span| span.content.ends_with(' ')) {
+                spans.push(Span::raw("  "));
+            }
+            spans.extend([
+                Span::styled("→", Style::default().fg(Color::LightCyan)),
+                Span::styled(" agents  ", Style::default().fg(Color::DarkGray)),
+            ]);
+        }
+        spans
+    };
 
     let stalled = app.stalled_targets();
     if !stalled.is_empty() {
@@ -4302,6 +4550,7 @@ mod agent_status_tests {
             foreground_command: command.to_string(),
             pane_dead: false,
             query_ok: true,
+            visible: false,
         }
     }
 
@@ -4334,5 +4583,134 @@ mod agent_status_tests {
         assert_eq!(classify_agent_status(now, Some(&shell)), WorkingIdle::Idle);
         assert_eq!(classify_agent_status(now, Some(&failed)), WorkingIdle::Idle);
         assert_eq!(classify_agent_status(now, None), WorkingIdle::Idle);
+    }
+
+    fn idle_at(now: Instant, epoch: i64) -> AgentActivitySample {
+        let mut sample = sample(now, Duration::from_secs(120), "node");
+        sample.last_tmux_activity_epoch = Some(epoch);
+        sample
+    }
+
+    #[test]
+    fn panel_status_offline_when_session_dead_shell_or_missing() {
+        let now = Instant::now();
+        let mut dead = idle_at(now, 1_000);
+        dead.pane_dead = true;
+        dead.visible = true;
+        let shell = sample(now, Duration::from_secs(1), "zsh");
+
+        assert_eq!(classify_panel_status(now, None, 0), PanelStatus::Offline);
+        assert_eq!(
+            classify_panel_status(now, Some(&dead), 0),
+            PanelStatus::Offline
+        );
+        assert_eq!(
+            classify_panel_status(now, Some(&shell), 0),
+            PanelStatus::Offline
+        );
+    }
+
+    #[test]
+    fn panel_status_viewing_beats_working_beats_unseen() {
+        let now = Instant::now();
+        let mut viewing = sample(now, Duration::from_secs(1), "node");
+        viewing.visible = true;
+        let working = sample(now, Duration::from_secs(1), "node");
+
+        assert_eq!(
+            classify_panel_status(now, Some(&viewing), 0),
+            PanelStatus::Viewing
+        );
+        // Recent output after the last view is still "working", not "unseen".
+        assert_eq!(
+            classify_panel_status(now, Some(&working), 0),
+            PanelStatus::Working
+        );
+    }
+
+    #[test]
+    fn panel_status_unseen_is_idle_output_newer_than_last_view_plus_grace() {
+        let now = Instant::now();
+        let idle = idle_at(now, 1_000);
+
+        assert_eq!(
+            classify_panel_status(now, Some(&idle), 0),
+            PanelStatus::Unseen
+        );
+        assert_eq!(
+            classify_panel_status(now, Some(&idle), 1_000 - UNSEEN_GRACE_SECS - 1),
+            PanelStatus::Unseen
+        );
+        // Output inside the grace window after a view is treated as a redraw.
+        assert_eq!(
+            classify_panel_status(now, Some(&idle), 1_000 - UNSEEN_GRACE_SECS),
+            PanelStatus::Idle
+        );
+        assert_eq!(
+            classify_panel_status(now, Some(&idle), 1_000),
+            PanelStatus::Idle
+        );
+        assert_eq!(
+            classify_panel_status(now, Some(&idle), 5_000),
+            PanelStatus::Idle
+        );
+
+        let mut never_active = idle_at(now, 0);
+        never_active.last_tmux_activity_epoch = None;
+        assert_eq!(
+            classify_panel_status(now, Some(&never_active), 0),
+            PanelStatus::Idle
+        );
+    }
+
+    #[test]
+    fn panel_label_keeps_agent_name_and_shrinks_project_first() {
+        let engineer = PanelTarget::Agent {
+            project: "agman-improvements".to_string(),
+            name: "engineer-agman-agent-status-panel".to_string(),
+            kind_tag: "eng",
+        };
+        assert_eq!(
+            panel_label(&engineer, true, 60),
+            "agman-improvements/agman-agent-status-panel"
+        );
+        assert_eq!(
+            panel_label(&engineer, true, 30),
+            "agma…/agman-agent-status-panel"
+        );
+        assert_eq!(panel_label(&engineer, true, 25), "agman-agent-status-panel");
+        assert_eq!(panel_label(&engineer, true, 23), "agman-agent-status-pan…");
+        assert_eq!(
+            panel_label(&engineer, false, 60),
+            "agman-agent-status-panel"
+        );
+
+        let researcher = PanelTarget::Agent {
+            project: "p".to_string(),
+            name: "res-one".to_string(),
+            kind_tag: "res",
+        };
+        assert_eq!(panel_label(&researcher, true, 10), "p/res-one");
+        let bare = PanelTarget::Agent {
+            project: "p".to_string(),
+            name: "engineer-".to_string(),
+            kind_tag: "eng",
+        };
+        assert_eq!(panel_label(&bare, false, 20), "engineer-");
+        let pm = PanelTarget::Pm {
+            project: "agman-improvements".to_string(),
+        };
+        assert_eq!(panel_label(&pm, true, 8), "agman-i…");
+    }
+
+    #[test]
+    fn panel_age_is_compact() {
+        assert_eq!(panel_age(None, Some(100)), "-");
+        assert_eq!(panel_age(Some(100), None), "-");
+        assert_eq!(panel_age(Some(100), Some(130)), "now");
+        assert_eq!(panel_age(Some(100), Some(100 + 5 * 60)), "5m");
+        assert_eq!(panel_age(Some(100), Some(100 + 3 * 3_600)), "3h");
+        assert_eq!(panel_age(Some(100), Some(100 + 2 * 86_400)), "2d");
+        assert_eq!(panel_age(Some(500), Some(100)), "now");
     }
 }

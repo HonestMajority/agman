@@ -21,6 +21,7 @@ use agman::config::Config;
 use agman::dismissed_notifications::DismissedNotifications;
 use agman::git::Git;
 use agman::inbox;
+use agman::last_viewed::LastViewed;
 use agman::project::Project;
 use agman::repo_stats::RepoStats;
 use agman::supervisor;
@@ -28,7 +29,7 @@ use agman::task::Task;
 use agman::tmux::{Tmux, TmuxWindowActivity};
 use agman::use_cases;
 
-use super::ui;
+use super::ui::{self, PanelStatus};
 use super::vim::{VimMode, VimTextArea};
 
 /// Telegram watchdog: how often the main loop checks the bot heartbeat.
@@ -40,6 +41,12 @@ const TELEGRAM_STALL_THRESHOLD_SECS: u64 = 60;
 /// Telegram watchdog: cooldown after a respawn before another can fire.
 /// Gives the new thread time to warm up and write its first heartbeat.
 const TELEGRAM_RESPAWN_COOLDOWN: Duration = Duration::from_secs(90);
+
+/// Terminal width at or above which the right-side agent panel is shown.
+pub const PANEL_MIN_TERMINAL_WIDTH: u16 = 110;
+pub const PANEL_WIDTH: u16 = 36;
+/// Debounce for persisting last-viewed stamps while a window stays on screen.
+const LAST_VIEWED_SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Open a URL in the default browser, cross-platform (macOS / Linux).
 fn open_url(url: &str) {
@@ -128,6 +135,7 @@ enum ProjectDetailRowKey {
 /// the main loop via `try_wait` so the loop never blocks on the popup.
 struct ActivePopup {
     child: std::process::Child,
+    session: String,
 }
 
 /// Which wizard requested the directory picker.
@@ -445,6 +453,7 @@ struct ProjectRefreshSnapshot {
     project_active_agent_counts: HashMap<String, usize>,
     unassigned_task_count: usize,
     agent_activity: HashMap<String, AgentActivitySample>,
+    home_panel_roster: Vec<PanelRosterEntry>,
     project_list_error: Option<String>,
     agent_list_error: Option<String>,
     agent_activity_error: Option<String>,
@@ -459,11 +468,96 @@ impl ProjectRefreshSnapshot {
             project_active_agent_counts: HashMap::new(),
             unassigned_task_count: 0,
             agent_activity: HashMap::new(),
+            home_panel_roster: Vec::new(),
             project_list_error: Some(error),
             agent_list_error: None,
             agent_activity_error: None,
         }
     }
+}
+
+/// What a panel row opens. PMs and the Chief of Staff are tmux sessions
+/// without an `AgentRecord`, so they get their own variants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelTarget {
+    ChiefOfStaff,
+    Pm {
+        project: String,
+    },
+    Agent {
+        project: String,
+        name: String,
+        kind_tag: &'static str,
+    },
+}
+
+impl PanelTarget {
+    pub fn kind_tag(&self) -> &'static str {
+        match self {
+            Self::ChiefOfStaff => "cos",
+            Self::Pm { .. } => "pm",
+            Self::Agent { kind_tag, .. } => kind_tag,
+        }
+    }
+
+    pub fn label(&self, with_project: bool) -> String {
+        match self {
+            Self::ChiefOfStaff => "chief of staff".to_string(),
+            Self::Pm { project } => project.clone(),
+            Self::Agent { project, name, .. } if with_project => format!("{project}/{name}"),
+            Self::Agent { name, .. } => name.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelRosterEntry {
+    pub target: PanelTarget,
+    pub session: String,
+}
+
+impl PanelRosterEntry {
+    fn chief_of_staff() -> Self {
+        Self {
+            target: PanelTarget::ChiefOfStaff,
+            session: Config::chief_of_staff_tmux_session().to_string(),
+        }
+    }
+
+    fn pm(project: &str) -> Self {
+        Self {
+            target: PanelTarget::Pm {
+                project: project.to_string(),
+            },
+            session: Config::pm_tmux_session(project),
+        }
+    }
+
+    fn agent(record: &AgentRecord) -> Self {
+        let kind_tag = match record.meta.kind {
+            AgentKind::Engineer => "eng",
+            AgentKind::Researcher { .. } => "res",
+            AgentKind::Operator { .. } => "op",
+            AgentKind::Reviewer { .. } => "rev",
+            AgentKind::Tester { .. } => "tst",
+        };
+        Self {
+            target: PanelTarget::Agent {
+                project: record.meta.project.clone(),
+                name: record.meta.name.clone(),
+                kind_tag,
+            },
+            session: App::agent_session_name(record),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelEntry {
+    pub target: PanelTarget,
+    pub session: String,
+    pub status: PanelStatus,
+    pub last_activity_epoch: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -473,6 +567,8 @@ pub struct AgentActivitySample {
     pub foreground_command: String,
     pub pane_dead: bool,
     pub query_ok: bool,
+    /// The window was on screen for some attached tmux client when sampled.
+    pub visible: bool,
 }
 
 impl AgentActivitySample {
@@ -480,6 +576,7 @@ impl AgentActivitySample {
         activity: &TmuxWindowActivity,
         observed_at: Instant,
         now_epoch_secs: Option<i64>,
+        visible: bool,
     ) -> Self {
         let last_observed_work_at = match (activity.window_activity, now_epoch_secs) {
             (Some(activity_epoch), Some(now_epoch)) => {
@@ -495,6 +592,7 @@ impl AgentActivitySample {
             foreground_command: activity.pane_current_command.clone(),
             pane_dead: activity.pane_dead,
             query_ok: true,
+            visible,
         }
     }
 
@@ -545,6 +643,10 @@ fn build_agent_activity_snapshot(
         Ok(windows) => windows,
         Err(e) => return (HashMap::new(), Some(e.to_string())),
     };
+    let visible_window_ids = Tmux::list_client_window_ids().unwrap_or_else(|e| {
+        tracing::debug!(error = %e, "failed to list tmux clients; treating no window as viewed");
+        HashSet::new()
+    });
 
     let mut by_session: HashMap<String, TmuxWindowActivity> = HashMap::new();
     for activity in windows {
@@ -565,9 +667,15 @@ fn build_agent_activity_snapshot(
     let mut agent_activity = HashMap::new();
     for session in active_sessions {
         if let Some(activity) = by_session.get(session) {
+            let visible = visible_window_ids.contains(&activity.window_id);
             agent_activity.insert(
                 session.clone(),
-                AgentActivitySample::from_tmux_window(activity, observed_at, now_epoch_secs),
+                AgentActivitySample::from_tmux_window(
+                    activity,
+                    observed_at,
+                    now_epoch_secs,
+                    visible,
+                ),
             );
         }
     }
@@ -596,7 +704,6 @@ fn build_project_refresh_snapshot(config: Config) -> ProjectRefreshSnapshot {
 
     let mut project_agent_counts = HashMap::new();
     let mut project_active_agent_counts = HashMap::new();
-    let mut active_sessions = HashSet::new();
     let mut project_agents = Vec::new();
     let mut agent_list_error = None;
 
@@ -608,7 +715,6 @@ fn build_project_refresh_snapshot(config: Config) -> ProjectRefreshSnapshot {
                 {
                     continue;
                 }
-                active_sessions.insert(App::agent_session_name(&agent));
                 *project_agent_counts
                     .entry(agent.meta.project.clone())
                     .or_insert(0) += 1;
@@ -619,6 +725,18 @@ fn build_project_refresh_snapshot(config: Config) -> ProjectRefreshSnapshot {
             agent_list_error = Some(e.to_string());
         }
     }
+
+    let mut home_panel_roster = vec![PanelRosterEntry::chief_of_staff()];
+    home_panel_roster.extend(
+        projects
+            .iter()
+            .map(|project| PanelRosterEntry::pm(&project.meta.name)),
+    );
+    home_panel_roster.extend(project_agents.iter().map(PanelRosterEntry::agent));
+    let active_sessions: HashSet<String> = home_panel_roster
+        .iter()
+        .map(|entry| entry.session.clone())
+        .collect();
 
     let (agent_activity, agent_activity_error) = build_agent_activity_snapshot(&active_sessions);
     let now = Instant::now();
@@ -640,6 +758,7 @@ fn build_project_refresh_snapshot(config: Config) -> ProjectRefreshSnapshot {
         project_active_agent_counts,
         unassigned_task_count,
         agent_activity,
+        home_panel_roster,
         project_list_error,
         agent_list_error,
         agent_activity_error,
@@ -800,6 +919,17 @@ pub struct App {
     pub attached_task_agents: HashMap<String, Vec<AgentRecord>>,
     pub agent_activity: HashMap<String, AgentActivitySample>,
     agent_activity_query_failed_logged: bool,
+    // Right-side agent panel
+    pub panel_visible: bool,
+    pub panel_focus: bool,
+    /// Selected panel row keyed by tmux session, so the cursor follows its
+    /// row when activity-desc sorting reorders the list.
+    pub panel_selected: Option<String>,
+    pub panel_list_state: ListState,
+    home_panel_roster: Vec<PanelRosterEntry>,
+    last_viewed: LastViewed,
+    last_viewed_dirty: bool,
+    last_viewed_saved_at: Instant,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
@@ -891,6 +1021,8 @@ impl App {
         if dismissed_notifs.prune_older_than(retention) > 0 {
             dismissed_notifs.save(&config.dismissed_notifications_path());
         }
+        let last_viewed =
+            LastViewed::load(&config.last_viewed_path(), unix_epoch_secs().unwrap_or(0));
 
         if autostart_sessions {
             // Auto-start the Chief of Staff agent session in the background
@@ -999,6 +1131,14 @@ impl App {
             attached_task_agents: HashMap::new(),
             agent_activity: HashMap::new(),
             agent_activity_query_failed_logged: false,
+            panel_visible: false,
+            panel_focus: false,
+            panel_selected: None,
+            panel_list_state: ListState::default(),
+            home_panel_roster: Vec::new(),
+            last_viewed,
+            last_viewed_dirty: false,
+            last_viewed_saved_at: Instant::now(),
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -1048,9 +1188,36 @@ impl App {
     /// Dispatch side-effects for a popup that just closed. Called from the
     /// main loop once `try_wait` on the popup `Child` returns `Some`.
     fn on_popup_closed(&mut self) {
-        if self.popup.take().is_some() {
-            tracing::info!("popup closed");
+        if let Some(popup) = self.popup.take() {
+            tracing::info!(session = %popup.session, "popup closed");
+            if let Some(now) = unix_epoch_secs() {
+                self.last_viewed_dirty |= self.last_viewed.stamp(&popup.session, now);
+            }
+            self.flush_last_viewed(true);
         }
+    }
+
+    fn stamp_visible_sessions(&mut self) {
+        let Some(now) = unix_epoch_secs() else {
+            return;
+        };
+        for (session, sample) in &self.agent_activity {
+            if sample.visible {
+                self.last_viewed_dirty |= self.last_viewed.stamp(session, now);
+            }
+        }
+    }
+
+    fn flush_last_viewed(&mut self, force: bool) {
+        if !self.last_viewed_dirty {
+            return;
+        }
+        if !force && self.last_viewed_saved_at.elapsed() < LAST_VIEWED_SAVE_INTERVAL {
+            return;
+        }
+        self.last_viewed.save(&self.config.last_viewed_path());
+        self.last_viewed_dirty = false;
+        self.last_viewed_saved_at = Instant::now();
     }
 
     fn create_plain_editor() -> TextArea<'static> {
@@ -1136,6 +1303,7 @@ impl App {
     /// and `selected_index` still hold the pre-attach state; only the
     /// lists behind them are reloaded (selection is restored by row key).
     fn on_return_from_attach(&mut self) {
+        self.panel_focus = false;
         match self.view {
             View::TaskList => {
                 self.refresh_tasks_for_project();
@@ -1177,23 +1345,15 @@ impl App {
     }
 
     fn apply_project_refresh_snapshot(&mut self, snapshot: ProjectRefreshSnapshot) {
+        let roster_complete =
+            snapshot.project_list_error.is_none() && snapshot.agent_list_error.is_none();
         if let Some(error) = snapshot.project_list_error {
             tracing::warn!(error = %error, "failed to list projects");
         }
         if let Some(error) = snapshot.agent_list_error {
             tracing::warn!(error = %error, "failed to count project agents");
         }
-        if let Some(error) = snapshot.agent_activity_error {
-            if !self.agent_activity_query_failed_logged {
-                tracing::warn!(
-                    error = %error,
-                    "failed to query tmux activity; agent statuses will be idle"
-                );
-                self.agent_activity_query_failed_logged = true;
-            }
-        } else {
-            self.agent_activity_query_failed_logged = false;
-        }
+        self.note_agent_activity_error(snapshot.agent_activity_error);
 
         self.projects = snapshot.projects;
         self.project_task_counts = snapshot.project_task_counts;
@@ -1201,6 +1361,18 @@ impl App {
         self.project_active_agent_counts = snapshot.project_active_agent_counts;
         self.unassigned_task_count = snapshot.unassigned_task_count;
         self.agent_activity = snapshot.agent_activity;
+        self.home_panel_roster = snapshot.home_panel_roster;
+        // Only a complete roster may prune: a partial listing would drop
+        // stamps for sessions that still exist.
+        if roster_complete {
+            let roster: HashSet<String> = self
+                .home_panel_roster
+                .iter()
+                .map(|entry| entry.session.clone())
+                .collect();
+            self.last_viewed_dirty |= self.last_viewed.retain_sessions(&roster) > 0;
+        }
+        self.stamp_visible_sessions();
 
         let total = self.project_list_len();
         if self.selected_project_index >= total && total > 0 {
@@ -1275,70 +1447,174 @@ impl App {
 
     fn refresh_agent_activity(&mut self) {
         let active_sessions: HashSet<String> = self
-            .agents
-            .iter()
-            .chain(self.attached_task_agents.values().flatten())
-            .map(Self::agent_session_name)
+            .panel_roster()
+            .into_iter()
+            .map(|entry| entry.session)
             .collect();
-        self.refresh_agent_activity_for_sessions(active_sessions);
+        let (agent_activity, error) = build_agent_activity_snapshot(&active_sessions);
+        self.note_agent_activity_error(error);
+        self.agent_activity = agent_activity;
+        self.stamp_visible_sessions();
     }
 
-    fn refresh_agent_activity_for_sessions(&mut self, active_sessions: HashSet<String>) {
-        if active_sessions.is_empty() {
-            self.agent_activity.clear();
-            return;
-        }
-
-        let windows = match Tmux::list_window_activity() {
-            Ok(windows) => windows,
-            Err(e) => {
+    fn note_agent_activity_error(&mut self, error: Option<String>) {
+        match error {
+            Some(error) => {
                 if !self.agent_activity_query_failed_logged {
                     tracing::warn!(
-                        error = %e,
+                        error = %error,
                         "failed to query tmux activity; agent statuses will be idle"
                     );
                     self.agent_activity_query_failed_logged = true;
                 }
-                self.agent_activity.clear();
-                return;
             }
-        };
-        self.agent_activity_query_failed_logged = false;
-
-        let mut by_session: HashMap<String, TmuxWindowActivity> = HashMap::new();
-        for activity in windows {
-            if !active_sessions.contains(&activity.session_name) {
-                continue;
-            }
-            let replace = by_session
-                .get(&activity.session_name)
-                .map(|current| activity.window_activity > current.window_activity)
-                .unwrap_or(true);
-            if replace {
-                by_session.insert(activity.session_name.clone(), activity);
-            }
-        }
-
-        self.agent_activity.retain(|session, _| {
-            active_sessions.contains(session) && by_session.contains_key(session)
-        });
-
-        let observed_at = Instant::now();
-        let now_epoch_secs = unix_epoch_secs();
-        for session in active_sessions {
-            if let Some(activity) = by_session.get(&session) {
-                self.agent_activity.insert(
-                    session,
-                    AgentActivitySample::from_tmux_window(activity, observed_at, now_epoch_secs),
-                );
-            } else {
-                self.agent_activity.remove(&session);
-            }
+            None => self.agent_activity_query_failed_logged = false,
         }
     }
 
     pub fn agent_activity_sample(&self, session_name: &str) -> Option<&AgentActivitySample> {
         self.agent_activity.get(session_name)
+    }
+
+    // --- Right-side agent panel ---
+
+    pub fn update_panel_visibility(&mut self, terminal_width: u16) {
+        self.panel_visible = terminal_width >= PANEL_MIN_TERMINAL_WIDTH;
+        if !self.panel_visible {
+            self.panel_focus = false;
+        }
+    }
+
+    /// Sessions the panel tracks for the current view: CoS + every PM +
+    /// every running agent on the home view; one project's PM plus its
+    /// running agents inside a project.
+    pub fn panel_roster(&self) -> Vec<PanelRosterEntry> {
+        match self.current_project.as_deref() {
+            None => self.home_panel_roster.clone(),
+            Some("(unassigned)") => Vec::new(),
+            Some(project) => {
+                let mut roster = vec![PanelRosterEntry::pm(project)];
+                roster.extend(
+                    self.agents
+                        .iter()
+                        .chain(self.attached_task_agents.values().flatten())
+                        .map(PanelRosterEntry::agent),
+                );
+                roster
+            }
+        }
+    }
+
+    /// Panel rows sorted by last activity (newest first), offline rows last,
+    /// label then session as stable tie-breaks.
+    pub fn panel_entries(&self) -> Vec<PanelEntry> {
+        let now = Instant::now();
+        let mut entries: Vec<PanelEntry> = self
+            .panel_roster()
+            .into_iter()
+            .map(|roster| {
+                let sample = self.agent_activity.get(&roster.session);
+                let status = ui::classify_panel_status(
+                    now,
+                    sample,
+                    self.last_viewed.epoch_for(&roster.session),
+                );
+                PanelEntry {
+                    target: roster.target,
+                    session: roster.session,
+                    status,
+                    last_activity_epoch: sample.and_then(|s| s.last_tmux_activity_epoch),
+                }
+            })
+            .collect();
+        entries.sort_by(|a, b| {
+            let offline = |entry: &PanelEntry| entry.status == PanelStatus::Offline;
+            offline(a)
+                .cmp(&offline(b))
+                .then_with(|| b.last_activity_epoch.cmp(&a.last_activity_epoch))
+                .then_with(|| a.target.label(true).cmp(&b.target.label(true)))
+                .then_with(|| a.session.cmp(&b.session))
+        });
+        entries
+    }
+
+    pub fn panel_selected_index(&self, entries: &[PanelEntry]) -> Option<usize> {
+        let selected = self.panel_selected.as_deref()?;
+        entries.iter().position(|entry| entry.session == selected)
+    }
+
+    fn focus_panel(&mut self) {
+        if !self.panel_visible {
+            return;
+        }
+        let entries = self.panel_entries();
+        if self.panel_selected_index(&entries).is_none() {
+            self.panel_selected = entries.first().map(|entry| entry.session.clone());
+        }
+        self.panel_focus = true;
+    }
+
+    fn move_panel_selection(&mut self, delta: isize) {
+        let entries = self.panel_entries();
+        if entries.is_empty() {
+            self.panel_selected = None;
+            return;
+        }
+        let current = self.panel_selected_index(&entries).unwrap_or(0) as isize;
+        let last = entries.len() as isize - 1;
+        let next = (current + delta).clamp(0, last) as usize;
+        self.panel_selected = Some(entries[next].session.clone());
+    }
+
+    fn selected_panel_entry(&self) -> Option<PanelEntry> {
+        let entries = self.panel_entries();
+        let idx = self.panel_selected_index(&entries)?;
+        entries.into_iter().nth(idx)
+    }
+
+    fn handle_panel_key(&mut self, key: event::KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_quit = true;
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.move_panel_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_panel_selection(-1),
+            KeyCode::Enter => self.open_panel_entry(),
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Left => {
+                self.panel_focus = false;
+            }
+            // Continue the section cycle: forward lands on agents, backward
+            // on tasks. The project list has no sections, so just blur.
+            KeyCode::Tab => {
+                self.panel_focus = false;
+                if self.view == View::TaskList {
+                    self.select_first_project_detail_row();
+                }
+            }
+            KeyCode::BackTab => {
+                self.panel_focus = false;
+                if self.view == View::TaskList {
+                    self.select_first_project_detail_task_row();
+                }
+            }
+            // Swallow everything else so main-view actions (archive, delete,
+            // respawn, ...) cannot fire while the panel has focus.
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn open_panel_entry(&mut self) {
+        let Some(entry) = self.selected_panel_entry() else {
+            return;
+        };
+        match entry.target {
+            PanelTarget::ChiefOfStaff => self.open_chief_of_staff_chat(),
+            PanelTarget::Pm { project } => self.open_pm_chat(&project),
+            PanelTarget::Agent { project, name, .. } => {
+                self.open_agent_session(&project, &name, &entry.session)
+            }
+        }
     }
 
     /// Total entries in the project list (projects + unassigned pseudo-entry).
@@ -1609,7 +1885,34 @@ impl App {
         }
     }
 
-    fn jump_to_next_project_detail_section(&mut self) {
+    /// First actionable row of the tasks section, else the first actionable
+    /// row overall.
+    fn select_first_project_detail_task_row(&mut self) {
+        let rows = self.project_detail_rows();
+        let tasks_start = rows
+            .iter()
+            .position(|row| matches!(row, ProjectDetailRow::TasksSectionHeader))
+            .unwrap_or(0);
+        match (tasks_start..rows.len())
+            .find(|idx| Self::project_detail_row_is_actionable(&rows[*idx]))
+        {
+            Some(idx) => self.selected_index = idx,
+            None => self.select_first_project_detail_row(),
+        }
+    }
+
+    fn project_detail_selection_in_agents_section(&self) -> bool {
+        let rows = self.project_detail_rows();
+        let tasks_start = rows
+            .iter()
+            .position(|row| matches!(row, ProjectDetailRow::TasksSectionHeader))
+            .unwrap_or(0);
+        self.selected_index < tasks_start
+    }
+
+    /// Returns whether the selection moved (false when the other section
+    /// has no actionable row).
+    fn jump_to_next_project_detail_section(&mut self) -> bool {
         let rows = self.project_detail_rows();
         let tasks_start = rows
             .iter()
@@ -1621,15 +1924,19 @@ impl App {
         } else {
             1..tasks_start
         };
-        if let Some(idx) = search_range.find(|idx| {
+        match search_range.find(|idx| {
             rows.get(*idx)
                 .is_some_and(Self::project_detail_row_is_actionable)
         }) {
-            self.selected_index = idx;
+            Some(idx) => {
+                self.selected_index = idx;
+                true
+            }
+            None => false,
         }
     }
 
-    fn jump_to_previous_project_detail_section(&mut self) {
+    fn jump_to_previous_project_detail_section(&mut self) -> bool {
         let rows = self.project_detail_rows();
         let tasks_start = rows
             .iter()
@@ -1641,11 +1948,15 @@ impl App {
         } else {
             tasks_start.saturating_add(1)..rows.len()
         };
-        if let Some(idx) = search_range.find(|idx| {
+        match search_range.find(|idx| {
             rows.get(*idx)
                 .is_some_and(Self::project_detail_row_is_actionable)
         }) {
-            self.selected_index = idx;
+            Some(idx) => {
+                self.selected_index = idx;
+                true
+            }
+            None => false,
         }
     }
 
@@ -1762,18 +2073,19 @@ impl App {
     }
 
     fn open_agent(&mut self, agent: &AgentRecord) {
+        let session_name = Self::agent_session_name(agent);
+        self.open_agent_session(&agent.meta.project, &agent.meta.name, &session_name);
+    }
+
+    fn open_agent_session(&mut self, project: &str, name: &str, session_name: &str) {
         if self.popup.is_some() {
             return;
         }
 
-        let project = agent.meta.project.clone();
-        let name = agent.meta.name.clone();
-        let session_name = Self::agent_session_name(agent);
-
-        if !Tmux::session_exists(&session_name) {
-            match use_cases::resume_agent(&self.config, &project, &name) {
+        if !Tmux::session_exists(session_name) {
+            match use_cases::resume_agent(&self.config, project, name) {
                 Ok(()) => {
-                    tracing::info!(session = &session_name, "resumed agent session");
+                    tracing::info!(session = session_name, "resumed agent session");
                     self.refresh_agents();
                 }
                 Err(e) => {
@@ -1783,13 +2095,35 @@ impl App {
             }
         }
 
-        match Tmux::popup_attach(&session_name) {
+        match Tmux::popup_attach(session_name) {
             Ok(child) => {
-                tracing::info!(session = &session_name, "attached to agent session");
-                self.popup = Some(ActivePopup { child });
+                tracing::info!(session = session_name, "attached to agent session");
+                self.popup = Some(ActivePopup {
+                    child,
+                    session: session_name.to_string(),
+                });
             }
             Err(e) => {
                 self.set_status(format!("Failed to attach: {e}"));
+            }
+        }
+    }
+
+    fn open_chief_of_staff_chat(&mut self) {
+        if self.popup.is_some() {
+            return;
+        }
+        match use_cases::open_chief_of_staff_popup(&self.config) {
+            Ok(child) => {
+                tracing::info!("opened Chief of Staff popup");
+                self.popup = Some(ActivePopup {
+                    child,
+                    session: Config::chief_of_staff_tmux_session().to_string(),
+                });
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to open Chief of Staff popup");
+                self.set_status(format!("Failed to open Chief of Staff chat: {e}"));
             }
         }
     }
@@ -1841,14 +2175,23 @@ impl App {
         let Some(project_name) = self.current_project.clone() else {
             return;
         };
-        if project_name == "(unassigned)" || self.popup.is_some() {
+        if project_name == "(unassigned)" {
             return;
         }
+        self.open_pm_chat(&project_name);
+    }
 
-        match use_cases::open_pm_popup(&self.config, &project_name) {
+    fn open_pm_chat(&mut self, project_name: &str) {
+        if self.popup.is_some() {
+            return;
+        }
+        match use_cases::open_pm_popup(&self.config, project_name) {
             Ok(child) => {
                 tracing::info!(project = %project_name, "opened PM popup");
-                self.popup = Some(ActivePopup { child });
+                self.popup = Some(ActivePopup {
+                    child,
+                    session: Config::pm_tmux_session(project_name),
+                });
             }
             Err(e) => {
                 tracing::error!(project = %project_name, error = %e, "failed to open PM popup");
@@ -2478,9 +2821,15 @@ impl App {
 
     fn handle_project_list_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
+            if self.panel_focus {
+                return self.handle_panel_key(key);
+            }
             match key.code {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.should_quit = true;
+                }
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Right => {
+                    self.focus_panel();
                 }
                 KeyCode::Char('j') => {
                     let total = self.project_list_len();
@@ -2527,20 +2876,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('c') => {
-                    // Open Chief of Staff chat as a tmux popup (non-blocking)
-                    if self.popup.is_some() {
-                        return Ok(false);
-                    }
-                    match use_cases::open_chief_of_staff_popup(&self.config) {
-                        Ok(child) => {
-                            tracing::info!("opened Chief of Staff popup");
-                            self.popup = Some(ActivePopup { child });
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "failed to open Chief of Staff popup");
-                            self.set_status(format!("Failed to open Chief of Staff chat: {e}"));
-                        }
-                    }
+                    self.open_chief_of_staff_chat();
                 }
                 KeyCode::Char('n') => {
                     let mut name_editor = TextArea::default();
@@ -2659,6 +2995,9 @@ impl App {
 
     fn handle_task_list_event(&mut self, event: Event) -> Result<bool> {
         if let Event::Key(key) = event {
+            if self.panel_focus {
+                return self.handle_panel_key(key);
+            }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
                     self.current_project = None;
@@ -2684,11 +3023,26 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.next_project_detail_row();
             }
+            // Tab cycles agents -> tasks -> panel (when shown) -> agents; a
+            // section with nothing to land on is skipped.
             KeyCode::Tab => {
-                self.jump_to_next_project_detail_section();
+                let in_agents = self.project_detail_selection_in_agents_section();
+                let moved = (!self.panel_visible || in_agents)
+                    && self.jump_to_next_project_detail_section();
+                if !moved && self.panel_visible {
+                    self.focus_panel();
+                }
             }
             KeyCode::BackTab => {
-                self.jump_to_previous_project_detail_section();
+                let in_agents = self.project_detail_selection_in_agents_section();
+                let moved = (!self.panel_visible || !in_agents)
+                    && self.jump_to_previous_project_detail_section();
+                if !moved && self.panel_visible {
+                    self.focus_panel();
+                }
+            }
+            KeyCode::Right => {
+                self.focus_panel();
             }
             KeyCode::Enter => match self.selected_project_detail_row() {
                 Some(ProjectDetailRow::Task(_)) => {
@@ -5456,6 +5810,7 @@ pub fn run_tui(config: Config) -> Result<()> {
                 last_refresh = Instant::now();
             }
             app.apply_project_refresh_result();
+            app.flush_last_viewed(false);
 
             // Poll GitHub notifications every 60 seconds (regardless of view)
             if app.last_gh_notif_poll.elapsed() >= Duration::from_secs(60) {
@@ -5513,6 +5868,8 @@ pub fn run_tui(config: Config) -> Result<()> {
             app.clear_old_status();
             app.clear_old_output();
         }
+
+        app.flush_last_viewed(true);
 
         // Restore terminal
         disable_raw_mode()?;
@@ -5582,8 +5939,10 @@ mod tests {
                     foreground_command: "nvim".to_string(),
                     pane_dead: false,
                     query_ok: true,
+                    visible: false,
                 },
             )]),
+            home_panel_roster: Vec::new(),
             project_list_error: None,
             agent_list_error: None,
             agent_activity_error: None,
@@ -5613,6 +5972,7 @@ mod tests {
             project_active_agent_counts: HashMap::new(),
             unassigned_task_count: 0,
             agent_activity: HashMap::new(),
+            home_panel_roster: Vec::new(),
             project_list_error: None,
             agent_list_error: None,
             agent_activity_error: None,
@@ -5641,6 +6001,7 @@ mod tests {
             project_active_agent_counts: HashMap::new(),
             unassigned_task_count: 99,
             agent_activity: HashMap::new(),
+            home_panel_roster: Vec::new(),
             project_list_error: None,
             agent_list_error: None,
             agent_activity_error: None,
@@ -6645,6 +7006,21 @@ mod tests {
     }
 
     #[test]
+    fn on_return_from_attach_clears_panel_focus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(test_config(tmp.path())).unwrap();
+        app.home_panel_roster = vec![pm_roster_entry("agman-pm-alpha")];
+        app.update_panel_visibility(120);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(app.panel_focus);
+
+        app.on_return_from_attach();
+
+        assert!(!app.panel_focus);
+        assert_eq!(app.view, View::ProjectList);
+    }
+
+    #[test]
     fn on_return_from_attach_reloads_projects_on_project_list() {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config(tmp.path());
@@ -6714,6 +7090,422 @@ mod tests {
                     .output();
             }
         }
+    }
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(event::KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn activity_sample(epoch: i64, age: Duration, command: &str) -> AgentActivitySample {
+        AgentActivitySample {
+            last_tmux_activity_epoch: Some(epoch),
+            last_observed_work_at: Instant::now().checked_sub(age),
+            foreground_command: command.to_string(),
+            pane_dead: false,
+            query_ok: true,
+            visible: false,
+        }
+    }
+
+    fn idle_sample(epoch: i64) -> AgentActivitySample {
+        activity_sample(epoch, Duration::from_secs(120), "node")
+    }
+
+    fn pm_roster_entry(session: &str) -> PanelRosterEntry {
+        PanelRosterEntry {
+            target: PanelTarget::Pm {
+                project: session.to_string(),
+            },
+            session: session.to_string(),
+        }
+    }
+
+    fn researcher_kind() -> AgentKind {
+        AgentKind::Researcher {
+            repo: None,
+            branch: None,
+            task_id: None,
+        }
+    }
+
+    fn panel_sessions(app: &App) -> Vec<String> {
+        app.panel_entries()
+            .into_iter()
+            .map(|entry| entry.session)
+            .collect()
+    }
+
+    #[test]
+    fn home_panel_roster_lists_cos_every_pm_and_running_agents_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        Project::create(&config, "alpha", "Alpha").unwrap();
+        Project::create(&config, "beta", "Beta").unwrap();
+        AgentRecord::create(&config, "alpha", "res-one", "r", researcher_kind()).unwrap();
+        AgentRecord::create(&config, "beta", "old-op", "o", researcher_kind()).unwrap();
+        use_cases::archive_agent(&config, "beta", "old-op").unwrap();
+
+        let snapshot = build_project_refresh_snapshot(config);
+
+        let mut sessions: Vec<&str> = snapshot
+            .home_panel_roster
+            .iter()
+            .map(|entry| entry.session.as_str())
+            .collect();
+        sessions.sort();
+        assert_eq!(
+            sessions,
+            vec![
+                "agman-chief-of-staff",
+                "agman-pm-alpha",
+                "agman-pm-beta",
+                "agman-researcher-alpha--res-one",
+            ]
+        );
+        assert!(snapshot
+            .home_panel_roster
+            .iter()
+            .any(|entry| entry.target == PanelTarget::ChiefOfStaff));
+    }
+
+    #[test]
+    fn project_panel_roster_scopes_to_that_pm_and_its_running_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let unique = unique_name();
+        let project = format!("alpha-{unique}");
+        let branch = format!("branch-{unique}");
+        create_test_task(&config, &project, &branch);
+        AgentRecord::create(&config, &project, "res-one", "r", researcher_kind()).unwrap();
+        AgentRecord::create(&config, "beta", "beta-res", "r", researcher_kind()).unwrap();
+
+        let mut app = App::new_for_test(config).unwrap();
+        app.current_project = Some(project.clone());
+        app.refresh_tasks_for_project();
+        app.refresh_agents();
+
+        let roster = app.panel_roster();
+        let sessions: Vec<&str> = roster.iter().map(|entry| entry.session.as_str()).collect();
+        assert_eq!(sessions.len(), 3, "{sessions:?}");
+        assert!(sessions.contains(&Config::pm_tmux_session(&project).as_str()));
+        assert!(sessions.contains(&Config::researcher_tmux_session(&project, "res-one").as_str()));
+        assert!(sessions
+            .iter()
+            .any(|session| session.starts_with("agman-engineer-")));
+        assert!(!sessions.contains(&Config::chief_of_staff_tmux_session()));
+        assert!(!sessions.iter().any(|session| session.contains("beta")));
+
+        app.current_project = Some("(unassigned)".to_string());
+        assert!(app.panel_roster().is_empty());
+    }
+
+    #[test]
+    fn panel_entries_sort_by_activity_desc_with_offline_last_and_stable_ties() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(test_config(tmp.path())).unwrap();
+        app.last_viewed = LastViewed {
+            tracking_since: 0,
+            sessions: HashMap::new(),
+        };
+        app.home_panel_roster = ["b-old", "a-new", "c-none", "d-dead", "e-tie", "a-tie"]
+            .into_iter()
+            .map(pm_roster_entry)
+            .collect();
+        app.agent_activity
+            .insert("b-old".to_string(), idle_sample(300));
+        app.agent_activity
+            .insert("a-new".to_string(), idle_sample(500));
+        app.agent_activity
+            .insert("e-tie".to_string(), idle_sample(300));
+        app.agent_activity
+            .insert("a-tie".to_string(), idle_sample(300));
+        let mut dead = idle_sample(900);
+        dead.pane_dead = true;
+        app.agent_activity.insert("d-dead".to_string(), dead);
+
+        assert_eq!(
+            panel_sessions(&app),
+            vec!["a-new", "a-tie", "b-old", "e-tie", "d-dead", "c-none"]
+        );
+        let entries = app.panel_entries();
+        assert_eq!(entries[0].status, PanelStatus::Unseen);
+        assert_eq!(entries[4].status, PanelStatus::Offline);
+        assert_eq!(entries[5].status, PanelStatus::Offline);
+    }
+
+    #[test]
+    fn unseen_hint_clears_once_window_is_viewed_or_popup_closes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        config.ensure_dirs().unwrap();
+        let mut app = App::new_for_test(config.clone()).unwrap();
+        let session = "agman-pm-alpha";
+        app.home_panel_roster = vec![pm_roster_entry(session)];
+        app.last_viewed = LastViewed {
+            tracking_since: 0,
+            sessions: HashMap::new(),
+        };
+        app.agent_activity
+            .insert(session.to_string(), idle_sample(1_000));
+        assert_eq!(app.panel_entries()[0].status, PanelStatus::Unseen);
+
+        app.agent_activity.get_mut(session).unwrap().visible = true;
+        app.stamp_visible_sessions();
+        assert_eq!(app.panel_entries()[0].status, PanelStatus::Viewing);
+        assert!(app.last_viewed_dirty);
+        assert!(app.last_viewed.epoch_for(session) > 1_000);
+
+        app.agent_activity.get_mut(session).unwrap().visible = false;
+        assert_eq!(app.panel_entries()[0].status, PanelStatus::Idle);
+
+        // Popup close stamps the popup's session and persists immediately.
+        let other = "agman-pm-beta";
+        app.home_panel_roster.push(pm_roster_entry(other));
+        app.agent_activity
+            .insert(other.to_string(), idle_sample(1_000));
+        assert_eq!(app.panel_entries()[1].status, PanelStatus::Unseen);
+        app.popup = Some(ActivePopup {
+            child: Command::new("true").spawn().unwrap(),
+            session: other.to_string(),
+        });
+        app.on_popup_closed();
+        assert!(app.popup.is_none());
+        assert!(!app.last_viewed_dirty);
+        assert_eq!(app.panel_entries()[1].status, PanelStatus::Idle);
+        let persisted = LastViewed::load(&config.last_viewed_path(), 0);
+        assert_eq!(persisted, app.last_viewed);
+        assert!(persisted.epoch_for(other) > 1_000);
+    }
+
+    #[test]
+    fn project_list_tab_focuses_panel_and_panel_swallows_main_view_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        Project::create(&config, "alpha", "Alpha").unwrap();
+        let mut app = App::new_for_test(config).unwrap();
+        app.refresh_projects();
+        app.agent_activity.clear();
+        app.update_panel_visibility(120);
+        assert!(!app.panel_focus);
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(app.panel_focus);
+        assert_eq!(app.panel_selected.as_deref(), Some("agman-pm-alpha"));
+
+        app.handle_event(key(KeyCode::Char('d'))).unwrap();
+        assert_eq!(app.view, View::ProjectList);
+        assert!(app.project_to_delete.is_none());
+        app.handle_event(key(KeyCode::Char('n'))).unwrap();
+        assert_eq!(app.view, View::ProjectList);
+        assert!(app.project_wizard.is_none());
+
+        app.handle_event(key(KeyCode::Char('j'))).unwrap();
+        assert_eq!(app.panel_selected.as_deref(), Some("agman-chief-of-staff"));
+        app.handle_event(key(KeyCode::Char('j'))).unwrap();
+        assert_eq!(app.panel_selected.as_deref(), Some("agman-chief-of-staff"));
+        app.handle_event(key(KeyCode::Up)).unwrap();
+        assert_eq!(app.panel_selected.as_deref(), Some("agman-pm-alpha"));
+
+        app.handle_event(key(KeyCode::Esc)).unwrap();
+        assert!(!app.panel_focus);
+        app.handle_event(key(KeyCode::Right)).unwrap();
+        assert!(app.panel_focus);
+        app.handle_event(key(KeyCode::Left)).unwrap();
+        assert!(!app.panel_focus);
+        app.handle_event(key(KeyCode::BackTab)).unwrap();
+        assert!(app.panel_focus);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(!app.panel_focus);
+
+        app.handle_event(key(KeyCode::Char('d'))).unwrap();
+        assert_eq!(app.view, View::ProjectDeleteConfirm);
+    }
+
+    #[test]
+    fn narrow_terminal_hides_panel_and_clears_focus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(test_config(tmp.path())).unwrap();
+        app.home_panel_roster = vec![pm_roster_entry("agman-pm-alpha")];
+
+        app.update_panel_visibility(PANEL_MIN_TERMINAL_WIDTH);
+        assert!(app.panel_visible);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(app.panel_focus);
+
+        app.update_panel_visibility(PANEL_MIN_TERMINAL_WIDTH - 1);
+        assert!(!app.panel_visible);
+        assert!(!app.panel_focus);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        app.handle_event(key(KeyCode::Right)).unwrap();
+        assert!(!app.panel_focus);
+    }
+
+    #[test]
+    fn panel_selection_clamps_and_follows_its_session_across_reorders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(test_config(tmp.path())).unwrap();
+        app.home_panel_roster = ["a", "b", "c"].into_iter().map(pm_roster_entry).collect();
+        app.agent_activity.insert("a".to_string(), idle_sample(300));
+        app.agent_activity.insert("b".to_string(), idle_sample(200));
+        app.agent_activity.insert("c".to_string(), idle_sample(100));
+        app.update_panel_visibility(120);
+        assert_eq!(panel_sessions(&app), vec!["a", "b", "c"]);
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        for _ in 0..5 {
+            app.handle_event(key(KeyCode::Char('j'))).unwrap();
+        }
+        assert_eq!(app.panel_selected.as_deref(), Some("c"));
+        app.handle_event(key(KeyCode::Char('k'))).unwrap();
+        assert_eq!(app.panel_selected.as_deref(), Some("b"));
+
+        app.agent_activity.insert("c".to_string(), idle_sample(900));
+        assert_eq!(panel_sessions(&app), vec!["c", "a", "b"]);
+        assert_eq!(app.panel_selected_index(&app.panel_entries()), Some(2));
+        app.handle_event(key(KeyCode::Char('k'))).unwrap();
+        assert_eq!(app.panel_selected.as_deref(), Some("a"));
+
+        // A vanished selection is not an error; the next move restarts at the top.
+        app.home_panel_roster.retain(|entry| entry.session != "a");
+        assert_eq!(app.panel_selected_index(&app.panel_entries()), None);
+        app.handle_event(key(KeyCode::Char('j'))).unwrap();
+        assert_eq!(app.panel_selected.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn task_list_tab_cycles_agents_tasks_panel_and_q_only_blurs_panel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        let unique = unique_name();
+        let project = format!("alpha-{unique}");
+        create_test_task(&config, &project, &format!("branch-{unique}"));
+        AgentRecord::create(&config, &project, "res-one", "r", researcher_kind()).unwrap();
+
+        let mut app = App::new_for_test(config).unwrap();
+        app.current_project = Some(project);
+        app.refresh_tasks_for_project();
+        app.refresh_agents();
+        app.view = View::TaskList;
+        app.update_panel_visibility(120);
+        app.select_first_project_detail_row();
+        assert!(app.project_detail_selection_in_agents_section());
+
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(!app.project_detail_selection_in_agents_section());
+        assert!(!app.panel_focus);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(app.panel_focus);
+        let tasks_selection = app.selected_index;
+
+        app.handle_event(key(KeyCode::Char('q'))).unwrap();
+        assert!(!app.panel_focus);
+        assert_eq!(app.view, View::TaskList);
+        assert_eq!(app.selected_index, tasks_selection);
+
+        app.handle_event(key(KeyCode::BackTab)).unwrap();
+        assert!(app.project_detail_selection_in_agents_section());
+        app.handle_event(key(KeyCode::BackTab)).unwrap();
+        assert!(app.panel_focus);
+        app.handle_event(key(KeyCode::Esc)).unwrap();
+        assert!(!app.panel_focus);
+
+        // From the panel, Tab continues to the agents section and BackTab
+        // goes back to the tasks section.
+        app.handle_event(key(KeyCode::Right)).unwrap();
+        assert!(app.panel_focus);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(!app.panel_focus);
+        assert!(app.project_detail_selection_in_agents_section());
+        app.handle_event(key(KeyCode::Right)).unwrap();
+        app.handle_event(key(KeyCode::BackTab)).unwrap();
+        assert!(!app.panel_focus);
+        assert!(!app.project_detail_selection_in_agents_section());
+        assert_eq!(app.selected_index, tasks_selection);
+
+        // Hidden panel keeps the pre-existing two-section wrap (selection is
+        // in the tasks section here).
+        app.update_panel_visibility(80);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(app.project_detail_selection_in_agents_section());
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(!app.project_detail_selection_in_agents_section());
+        assert!(!app.panel_focus);
+
+        app.handle_event(key(KeyCode::Char('q'))).unwrap();
+        assert_eq!(app.view, View::ProjectList);
+    }
+
+    #[test]
+    fn task_list_tab_reaches_panel_when_the_other_section_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        config.ensure_dirs().unwrap();
+        AgentRecord::create(&config, "alpha", "res-one", "r", researcher_kind()).unwrap();
+
+        let mut app = App::new_for_test(config).unwrap();
+        app.current_project = Some("alpha".to_string());
+        app.refresh_tasks_for_project();
+        app.refresh_agents();
+        app.view = View::TaskList;
+        app.select_first_project_detail_row();
+        assert!(app.tasks.is_empty());
+        assert!(app.project_detail_selection_in_agents_section());
+
+        // Hidden panel: nothing to jump to, selection stays put.
+        app.update_panel_visibility(80);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(app.project_detail_selection_in_agents_section());
+        assert!(!app.panel_focus);
+
+        app.update_panel_visibility(120);
+        app.handle_event(key(KeyCode::Tab)).unwrap();
+        assert!(app.panel_focus);
+        app.handle_event(key(KeyCode::Esc)).unwrap();
+        app.handle_event(key(KeyCode::BackTab)).unwrap();
+        assert!(app.panel_focus);
+    }
+
+    #[test]
+    fn selected_panel_entry_resolves_the_target_to_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        AgentRecord::create(&config, "alpha", "res-one", "r", researcher_kind()).unwrap();
+        let agent = use_cases::list_agents(&config, None, None)
+            .unwrap()
+            .remove(0);
+        let mut app = App::new_for_test(config).unwrap();
+        app.home_panel_roster = vec![
+            PanelRosterEntry::chief_of_staff(),
+            PanelRosterEntry::pm("alpha"),
+            PanelRosterEntry::agent(&agent),
+        ];
+        assert!(app.selected_panel_entry().is_none());
+
+        app.panel_selected = Some("agman-researcher-alpha--res-one".to_string());
+        let entry = app.selected_panel_entry().unwrap();
+        assert_eq!(
+            entry.target,
+            PanelTarget::Agent {
+                project: "alpha".to_string(),
+                name: "res-one".to_string(),
+                kind_tag: "res",
+            }
+        );
+        assert_eq!(entry.target.label(true), "alpha/res-one");
+        assert_eq!(entry.target.label(false), "res-one");
+
+        app.panel_selected = Some("agman-pm-alpha".to_string());
+        assert_eq!(
+            app.selected_panel_entry().unwrap().target,
+            PanelTarget::Pm {
+                project: "alpha".to_string()
+            }
+        );
+        app.panel_selected = Some("agman-chief-of-staff".to_string());
+        assert_eq!(
+            app.selected_panel_entry().unwrap().target,
+            PanelTarget::ChiefOfStaff
+        );
     }
 
     fn test_config(root: &Path) -> Config {
