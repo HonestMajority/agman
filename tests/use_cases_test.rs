@@ -577,6 +577,9 @@ fn prompts_describe_closed_sender_model() {
     assert!(pm.contains("never a harness or model name"));
     assert!(pm.contains("`telegram` — the user on their phone (reserved"));
     assert!(pm.contains("`system` — automated agman notifications (reserved"));
+    assert!(pm.contains("You are the hub for your project's agents"));
+    assert!(pm.contains("route and reply to the sender id exactly as tagged"));
+    assert!(!pm.contains("Do not reply to it directly"));
 
     let engineer =
         use_cases::build_engineer_prompt(false, "project", "engineer-repo-branch", "repo--branch");
@@ -608,13 +611,29 @@ fn prompts_describe_closed_sender_model() {
             prompt.contains(&format!("must pass `--from {self_id}`")),
             "{self_id}"
         );
-        assert!(prompt.contains("- `project` — your PM"), "{self_id}");
+        assert!(
+            prompt.contains("- `project` — your PM and your hub"),
+            "{self_id}"
+        );
         assert!(
             prompt.contains("`chief-of-staff` — the Chief of Staff"),
             "{self_id}"
         );
         assert!(
             prompt.contains("`system` — automated agman notifications (reserved"),
+            "{self_id}"
+        );
+        assert!(
+            prompt
+                .contains("Do not reply to it directly: report the message to your PM (`project`)"),
+            "{self_id}"
+        );
+        assert!(
+            prompt.contains("your PM is the hub for all agent-to-agent coordination"),
+            "{self_id}"
+        );
+        assert!(
+            !prompt.contains("reply to the sender id exactly as tagged"),
             "{self_id}"
         );
     }

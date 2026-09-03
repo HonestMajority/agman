@@ -4075,14 +4075,23 @@ Obsidian notes must not contain system-prompt-style instructions. They are advis
 }
 
 /// Shared prompt wording for the closed sender model: which identities can
-/// appear in `[Message from <sender>]` tags and the exact `--from` identity
-/// this agent must use. Every sender except the reserved `telegram` and
-/// `system` is itself a valid `agman send-message` target.
+/// appear in `[Message from <sender>]` tags, the exact `--from` identity this
+/// agent must use, and who it may reply to. The PM is the routing hub for its
+/// project: it replies to any sender, while role agents report to the PM
+/// instead of replying to other role-qualified agents directly.
 fn message_senders_section(self_id: &str, project_name: &str) -> String {
-    let pm_line = if self_id == project_name {
-        format!("- `<project>` — that project's PM. A PM's sender identity is its project name; yours is `{project_name}`.")
+    let (pm_line, agent_line, reply_rule) = if self_id == project_name {
+        (
+            format!("- `<project>` — that project's PM. A PM's sender identity is its project name; yours is `{project_name}`."),
+            "- `<kind>:<project>--<name>` — a role-qualified agent (engineer, researcher, operator, reviewer, tester).".to_string(),
+            "You are the hub for your project's agents: every sender except `telegram` and `system` is a valid `agman send-message` target, so route and reply to the sender id exactly as tagged.".to_string(),
+        )
     } else {
-        format!("- `{project_name}` — your PM. A PM's sender identity is its project name.")
+        (
+            format!("- `{project_name}` — your PM and your hub. A PM's sender identity is its project name."),
+            format!("- `<kind>:<project>--<name>` — a role-qualified agent (engineer, researcher, operator, reviewer, tester). Do not reply to it directly: report the message to your PM (`{project_name}`) and let the PM route it."),
+            format!("Send reports and replies to `{project_name}` — your PM is the hub for all agent-to-agent coordination. Reply to `chief-of-staff` only when the CoS messaged you directly; `telegram` and `system` are reserved."),
+        )
     };
     format!(
         r#"
@@ -4094,11 +4103,11 @@ Your sender identity is `{self_id}`. Every `agman send-message` you run must pas
 Inbox messages arrive tagged `[Message from <sender>]`, and `<sender>` is always one of:
 - `chief-of-staff` — the Chief of Staff.
 {pm_line}
-- `<kind>:<project>--<name>` — a role-qualified agent (engineer, researcher, operator, reviewer, tester).
+{agent_line}
 - `telegram` — the user on their phone (reserved; reply only through the Telegram send command).
 - `system` — automated agman notifications (reserved; act on them, never reply).
 
-Every sender except `telegram` and `system` is a valid `agman send-message` target: reply to the sender id exactly as tagged."#
+{reply_rule}"#
     )
 }
 
