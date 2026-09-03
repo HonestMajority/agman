@@ -1649,10 +1649,11 @@ pub(super) const UNSEEN_GRACE_SECS: i64 = 5;
 /// Panel row status, highest priority first. `Unseen` is a needs-attention
 /// hint, not a completion signal: the agent is idle and its window produced
 /// output after a tmux client last had it on screen. It cannot distinguish
-/// "finished" from "waiting at a prompt"; both deserve a look.
+/// "finished" from "waiting at a prompt"; both deserve a look. A window
+/// currently on screen is not a status of its own: visibility only stamps
+/// `last_viewed`, which is what clears `Working` and `Unseen`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelStatus {
-    Viewing,
     Working,
     Unseen,
     Idle,
@@ -1662,7 +1663,6 @@ pub enum PanelStatus {
 impl PanelStatus {
     fn glyph(self) -> &'static str {
         match self {
-            Self::Viewing => "▶",
             Self::Working => "●",
             Self::Unseen => "◆",
             Self::Idle => "○",
@@ -1672,7 +1672,6 @@ impl PanelStatus {
 
     fn glyph_style(self) -> Style {
         match self {
-            Self::Viewing => Style::default().fg(Color::LightCyan),
             Self::Working => Style::default().fg(Color::LightGreen),
             Self::Unseen => Style::default()
                 .fg(Color::LightYellow)
@@ -1684,7 +1683,6 @@ impl PanelStatus {
 
     fn label_style(self) -> Style {
         match self {
-            Self::Viewing => Style::default().fg(Color::LightCyan),
             Self::Working => Style::default(),
             Self::Unseen => Style::default().fg(Color::LightYellow),
             Self::Idle | Self::Offline => Style::default().fg(Color::DarkGray),
@@ -1702,9 +1700,6 @@ pub(super) fn classify_panel_status(
     };
     if !sample.query_ok || sample.pane_dead || sample.foreground_command_is_shell() {
         return PanelStatus::Offline;
-    }
-    if sample.visible {
-        return PanelStatus::Viewing;
     }
     // Working and Unseen both mean unseen output; only its recency differs.
     let unseen = sample
@@ -4624,20 +4619,36 @@ mod agent_status_tests {
     }
 
     #[test]
-    fn panel_status_viewing_beats_working_beats_unseen() {
+    fn panel_status_visible_window_classifies_like_invisible() {
         let now = Instant::now();
-        let mut viewing = working_at(now, 1_000);
-        viewing.visible = true;
         let working = working_at(now, 1_000);
+        let mut visible_working = working_at(now, 1_000);
+        visible_working.visible = true;
+        let idle = idle_at(now, 1_000);
+        let mut visible_idle = idle_at(now, 1_000);
+        visible_idle.visible = true;
 
-        assert_eq!(
-            classify_panel_status(now, Some(&viewing), 0),
-            PanelStatus::Viewing
-        );
         // Recent output after the last view is still "working", not "unseen".
         assert_eq!(
             classify_panel_status(now, Some(&working), 0),
             PanelStatus::Working
+        );
+        assert_eq!(
+            classify_panel_status(now, Some(&visible_working), 0),
+            PanelStatus::Working
+        );
+        assert_eq!(
+            classify_panel_status(now, Some(&idle), 0),
+            PanelStatus::Unseen
+        );
+        assert_eq!(
+            classify_panel_status(now, Some(&visible_idle), 0),
+            PanelStatus::Unseen
+        );
+        // Only a last_viewed stamp clears the hint, never visibility itself.
+        assert_eq!(
+            classify_panel_status(now, Some(&visible_idle), 1_000),
+            PanelStatus::Idle
         );
     }
 
