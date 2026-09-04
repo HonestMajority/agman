@@ -155,7 +155,8 @@ struct PopupActivitySuppression {
 /// view; a larger gap between two unconfirmed epochs means the earlier burst
 /// has ended. A session unsampled for longer than this (another project's
 /// task list, a non-refreshing view, a blocking attach) may have completed a
-/// whole turn unobserved, so its next sample is trusted like a first one.
+/// whole turn unobserved, so its next sample is trusted like a first one
+/// unless it is the very epoch already judged a lone bump before the gap.
 const ACTIVITY_BURST_GAP_SECS: i64 = 10;
 const ACTIVITY_BURST_GAP: Duration = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64);
 
@@ -1309,8 +1310,16 @@ impl App {
             };
             let unobserved = now.duration_since(burst.sampled_at) > ACTIVITY_BURST_GAP;
             burst.sampled_at = now;
-            if unobserved || activity <= burst.confirmed {
-                burst.confirmed = burst.confirmed.max(activity);
+            if activity <= burst.confirmed {
+                burst.pending = None;
+                continue;
+            }
+            // An epoch already judged a lone bump stays one across a sampling
+            // gap; only output the gap itself hid is trusted like a first
+            // sample.
+            let known_lone_bump = burst.pending.is_some_and(|(_, last)| activity == last);
+            if unobserved && !known_lone_bump {
+                burst.confirmed = activity;
                 burst.pending = None;
                 continue;
             }
@@ -1458,8 +1467,6 @@ impl App {
     /// lists behind them are reloaded (selection is restored by row key).
     fn on_return_from_attach(&mut self) {
         self.panel_focus = false;
-        // The TUI was blind while attached, so burst continuity is unknown.
-        self.activity_bursts.clear();
         match self.view {
             View::TaskList => {
                 self.refresh_tasks_for_project();
@@ -7803,7 +7810,58 @@ mod tests {
     }
 
     #[test]
-    fn return_from_attach_trusts_the_next_activity_sample() {
+    fn known_lone_bump_stays_filtered_across_a_sampling_gap() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let roster = ["a", "b"];
+        let (_tmp, mut app) = burst_app(now, &[("a", old), ("b", now - 7100)]);
+        assert_eq!(panel_sessions(&app), vec!["b", "a"]);
+
+        let bump = now - 3600;
+        apply_activity(&mut app, &roster, "a", bump, 3600);
+        assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+
+        // Overnight idle sleep: the next sample lands after a blind window
+        // but carries the very epoch already judged a lone bump.
+        let blind = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64 + 1);
+        app.activity_bursts.get_mut("a").unwrap().sampled_at =
+            Instant::now().checked_sub(blind).unwrap();
+        apply_activity(&mut app, &roster, "a", bump, 3600);
+        let entry = panel_entry(&app, "a");
+        assert_eq!(panel_sessions(&app), vec!["b", "a"]);
+        assert_eq!(entry.status, PanelStatus::Idle);
+        assert_eq!(entry.last_activity_epoch, Some(old));
+        assert_eq!(app.activity_bursts["a"].confirmed, old);
+        assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+    }
+
+    #[test]
+    fn output_hidden_by_a_sampling_gap_is_trusted_past_a_known_lone_bump() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let roster = ["a", "b"];
+        let (_tmp, mut app) = burst_app(now, &[("a", old), ("b", now - 7100)]);
+
+        let bump = now - 3600;
+        apply_activity(&mut app, &roster, "a", bump, 3600);
+        assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+
+        // Whatever wrote inside the blind window is unknown output: trusted.
+        let blind = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64 + 1);
+        app.activity_bursts.get_mut("a").unwrap().sampled_at =
+            Instant::now().checked_sub(blind).unwrap();
+        let later = bump + 1800;
+        apply_activity(&mut app, &roster, "a", later, 1800);
+        let entry = panel_entry(&app, "a");
+        assert_eq!(panel_sessions(&app), vec!["a", "b"]);
+        assert_eq!(entry.status, PanelStatus::Unseen);
+        assert_eq!(entry.last_activity_epoch, Some(later));
+        assert_eq!(app.activity_bursts["a"].confirmed, later);
+        assert_eq!(app.activity_bursts["a"].pending, None);
+    }
+
+    #[test]
+    fn return_from_attach_keeps_a_known_lone_bump_filtered() {
         let now = unix_epoch_secs().unwrap();
         let old = now - 7200;
         let roster = ["a"];
@@ -7812,23 +7870,30 @@ mod tests {
         apply_activity(&mut app, &roster, "a", bump, 60);
         assert_eq!(panel_entry(&app, "a").status, PanelStatus::Idle);
 
+        // A blocking attach leaves every session unsampled past the gap.
+        let blind = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64 + 1);
+        app.activity_bursts.get_mut("a").unwrap().sampled_at =
+            Instant::now().checked_sub(blind).unwrap();
         app.view = View::TaskList;
         app.current_project = Some("(unassigned)".to_string());
         app.on_return_from_attach();
-        assert!(app.activity_bursts.is_empty());
+        assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
 
         app.view = View::ProjectList;
         app.current_project = None;
-        app.apply_project_refresh_snapshot(activity_snapshot(
-            &roster,
-            HashMap::from([(
-                "a".to_string(),
-                activity_sample(bump, Duration::from_secs(60), "node"),
-            )]),
-        ));
+        apply_activity(&mut app, &roster, "a", bump, 60);
+        let entry = panel_entry(&app, "a");
+        assert_eq!(entry.status, PanelStatus::Idle);
+        assert_eq!(entry.last_activity_epoch, Some(old));
+        assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+
+        // Output that finished during the attach is still trusted.
+        app.activity_bursts.get_mut("a").unwrap().sampled_at =
+            Instant::now().checked_sub(blind).unwrap();
+        apply_activity(&mut app, &roster, "a", bump + 30, 30);
         let entry = panel_entry(&app, "a");
         assert_eq!(entry.status, PanelStatus::Unseen);
-        assert_eq!(entry.last_activity_epoch, Some(bump));
+        assert_eq!(entry.last_activity_epoch, Some(bump + 30));
     }
 
     #[test]

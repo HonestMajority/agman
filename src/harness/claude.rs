@@ -39,8 +39,12 @@ impl Harness for ClaudeHarness {
     /// is also pinned to a known UUID via `--session-id <uuid>` so a later
     /// `--resume <uuid>` lands directly in interactive mode (resuming by
     /// name opens a picker).
+    ///
+    /// `DISABLE_AUTOUPDATER=1` is scoped to the launched process: the
+    /// auto-updater writes to every idle pty on a synchronized schedule,
+    /// which tmux reports as window activity for whole batches of agents.
     fn build_session_command(&self, ctx: &LaunchContext) -> String {
-        let mut cmd = String::from("claude --dangerously-skip-permissions");
+        let mut cmd = String::from("DISABLE_AUTOUPDATER=1 claude --dangerously-skip-permissions");
 
         match ctx.session_key {
             SessionKey::Auto => {
