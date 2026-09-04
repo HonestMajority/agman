@@ -33,13 +33,39 @@ fn claude_build_session_command_emits_system_prompt_and_name() {
         capabilities: Default::default(),
         session_key: SessionKey::Auto,
     });
-    assert!(cmd.starts_with("claude"));
+    assert!(cmd.starts_with("DISABLE_AUTOUPDATER=1 claude "));
     assert!(cmd.contains("--dangerously-skip-permissions"));
     assert!(cmd.contains("--system-prompt 'Identity body'"));
     assert!(cmd.contains("--name 'agman-task-myrepo--feat-x-step-1'"));
     assert!(!cmd.contains("--system-prompt-file"));
     assert!(!cmd.contains("--resume"));
     assert!(!cmd.contains("--session-id"));
+}
+
+#[test]
+fn claude_build_session_command_disables_autoupdater_on_every_launch_shape() {
+    let h = HarnessKind::Claude.select();
+    let uuid = "11111111-2222-3333-4444-555555555555";
+    for session_key in [
+        SessionKey::Auto,
+        SessionKey::Pin(uuid),
+        SessionKey::Resume(uuid),
+    ] {
+        let cmd = h.build_session_command(&LaunchContext {
+            identity: "Identity body",
+            name: "agman-chief-of-staff",
+            identity_file: None,
+            session_dir: None,
+            cwd: &cwd(),
+            no_alt_screen: false,
+            capabilities: Default::default(),
+            session_key,
+        });
+        assert!(
+            cmd.starts_with("DISABLE_AUTOUPDATER=1 claude "),
+            "auto-updater must be disabled on the launched command: {cmd}"
+        );
+    }
 }
 
 #[test]
