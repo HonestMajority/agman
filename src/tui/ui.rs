@@ -210,6 +210,7 @@ fn render_project_row<'a>(
     project: &'a agman::project::Project,
     i: usize,
     is_held: bool,
+    main_focused: bool,
     project_width: usize,
     desc_width: usize,
 ) -> ListItem<'a> {
@@ -229,7 +230,7 @@ fn render_project_row<'a>(
         .copied()
         .unwrap_or(0);
 
-    let is_selected = i == app.selected_project_index;
+    let is_selected = main_focused && i == app.selected_project_index;
     let style = if is_selected {
         Style::default().bg(Color::Rgb(40, 40, 60))
     } else {
@@ -304,6 +305,7 @@ fn render_project_row<'a>(
 }
 
 fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
+    let main_focused = !app.panel_focus;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
@@ -332,7 +334,11 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
         ]))
         .title(clock_title(app))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightCyan));
+        .border_style(Style::default().fg(if main_focused {
+            Color::LightCyan
+        } else {
+            Color::DarkGray
+        }));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -448,6 +454,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
             project,
             i,
             false,
+            main_focused,
             project_width,
             desc_width,
         ));
@@ -479,6 +486,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
                     project,
                     i,
                     true,
+                    main_focused,
                     project_width,
                     desc_width,
                 ));
@@ -489,7 +497,7 @@ fn draw_project_list(f: &mut Frame, app: &App, area: Rect) {
     // Add "(unassigned)" pseudo-entry after held projects (matches navigation order)
     if app.unassigned_task_count > 0 {
         let idx = app.projects.len();
-        let is_selected = idx == app.selected_project_index;
+        let is_selected = main_focused && idx == app.selected_project_index;
         let style = if is_selected {
             Style::default().bg(Color::Rgb(40, 40, 60))
         } else {
@@ -991,6 +999,7 @@ fn draw_agent_wizard_first_prompt(f: &mut Frame, wizard: &mut super::app::AgentW
 }
 
 fn draw_project_detail(f: &mut Frame, app: &App, area: Rect) {
+    let main_focused = !app.panel_focus;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
@@ -1020,7 +1029,11 @@ fn draw_project_detail(f: &mut Frame, app: &App, area: Rect) {
         ]))
         .title(clock_title(app))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightCyan));
+        .border_style(Style::default().fg(if main_focused {
+            Color::LightCyan
+        } else {
+            Color::DarkGray
+        }));
     let inner = block.inner(chunks[1]);
     f.render_widget(block, chunks[1]);
 
@@ -1182,6 +1195,7 @@ fn project_detail_list_item(
     task_widths: TaskColumnWidths,
     attached_agent_widths: AttachedAgentColumnWidths,
 ) -> ListItem<'static> {
+    let is_selected = !app.panel_focus && row_index == app.selected_index;
     match row {
         ProjectDetailRow::AgentsSectionHeader => ListItem::new(project_agents_section_header()),
         ProjectDetailRow::AgentsColumnsHeader => {
@@ -1192,7 +1206,7 @@ fn project_detail_list_item(
             Style::default().fg(Color::DarkGray),
         ))),
         ProjectDetailRow::UnattachedAgent { agent, .. } => {
-            project_agent_row(app, agent, row_index == app.selected_index, agent_widths)
+            project_agent_row(app, agent, is_selected, agent_widths)
         }
         ProjectDetailRow::SectionColumnSpacer => {
             ListItem::new(project_section_separator(list_width))
@@ -1207,18 +1221,13 @@ fn project_detail_list_item(
             Style::default().fg(Color::DarkGray),
         ))),
         ProjectDetailRow::Task(ProjectTaskRow::Task { task, .. }) => {
-            project_task_row(task, row_index == app.selected_index, task_widths)
+            project_task_row(task, is_selected, task_widths)
         }
         ProjectDetailRow::AttachedAgentsHeader => {
             ListItem::new(project_attached_agents_header(attached_agent_widths))
         }
         ProjectDetailRow::AttachedAgent(ProjectTaskRow::Agent { agent, .. }) => {
-            project_attached_agent_row(
-                app,
-                agent,
-                row_index == app.selected_index,
-                attached_agent_widths,
-            )
+            project_attached_agent_row(app, agent, is_selected, attached_agent_widths)
         }
         ProjectDetailRow::Task(ProjectTaskRow::Agent { .. })
         | ProjectDetailRow::AttachedAgent(ProjectTaskRow::Task { .. }) => ListItem::new(""),
@@ -4193,9 +4202,32 @@ fn draw_notes_editor(f: &mut Frame, app: &mut App, area: Rect) {
 #[cfg(test)]
 mod project_count_cell_tests {
     use super::*;
+    use agman::project::Project;
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
 
     fn span_text(spans: &[Span<'_>]) -> Vec<String> {
         spans.iter().map(|span| span.content.to_string()).collect()
+    }
+
+    fn render_app(app: &mut App, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn find_text_cell(buffer: &Buffer, needle: &str) -> (u16, u16) {
+        for y in buffer.area.y..buffer.area.y + buffer.area.height {
+            let mut line = String::new();
+            for x in buffer.area.x..buffer.area.x + buffer.area.width {
+                line.push_str(buffer[(x, y)].symbol());
+            }
+            if let Some(index) = line.find(needle) {
+                let x = line[..index].chars().count() as u16;
+                return (x, y);
+            }
+        }
+        panic!("could not find text {needle:?} in rendered buffer");
     }
 
     #[test]
@@ -4358,6 +4390,56 @@ mod project_count_cell_tests {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD)
         );
+    }
+
+    #[test]
+    fn project_list_deemphasizes_main_pane_when_panel_has_focus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config =
+            agman::config::Config::new(tmp.path().join(".agman"), tmp.path().join("repos"));
+        let project = Project::create(&config, "alpha", "Alpha project").unwrap();
+        let mut app = App::new(config).unwrap();
+        app.projects = vec![project];
+        app.selected_project_index = 0;
+        app.view = View::ProjectList;
+
+        let focused = render_app(&mut app, 120, 16);
+        assert_eq!(focused[(0, 1)].fg, Color::LightCyan);
+        let (name_x, name_y) = find_text_cell(&focused, "alpha");
+        assert_eq!(focused[(name_x, name_y)].bg, Color::Rgb(40, 40, 60));
+
+        app.panel_focus = true;
+        let blurred = render_app(&mut app, 120, 16);
+        assert_eq!(blurred[(0, 1)].fg, Color::DarkGray);
+        let (name_x, name_y) = find_text_cell(&blurred, "alpha");
+        assert_eq!(blurred[(name_x, name_y)].bg, Color::Reset);
+    }
+
+    #[test]
+    fn task_list_deemphasizes_main_pane_when_panel_has_focus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config =
+            agman::config::Config::new(tmp.path().join(".agman"), tmp.path().join("repos"));
+        let mut app = App::new(config).unwrap();
+        app.view = View::TaskList;
+        app.current_project = Some("alpha".to_string());
+        app.tasks = vec![task_with_repo("repoabc", "focus-branch")];
+        app.selected_index = app
+            .project_detail_rows()
+            .iter()
+            .position(|row| matches!(row, ProjectDetailRow::Task(ProjectTaskRow::Task { .. })))
+            .unwrap();
+
+        let focused = render_app(&mut app, 120, 16);
+        assert_eq!(focused[(0, 1)].fg, Color::LightCyan);
+        let (repo_x, repo_y) = find_text_cell(&focused, "repoabc");
+        assert_eq!(focused[(repo_x, repo_y)].bg, Color::Rgb(40, 40, 50));
+
+        app.panel_focus = true;
+        let blurred = render_app(&mut app, 120, 16);
+        assert_eq!(blurred[(0, 1)].fg, Color::DarkGray);
+        let (repo_x, repo_y) = find_text_cell(&blurred, "repoabc");
+        assert_eq!(blurred[(repo_x, repo_y)].bg, Color::Reset);
     }
 
     #[test]
