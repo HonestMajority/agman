@@ -184,6 +184,10 @@ impl Config {
         self.base_dir.join("last_viewed.json")
     }
 
+    pub fn activity_bursts_path(&self) -> PathBuf {
+        self.base_dir.join("activity_bursts.json")
+    }
+
     /// Resolve the configured harness kind. Falls back to `Claude` when the
     /// `harness` config key is absent or unparseable.
     pub fn harness_kind(&self) -> HarnessKind {

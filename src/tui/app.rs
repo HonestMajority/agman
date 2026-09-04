@@ -16,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc as tokio_mpsc;
 use tui_textarea::{Input, Key, TextArea};
 
+use agman::activity_bursts::ActivityBursts;
 use agman::agent_model::{AgentAttachment, AgentKind, AgentRecord, AgentStatus};
 use agman::config::Config;
 use agman::dismissed_notifications::DismissedNotifications;
@@ -45,8 +46,9 @@ const TELEGRAM_RESPAWN_COOLDOWN: Duration = Duration::from_secs(90);
 /// Terminal width at or above which the right-side agent panel is shown.
 pub const PANEL_MIN_TERMINAL_WIDTH: u16 = 110;
 pub const PANEL_WIDTH: u16 = 36;
-/// Debounce for persisting last-viewed stamps while a window stays on screen.
-const LAST_VIEWED_SAVE_INTERVAL: Duration = Duration::from_secs(5);
+/// Debounce for persisting last-viewed stamps and burst state while they
+/// keep changing.
+const PANEL_STATE_SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Open a URL in the default browser, cross-platform (macOS / Linux).
 fn open_url(url: &str) {
@@ -149,29 +151,6 @@ struct ActivePopup {
 struct PopupActivitySuppression {
     activity_before: i64,
     ended_at: i64,
-}
-
-/// Samples arrive about once a second while a session is on a refreshing
-/// view; a larger gap between two unconfirmed epochs means the earlier burst
-/// has ended. A session unsampled for longer than this (another project's
-/// task list, a non-refreshing view, a blocking attach) may have completed a
-/// whole turn unobserved, so its next sample is trusted like a first one
-/// unless it is the very epoch already judged a lone bump before the gap.
-const ACTIVITY_BURST_GAP_SECS: i64 = 10;
-const ACTIVITY_BURST_GAP: Duration = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64);
-
-/// Output-burst confirmation for one tmux session. A newer `window_activity`
-/// epoch counts as real agent activity only once output has spanned two
-/// distinct seconds: an idle harness writes invisible single-second
-/// housekeeping updates (Claude Code does so hourly, in launch-time batches),
-/// whereas a real turn repaints across many seconds. Until then samples are
-/// rewound to `confirmed`.
-#[derive(Debug, Clone, Copy)]
-struct ActivityBurst {
-    confirmed: i64,
-    /// `(first, last)` epochs of an unconfirmed burst newer than `confirmed`.
-    pending: Option<(i64, i64)>,
-    sampled_at: Instant,
 }
 
 /// Which wizard requested the directory picker.
@@ -994,9 +973,12 @@ pub struct App {
     home_panel_roster: Vec<PanelRosterEntry>,
     last_viewed: LastViewed,
     last_viewed_dirty: bool,
-    last_viewed_saved_at: Instant,
+    /// Burst state for every session in the global roster, sampled in every
+    /// view so ticks landing off the rendered panel are still judged.
+    activity_bursts: ActivityBursts,
+    activity_bursts_dirty: bool,
+    panel_state_saved_at: Instant,
     popup_activity_suppression: HashMap<String, PopupActivitySuppression>,
-    activity_bursts: HashMap<String, ActivityBurst>,
     // Inbox polling
     pub last_inbox_poll: Instant,
     inbox_poll_tx: tokio_mpsc::UnboundedSender<InboxPollOutput>,
@@ -1090,6 +1072,7 @@ impl App {
         }
         let last_viewed =
             LastViewed::load(&config.last_viewed_path(), unix_epoch_secs().unwrap_or(0));
+        let activity_bursts = ActivityBursts::load(&config.activity_bursts_path());
 
         if autostart_sessions {
             // Auto-start the Chief of Staff agent session in the background
@@ -1205,9 +1188,10 @@ impl App {
             home_panel_roster: Vec::new(),
             last_viewed,
             last_viewed_dirty: false,
-            last_viewed_saved_at: Instant::now(),
+            activity_bursts,
+            activity_bursts_dirty: false,
+            panel_state_saved_at: Instant::now(),
             popup_activity_suppression: HashMap::new(),
-            activity_bursts: HashMap::new(),
             last_inbox_poll: Instant::now(),
             inbox_poll_tx,
             inbox_poll_rx,
@@ -1271,7 +1255,7 @@ impl App {
                     );
                 }
             }
-            self.flush_last_viewed(true);
+            self.flush_panel_state(true);
             self.suppress_popup_activity();
         }
     }
@@ -1288,55 +1272,35 @@ impl App {
         });
     }
 
-    /// Rewind samples whose newest `window_activity` has not yet spanned two
-    /// distinct seconds. A session's first sample is trusted as-is, so a TUI
-    /// restart keeps its conservative behaviour.
-    fn confirm_activity_bursts(&mut self) {
+    /// Judge every sampled session's newest `window_activity` and rewind
+    /// samples whose burst has not yet spanned two distinct seconds.
+    fn confirm_activity_bursts(&mut self, samples: &mut HashMap<String, AgentActivitySample>) {
         let now = Instant::now();
-        for (session, sample) in &mut self.agent_activity {
+        for (session, sample) in samples {
             let Some(activity) = sample.last_tmux_activity_epoch else {
                 continue;
             };
-            let Some(burst) = self.activity_bursts.get_mut(session) else {
-                self.activity_bursts.insert(
-                    session.clone(),
-                    ActivityBurst {
-                        confirmed: activity,
-                        pending: None,
-                        sampled_at: now,
-                    },
-                );
-                continue;
-            };
-            let unobserved = now.duration_since(burst.sampled_at) > ACTIVITY_BURST_GAP;
-            burst.sampled_at = now;
-            if activity <= burst.confirmed {
-                burst.pending = None;
-                continue;
-            }
-            // An epoch already judged a lone bump stays one across a sampling
-            // gap; only output the gap itself hid is trusted like a first
-            // sample.
-            let known_lone_bump = burst.pending.is_some_and(|(_, last)| activity == last);
-            if unobserved && !known_lone_bump {
-                burst.confirmed = activity;
-                burst.pending = None;
-                continue;
-            }
-            let (first, last) = match burst.pending {
-                Some((first, last)) if activity - last <= ACTIVITY_BURST_GAP_SECS => {
-                    (first, activity)
-                }
-                _ => (activity, activity),
-            };
-            if last > first {
-                burst.confirmed = activity;
-                burst.pending = None;
-            } else {
-                burst.pending = Some((first, last));
-                sample.rewind_activity_to(burst.confirmed);
+            let observation = self.activity_bursts.observe(session, activity, now);
+            self.activity_bursts_dirty |= observation.changed;
+            if let Some(epoch) = observation.rewind_to {
+                sample.rewind_activity_to(epoch);
             }
         }
+    }
+
+    /// Feed a global sample set through burst confirmation, then keep only
+    /// the sessions the current view renders.
+    fn apply_agent_activity_samples(&mut self, mut samples: HashMap<String, AgentActivitySample>) {
+        self.confirm_activity_bursts(&mut samples);
+        let visible: HashSet<String> = self
+            .panel_roster()
+            .into_iter()
+            .map(|entry| entry.session)
+            .collect();
+        samples.retain(|session, _| visible.contains(session));
+        self.agent_activity = samples;
+        self.suppress_popup_activity();
+        self.stamp_visible_sessions();
     }
 
     /// Rewind samples still carrying popup-caused activity; drop each
@@ -1371,16 +1335,23 @@ impl App {
         }
     }
 
-    fn flush_last_viewed(&mut self, force: bool) {
-        if !self.last_viewed_dirty {
+    fn flush_panel_state(&mut self, force: bool) {
+        if !self.last_viewed_dirty && !self.activity_bursts_dirty {
             return;
         }
-        if !force && self.last_viewed_saved_at.elapsed() < LAST_VIEWED_SAVE_INTERVAL {
+        if !force && self.panel_state_saved_at.elapsed() < PANEL_STATE_SAVE_INTERVAL {
             return;
         }
-        self.last_viewed.save(&self.config.last_viewed_path());
-        self.last_viewed_dirty = false;
-        self.last_viewed_saved_at = Instant::now();
+        if self.last_viewed_dirty {
+            self.last_viewed.save(&self.config.last_viewed_path());
+            self.last_viewed_dirty = false;
+        }
+        if self.activity_bursts_dirty {
+            self.activity_bursts
+                .save(&self.config.activity_bursts_path());
+            self.activity_bursts_dirty = false;
+        }
+        self.panel_state_saved_at = Instant::now();
     }
 
     fn create_plain_editor() -> TextArea<'static> {
@@ -1523,7 +1494,6 @@ impl App {
         self.project_agent_counts = snapshot.project_agent_counts;
         self.project_active_agent_counts = snapshot.project_active_agent_counts;
         self.unassigned_task_count = snapshot.unassigned_task_count;
-        self.agent_activity = snapshot.agent_activity;
         self.home_panel_roster = snapshot.home_panel_roster;
         // Only a complete roster may prune: a partial listing would drop
         // stamps for sessions that still exist.
@@ -1536,12 +1506,9 @@ impl App {
             self.last_viewed_dirty |= self.last_viewed.retain_sessions(&roster) > 0;
             self.popup_activity_suppression
                 .retain(|session, _| roster.contains(session));
-            self.activity_bursts
-                .retain(|session, _| roster.contains(session));
+            self.activity_bursts_dirty |= self.activity_bursts.retain_sessions(&roster) > 0;
         }
-        self.confirm_activity_bursts();
-        self.suppress_popup_activity();
-        self.stamp_visible_sessions();
+        self.apply_agent_activity_samples(snapshot.agent_activity);
 
         let total = self.project_list_len();
         if self.selected_project_index >= total && total > 0 {
@@ -1584,25 +1551,17 @@ impl App {
     /// Refresh the agent list, filtered by `current_project` if set.
     pub fn refresh_agents(&mut self) {
         let prev_row_key = self.selected_project_detail_row_key();
-        if self.current_project.as_deref() == Some("(unassigned)") {
-            self.agents.clear();
-            self.agent_activity.clear();
-            if !self.restore_project_detail_selection(prev_row_key.as_ref()) {
-                self.clamp_project_detail_selection();
-            }
-            return;
-        }
-
-        self.agents = if let Some(project) = self.current_project.as_deref() {
-            use_cases::unattached_agents_for_project(&self.config, project).unwrap_or_else(|e| {
+        self.agents = match self.current_project.as_deref() {
+            Some("(unassigned)") => Vec::new(),
+            Some(project) => use_cases::unattached_agents_for_project(&self.config, project)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "failed to list agents");
+                    Vec::new()
+                }),
+            None => use_cases::list_agents(&self.config, None, None).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "failed to list agents");
                 Vec::new()
-            })
-        } else {
-            use_cases::list_agents(&self.config, None, None).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to list agents");
-                Vec::new()
-            })
+            }),
         };
         self.agents
             .retain(|agent| agent.meta.status != AgentStatus::Archived);
@@ -1614,18 +1573,20 @@ impl App {
         self.refresh_agent_activity();
     }
 
+    /// Sample the whole known roster (the last complete home roster plus the
+    /// current view's) from the one tmux listing so burst state stays global
+    /// while the rendered panel stays scoped.
     fn refresh_agent_activity(&mut self) {
         let active_sessions: HashSet<String> = self
-            .panel_roster()
-            .into_iter()
+            .home_panel_roster
+            .iter()
+            .cloned()
+            .chain(self.panel_roster())
             .map(|entry| entry.session)
             .collect();
-        let (agent_activity, error) = build_agent_activity_snapshot(&active_sessions);
+        let (samples, error) = build_agent_activity_snapshot(&active_sessions);
         self.note_agent_activity_error(error);
-        self.agent_activity = agent_activity;
-        self.confirm_activity_bursts();
-        self.suppress_popup_activity();
-        self.stamp_visible_sessions();
+        self.apply_agent_activity_samples(samples);
     }
 
     fn note_agent_activity_error(&mut self, error: Option<String>) {
@@ -5971,16 +5932,18 @@ pub fn run_tui(config: Config) -> Result<()> {
 
             // Periodic refresh (drives visible project data and agent activity)
             if last_refresh.elapsed() >= refresh_interval {
-                if app.view == View::ProjectList {
-                    app.start_project_refresh();
-                } else if app.view == View::TaskList {
-                    app.refresh_tasks_for_project();
-                    app.refresh_agents();
+                match app.view {
+                    View::ProjectList => app.start_project_refresh(),
+                    View::TaskList => {
+                        app.refresh_tasks_for_project();
+                        app.refresh_agents();
+                    }
+                    _ => app.refresh_agent_activity(),
                 }
                 last_refresh = Instant::now();
             }
             app.apply_project_refresh_result();
-            app.flush_last_viewed(false);
+            app.flush_panel_state(false);
 
             // Poll GitHub notifications every 60 seconds (regardless of view)
             if app.last_gh_notif_poll.elapsed() >= Duration::from_secs(60) {
@@ -6039,7 +6002,7 @@ pub fn run_tui(config: Config) -> Result<()> {
             app.clear_old_output();
         }
 
-        app.flush_last_viewed(true);
+        app.flush_panel_state(true);
 
         // Restore terminal
         disable_raw_mode()?;
@@ -6082,6 +6045,7 @@ pub fn run_tui(config: Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agman::activity_bursts::ACTIVITY_BURST_GAP_SECS;
     use agman::agent_model::AgentAttachment;
     use agman::task::{LinkedPr, RepoEntry, TaskMeta};
 
@@ -6132,7 +6096,7 @@ mod tests {
                     visible: false,
                 },
             )]),
-            home_panel_roster: Vec::new(),
+            home_panel_roster: vec![pm_roster_entry("agent-session")],
             project_list_error: None,
             agent_list_error: None,
             agent_activity_error: None,
@@ -7653,8 +7617,8 @@ mod tests {
 
         assert_eq!(panel_sessions(&app), vec!["a", "b"]);
         assert_eq!(panel_entry(&app, "a").status, PanelStatus::Unseen);
-        assert_eq!(app.activity_bursts["a"].confirmed, now - 60);
-        assert_eq!(app.activity_bursts["a"].pending, None);
+        assert_eq!(app.activity_bursts.sessions["a"].confirmed, now - 60);
+        assert_eq!(app.activity_bursts.sessions["a"].pending, None);
     }
 
     #[test]
@@ -7672,7 +7636,10 @@ mod tests {
             assert_eq!(panel_sessions(&app), vec!["b", "a"]);
             assert_eq!(entry.status, PanelStatus::Idle);
             assert_eq!(entry.last_activity_epoch, Some(old));
-            assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+            assert_eq!(
+                app.activity_bursts.sessions["a"].pending,
+                Some((bump, bump))
+            );
         }
 
         apply_activity(&mut app, &roster, "a", bump + 1, 59);
@@ -7680,8 +7647,8 @@ mod tests {
         assert_eq!(panel_sessions(&app), vec!["a", "b"]);
         assert_eq!(entry.status, PanelStatus::Unseen);
         assert_eq!(entry.last_activity_epoch, Some(bump + 1));
-        assert_eq!(app.activity_bursts["a"].confirmed, bump + 1);
-        assert_eq!(app.activity_bursts["a"].pending, None);
+        assert_eq!(app.activity_bursts.sessions["a"].confirmed, bump + 1);
+        assert_eq!(app.activity_bursts.sessions["a"].pending, None);
     }
 
     #[test]
@@ -7760,8 +7727,11 @@ mod tests {
         assert_eq!(panel_sessions(&app), vec!["b", "a"]);
         assert_eq!(entry.status, PanelStatus::Idle);
         assert_eq!(entry.last_activity_epoch, Some(old));
-        assert_eq!(app.activity_bursts["a"].confirmed, old);
-        assert_eq!(app.activity_bursts["a"].pending, Some((second, second)));
+        assert_eq!(app.activity_bursts.sessions["a"].confirmed, old);
+        assert_eq!(
+            app.activity_bursts.sessions["a"].pending,
+            Some((second, second))
+        );
 
         // A follow-up inside the continuity gap chains and confirms.
         let third = second + ACTIVITY_BURST_GAP_SECS;
@@ -7789,8 +7759,11 @@ mod tests {
         // A whole turn ran while "a" was off every refreshing view; the only
         // sample the TUI ever gets for it is the turn's final epoch.
         let blind = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64 + 1);
-        app.activity_bursts.get_mut("a").unwrap().sampled_at =
-            Instant::now().checked_sub(blind).unwrap();
+        app.activity_bursts
+            .sessions
+            .get_mut("a")
+            .unwrap()
+            .sampled_at = Some(Instant::now().checked_sub(blind).unwrap());
         let finished = now - 60;
         for _ in 0..3 {
             apply_activity(&mut app, &roster, "a", finished, 60);
@@ -7798,15 +7771,18 @@ mod tests {
             assert_eq!(panel_sessions(&app), vec!["a", "b"]);
             assert_eq!(entry.status, PanelStatus::Unseen);
             assert_eq!(entry.last_activity_epoch, Some(finished));
-            assert_eq!(app.activity_bursts["a"].confirmed, finished);
-            assert_eq!(app.activity_bursts["a"].pending, None);
+            assert_eq!(app.activity_bursts.sessions["a"].confirmed, finished);
+            assert_eq!(app.activity_bursts.sessions["a"].pending, None);
         }
 
         // Continuously sampled again, a lone later write is filtered as before.
         apply_activity(&mut app, &roster, "a", now - 30, 30);
         let entry = panel_entry(&app, "a");
         assert_eq!(entry.last_activity_epoch, Some(finished));
-        assert_eq!(app.activity_bursts["a"].pending, Some((now - 30, now - 30)));
+        assert_eq!(
+            app.activity_bursts.sessions["a"].pending,
+            Some((now - 30, now - 30))
+        );
     }
 
     #[test]
@@ -7819,20 +7795,29 @@ mod tests {
 
         let bump = now - 3600;
         apply_activity(&mut app, &roster, "a", bump, 3600);
-        assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+        assert_eq!(
+            app.activity_bursts.sessions["a"].pending,
+            Some((bump, bump))
+        );
 
         // Overnight idle sleep: the next sample lands after a blind window
         // but carries the very epoch already judged a lone bump.
         let blind = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64 + 1);
-        app.activity_bursts.get_mut("a").unwrap().sampled_at =
-            Instant::now().checked_sub(blind).unwrap();
+        app.activity_bursts
+            .sessions
+            .get_mut("a")
+            .unwrap()
+            .sampled_at = Some(Instant::now().checked_sub(blind).unwrap());
         apply_activity(&mut app, &roster, "a", bump, 3600);
         let entry = panel_entry(&app, "a");
         assert_eq!(panel_sessions(&app), vec!["b", "a"]);
         assert_eq!(entry.status, PanelStatus::Idle);
         assert_eq!(entry.last_activity_epoch, Some(old));
-        assert_eq!(app.activity_bursts["a"].confirmed, old);
-        assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+        assert_eq!(app.activity_bursts.sessions["a"].confirmed, old);
+        assert_eq!(
+            app.activity_bursts.sessions["a"].pending,
+            Some((bump, bump))
+        );
     }
 
     #[test]
@@ -7844,20 +7829,26 @@ mod tests {
 
         let bump = now - 3600;
         apply_activity(&mut app, &roster, "a", bump, 3600);
-        assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+        assert_eq!(
+            app.activity_bursts.sessions["a"].pending,
+            Some((bump, bump))
+        );
 
         // Whatever wrote inside the blind window is unknown output: trusted.
         let blind = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64 + 1);
-        app.activity_bursts.get_mut("a").unwrap().sampled_at =
-            Instant::now().checked_sub(blind).unwrap();
+        app.activity_bursts
+            .sessions
+            .get_mut("a")
+            .unwrap()
+            .sampled_at = Some(Instant::now().checked_sub(blind).unwrap());
         let later = bump + 1800;
         apply_activity(&mut app, &roster, "a", later, 1800);
         let entry = panel_entry(&app, "a");
         assert_eq!(panel_sessions(&app), vec!["a", "b"]);
         assert_eq!(entry.status, PanelStatus::Unseen);
         assert_eq!(entry.last_activity_epoch, Some(later));
-        assert_eq!(app.activity_bursts["a"].confirmed, later);
-        assert_eq!(app.activity_bursts["a"].pending, None);
+        assert_eq!(app.activity_bursts.sessions["a"].confirmed, later);
+        assert_eq!(app.activity_bursts.sessions["a"].pending, None);
     }
 
     #[test]
@@ -7872,12 +7863,18 @@ mod tests {
 
         // A blocking attach leaves every session unsampled past the gap.
         let blind = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64 + 1);
-        app.activity_bursts.get_mut("a").unwrap().sampled_at =
-            Instant::now().checked_sub(blind).unwrap();
+        app.activity_bursts
+            .sessions
+            .get_mut("a")
+            .unwrap()
+            .sampled_at = Some(Instant::now().checked_sub(blind).unwrap());
         app.view = View::TaskList;
         app.current_project = Some("(unassigned)".to_string());
         app.on_return_from_attach();
-        assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+        assert_eq!(
+            app.activity_bursts.sessions["a"].pending,
+            Some((bump, bump))
+        );
 
         app.view = View::ProjectList;
         app.current_project = None;
@@ -7885,15 +7882,255 @@ mod tests {
         let entry = panel_entry(&app, "a");
         assert_eq!(entry.status, PanelStatus::Idle);
         assert_eq!(entry.last_activity_epoch, Some(old));
-        assert_eq!(app.activity_bursts["a"].pending, Some((bump, bump)));
+        assert_eq!(
+            app.activity_bursts.sessions["a"].pending,
+            Some((bump, bump))
+        );
 
         // Output that finished during the attach is still trusted.
-        app.activity_bursts.get_mut("a").unwrap().sampled_at =
-            Instant::now().checked_sub(blind).unwrap();
+        app.activity_bursts
+            .sessions
+            .get_mut("a")
+            .unwrap()
+            .sampled_at = Some(Instant::now().checked_sub(blind).unwrap());
         apply_activity(&mut app, &roster, "a", bump + 30, 30);
         let entry = panel_entry(&app, "a");
         assert_eq!(entry.status, PanelStatus::Unseen);
         assert_eq!(entry.last_activity_epoch, Some(bump + 30));
+    }
+
+    fn apply_global_activity(app: &mut App, samples: &[(&str, i64, u64)]) {
+        app.apply_agent_activity_samples(
+            samples
+                .iter()
+                .map(|(session, epoch, age)| {
+                    (
+                        session.to_string(),
+                        activity_sample(*epoch, Duration::from_secs(*age), "node"),
+                    )
+                })
+                .collect(),
+        );
+    }
+
+    #[test]
+    fn off_roster_lone_tick_is_learned_in_a_project_view_and_stays_filtered_at_home() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let pm = "agman-pm-alpha";
+        let roster = [pm, "b"];
+        let (_tmp, mut app) = burst_app(now, &[(pm, now - 7100), ("b", old)]);
+        assert_eq!(panel_sessions(&app), vec![pm, "b"]);
+
+        // Inside project alpha only its PM is rendered, but "b" is still
+        // sampled from the same tmux listing.
+        app.view = View::TaskList;
+        app.current_project = Some("alpha".to_string());
+        let bump = now - 60;
+        for _ in 0..3 {
+            apply_global_activity(&mut app, &[(pm, now - 7100, 7100), ("b", bump, 60)]);
+            assert_eq!(panel_sessions(&app), vec![pm]);
+            assert!(app.agent_activity_sample("b").is_none());
+            assert_eq!(app.activity_bursts.sessions["b"].confirmed, old);
+            assert_eq!(
+                app.activity_bursts.sessions["b"].pending,
+                Some((bump, bump))
+            );
+        }
+
+        app.view = View::ProjectList;
+        app.current_project = None;
+        apply_activity(&mut app, &roster, "b", bump, 60);
+        let entry = panel_entry(&app, "b");
+        assert_eq!(panel_sessions(&app), vec![pm, "b"]);
+        assert_eq!(entry.status, PanelStatus::Idle);
+        assert_eq!(entry.last_activity_epoch, Some(old));
+        assert_eq!(
+            app.activity_bursts.sessions["b"].pending,
+            Some((bump, bump))
+        );
+
+        // Even a slow return past the sampling gap keeps the known tick out.
+        let blind = Duration::from_secs(ACTIVITY_BURST_GAP_SECS as u64 + 1);
+        app.activity_bursts
+            .sessions
+            .get_mut("b")
+            .unwrap()
+            .sampled_at = Some(Instant::now().checked_sub(blind).unwrap());
+        apply_activity(&mut app, &roster, "b", bump, 60);
+        let entry = panel_entry(&app, "b");
+        assert_eq!(entry.status, PanelStatus::Idle);
+        assert_eq!(entry.last_activity_epoch, Some(old));
+        assert_eq!(
+            app.activity_bursts.sessions["b"].pending,
+            Some((bump, bump))
+        );
+    }
+
+    #[test]
+    fn off_roster_output_spanning_two_seconds_is_unseen_on_return_home() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let pm = "agman-pm-alpha";
+        let roster = [pm, "b"];
+        let (_tmp, mut app) = burst_app(now, &[(pm, now - 7100), ("b", old)]);
+        assert_eq!(panel_sessions(&app), vec![pm, "b"]);
+
+        app.view = View::TaskList;
+        app.current_project = Some("alpha".to_string());
+        let finished = now - 60;
+        apply_global_activity(&mut app, &[(pm, now - 7100, 7100), ("b", finished - 1, 61)]);
+        assert_eq!(app.activity_bursts.sessions["b"].confirmed, old);
+        apply_global_activity(&mut app, &[(pm, now - 7100, 7100), ("b", finished, 60)]);
+        assert_eq!(panel_sessions(&app), vec![pm]);
+        assert_eq!(app.activity_bursts.sessions["b"].confirmed, finished);
+        assert_eq!(app.activity_bursts.sessions["b"].pending, None);
+
+        app.view = View::ProjectList;
+        app.current_project = None;
+        apply_activity(&mut app, &roster, "b", finished, 60);
+        let entry = panel_entry(&app, "b");
+        assert_eq!(panel_sessions(&app), vec!["b", pm]);
+        assert_eq!(entry.status, PanelStatus::Unseen);
+        assert_eq!(entry.last_activity_epoch, Some(finished));
+    }
+
+    #[test]
+    fn unassigned_view_renders_nothing_but_still_learns_ticks() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let roster = ["a"];
+        let (_tmp, mut app) = burst_app(now, &[("a", old)]);
+
+        app.view = View::TaskList;
+        app.current_project = Some("(unassigned)".to_string());
+        let bump = now - 60;
+        apply_global_activity(&mut app, &[("a", bump, 60)]);
+        assert!(app.panel_entries().is_empty());
+        assert!(app.agent_activity.is_empty());
+        assert_eq!(
+            app.activity_bursts.sessions["a"].pending,
+            Some((bump, bump))
+        );
+
+        app.view = View::ProjectList;
+        app.current_project = None;
+        apply_activity(&mut app, &roster, "a", bump, 60);
+        let entry = panel_entry(&app, "a");
+        assert_eq!(entry.status, PanelStatus::Idle);
+        assert_eq!(entry.last_activity_epoch, Some(old));
+    }
+
+    /// Learn a lone tick for "a" over `old`, persist panel state, and return
+    /// the config for a second `App` to load it.
+    fn persist_lone_tick(now: i64, old: i64, bump: i64) -> (tempfile::TempDir, Config) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        config.ensure_dirs().unwrap();
+        let mut app = App::new_for_test(config.clone()).unwrap();
+        app.last_viewed = LastViewed {
+            tracking_since: now - 7000,
+            sessions: HashMap::new(),
+        };
+        app.last_viewed_dirty = true;
+        app.apply_project_refresh_snapshot(activity_snapshot(
+            &["a"],
+            HashMap::from([("a".to_string(), idle_sample(old))]),
+        ));
+        apply_activity(&mut app, &["a"], "a", bump, (now - bump) as u64);
+        assert_eq!(
+            app.activity_bursts.sessions["a"].pending,
+            Some((bump, bump))
+        );
+        assert!(app.activity_bursts_dirty);
+        app.flush_panel_state(true);
+        assert!(!app.activity_bursts_dirty);
+        (tmp, config)
+    }
+
+    #[test]
+    fn persisted_lone_tick_stays_filtered_after_restart() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let bump = now - 3600;
+        let (_tmp, config) = persist_lone_tick(now, old, bump);
+
+        let mut app = App::new_for_test(config).unwrap();
+        let burst = app.activity_bursts.sessions["a"];
+        assert_eq!(burst.confirmed, old);
+        assert_eq!(burst.pending, Some((bump, bump)));
+        assert_eq!(burst.sampled_at, None);
+
+        for _ in 0..3 {
+            apply_activity(&mut app, &["a"], "a", bump, 3600);
+            let entry = panel_entry(&app, "a");
+            assert_eq!(entry.status, PanelStatus::Idle);
+            assert_eq!(entry.last_activity_epoch, Some(old));
+            assert_eq!(
+                app.activity_bursts.sessions["a"].pending,
+                Some((bump, bump))
+            );
+        }
+    }
+
+    #[test]
+    fn persisted_state_trusts_newer_output_after_restart() {
+        let now = unix_epoch_secs().unwrap();
+        let old = now - 7200;
+        let bump = now - 3600;
+        let (_tmp, config) = persist_lone_tick(now, old, bump);
+
+        let mut app = App::new_for_test(config).unwrap();
+        let later = bump + 30;
+        apply_activity(&mut app, &["a"], "a", later, 3570);
+        let entry = panel_entry(&app, "a");
+        assert_eq!(entry.status, PanelStatus::Unseen);
+        assert_eq!(entry.last_activity_epoch, Some(later));
+        assert_eq!(app.activity_bursts.sessions["a"].confirmed, later);
+        assert_eq!(app.activity_bursts.sessions["a"].pending, None);
+    }
+
+    #[test]
+    fn corrupt_burst_state_falls_back_to_trusting_first_samples() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path());
+        config.ensure_dirs().unwrap();
+        std::fs::write(config.activity_bursts_path(), "{\"sessions\": 42").unwrap();
+        let now = unix_epoch_secs().unwrap();
+
+        let mut app = App::new_for_test(config).unwrap();
+        assert!(app.activity_bursts.sessions.is_empty());
+        app.last_viewed = LastViewed {
+            tracking_since: now - 7000,
+            sessions: HashMap::new(),
+        };
+        app.apply_project_refresh_snapshot(activity_snapshot(
+            &["a"],
+            HashMap::from([("a".to_string(), idle_sample(now - 60))]),
+        ));
+        assert_eq!(panel_entry(&app, "a").status, PanelStatus::Unseen);
+        assert_eq!(app.activity_bursts.sessions["a"].confirmed, now - 60);
+    }
+
+    #[test]
+    fn complete_roster_prunes_burst_state_and_marks_it_dirty() {
+        let now = unix_epoch_secs().unwrap();
+        let (_tmp, mut app) = burst_app(now, &[("a", now - 7200), ("b", now - 7100)]);
+        app.flush_panel_state(true);
+        assert!(!app.activity_bursts_dirty);
+
+        let mut partial = activity_snapshot(&["a"], HashMap::new());
+        partial.agent_list_error = Some("boom".to_string());
+        app.apply_project_refresh_snapshot(partial);
+        assert!(app.activity_bursts.sessions.contains_key("b"));
+        assert!(!app.activity_bursts_dirty);
+
+        app.apply_project_refresh_snapshot(activity_snapshot(&["a"], HashMap::new()));
+        assert!(!app.activity_bursts.sessions.contains_key("b"));
+        assert!(app.activity_bursts_dirty);
+        app.flush_panel_state(true);
+        let persisted = ActivityBursts::load(&app.config.activity_bursts_path());
+        assert_eq!(persisted.sessions.keys().collect::<Vec<_>>(), vec!["a"]);
     }
 
     #[test]
@@ -7911,7 +8148,10 @@ mod tests {
         // then rewound because it is viewer-caused.
         apply_activity(&mut app, &roster, "a", suppression.ended_at - 1, 1);
         apply_activity(&mut app, &roster, "a", suppression.ended_at, 0);
-        assert_eq!(app.activity_bursts["a"].confirmed, suppression.ended_at);
+        assert_eq!(
+            app.activity_bursts.sessions["a"].confirmed,
+            suppression.ended_at
+        );
         let entry = panel_entry(&app, "a");
         assert_eq!(panel_sessions(&app), vec!["b", "a"]);
         assert_eq!(entry.status, PanelStatus::Idle);
