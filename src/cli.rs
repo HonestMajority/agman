@@ -33,8 +33,8 @@ EXAMPLES:
         /// Read message from a file
         #[arg(short = 'F', long)]
         file: Option<std::path::PathBuf>,
-        /// Sender identity (required): "chief-of-staff", "telegram", "system",
-        /// a project name (the PM), or "<kind>:<project>--<name>"
+        /// Authenticated sender: "chief-of-staff", a project name (the PM),
+        /// or "<kind>:<project>--<name>". Requires an agman-managed launch environment.
         #[arg(long)]
         from: String,
     },

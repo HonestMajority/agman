@@ -1,9 +1,11 @@
+mod helpers;
+
 use agman::config::Config;
 use agman::inbox::{self, InboxMessage};
 use agman::project::Project;
 use chrono::Utc;
 use std::collections::HashSet;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn message_line(seq: u64, message: &str) -> String {
     serde_json::to_string(&InboxMessage {
@@ -11,6 +13,7 @@ fn message_line(seq: u64, message: &str) -> String {
         from: "tester".to_string(),
         message: message.to_string(),
         timestamp: Utc::now(),
+        provenance: None,
     })
     .unwrap()
 }
@@ -67,10 +70,11 @@ fn concurrent_send_message_processes_assign_unique_monotonic_seq_without_framing
     let config = Config::new(tmp.path().join(".agman"), tmp.path().join("repos"));
     Project::create(&config, "race", "Race project").unwrap();
 
+    std::fs::create_dir_all(config.chief_of_staff_dir()).unwrap();
     let process_count = 32usize;
     let mut children = Vec::new();
     for i in 0..process_count {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_agman"));
+        let mut command = helpers::authenticated_cli(&config, "chief-of-staff");
         command
             .env("HOME", tmp.path())
             .env("RUST_LOG", "off")

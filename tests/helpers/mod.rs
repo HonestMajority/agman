@@ -139,3 +139,27 @@ pub fn create_test_agent(
     config.ensure_dirs().unwrap();
     AgentRecord::create(config, project, name, "test description", kind).unwrap()
 }
+
+/// Run CLI tests in their own environment, without changing global process env.
+#[allow(dead_code)]
+pub fn isolated_cli(config: &Config) -> std::process::Command {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_agman"));
+    command
+        .env("HOME", config.base_dir.parent().unwrap())
+        .env_remove("AGMAN_SENDER")
+        .env_remove("AGMAN_SENDER_TOKEN")
+        .env("RUST_LOG", "agman=debug");
+    command
+}
+
+#[allow(dead_code)]
+pub fn authenticated_cli(config: &Config, sender: &str) -> std::process::Command {
+    agman::sender_auth::launch_command(config, sender, "true").unwrap();
+    let inbox = agman::use_cases::agent_inbox_path(config, sender).unwrap();
+    let token = std::fs::read_to_string(inbox.parent().unwrap().join("sender-token")).unwrap();
+    let mut command = isolated_cli(config);
+    command
+        .env("AGMAN_SENDER", sender)
+        .env("AGMAN_SENDER_TOKEN", token);
+    command
+}

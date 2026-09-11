@@ -13,6 +13,53 @@ pub struct InboxMessage {
     pub from: String,
     pub message: String,
     pub timestamp: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<AppendProvenance>,
+}
+
+/// Writer metadata only; message contents and credentials are never copied here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppendProvenance {
+    pub source: AppendSource,
+    pub authenticated_sender: String,
+    pub target: String,
+    pub pid: u32,
+    pub ppid: Option<u32>,
+    pub cwd: std::path::PathBuf,
+    pub executable: Option<std::path::PathBuf>,
+    pub argv0: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppendSource {
+    Cli,
+}
+
+pub fn append_cli_message(
+    inbox_path: &Path,
+    sender: &crate::sender_auth::AuthenticatedSender,
+    target: &str,
+    message: &str,
+) -> Result<InboxMessage> {
+    #[cfg(unix)]
+    // SAFETY: getppid has no arguments or preconditions.
+    let ppid = Some(unsafe { libc::getppid() } as u32);
+    #[cfg(not(unix))]
+    let ppid = None;
+    let provenance = AppendProvenance {
+        source: AppendSource::Cli,
+        authenticated_sender: sender.id().to_owned(),
+        target: target.to_owned(),
+        pid: std::process::id(),
+        ppid,
+        cwd: std::env::current_dir().context("cannot capture sender working directory")?,
+        executable: std::env::current_exe().ok(),
+        argv0: std::env::args_os()
+            .next()
+            .map(|arg| arg.to_string_lossy().into_owned()),
+    };
+    append(inbox_path, sender.id(), message, Some(provenance))
 }
 
 /// Serializes concurrent `append_message` calls inside one process. The
@@ -25,6 +72,15 @@ static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Safe across agman processes that use this function. Parse/read errors are
 /// returned to the caller and never treated as an empty inbox.
 pub fn append_message(inbox_path: &Path, from: &str, message: &str) -> Result<InboxMessage> {
+    append(inbox_path, from, message, None)
+}
+
+fn append(
+    inbox_path: &Path,
+    from: &str,
+    message: &str,
+    provenance: Option<AppendProvenance>,
+) -> Result<InboxMessage> {
     // Ensure parent directory exists before taking the lock file.
     if let Some(parent) = inbox_path.parent() {
         std::fs::create_dir_all(parent)
@@ -58,6 +114,7 @@ pub fn append_message(inbox_path: &Path, from: &str, message: &str) -> Result<In
         from: from.to_string(),
         message: message.to_string(),
         timestamp: Utc::now(),
+        provenance,
     };
 
     let mut line = serde_json::to_vec(&msg).context("failed to serialize inbox message")?;
@@ -70,6 +127,10 @@ pub fn append_message(inbox_path: &Path, from: &str, message: &str) -> Result<In
         .with_context(|| format!("failed to open inbox {}", inbox_path.display()))?;
     file.write_all(&line)
         .with_context(|| format!("failed to write to inbox {}", inbox_path.display()))?;
+    if msg.provenance.is_some() {
+        file.sync_data()
+            .context("failed to persist CLI inbox append")?;
+    }
 
     Ok(msg)
 }
