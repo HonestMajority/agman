@@ -30,8 +30,6 @@ chrono = { version = "0.4", features = ["serde"] }
 # File system
 dirs = "5.0"
 fs2 = "0.4"
-tempfile = "3"
-libc = "0.2"
 
 # Logging
 tracing = "0.1"
@@ -57,3 +55,6 @@ tui-textarea-2 = "0.9"
 
 # System clipboard
 arboard = "3"
+
+[dev-dependencies]
+tempfile = "3"
