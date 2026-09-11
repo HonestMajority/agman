@@ -8,6 +8,7 @@ pub mod inbox;
 pub mod last_viewed;
 pub mod project;
 pub mod repo_stats;
+pub mod sender_auth;
 pub mod supervisor;
 pub mod task;
 pub mod telegram;

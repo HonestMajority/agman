@@ -103,7 +103,8 @@ fn cli_send_message_help_requires_from_sender() {
 
     assert!(stdout.contains("--from <FROM>"));
     assert!(!stdout.contains("[--from <FROM>]"));
-    assert!(stdout.contains("Sender identity (required)"));
+    assert!(stdout.contains("Authenticated sender"));
+    assert!(stdout.contains("agman-managed launch environment"));
     assert!(stdout
         .contains("agman send-message engineer:myproj--engineer-myrepo-fix-bug --from myproj"));
 }

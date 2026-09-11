@@ -66,6 +66,7 @@ fn visible_fresh_inbox_message_is_deferred() {
         from: "pm".to_string(),
         message: "fresh".to_string(),
         timestamp: now - Duration::seconds(60),
+        provenance: None,
     };
 
     assert!(use_cases::should_defer_visible_fresh_inbox_message(
@@ -83,6 +84,7 @@ fn hidden_fresh_inbox_message_is_not_deferred() {
         from: "pm".to_string(),
         message: "fresh".to_string(),
         timestamp: now - Duration::seconds(60),
+        provenance: None,
     };
 
     assert!(!use_cases::should_defer_visible_fresh_inbox_message(
@@ -100,12 +102,14 @@ fn visibility_error_defers_fresh_but_not_old_inbox_message() {
         from: "pm".to_string(),
         message: "fresh".to_string(),
         timestamp: now - Duration::seconds(60),
+        provenance: None,
     };
     let old = inbox::InboxMessage {
         seq: 2,
         from: "pm".to_string(),
         message: "old".to_string(),
         timestamp: now - Duration::seconds(use_cases::INBOX_VISIBLE_FRESH_DEFERRAL_SECS),
+        provenance: None,
     };
 
     assert!(use_cases::should_defer_visible_fresh_inbox_message(
@@ -364,6 +368,7 @@ fn create_researcher_with_first_prompt_seeds_one_inbox_message() {
     let messages = inbox::read_messages(&config.agent_inbox("project", "researcher")).unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].from, "project");
+    assert!(messages[0].provenance.is_none());
     assert_eq!(messages[0].message, "Investigate the API latency");
 }
 
@@ -412,13 +417,21 @@ fn send_message_targets_specific_attached_engineer() {
     let _task = create_test_task(&config, "repo", "branch");
     let engineer = use_cases::attached_engineer_for_task(&config, "repo--branch").unwrap();
 
-    use_cases::send_message(
-        &config,
-        &format!("engineer:repo--{}", engineer.meta.name),
-        "repo",
-        "Please tighten the tests",
-    )
-    .unwrap();
+    let output = helpers::authenticated_cli(&config, "repo")
+        .args([
+            "send-message",
+            &format!("engineer:repo--{}", engineer.meta.name),
+            "--from",
+            "repo",
+            "Please tighten the tests",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let messages = inbox::read_messages(&config.agent_inbox("repo", &engineer.meta.name)).unwrap();
     assert!(messages
@@ -429,34 +442,6 @@ fn send_message_targets_specific_attached_engineer() {
         .unwrap_err()
         .to_string();
     assert!(task_target_err.contains("unknown target"));
-}
-
-#[test]
-fn send_message_accepts_replyable_and_reserved_senders() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
-    create_test_project(&config, "repo");
-    let _task = create_test_task(&config, "repo", "branch");
-    let engineer = use_cases::attached_engineer_for_task(&config, "repo--branch").unwrap();
-    let engineer_id = format!("engineer:repo--{}", engineer.meta.name);
-
-    let senders = [
-        "repo",
-        engineer_id.as_str(),
-        "chief-of-staff",
-        "telegram",
-        "system",
-    ];
-    for sender in senders {
-        use_cases::send_message(&config, "repo", sender, "hello").unwrap();
-    }
-
-    let recorded: Vec<String> = inbox::read_messages(&config.project_inbox("repo"))
-        .unwrap()
-        .into_iter()
-        .map(|message| message.from)
-        .collect();
-    assert_eq!(recorded, senders);
 }
 
 #[test]
@@ -473,10 +458,6 @@ fn send_message_rejects_unroutable_senders() {
             .unwrap_err()
             .to_string();
         assert!(err.contains(&format!("invalid sender '{sender}'")), "{err}");
-        assert!(
-            err.contains("valid senders: chief-of-staff, telegram, system, <project>"),
-            "{err}"
-        );
     }
 
     let messages = inbox::read_messages(&config.agent_inbox("repo", &engineer.meta.name)).unwrap();
