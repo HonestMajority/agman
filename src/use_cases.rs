@@ -17,7 +17,6 @@ use crate::harness::{
 use crate::inbox;
 use crate::project::Project;
 use crate::repo_stats::RepoStats;
-use crate::sender_auth::{self, AuthenticatedSender};
 use crate::task::{LinkedPr, Task};
 use crate::tmux::Tmux;
 
@@ -1927,13 +1926,35 @@ pub fn parse_send_target(config: &Config, target: &str) -> Result<SendTarget> {
     Ok(SendTarget::Project(target.to_string()))
 }
 
+const VALID_SENDERS_HINT: &str =
+    "valid senders: chief-of-staff, telegram, system, <project>, engineer:<project>--<name>, researcher:<project>--<name>, operator:<project>--<name>, reviewer:<project>--<name>, tester:<project>--<name>";
+
+/// A sender must be replyable: every sender is itself a valid send target,
+/// except the reserved `telegram` and `system` pseudo-senders.
+fn validate_sender(config: &Config, from: &str) -> Result<()> {
+    if from.trim().is_empty() {
+        anyhow::bail!("invalid sender '{from}': sender must not be blank\n{VALID_SENDERS_HINT}");
+    }
+    if from == "system" {
+        return Ok(());
+    }
+    match parse_send_target(config, from) {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            let reason = err.to_string();
+            let reason = reason.lines().next().unwrap_or_default();
+            anyhow::bail!("invalid sender '{from}': {reason}\n{VALID_SENDERS_HINT}")
+        }
+    }
+}
+
 /// Send a message to an agent's inbox.
 pub fn send_message(config: &Config, target: &str, from: &str, message: &str) -> Result<()> {
     let inbox_path = agent_inbox_path(config, target)?;
-    let sender = AuthenticatedSender::from_env(config, from)?;
+    validate_sender(config, from)?;
 
     tracing::info!(target = target, from = from, "sending message");
-    inbox::append_cli_message(&inbox_path, &sender, target, message)?;
+    inbox::append_message(&inbox_path, from, message)?;
     Ok(())
 }
 
@@ -2622,8 +2643,6 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
         session_key: prep.session_key(),
     });
 
-    let cmd = sender_auth::launch_command(config, "chief-of-staff", &cmd)?;
-
     let already_existed = Tmux::session_exists(session_name);
     Tmux::create_agent_session(session_name, &cmd, Some(&prep.cwd))?;
 
@@ -2723,8 +2742,6 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
         capabilities: Default::default(),
         session_key: prep.session_key(),
     });
-
-    let cmd = sender_auth::launch_command(config, project_name, &cmd)?;
 
     let already_existed = Tmux::session_exists(&session_name);
     Tmux::create_agent_session(&session_name, &cmd, Some(&prep.cwd))?;
@@ -3358,12 +3375,6 @@ pub fn start_agent_session(
         session_key: prep.session_key(),
     });
 
-    let cmd = sender_auth::launch_command(
-        config,
-        &format!("{}:{project}--{name}", agent_kind_name(&agent.meta.kind)),
-        &cmd,
-    )?;
-
     let already_existed = Tmux::session_exists(&session_name);
     Tmux::create_agent_session(&session_name, &cmd, Some(&prep.cwd))?;
     if !already_existed && (prep.is_first_launch || kind == HarnessKind::Pi) {
@@ -3563,7 +3574,7 @@ pub fn detach_agent_from_task(config: &Config, project: &str, name: &str) -> Res
     Ok(agent)
 }
 
-pub(crate) fn agent_kind_name(kind: &AgentKind) -> &'static str {
+fn agent_kind_name(kind: &AgentKind) -> &'static str {
     match kind {
         AgentKind::Engineer => "engineer",
         AgentKind::Researcher { .. } => "researcher",
@@ -4087,7 +4098,7 @@ fn message_senders_section(self_id: &str, project_name: &str) -> String {
 
 ## Message Senders
 
-Your sender identity is `{self_id}`. Every `agman send-message` you run must pass `--from {self_id}` — never a harness or model name (codex, claude, ...), never `user` or `unknown`. agman authenticates this exact identity using its managed launch environment. If authentication fails, report that the session needs relaunch through agman; never read, paste, or log sender tokens. CLI sends from `telegram` and `system` are rejected.
+Your sender identity is `{self_id}`. Every `agman send-message` you run must pass `--from {self_id}` — never a harness or model name (codex, claude, ...), never `user` or `unknown`. agman rejects any `--from` that is not a valid message target, so a wrong sender fails loudly instead of being delivered.
 
 Inbox messages arrive tagged `[Message from <sender>]`, and `<sender>` is always one of:
 - `chief-of-staff` — the Chief of Staff.

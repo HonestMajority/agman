@@ -63,13 +63,7 @@ agman status
 `create-agent --first-prompt` behaves the same for project-scoped Researcher, Operator, Reviewer, and Tester agents. Omitting it creates and starts an idle agent with no initial inbox message until you use `agman send-message`.
 First prompts are delivered from the project (PM) identity.
 
-`send-message --from` is required and must match the authenticated sender of the calling session: `chief-of-staff`, a project name (the PM), or `<kind>:<project>--<name>` for an existing agent with that role. CLI sends from `telegram`, `system`, `user`, `codex`, or `unknown` are rejected. PMs remain the hub for agent coordination.
-
-agman creates a private `sender-token` file in each sender's state directory (`chief-of-staff/`, `projects/<project>/`, or `agents/<project>--<name>/`) and supplies `AGMAN_SENDER` and `AGMAN_SENDER_TOKEN` when launching or resuming Claude, Codex, or Pi. Agents keep using the same command syntax; credentials are never included in prompts. Custom harness environment filters must preserve both variables. Missing or mismatched credentials fail closed.
-
-After upgrading, already-running sessions must be stopped and relaunched through agman to receive credentials; reattaching to an existing session does not update its environment. Internal first prompts, Telegram ingestion, and system messages continue through internal append APIs without CLI credentials.
-
-CLI inbox rows include `provenance` with source, authenticated sender, target, PID/PPID, working directory, executable, and argv0; the row timestamp dates the append. This metadata is persisted with the message under the same inbox lock and never copies message text, full arguments, or tokens. Existing historical rows have no authenticated provenance. Token possession authenticates CLI attribution within the local account; it does not isolate processes that can read that account's token files or directly edit inbox state.
+`send-message --from` is required and must be a replyable sender: `chief-of-staff`, a project name (the PM), or `<kind>:<project>--<name>` for an existing agent. `telegram` and `system` are reserved senders. Anything else (for example `user`, `codex`, or `unknown`) is rejected.
 
 ## Harness Notes
 

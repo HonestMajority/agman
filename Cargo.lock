@@ -28,7 +28,6 @@ dependencies = [
  "clap",
  "dirs",
  "fs2",
- "libc",
  "ratatui",
  "serde",
  "serde_json",

@@ -68,17 +68,7 @@ fn main() -> Result<()> {
     // Parse CLI
     let cli = Cli::parse();
 
-    match &cli.command {
-        Some(Commands::SendMessage { target, from, .. }) => {
-            tracing::debug!(
-                command = "send-message",
-                target,
-                from,
-                "dispatching command"
-            );
-        }
-        command => tracing::debug!(command = ?command, "dispatching command"),
-    }
+    tracing::debug!(command = ?cli.command, "dispatching command");
 
     match cli.command {
         Some(Commands::Init) => {
