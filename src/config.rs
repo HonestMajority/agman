@@ -245,6 +245,12 @@ impl Config {
         state_dir.join("launch-cwd")
     }
 
+    /// Harness-native session UUID of a long-lived agent: minted by agman
+    /// for claude, resolved from the codex session index for codex.
+    pub fn session_id_path(state_dir: &Path) -> PathBuf {
+        state_dir.join("session-id")
+    }
+
     pub fn chief_of_staff_tmux_session() -> &'static str {
         "agman-chief-of-staff"
     }

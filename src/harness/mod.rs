@@ -23,13 +23,14 @@ pub mod pi;
 
 /// Test-only re-export of the codex session_index polling helper. Used by
 /// integration tests to verify the polling logic without a running codex.
+/// `codex_home` is the directory holding `session_index*.jsonl`.
 #[doc(hidden)]
 pub fn poll_session_index_for_test(
-    index_path: &std::path::Path,
+    codex_home: &std::path::Path,
     name: &str,
     timeout: std::time::Duration,
 ) -> bool {
-    codex::poll_session_index_for(index_path, name, timeout)
+    codex::poll_session_index_for(codex_home, name, timeout)
 }
 
 /// Test-only re-export of the codex /rename retry loop. Tests pass a
@@ -39,7 +40,7 @@ pub fn poll_session_index_for_test(
 #[doc(hidden)]
 pub fn register_session_name_with_retry_for_test(
     paste_attempt: Box<dyn FnMut() -> Result<()> + Send>,
-    index_path: &std::path::Path,
+    codex_home: &std::path::Path,
     name: &str,
     initial_delay: std::time::Duration,
     poll_timeout: std::time::Duration,
@@ -47,7 +48,7 @@ pub fn register_session_name_with_retry_for_test(
 ) -> Result<bool> {
     codex::register_session_name_with_retry(
         paste_attempt,
-        index_path,
+        codex_home,
         name,
         initial_delay,
         poll_timeout,
@@ -145,8 +146,8 @@ pub fn read_or_stamp(state_dir: &Path, default_kind: HarnessKind) -> Result<Harn
 /// agman never resumes them). Long-lived agents (CEO/PM/researcher) use
 /// `Pin` on first launch and `Resume` on subsequent launches.
 ///
-/// The `'a` lifetime borrows the stamped session-id (claude) or
-/// stamped unique session name (codex/pi) from the caller.
+/// The `'a` lifetime borrows the stamped session-id (claude/codex) or
+/// stamped unique session name (pi) from the caller.
 #[derive(Debug, Clone, Copy)]
 pub enum SessionKey<'a> {
     /// No resume, no pin. Claude receives the launch name directly;
@@ -157,8 +158,9 @@ pub enum SessionKey<'a> {
     /// pin and treat this like `Auto`.
     Pin(&'a str),
     /// Resume an existing long-lived session. Claude resumes by UUID
-    /// (`--resume <uuid>`); codex resumes by stamped unique name;
-    /// pi resumes latest session in a private session dir via `--continue`.
+    /// (`--resume <uuid>`); codex resumes by the session UUID agman resolved
+    /// from its session index (`resume <uuid>`); pi resumes latest session
+    /// in a private session dir via `--continue`.
     Resume(&'a str),
 }
 
@@ -170,7 +172,7 @@ pub struct AgentCapabilities {
 
 /// Static input for `Harness::build_session_command`. Names follow the
 /// harness's resume / session-listing convention so the user can reattach
-/// manually from a shell (`claude --resume <id>` or `codex resume <name>`;
+/// manually from a shell (`claude --resume <id>` or `codex resume <uuid>`;
 /// pi uses its private session dir).
 pub struct LaunchContext<'a> {
     /// Inline system-prompt body. Passed to claude via `--system-prompt` and
@@ -249,11 +251,23 @@ pub trait Harness: Send + Sync {
     /// foreground process is no longer a shell.
     /// - Claude: no-op.
     /// - Codex: paste `/rename <name>` + Enter, then verify by tailing
-    ///   `~/.codex/session_index.jsonl` for ≤ 5s. On timeout: log warning
-    ///   and return Ok — the session is still usable, just not
-    ///   resume-by-name.
+    ///   `~/.codex/session_index*.jsonl` for ≤ 5s. On timeout: log warning
+    ///   and return Ok — the session is still usable, but agman cannot
+    ///   resolve its UUID for a later resume.
     /// - Pi: best-effort paste `/name <name>` + Enter.
     fn register_session_name(&self, ctx: &RegisterContext) -> Result<()>;
+
+    /// Resolve the harness-native session id that resumes the session
+    /// registered under `name`. Called after `register_session_name` on
+    /// first launch and again on resume when `<state_dir>/session-id` is
+    /// missing (agents stamped before agman persisted codex UUIDs).
+    /// - Claude: `Ok(None)` — agman pins the UUID at launch.
+    /// - Codex: exactly one UUID in `session_index*.jsonl` → `Ok(Some)`;
+    ///   none or several → `Err` naming the label and candidates.
+    /// - Pi: `Ok(None)` — resumes via `--continue` in its session dir.
+    fn resolve_session_id(&self, _harness_home: &Path, _name: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
 
     /// Tear down the foreground agent in a tmux pane gracefully.
     /// - Claude: `/exit` + Enter, fallback Ctrl-C × 2.
