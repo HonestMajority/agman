@@ -2312,6 +2312,202 @@ mod tests {
         let content = require_graceful_handoff(Some("handoff summary".to_string())).unwrap();
         assert_eq!(content.as_deref(), Some("handoff summary"));
     }
+
+    mod codex_resume {
+        use super::super::{prepare_long_lived_launch_inner, LaunchMode};
+        use crate::config::Config;
+        use crate::harness::HarnessKind;
+
+        const NAME: &str = "agman-pm-reviews-260603-113612-e0337e08";
+        const UUID: &str = "019e8d45-1c40-7353-86da-f02f183a4ad4";
+
+        fn index_line(id: &str, name: &str) -> String {
+            format!("{{\"id\":\"{id}\",\"thread_name\":\"{name}\",\"updated_at\":\"2026-06-03T11:36:19Z\"}}\n")
+        }
+
+        /// Agent state as stamped by agman before it persisted codex UUIDs:
+        /// `session-name` + `launch-cwd`, no `session-id`.
+        fn legacy_codex_state(state_dir: &std::path::Path, cwd: &std::path::Path) {
+            std::fs::create_dir_all(state_dir).unwrap();
+            std::fs::write(state_dir.join("session-name"), NAME).unwrap();
+            std::fs::write(
+                Config::launch_cwd_path(state_dir),
+                cwd.to_string_lossy().as_ref(),
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn resume_prefers_persisted_session_id() {
+            let tmp = tempfile::tempdir().unwrap();
+            let state_dir = tmp.path().join("agent");
+            let codex_home = tmp.path().join("codex");
+            std::fs::create_dir_all(&codex_home).unwrap();
+            legacy_codex_state(&state_dir, tmp.path());
+            std::fs::write(Config::session_id_path(&state_dir), UUID).unwrap();
+            // Index would be ambiguous — must not even be consulted.
+            std::fs::write(
+                codex_home.join("session_index.jsonl"),
+                index_line("019dd4b5-48d4-76a3-ad3a-8384f83f25f2", NAME)
+                    + &index_line("019dd4b7-ed70-7c33-b3f5-9509ce924474", NAME),
+            )
+            .unwrap();
+
+            let prep = prepare_long_lived_launch_inner(
+                &state_dir,
+                "agman-pm-reviews",
+                tmp.path(),
+                HarnessKind::Codex,
+                &codex_home,
+                false,
+            )
+            .unwrap();
+            assert!(matches!(&prep.mode, LaunchMode::Resume(h) if h == UUID));
+            assert!(!prep.is_first_launch);
+            assert_eq!(prep.session_name, NAME);
+        }
+
+        #[test]
+        fn resume_migrates_session_name_only_state_to_uuid() {
+            let tmp = tempfile::tempdir().unwrap();
+            let state_dir = tmp.path().join("agent");
+            let codex_home = tmp.path().join("codex");
+            std::fs::create_dir_all(&codex_home).unwrap();
+            legacy_codex_state(&state_dir, tmp.path());
+            std::fs::write(
+                codex_home.join("session_index.jsonl"),
+                index_line("019dd39d-3281-7b92-a276-f82aeb35f18e", "agman-test")
+                    + &index_line(UUID, NAME)
+                    + &index_line(UUID, NAME),
+            )
+            .unwrap();
+
+            let prep = prepare_long_lived_launch_inner(
+                &state_dir,
+                "agman-pm-reviews",
+                tmp.path(),
+                HarnessKind::Codex,
+                &codex_home,
+                false,
+            )
+            .unwrap();
+            assert!(matches!(&prep.mode, LaunchMode::Resume(h) if h == UUID));
+            assert!(!prep.is_first_launch);
+            assert_eq!(
+                std::fs::read_to_string(Config::session_id_path(&state_dir)).unwrap(),
+                UUID,
+                "resolved UUID must be persisted for the next launch"
+            );
+            assert_eq!(
+                std::fs::read_to_string(state_dir.join("session-name")).unwrap(),
+                NAME,
+                "session-name stays as the human-visible label"
+            );
+        }
+
+        #[test]
+        fn resume_fails_loudly_when_label_cannot_be_resolved() {
+            let tmp = tempfile::tempdir().unwrap();
+            let state_dir = tmp.path().join("agent");
+            let codex_home = tmp.path().join("codex");
+            std::fs::create_dir_all(&codex_home).unwrap();
+            legacy_codex_state(&state_dir, tmp.path());
+            let first = "019dd4b5-48d4-76a3-ad3a-8384f83f25f2";
+            let second = "019dd4b7-ed70-7c33-b3f5-9509ce924474";
+            std::fs::write(
+                codex_home.join("session_index.jsonl"),
+                index_line(first, NAME) + &index_line(second, NAME),
+            )
+            .unwrap();
+
+            let err = prepare_long_lived_launch_inner(
+                &state_dir,
+                "agman-pm-reviews",
+                tmp.path(),
+                HarnessKind::Codex,
+                &codex_home,
+                false,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(NAME), "{err}");
+            assert!(err.contains(first) && err.contains(second), "{err}");
+            assert!(
+                !Config::session_id_path(&state_dir).exists(),
+                "must not persist a guess"
+            );
+
+            // No index entry at all fails the same way rather than handing
+            // codex a label it rejects.
+            std::fs::remove_file(codex_home.join("session_index.jsonl")).unwrap();
+            let err = prepare_long_lived_launch_inner(
+                &state_dir,
+                "agman-pm-reviews",
+                tmp.path(),
+                HarnessKind::Codex,
+                &codex_home,
+                false,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(NAME), "{err}");
+        }
+
+        #[test]
+        fn first_launch_and_force_fresh_do_not_consult_index() {
+            let tmp = tempfile::tempdir().unwrap();
+            let state_dir = tmp.path().join("agent");
+            let codex_home = tmp.path().join("codex");
+
+            let prep = prepare_long_lived_launch_inner(
+                &state_dir,
+                "agman-pm-reviews",
+                tmp.path(),
+                HarnessKind::Codex,
+                &codex_home,
+                false,
+            )
+            .unwrap();
+            assert!(matches!(prep.mode, LaunchMode::Auto));
+            assert!(prep.is_first_launch);
+            assert!(!Config::session_id_path(&state_dir).exists());
+
+            // respawn: handles wiped, then force_fresh — still a fresh launch.
+            std::fs::write(Config::session_id_path(&state_dir), UUID).unwrap();
+            super::super::wipe_long_lived_session_handles(&state_dir);
+            let prep = prepare_long_lived_launch_inner(
+                &state_dir,
+                "agman-pm-reviews",
+                tmp.path(),
+                HarnessKind::Codex,
+                &codex_home,
+                true,
+            )
+            .unwrap();
+            assert!(matches!(prep.mode, LaunchMode::Auto));
+            assert!(!Config::session_id_path(&state_dir).exists());
+        }
+
+        #[test]
+        fn pi_resume_keeps_session_name_handle() {
+            let tmp = tempfile::tempdir().unwrap();
+            let state_dir = tmp.path().join("agent");
+            let pi_home = tmp.path().join("pi");
+            legacy_codex_state(&state_dir, tmp.path());
+
+            let prep = prepare_long_lived_launch_inner(
+                &state_dir,
+                "agman-pm-reviews",
+                tmp.path(),
+                HarnessKind::Pi,
+                &pi_home,
+                false,
+            )
+            .unwrap();
+            assert!(matches!(&prep.mode, LaunchMode::Resume(h) if h == NAME));
+            assert!(!Config::session_id_path(&state_dir).exists());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2339,6 +2535,7 @@ pub fn wipe_long_lived_session_handles(state_dir: &Path) {
 /// `Harness::build_session_command` and whether to run the post-launch
 /// registration step (`/rename` for codex, `/name` for pi; no-op for
 /// claude).
+#[derive(Debug)]
 struct LongLivedLaunch {
     /// Mode + the owned UUID/name backing the borrowed `SessionKey` returned
     /// by `session_key`. The handle lives inside the variant, so a `Pin` /
@@ -2352,7 +2549,8 @@ struct LongLivedLaunch {
     /// `--continue` inside this directory; other harnesses leave it unset.
     session_dir: Option<PathBuf>,
     /// Stamped unique generation name. Passed as the harness session name
-    /// for fresh launches, as the resume key for codex, and as the
+    /// for fresh launches, registered via `/rename` for codex (and then
+    /// resolved to the UUID that actually resumes it), and used as the
     /// human-visible `/name` value for pi.
     session_name: String,
     /// First time we've launched this long-lived agent (or `force_fresh`
@@ -2385,9 +2583,13 @@ impl LongLivedLaunch {
 ///
 /// Codex/pi path: keyed off `<state_dir>/session-name`. On first launch
 /// we mint a unique generation name and stamp `<state_dir>/launch-cwd`;
-/// on subsequent launches we resume that exact stamped name from the
-/// stamped cwd. Pi also receives a private `<state_dir>/pi-sessions` dir
-/// and resumes via `--continue`.
+/// on subsequent launches we resume from the stamped cwd. Codex resumes
+/// by the UUID in `<state_dir>/session-id`; when only `session-name` is
+/// stamped (agents launched before agman persisted codex UUIDs) the name
+/// is resolved through the codex session index and the UUID persisted,
+/// failing the launch when the label does not map to exactly one session.
+/// Pi also receives a private `<state_dir>/pi-sessions` dir and resumes
+/// via `--continue`.
 ///
 /// `force_fresh` short-circuits all paths: caller (respawn_agent) has
 /// already wiped the handles; we mint a fresh generation.
@@ -2398,7 +2600,14 @@ fn prepare_long_lived_launch(
     kind: HarnessKind,
     force_fresh: bool,
 ) -> Result<LongLivedLaunch> {
-    prepare_long_lived_launch_inner(state_dir, base_name, cwd, kind, force_fresh)
+    prepare_long_lived_launch_inner(
+        state_dir,
+        base_name,
+        cwd,
+        kind,
+        &harness::harness_home(kind),
+        force_fresh,
+    )
 }
 
 fn prepare_long_lived_launch_inner(
@@ -2406,6 +2615,7 @@ fn prepare_long_lived_launch_inner(
     base_name: &str,
     cwd: &Path,
     kind: HarnessKind,
+    harness_home: &Path,
     force_fresh: bool,
 ) -> Result<LongLivedLaunch> {
     std::fs::create_dir_all(state_dir).context("failed to create agent state dir")?;
@@ -2414,7 +2624,7 @@ fn prepare_long_lived_launch_inner(
 
     match kind {
         HarnessKind::Claude => {
-            let id_path = state_dir.join("session-id");
+            let id_path = Config::session_id_path(state_dir);
             if !force_fresh {
                 if let Ok(raw) = std::fs::read_to_string(&id_path) {
                     let trimmed = raw.trim();
@@ -2454,8 +2664,15 @@ fn prepare_long_lived_launch_inner(
                     .map(|s| PathBuf::from(s.trim()))
                     .filter(|p| p.exists())
                     .unwrap_or_else(|| cwd.to_path_buf());
+                let handle = read_or_resolve_session_id(
+                    kind.select().as_ref(),
+                    harness_home,
+                    state_dir,
+                    &session_name,
+                )?
+                .unwrap_or_else(|| session_name.clone());
                 Ok(LongLivedLaunch {
-                    mode: LaunchMode::Resume(session_name.clone()),
+                    mode: LaunchMode::Resume(handle),
                     cwd: resume_cwd,
                     session_dir,
                     session_name,
@@ -2501,6 +2718,46 @@ fn read_or_create_session_name(
     std::fs::write(&path, &session_name)
         .with_context(|| format!("failed to write {}", path.display()))?;
     Ok((session_name, true))
+}
+
+/// Harness-native resume handle for a long-lived agent: the persisted
+/// `<state_dir>/session-id` when present, otherwise resolved through the
+/// harness and persisted for the next launch. `None` for harnesses that
+/// resume without one.
+fn read_or_resolve_session_id(
+    harness: &dyn crate::harness::Harness,
+    harness_home: &Path,
+    state_dir: &Path,
+    session_name: &str,
+) -> Result<Option<String>> {
+    if let Ok(raw) = std::fs::read_to_string(Config::session_id_path(state_dir)) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Ok(Some(trimmed.to_string()));
+        }
+    }
+    resolve_and_persist_session_id(harness, harness_home, state_dir, session_name)
+}
+
+fn resolve_and_persist_session_id(
+    harness: &dyn crate::harness::Harness,
+    harness_home: &Path,
+    state_dir: &Path,
+    session_name: &str,
+) -> Result<Option<String>> {
+    let Some(id) = harness.resolve_session_id(harness_home, session_name)? else {
+        return Ok(None);
+    };
+    let id_path = Config::session_id_path(state_dir);
+    std::fs::write(&id_path, &id)
+        .with_context(|| format!("failed to write {}", id_path.display()))?;
+    tracing::info!(
+        session_name,
+        session_id = %id,
+        harness = %harness.kind(),
+        "persisted harness session id for resume"
+    );
+    Ok(Some(id))
 }
 
 fn unique_session_name(base_name: &str) -> String {
@@ -2610,6 +2867,13 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
     let prompt = build_chief_of_staff_prompt(telegram_enabled);
 
     let session_name = Config::chief_of_staff_tmux_session();
+    if Tmux::session_exists(session_name) {
+        tracing::debug!(
+            session = session_name,
+            "Chief of Staff session already running"
+        );
+        return Ok(());
+    }
     let agent_name = "agman-chief-of-staff".to_string();
     tracing::info!(session = session_name, telegram_enabled, harness = %kind, force_fresh, "starting Chief of Staff session");
 
@@ -2643,11 +2907,16 @@ pub fn start_chief_of_staff_session(config: &Config, force_fresh: bool) -> Resul
         session_key: prep.session_key(),
     });
 
-    let already_existed = Tmux::session_exists(session_name);
     Tmux::create_agent_session(session_name, &cmd, Some(&prep.cwd))?;
 
-    if !already_existed && (prep.is_first_launch || kind == HarnessKind::Pi) {
-        register_long_lived_session(harness.as_ref(), session_name, &prep.session_name, kind);
+    if prep.is_first_launch || kind == HarnessKind::Pi {
+        register_long_lived_session(
+            harness.as_ref(),
+            session_name,
+            &prep.session_name,
+            kind,
+            &cos_dir,
+        );
     }
     Ok(())
 }
@@ -2660,6 +2929,7 @@ fn register_long_lived_session(
     session: &str,
     name: &str,
     kind: HarnessKind,
+    state_dir: &Path,
 ) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
@@ -2672,6 +2942,15 @@ fn register_long_lived_session(
                 harness_home: &harness_home,
             }) {
                 tracing::warn!(session, error = %e, "register_session_name failed");
+            }
+            if let Err(e) = resolve_and_persist_session_id(harness, &harness_home, state_dir, name)
+            {
+                tracing::warn!(
+                    session,
+                    name,
+                    error = %e,
+                    "could not persist harness session id; the next resume will fail unless the label resolves by then"
+                );
             }
             return;
         }
@@ -2711,6 +2990,14 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
         && chat_id.as_deref().is_some_and(|c| !c.is_empty());
     let prompt = build_pm_prompt(telegram_enabled, project_name);
     let session_name = Config::pm_tmux_session(project_name);
+    if Tmux::session_exists(&session_name) {
+        tracing::debug!(
+            session = &session_name,
+            project = project_name,
+            "PM session already running"
+        );
+        return Ok(());
+    }
     let agent_name = format!("agman-pm-{project_name}");
     tracing::info!(session = &session_name, project = project_name, telegram_enabled, harness = %kind, force_fresh, "starting PM session");
 
@@ -2743,10 +3030,15 @@ pub fn start_pm_session(config: &Config, project_name: &str, force_fresh: bool) 
         session_key: prep.session_key(),
     });
 
-    let already_existed = Tmux::session_exists(&session_name);
     Tmux::create_agent_session(&session_name, &cmd, Some(&prep.cwd))?;
-    if !already_existed && (prep.is_first_launch || kind == HarnessKind::Pi) {
-        register_long_lived_session(harness.as_ref(), &session_name, &prep.session_name, kind);
+    if prep.is_first_launch || kind == HarnessKind::Pi {
+        register_long_lived_session(
+            harness.as_ref(),
+            &session_name,
+            &prep.session_name,
+            kind,
+            &project_dir,
+        );
     }
     Ok(())
 }
@@ -3318,6 +3610,16 @@ pub fn start_agent_session(
         }
     };
 
+    if Tmux::session_exists(&session_name) {
+        tracing::debug!(
+            session = &session_name,
+            project,
+            name,
+            "agent session already running"
+        );
+        return Ok(());
+    }
+
     let agent_kind = match &agent.meta.kind {
         AgentKind::Engineer => "engineer",
         AgentKind::Researcher { .. } => "researcher",
@@ -3375,10 +3677,15 @@ pub fn start_agent_session(
         session_key: prep.session_key(),
     });
 
-    let already_existed = Tmux::session_exists(&session_name);
     Tmux::create_agent_session(&session_name, &cmd, Some(&prep.cwd))?;
-    if !already_existed && (prep.is_first_launch || kind == HarnessKind::Pi) {
-        register_long_lived_session(harness.as_ref(), &session_name, &prep.session_name, kind);
+    if prep.is_first_launch || kind == HarnessKind::Pi {
+        register_long_lived_session(
+            harness.as_ref(),
+            &session_name,
+            &prep.session_name,
+            kind,
+            &dir,
+        );
     }
 
     Ok(())

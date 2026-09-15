@@ -233,11 +233,14 @@ fn codex_build_session_command_always_bypasses_approvals_and_sandbox() {
 
 #[test]
 fn codex_build_session_command_emits_resume_subcommand() {
-    // Long-lived resume: `codex resume <name>` shape with -C <cwd> and
-    // --no-alt-screen. Skips developer_instructions (the saved thread
-    // keeps its original prompt) and the git-repo guard.
+    // Long-lived resume: `codex resume <uuid>` shape with -C <cwd> and
+    // --no-alt-screen. The handle is the session UUID agman resolved from
+    // the codex session index, never the display label (codex 0.154
+    // rejects labels it cannot prove unique). Skips developer_instructions
+    // (the saved thread keeps its original prompt) and the git-repo guard.
     let h = HarnessKind::Codex.select();
     let work_dir = cwd();
+    let uuid = "019e8d45-1c40-7353-86da-f02f183a4ad4";
     let cmd = h.build_session_command(&LaunchContext {
         identity: "Identity body",
         name: "agman-chief-of-staff",
@@ -246,10 +249,14 @@ fn codex_build_session_command_emits_resume_subcommand() {
         cwd: &work_dir,
         no_alt_screen: true,
         capabilities: Default::default(),
-        session_key: SessionKey::Resume("agman-chief-of-staff"),
+        session_key: SessionKey::Resume(uuid),
     });
     assert!(cmd.starts_with("codex"));
-    assert!(cmd.contains(" resume 'agman-chief-of-staff'"));
+    assert!(cmd.contains(&format!(" resume '{uuid}'")));
+    assert!(
+        !cmd.contains("agman-chief-of-staff"),
+        "resume must not pass the display label: {cmd}"
+    );
     assert!(cmd.contains(&format!(" -C '{}'", work_dir.to_string_lossy())));
     assert!(cmd.contains("--dangerously-bypass-approvals-and-sandbox"));
     assert!(cmd.contains("--no-alt-screen"));
@@ -413,8 +420,8 @@ fn pi_ensure_workspace_trusted_is_noop() {
 #[test]
 fn codex_session_index_walker_matches_thread_name() {
     // Regression: codex writes `thread_name` (not `name`) in
-    // session_index.jsonl. The walker that backs both the post-/rename
-    // poll AND the pre-resume existence check must match it.
+    // session_index.jsonl. The walker that backs the post-/rename poll
+    // must match it.
     use agman::harness::poll_session_index_for_test;
 
     let codex_home = tempfile::tempdir().unwrap();
@@ -428,22 +435,186 @@ fn codex_session_index_walker_matches_thread_name() {
     .unwrap();
 
     assert!(
-        poll_session_index_for_test(&index_path, name, std::time::Duration::from_secs(2)),
+        poll_session_index_for_test(codex_home.path(), name, std::time::Duration::from_secs(2)),
         "walker must match `thread_name` (codex's actual key)"
     );
 
-    // Forward-compat: still matches `name`.
-    let other_idx = codex_home.path().join("session_index_v2.jsonl");
+    // Forward-compat: still matches `name`, and in any session_index*.jsonl.
+    let other_home = tempfile::tempdir().unwrap();
+    let other_idx = other_home.path().join("session_index_v2.jsonl");
     std::fs::write(
         &other_idx,
         format!("{{\"name\": \"{name}\", \"id\": \"def-456\"}}\n"),
     )
     .unwrap();
     assert!(poll_session_index_for_test(
-        &other_idx,
+        other_home.path(),
         name,
         std::time::Duration::from_secs(2)
     ));
+}
+
+#[test]
+fn codex_resolve_session_id_maps_label_to_single_uuid() {
+    // Codex appends one index line per rename/update, so a label normally
+    // has several lines sharing one id. Resolution must collapse them.
+    use agman::harness::codex::resolve_session_id;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    let name = "agman-pm-reviews-260603-113612-e0337e08";
+    let uuid = "019e8d45-1c40-7353-86da-f02f183a4ad4";
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        format!(
+            concat!(
+                "{{\"id\":\"019dd39d-3281-7b92-a276-f82aeb35f18e\",\"thread_name\":\"agman-test\",\"updated_at\":\"2026-04-28T10:23:30Z\"}}\n",
+                "{{\"id\":\"{uuid}\",\"thread_name\":\"{name}\",\"updated_at\":\"2026-06-03T11:36:19Z\"}}\n",
+                "not json\n",
+                "{{\"id\":\"{uuid}\",\"thread_name\":\"{name}\",\"updated_at\":\"2026-09-03T10:21:22Z\"}}\n",
+            ),
+            uuid = uuid,
+            name = name
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(resolve_session_id(codex_home.path(), name).unwrap(), uuid);
+}
+
+#[test]
+fn codex_resolve_session_id_scans_every_session_index_file() {
+    use agman::harness::codex::resolve_session_id;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    let name = "agman-pm-reviews-260603-113612-e0337e08";
+    let uuid = "019e8d45-1c40-7353-86da-f02f183a4ad4";
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        "{\"id\":\"019dd39d-3281-7b92-a276-f82aeb35f18e\",\"thread_name\":\"other\"}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        codex_home.path().join("session_index_2.jsonl"),
+        format!("{{\"id\":\"{uuid}\",\"thread_name\":\"{name}\"}}\n"),
+    )
+    .unwrap();
+    // Not a session index file: must be ignored even though it matches.
+    std::fs::write(
+        codex_home.path().join("history.jsonl"),
+        format!("{{\"id\":\"ffffffff-1c40-7353-86da-f02f183a4ad4\",\"thread_name\":\"{name}\"}}\n"),
+    )
+    .unwrap();
+
+    assert_eq!(resolve_session_id(codex_home.path(), name).unwrap(), uuid);
+}
+
+#[test]
+fn codex_resolve_session_id_fails_when_label_is_missing() {
+    use agman::harness::codex::resolve_session_id;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        "{\"id\":\"019dd39d-3281-7b92-a276-f82aeb35f18e\",\"thread_name\":\"agman-test\"}\n",
+    )
+    .unwrap();
+
+    let err = resolve_session_id(codex_home.path(), "agman-pm-missing")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("agman-pm-missing"), "{err}");
+    assert!(err.contains("no entry"), "{err}");
+
+    // No index at all behaves the same as no match.
+    let empty_home = tempfile::tempdir().unwrap();
+    let err = resolve_session_id(empty_home.path(), "agman-pm-missing")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("agman-pm-missing"), "{err}");
+}
+
+#[test]
+fn codex_resolve_session_id_fails_loudly_when_label_is_ambiguous() {
+    use agman::harness::codex::resolve_session_id;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    let name = "agman-task-repo--feature-step-1";
+    let first = "019dd4b5-48d4-76a3-ad3a-8384f83f25f2";
+    let second = "019dd4b7-ed70-7c33-b3f5-9509ce924474";
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        format!(
+            concat!(
+                "{{\"id\":\"{first}\",\"thread_name\":\"{name}\",\"updated_at\":\"2026-04-28T15:29:04Z\"}}\n",
+                "{{\"id\":\"{second}\",\"thread_name\":\"{name}\",\"updated_at\":\"2026-04-28T15:31:58Z\"}}\n",
+                "{{\"id\":\"{first}\",\"thread_name\":\"{name}\",\"updated_at\":\"2026-04-28T15:40:00Z\"}}\n",
+            ),
+            first = first,
+            second = second,
+            name = name
+        ),
+    )
+    .unwrap();
+
+    let err = resolve_session_id(codex_home.path(), name)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(name), "{err}");
+    assert!(err.contains("2 sessions"), "{err}");
+    assert!(err.contains(first) && err.contains(second), "{err}");
+    assert!(
+        err.contains("2026-04-28T15:40:00Z"),
+        "must report the latest updated_at per candidate: {err}"
+    );
+}
+
+#[test]
+fn codex_resolve_session_id_rejects_non_uuid_ids() {
+    // `codex resume <arg>` only takes the UUID path when the arg parses as
+    // one; anything else is treated as a label again.
+    use agman::harness::codex::resolve_session_id;
+
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        "{\"id\":\"abc-123\",\"thread_name\":\"agman-x\"}\n",
+    )
+    .unwrap();
+
+    let err = resolve_session_id(codex_home.path(), "agman-x")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not a UUID"), "{err}");
+}
+
+#[test]
+fn harness_resolve_session_id_is_codex_only() {
+    let codex_home = tempfile::tempdir().unwrap();
+    let name = "agman-pm-reviews";
+    let uuid = "019e8d45-1c40-7353-86da-f02f183a4ad4";
+    std::fs::write(
+        codex_home.path().join("session_index.jsonl"),
+        format!("{{\"id\":\"{uuid}\",\"thread_name\":\"{name}\"}}\n"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        HarnessKind::Codex
+            .select()
+            .resolve_session_id(codex_home.path(), name)
+            .unwrap()
+            .as_deref(),
+        Some(uuid)
+    );
+    for kind in [HarnessKind::Claude, HarnessKind::Pi] {
+        assert_eq!(
+            kind.select()
+                .resolve_session_id(codex_home.path(), name)
+                .unwrap(),
+            None,
+            "{kind} pins or continues its own session; nothing to resolve"
+        );
+    }
 }
 
 #[test]
@@ -466,13 +637,13 @@ fn codex_register_session_name_polls_session_index() {
     .unwrap();
 
     assert!(poll_session_index_for_test(
-        &index_path,
+        codex_home.path(),
         name,
         std::time::Duration::from_secs(2)
     ));
     // Negative case: a different name is not found.
     assert!(!poll_session_index_for_test(
-        &index_path,
+        codex_home.path(),
         "agman-other",
         std::time::Duration::from_millis(300)
     ));
@@ -508,7 +679,13 @@ fn codex_register_session_name_retries_until_indexed() {
             let nm = name_owned.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(100));
-                std::fs::write(&p, format!("{{\"thread_name\":\"{nm}\"}}\n")).unwrap();
+                std::fs::write(
+                    &p,
+                    format!(
+                        "{{\"id\":\"019dd4b7-ed70-7c33-b3f5-9509ce924474\",\"thread_name\":\"{nm}\"}}\n"
+                    ),
+                )
+                .unwrap();
             });
         }
         Ok(())
@@ -516,7 +693,7 @@ fn codex_register_session_name_retries_until_indexed() {
 
     let result = register_session_name_with_retry_for_test(
         paste,
-        &index_path,
+        codex_home.path(),
         name,
         Duration::from_millis(0),
         Duration::from_millis(500),
@@ -540,7 +717,6 @@ fn codex_register_session_name_returns_ok_on_timeout_after_retries() {
     use std::time::Duration;
 
     let codex_home = tempfile::tempdir().unwrap();
-    let index_path = codex_home.path().join("session_index.jsonl");
     let name = "agman-task-foo--bar-step-2";
 
     let attempts = Arc::new(AtomicU32::new(0));
@@ -553,7 +729,7 @@ fn codex_register_session_name_returns_ok_on_timeout_after_retries() {
 
     let result = register_session_name_with_retry_for_test(
         paste,
-        &index_path,
+        codex_home.path(),
         name,
         Duration::from_millis(0),
         Duration::from_millis(150),

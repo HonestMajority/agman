@@ -27,13 +27,16 @@ impl Harness for CodexHarness {
     }
 
     fn build_session_command(&self, ctx: &LaunchContext) -> String {
-        // Resume short-circuits: `codex resume <name>` keeps the saved
+        // Resume short-circuits: `codex resume <uuid>` keeps the saved
         // thread's developer_instructions, so we skip the `-c ...` arg.
+        // The handle is the session UUID persisted in `<state_dir>/session-id`
+        // (see `resolve_session_id`); codex no longer accepts a bare label
+        // when it cannot prove the label unique across its server pages.
         // Pass the working directory via `-C <cwd>` so codex doesn't
         // prompt a directory picker when launch cwd differs from saved.
-        if let SessionKey::Resume(name) = ctx.session_key {
+        if let SessionKey::Resume(session_id) = ctx.session_key {
             let cwd_str = ctx.cwd.to_string_lossy().replace('\'', "'\\''");
-            let escaped_name = name.replace('\'', "'\\''");
+            let escaped_id = session_id.replace('\'', "'\\''");
             let mut cmd = String::from("codex");
             // Always run codex with full approval+sandbox bypass. Mirrors
             // claude's `--dangerously-skip-permissions`. Without this, codex
@@ -47,7 +50,7 @@ impl Harness for CodexHarness {
                 cmd.push_str(" -c 'mcp_servers.playwright.enabled=true'");
             }
             cmd.push_str(&format!(" -C '{}'", cwd_str));
-            cmd.push_str(&format!(" resume '{}'", escaped_name));
+            cmd.push_str(&format!(" resume '{}'", escaped_id));
             return cmd;
         }
 
@@ -94,7 +97,7 @@ impl Harness for CodexHarness {
     }
 
     /// Paste-inject `/rename <name>` post-launch and verify the entry shows
-    /// up in `~/.codex/session_index.jsonl`. Self-verifying with retry: codex
+    /// up in `~/.codex/session_index*.jsonl`. Self-verifying with retry: codex
     /// step 2+ relaunches faster than first launch (file watchers warm, no
     /// first-time prompts), so the bracket-paste handler isn't always
     /// fully mounted when `wait_for_agent_ready` returns. Sleep ~500 ms,
@@ -107,11 +110,10 @@ impl Harness for CodexHarness {
             None => ctx.session.to_string(),
         };
         let cmd = format!("/rename {}", ctx.name);
-        let index_path = ctx.harness_home.join("session_index.jsonl");
 
         let found = register_session_name_with_retry(
             || paste_text(&target, &cmd),
-            &index_path,
+            ctx.harness_home,
             ctx.name,
             Duration::from_millis(500),
             Duration::from_secs(2),
@@ -122,17 +124,21 @@ impl Harness for CodexHarness {
             tracing::debug!(
                 session = ctx.session,
                 name = ctx.name,
-                "codex /rename registered in session_index.jsonl"
+                "codex /rename registered in session index"
             );
         } else {
             tracing::warn!(
                 session = ctx.session,
                 name = ctx.name,
-                index_path = %index_path.display(),
-                "codex /rename did not appear in session_index.jsonl after 3 retries; session usable but not resume-by-name"
+                harness_home = %ctx.harness_home.display(),
+                "codex /rename did not appear in session_index*.jsonl after 3 retries; session usable but agman cannot resolve its UUID for resume"
             );
         }
         Ok(())
+    }
+
+    fn resolve_session_id(&self, harness_home: &Path, name: &str) -> Result<Option<String>> {
+        resolve_session_id(harness_home, name).map(Some)
     }
 
     fn kill_pane(&self, session: &str, window: Option<&str>) -> Result<()> {
@@ -140,7 +146,8 @@ impl Harness for CodexHarness {
     }
 }
 
-/// Run `paste_attempt` then poll `index_path` for `name`, retrying up to
+/// Run `paste_attempt` then poll the session index under `codex_home` for
+/// `name`, retrying up to
 /// `max_attempts` times. Returns `Ok(true)` if the entry appears within any
 /// attempt's poll window, `Ok(false)` if all attempts time out.
 ///
@@ -155,7 +162,7 @@ impl Harness for CodexHarness {
 /// effectively backs off naturally.
 pub(crate) fn register_session_name_with_retry<F>(
     mut paste_attempt: F,
-    index_path: &Path,
+    codex_home: &Path,
     name: &str,
     initial_delay: Duration,
     poll_timeout: Duration,
@@ -176,28 +183,29 @@ where
                 "codex /rename: paste attempt failed; will retry"
             );
         }
-        if poll_session_index_for(index_path, name, poll_timeout) {
+        if poll_session_index_for(codex_home, name, poll_timeout) {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-/// Poll `index_path` (`~/.codex/session_index.jsonl`) for at most `timeout`
-/// looking for any line containing an entry named `name`. Returns true if
-/// such a line is observed; false on timeout.
-pub(crate) fn poll_session_index_for(index_path: &Path, name: &str, timeout: Duration) -> bool {
+/// Poll the session index under `codex_home` for at most `timeout` looking
+/// for any entry named `name`. Returns true if such an entry is observed;
+/// false on timeout.
+pub(crate) fn poll_session_index_for(codex_home: &Path, name: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     let mut last_size: u64 = 0;
     while Instant::now() < deadline {
-        let size = std::fs::metadata(index_path).map(|m| m.len()).unwrap_or(0);
+        let files = session_index_files(codex_home);
+        let size = files
+            .iter()
+            .filter_map(|f| std::fs::metadata(f).ok())
+            .map(|m| m.len())
+            .sum();
         if size != last_size {
-            if let Ok(content) = std::fs::read_to_string(index_path) {
-                for line in content.lines() {
-                    if line_names_match(line, name) {
-                        return true;
-                    }
-                }
+            if index_entries_named(&files, name).next().is_some() {
+                return true;
             }
             last_size = size;
         }
@@ -206,32 +214,135 @@ pub(crate) fn poll_session_index_for(index_path: &Path, name: &str, timeout: Dur
     false
 }
 
-/// Return true when a session_index.jsonl line declares the given `name`.
-/// Handles both flat and nested shapes by walking JSON values for any
-/// `thread_name` (codex's actual key) or `name` field whose value matches.
-fn line_names_match(line: &str, name: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-        return false;
-    };
-    json_contains_name(&v, name)
+/// One `session_index*.jsonl` line: codex writes flat
+/// `{"id": <uuid>, "thread_name": <name>, "updated_at": <rfc3339>}` and
+/// appends a new line on every rename/update, so a name usually has several
+/// lines sharing one id.
+#[derive(Debug)]
+struct IndexEntry {
+    id: String,
+    name: String,
+    updated_at: Option<String>,
 }
 
-fn json_contains_name(v: &serde_json::Value, name: &str) -> bool {
-    match v {
-        serde_json::Value::Object(map) => {
-            // Codex writes `thread_name` in session_index.jsonl. Accept
-            // `name` too as a forward-compat fallback.
-            for key in ["thread_name", "name"] {
-                if let Some(serde_json::Value::String(s)) = map.get(key) {
-                    if s == name {
-                        return true;
-                    }
+impl IndexEntry {
+    fn parse(line: &str) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        let obj = v.as_object()?;
+        let id = obj.get("id")?.as_str()?.to_string();
+        // Codex writes `thread_name`; accept `name` as a forward-compat alias.
+        let name = obj
+            .get("thread_name")
+            .or_else(|| obj.get("name"))?
+            .as_str()?
+            .to_string();
+        let updated_at = obj
+            .get("updated_at")
+            .and_then(|u| u.as_str())
+            .map(str::to_string);
+        Some(Self {
+            id,
+            name,
+            updated_at,
+        })
+    }
+}
+
+/// All `session_index*.jsonl` files directly under `codex_home`, sorted by
+/// path. Codex currently writes a single `session_index.jsonl`; the glob keeps
+/// agman working if it ever versions the file like its sqlite stores.
+pub fn session_index_files(codex_home: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(codex_home) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.is_file()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("session_index") && n.ends_with(".jsonl"))
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+fn index_entries_named<'a>(
+    files: &'a [PathBuf],
+    name: &'a str,
+) -> impl Iterator<Item = IndexEntry> + 'a {
+    files
+        .iter()
+        .filter_map(|f| std::fs::read_to_string(f).ok())
+        .flat_map(|content| {
+            content
+                .lines()
+                .filter_map(IndexEntry::parse)
+                .collect::<Vec<_>>()
+        })
+        .filter(move |e| e.name == name)
+}
+
+/// Resolve the codex session UUID registered under `name` from the session
+/// index under `codex_home`.
+///
+/// Succeeds only when the label maps to exactly one UUID. Zero matches (the
+/// `/rename` never landed, or the index was pruned) and several distinct ids
+/// (the label was reused) both fail with the label and the candidates so the
+/// caller can surface them instead of handing codex a label it will reject.
+pub fn resolve_session_id(codex_home: &Path, name: &str) -> Result<String> {
+    let files = session_index_files(codex_home);
+    // Latest `updated_at` per distinct id, in first-seen order.
+    let mut candidates: Vec<IndexEntry> = Vec::new();
+    for entry in index_entries_named(&files, name) {
+        match candidates.iter_mut().find(|c| c.id == entry.id) {
+            Some(existing) => {
+                if entry.updated_at > existing.updated_at {
+                    existing.updated_at = entry.updated_at;
                 }
             }
-            map.values().any(|child| json_contains_name(child, name))
+            None => candidates.push(entry),
         }
-        serde_json::Value::Array(arr) => arr.iter().any(|child| json_contains_name(child, name)),
-        _ => false,
+    }
+
+    match candidates.as_slice() {
+        [] => anyhow::bail!(
+            "codex session label '{}' has no entry in {} (session_index*.jsonl); \
+             the /rename never registered or the index was pruned, so codex \
+             cannot resume it. Respawn the agent to start a fresh session.",
+            name,
+            codex_home.display()
+        ),
+        [single] => {
+            if uuid::Uuid::parse_str(&single.id).is_err() {
+                anyhow::bail!(
+                    "codex session label '{}' resolves to id '{}' in {}, which is not a UUID; \
+                     refusing to resume by label",
+                    name,
+                    single.id,
+                    codex_home.display()
+                );
+            }
+            Ok(single.id.clone())
+        }
+        many => {
+            let listed: Vec<String> = many
+                .iter()
+                .map(|c| match &c.updated_at {
+                    Some(at) => format!("{} (updated {})", c.id, at),
+                    None => c.id.clone(),
+                })
+                .collect();
+            anyhow::bail!(
+                "codex session label '{}' is ambiguous in {}: {} sessions carry it [{}]; \
+                 stamp the intended UUID in <state_dir>/session-id or respawn the agent",
+                name,
+                codex_home.display(),
+                many.len(),
+                listed.join(", ")
+            )
+        }
     }
 }
 
